@@ -149,6 +149,27 @@ struct Filed {
     join_tx: mpsc::Sender<LinkJoin>,
 }
 
+impl Book {
+    /// Whether a live link from another address than `remote` holds the User
+    /// Hash `name`: it keeps it, as aMule's client stays on the socket it
+    /// holds and attaches no newcomer (`ClientList.cpp:384-398`, ADR-0107, "One
+    /// client on two addresses"). A dial not yet answered holds nothing, and
+    /// nor does one dead at the far end.
+    fn stands_elsewhere(&self, name: &LinkName, remote: PeerEndpoint, now: Instant) -> bool {
+        let (LinkName::User(_), Some(held)) = (name, self.links.get(name)) else {
+            return false;
+        };
+        held.remote.ip() != remote.ip()
+            && !self.yielding.contains_key(&held.filing)
+            && !self.unanswered.contains_key(&held.filing)
+            && self
+                .live
+                .get(&held.filing)
+                .and_then(|proven| proven.far_end.as_ref())
+                .is_none_or(|far_end| far_end.dead_at(now).is_none())
+    }
+}
+
 /// A download's ask to ride a link: seated at once when nobody rides it,
 /// told it waits otherwise, and answered at its turn — or with the cause of
 /// the dial it waited on, when that dial failed before the hello.
@@ -350,13 +371,17 @@ impl SharedPeerLinks {
             remote,
             join_tx,
         };
+        let now = Instant::now();
         let mut took_from = Vec::new();
         for name in &names {
-            if let Some(held) = book.links.insert(*name, filed.clone()) {
+            if let Some(held) = book.links.get(name) {
                 took_from.push(held.filing);
             }
+            if !book.stands_elsewhere(name, remote, now) {
+                book.links.insert(*name, filed.clone());
+            }
         }
-        let moving = book.overtake(&took_from, &filed, Instant::now());
+        let moving = book.overtake(&took_from, &filed, now);
         book.live.insert(
             filing,
             Proven {
@@ -538,12 +563,13 @@ impl Filing {
             .filter(|name| !names.contains(name))
             .collect();
         release(&mut book, self.filing, &given_up);
+        let now = Instant::now();
         for name in &names {
             let later = book
                 .links
                 .get(name)
                 .is_some_and(|held| held.filing > self.filing);
-            if !later {
+            if !later && !book.stands_elsewhere(name, filed.remote, now) {
                 book.links.insert(*name, filed.clone());
             }
         }

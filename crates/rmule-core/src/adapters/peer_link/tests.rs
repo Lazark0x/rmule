@@ -65,7 +65,7 @@ fn a_low_id_asker_is_found_by_its_callback_and_an_ipv6_asker_by_its_own_address(
 fn a_newer_link_takes_a_name_and_the_older_one_ending_leaves_it_there() {
     let links = SharedPeerLinks::default();
     let shared = LinkName::User(user(0x21));
-    let (older_at, newer_at) = (v4([203, 0, 113, 1], 4662), v4([203, 0, 113, 2], 4662));
+    let (older_at, newer_at) = (v4([203, 0, 113, 1], 4662), v4([203, 0, 113, 1], 50_288));
     let (older, _older_joins, _) = links.file(older_at, vec![LinkName::Endpoint(older_at), shared]);
     let (newer, _newer_joins, _) = links.file(newer_at, vec![shared]);
 
@@ -445,4 +445,40 @@ async fn the_peers_own_link_lets_a_dial_dead_at_the_far_end_go_and_spares_a_live
         let let_go = tokio::time::timeout(within, let_go_of(Some(&far_end))).await;
         assert_eq!(let_go.is_ok(), dead);
     }
+}
+
+/// A client's second address, or a thief's, attaches to nothing while the link
+/// that holds the hash stands: a download looking the peer up by its hash
+/// rides that link, as aMule's client stays on its socket
+/// (`ClientList.cpp:384-398`), and the name passes on when that link ends.
+#[test]
+fn a_link_from_another_address_takes_no_user_hash_from_the_link_that_stands() {
+    let links = SharedPeerLinks::default();
+    let (first, second) = (v4([203, 0, 113, 3], 4662), v4([198, 51, 100, 9], 4662));
+    let hash = LinkName::User(user(0x24));
+    let (held, _joins, _moving) = links.file(first, vec![LinkName::Endpoint(first), hash]);
+
+    let (_newcomer, _joins, _moving) = links.file(second, vec![LinkName::Endpoint(second), hash]);
+
+    let found = |names: &[LinkName]| links.find(names).map(|link| link.remote);
+    assert_eq!(found(&[hash]), Some(first));
+    assert_eq!(found(&[LinkName::Endpoint(second)]), Some(second));
+    drop(held);
+    assert_eq!(found(&[hash]), Some(second));
+}
+
+/// A dial not yet answered holds nothing yet: the peer's own link from its
+/// other family still overtakes it under the hash (ADR-0107 invariant 7).
+#[test]
+fn a_dial_not_yet_answered_gives_its_hash_to_the_peers_link_from_another_address() {
+    let links = SharedPeerLinks::default();
+    let (dialed, came_in) = (v4([203, 0, 113, 3], 4662), v4([198, 51, 100, 9], 4662));
+    let hash = LinkName::User(user(0x25));
+    let Reach::Dial(_dial) = links.reach(dialed, &[LinkName::Endpoint(dialed), hash]) else {
+        panic!("nothing is linked yet: the look-up files a dial");
+    };
+
+    let (_link, _joins, _moving) = links.file(came_in, vec![LinkName::Endpoint(came_in), hash]);
+
+    assert_eq!(links.find(&[hash]).map(|link| link.remote), Some(came_in));
 }
