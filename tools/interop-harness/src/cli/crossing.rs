@@ -25,6 +25,11 @@ const RMULE_FILE_SIZE: u64 = 1024 * 1024;
 /// The slot and wait files: larger than X's first burst at its cap, so X
 /// still holds the slot when it is stopped.
 const SERVED_FILE_SIZE: u64 = 32 * 1024 * 1024;
+/// The file a seed downloads back on the download legs: done well inside the
+/// seconds a stock aMule reads a link both ways at full rate. Past them it
+/// stops reading that link, its own ask and rmule's last one unread (run
+/// `1793367749`).
+const SEED_FILE_SIZE: u64 = 4 * 1024 * 1024;
 
 /// The race the flow stages.
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -144,7 +149,11 @@ pub(crate) fn peer_crossing(args: PeerCrossingArgs) -> Result<()> {
         &layout,
         RMULE_FILE_SIZE,
         1024,
-        SERVED_FILE_SIZE,
+        if shape.leg.serves() {
+            SERVED_FILE_SIZE
+        } else {
+            SEED_FILE_SIZE
+        },
         &hash_command,
     )?;
     let rmule_client_container = RmuleClientContainer::cargo_rmule_tools(&args.rmule_client_image)?;
