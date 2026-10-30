@@ -66,7 +66,7 @@ The operator reads the asking, queued and transferring counts of every running d
 |---|---|---|---|
 | **Dial Window** — the node, one fixed 5-second window at a time | new connections a fill opens: each dial, rung-0 dial, callback ask or punch, and each TCP full ask's road | 20 | `MaxConPerFive` (`Preferences.cpp:1029`), the counter turned every 5 s |
 | **Connection Ceiling** — the node, summed over the downloads | connections the downloads hold: every source asking or transferring, a callback road in flight included | 500 | `MaxConnections` (`Preferences.cpp:1028`, `:1493-1500` for a descriptor limit above 520 or unknown) |
-| **Source Limit** — one download | sources its Source Book holds | 300 | `MaxSourcesPerFile` (`Preferences.cpp:1027`; `DownloadQueue.cpp:1556`) |
+| **Source Limit** — one download | sources its Source Book holds, a record waiting on another download's Queue Standing not among them (ADR-0090) | 300 | `MaxSourcesPerFile` (`Preferences.cpp:1027`; `DownloadQueue.cpp:1556`) |
 
 `CoreConfig::peer_connections` carries the first two; the Source Limit is aMule's default and no knob.
 

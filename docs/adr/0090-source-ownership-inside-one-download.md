@@ -29,7 +29,8 @@ construction:
 
 Every channel's sighting arrives as one **Source Sighting** through the book's one entry,
 which merges a held source rather than pooling it twice, and takes none while it holds 300
-records, aMule's `MaxSourcesPerFile` (ADR-0116's Source Limit). The connections a download
+records, aMule's `MaxSourcesPerFile` (ADR-0116's Source Limit), a record waiting on another
+download's Queue Standing not among them (below). The connections a download
 holds are read off the stages — Dialing, Worker and CallbackPending — for the node's
 Connection Ceiling, and a source's **Source Activity** with them (ADR-0116); the next dial is
 the book's to pick, once the Connection Budget admits it, in lane order — High ID, then Low ID on the
@@ -101,8 +102,8 @@ nobody drops the source as any failed dial or lapsed road does, as aMule deletes
 `DS_CONNECTING` or `DS_WAITCALLBACK` source (`BaseClient.cpp:1341-1347`).
 
 **Blocks** stop a source from being pooled, live in the book and outlive its records:
-the **IP filter** and **address family** (the intake gate, below), the spent names
-(below), and the **distrusted peers** — keyed by User Hash, seeded at the book's
+**ourselves**, the **IP filter** and **address family** (the intake gate, below), the spent
+names (below), and the **distrusted peers** — keyed by User Hash, seeded at the book's
 construction from the download's record, where each new one is persisted as a child table
 (ADR-0083), never expiring in the download's life. The book hands a new distrust back as an
 outcome for the brain to persist. A record the store cannot read ends the start as a store
@@ -110,14 +111,37 @@ failure: a run that began without it would forget every distrust the download ea
 write the store refuses ends the run the same way, and the run never goes on believing the
 peer persisted.
 
-**The intake gate** is the first two blocks, applied inside the book's one entry to every
-sighting from every channel. Each is judged per half: a filtered half is dropped while its
+**The intake gate** is the first three blocks, applied inside the book's one entry to every
+sighting from every channel. A sighting that names us is refused whole, below; the filter and
+the family are each judged per half: a filtered half is dropped while its
 sibling half survives, a dual-stack source whose client id is refused stays on its IPv6
 half, and a source whose only address is a family this node holds no address to dial from
-is blocked. The caller lends the book the filter's current view and our Dial Position for
-the one call, so a filter reload applies from the next sighting and sources already pooled
-stay as they are. The book answers a block with its reason — filtered, family
-unreachable, spent or distrusted.
+is blocked. The caller lends the book the filter's current view, our Dial Position and our
+**Own Position** for the one call, so a filter reload or a new login applies from the next
+sighting and sources already pooled stay as they are. The book answers a block with its
+reason — ourselves, filtered, family unreachable, spent or distrusted.
+
+**A sighting that names us is refused whole**, on every channel, as aMule's `CanAddSource`
+(`PartFile.cpp:1575-1625`) reads a server answer, a link and a source exchange, its
+`CheckAndAddSource` (`DownloadQueue.cpp:612-619`) every source that reaches a file, and its
+Kad intake its own row (`DownloadQueue.cpp:1569`). The **Own Position** is what those rules
+read of us, taken per batch from the one owner of each fact: our User Hash, the live session's
+id and server, the address **Address Learning** holds, and the serve listener's port. One half
+naming us proves the pair ours, so its sibling is not kept.
+
+| The sighting names | aMule | rmule |
+|---|---|---|
+| our User Hash | `CheckAndAddSource`, `DownloadQueue.cpp:612-619` | refused, whatever its address |
+| our Low ID on our server, while we hold a Low ID | `PartFile.cpp:1596-1598` | refused; the same id in another server's namespace is another peer |
+| our public address at any port, while we hold a Low ID | `PartFile.cpp:1599-1601` | refused |
+| our High ID at our port | `PartFile.cpp:1603-1605` | refused |
+| our address at our port, from Kad and from an open Kad | `DownloadQueue.cpp:1569`, `PartFile.cpp:1609-1615` | refused on every channel: Address Learning holds one address, and nobody else answers at our port there |
+| a Kad callback row at our address and port | `DownloadQueue.cpp:1569` reads every row type | refused |
+| our Known IPv6 at our port | none: kno has no such rule | refused: rmule writes that half into its own hello and rows (ADR-0087) |
+| a Low ID while we are firewalled | `PartFile.cpp:1619-1624` drops it | departs: pooled, for the punch roads aMule lacks (ADR-0091); the Low-to-Low purge lets it go at the threshold |
+
+Any other address at our IP, while we hold a High ID, is a peer behind our NAT, and stays a
+source.
 
 **Two records merge only on wire proof**: a dual-stack pairing names both endpoints, a
 Low-ID candidate names its rung-0 IPv6 half, or an adopted callback's inbound endpoint joins
@@ -149,7 +173,72 @@ server (`DeadSourceList.cpp:63-75`, `AddDeadSource` at `ClientTCPSocket.cpp:541-
 (`DeadSourceList.cpp:34-35`), which rmule's one clock for every spent name shortens to the
 re-ask brackets. The block is this download's alone: the same peer stays a source of
 another download (ADR-0107), and aMule's swap of such a source to another file
-(`SwapToAnotherFile`) has no counterpart.
+(`SwapToAnotherFile(true, true, true, NULL)`, `ClientTCPSocket.cpp:555-561`) is the peer's
+Queue Standing passing on as the record leaves.
+
+### Sources shared between downloads
+
+aMule holds a peer as one client: `m_reqfile` names the file it asks for, `m_A4AF_list` the
+other files that sighted it (`DownloadQueue.cpp:678`, `:745`, `DownloadClient.cpp:496-507`).
+A source of that client holding nothing the file needs is offered to one of the others before
+it is let go (`PartFile.cpp:1423-1437`). rmule holds such a peer as one record in each download's
+book, and **no record ever crosses a book**: its stage, blocks, ask facts and Advertised Parts are
+that download's, and each run owns its book alone. What the downloads share is the peer's one
+**Queue Standing** (ADR-0107), the holder of which is `m_reqfile` and every other record of which
+is an A4AF entry.
+
+| Set | Key | Owner | Lifetime |
+|---|---|---|---|
+| **Places** | each Ask Name of a record holding a standing (ADR-0107) | the run, republished after every step | from its record earning a standing to the standing's end |
+| **Pooled Places** | each Ask Name of a record in a lane | the run, republished after every step | while the record waits in its lane |
+
+A **Source Handover** is the standing passing from a record holding no part we lack to another
+download's record of the peer. **Nothing moves and nobody sends anything.** Each run reads its
+own role off the **Queue Standings** (`role`, a pure function of what every run published), under
+a lock held for one read or one publication, never over a book and never across an await. Both
+sides of a handover so read one answer, each in its own step, and neither run touches the other's
+book, wakes it or waits for it. A run that stops withdraws its places, which is aMule's refusal
+of a stopped or finished target (`IsValidSwapTarget`, `DownloadClient.cpp:1546-1551`).
+
+1. **Who may take.** A download holding a record of the peer that may need a part, in a lane or
+   in the RemoteQueued stage, as aMule's target is a file that sighted the client and whose
+   `NeededParts` stands, which it does from the sighting (`DownloadClient.cpp:501`). A download
+   that never sighted the peer is offered nothing: it may not hold that file.
+2. **What a Pooled Place outranks.** Only a place holding no part we lack. Against a place that
+   may need a part, or another Pooled Place, it changes nothing, so two downloads that have not
+   asked yet still meet on the Peer Link (ADR-0107 invariants 7 and 8) rather than on a standing
+   neither holds.
+3. **The taker asks by TCP, on the peer's clock.** A fill that reaches its record while the
+   giver's place stands and the peer's last slot ask named the giver's file parks it in the
+   RemoteQueued stage, no rank and no contact, its clock at the peer's last ask, and its TCP full
+   ask falls due a period after that, as aMule's swap
+   leaves `DS_NONE` and only `AskForDownload` serves it, at the last ask plus `FILEREASKTIME`
+   (`DownloadClient.cpp:1498`, `PartFile.cpp:1472-1483`). The full ask stamps the record's own
+   ask, as `AskForDownload` stamps the client's (`DownloadClient.cpp:156`), so the fill that
+   follows dials it rather than parking it again.
+4. **The giver keeps its record.** At the purge tick, spaced from the file's one purge clock as
+   a no-needed-parts purge is and restarting it, whatever the file's source count, the book notes
+   the record whose role reads as waiting: its rank is cleared and the handover reported, once
+   (`PartFile.cpp:1424-1432`, `DownloadClient.cpp:1498-1502`). The record stays, as the A4AF entry
+   aMule keeps (`DownloadClient.cpp:1483-1491`): no purge takes it, as aMule's purges walk `m_SrcList`
+   and not the A4AF list, and neither the Source Limit, the purge threshold nor the source-ask
+   counts read it (`GetSourceCount`, `PartFile.h:144`). Its Advertised Parts stay too, for a grant
+   that reaches it; aMule's `ResetFileStatusInfo` says nothing on the wire.
+5. **With nobody to take it**, a no-needed-parts source stays the holder, is asked at twice the
+   period, and is let go at the threshold, as aMule's failed swap is (`PartFile.cpp:1426-1432`).
+6. **A handover ends when the taker's place does.** The giver's next sweep reads the standing back
+   and it asks by TCP on the peer's clock, counted again, as aMule's stopping file swaps its
+   sources on, needed parts or not (`PartFile.cpp:2206`).
+
+Two downloads never dial one peer over this: the giver asks nothing once it reads as waiting, the
+taker's dial is the full ask, and the Peer Link look-up (ADR-0107 invariant 7) is the floor under a
+step that read the role just before the other published. aMule's 15-minute suspension of the file
+a client left (`PURGESOURCESWAPSTOP`, `DownloadClient.cpp:1529`) has no counterpart: it stops a
+swap back, and a record marked as holding nothing we need loses the mark only on an answer, which
+only the holder is given, so a handover cannot swing back. rmule's downloads carry no priority
+(ADR-0107); among several takers the rank rule picks, the slot ask read last, then the download
+added first. The operator's and EC's swap commands (`GuiEvents.cpp:631`, `:646`,
+`ExternalConn.cpp:1490`) and A4AF-auto (`PartFile.cpp:1490-1502`) have no counterpart.
 
 Invariants every transition keeps:
 
@@ -169,6 +258,9 @@ Invariants every transition keeps:
    when it wrote, so a sender proven after its worker ended is distrusted too. Writers a
    failure names only by elimination are retired and never distrusted. Distrust follows the
    peer across addresses and stays apart from the IP-keyed, core-wide `BanStore` (ADR-0064).
+5. **A handover moves no record.** A peer shared by two downloads is one record in each book,
+   each with its one owner; only the Queue Standing's holder passes between them, and a run reads
+   and writes its own book alone.
 
 aMule's counterparts: one `CUpDownClient` per peer and one pooling seam,
 `CDownloadQueue::CheckAndAddSource` (`src/DownloadQueue.cpp:687-745`); dead endpoints in
@@ -220,6 +312,19 @@ The worker lifecycle keeps the invariants:
   reassigns a freed low id and a NAT reuses a port, so the newer sighting names who answers
   at the key now; a callback asked under the older owner's facts reaches the newer owner
   with the wrong crypt side and buddy.
+- **One source record shared by the Download Set.** It would give a peer aMule's one object, at
+  the cost of a lock over every sighting and a record whose blocks, ask facts and Advertised Parts
+  are per download anyway. Rejected: the only per-peer fact the wire needs is the standing, which
+  already has its registry.
+- **A handover as a message between runs, offer then accept.** Rejected: it needs the taker's run
+  awake to answer, a timeout for one that stops, and a third state in which two runs each think
+  the other asks. A published place has none of these: a stopped run's places are simply gone.
+- **Moving the record into the taker's book.** Rejected: the record's facts are about the giver's
+  file, and the taker that sighted the peer holds a record of its own.
+- **Waiting for the taker's fill to reveal it, with no Pooled Places.** Rejected: a fill the
+  Connection Budget refuses reaches no record, so a saturated node would keep asking a source for
+  a file that needs nothing while another download that wants it sits in a lane, and would let the
+  giver's record go at the threshold.
 - **Keep a source that lacks the file, asking it again each period.** Rejected: it said it
   holds nothing of this file; asking spends ask budget and a slot on every cycle, and aMule
   dead-lists it.

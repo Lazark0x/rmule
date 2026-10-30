@@ -342,7 +342,7 @@ holds aMule's shape as a **Queue Standing**: one per peer across the Download Se
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Queue Standings** | each Ask Name (ADR-0108) of a record holding a standing: the endpoint it stands at and the User Hash its record knows; per name, a **stamp** — the peer's last ask and the download whose slot ask it last read | the core, shared by the Download Set; each run republishes its places after every step and stamps each ping and TCP full ask its sweep sends | a place: from its record earning a standing (a slot ask, ADR-0057) to the standing's end; a stamp: until no place carries its name and two reask periods have passed |
+| **Queue Standings** | each Ask Name (ADR-0108) of a record holding a standing: the endpoint it stands at and the User Hash its record knows; per name, a **stamp** — the peer's last ask and the download whose slot ask it last read | the core, shared by the Download Set; each run republishes its places after every step and stamps each ping and TCP full ask its sweep sends | a place: from its record earning a standing (a slot ask, ADR-0057) to the standing's end; a Pooled Place, the same names of a record still in a lane (ADR-0090): while it waits there; a stamp: until no place carries its name and two reask periods have passed |
 
 Invariants every transition keeps:
 
@@ -353,7 +353,9 @@ Invariants every transition keeps:
 13. **A waiter asks nothing.** Every other download with a record at the peer waits on the
     standing, as aMule's A4AF file waits on its client: no ping, no TCP full ask and no first ask.
     A fill that takes a pooled record of a peer standing in another download's standing dials
-    nothing; the record waits in the RemoteQueued stage, holding no rank and no contact of its own.
+    nothing; the record waits in the RemoteQueued stage, holding no rank and no contact of its own,
+    and so does one that takes the standing from a place holding no part we need (ADR-0090,
+    "Sources shared between downloads"), whose ask falls due by invariant 14.
 14. **The standing's clock is the peer's.** Each ping and TCP full ask a sweep sends stamps the
     peer, and so does each slot ask a record earns its standing by. A download the standing passes
     to pings nothing — the peer holds the other file — and its TCP full ask falls due a period after
@@ -366,7 +368,7 @@ Invariants every transition keeps:
 | the entry names one file | `SetUploadFileID` at each file request (`ClientTCPSocket.cpp:462`, `:521`, `:613`) | the holder is the download whose slot ask the peer read last |
 | the client is reasked once a cycle, for its requested file | `UDPReaskForDownload` sends `m_reqfile` (`DownloadClient.cpp:1249-1323`) on the client's clock (`PartFile.cpp:1449-1483`) | the holder's record re-asks; every other download's record waits |
 | another file of a queued client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | a pooled record of a peer standing elsewhere waits on that standing and is not dialed |
-| a source holding nothing we need, or not the file, swaps to an A4AF file | `PartFile.cpp:1423-1426`, `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:2203-2206` | a holder holding no part we need yields to a waiter that may need one; a holder whose standing ends — a `0x92`, the TCP no-file answer, a purge, a failed road, its run's stop, pause or end — leaves it to the next waiter |
+| a source holding nothing we need, or not the file, swaps to an A4AF file | `PartFile.cpp:1423-1426`, `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:2203-2206` | a holder holding no part we need yields to a waiter, or a download holding the peer in a lane, that may need one (a **Source Handover**, ADR-0090); a holder whose standing ends — a `0x92`, the TCP no-file answer, a purge, a failed road, its run's stop, pause or end — leaves it to the next waiter |
 | a swapped client asks by TCP on the client's clock | `SwapToAnotherFile` leaves `DS_NONE` (`DownloadClient.cpp:1499`), which only the TCP ask serves, at the last ask plus `FILEREASKTIME` (`PartFile.cpp:1472-1483`) | the new holder's first re-ask is the TCP full ask, a period after the standing's last stamp |
 | a promoted client takes the grant for its requested file | `OP_ACCEPTUPLOADREQ` names no file; `DS_ONQUEUE` becomes `DS_DOWNLOADING` for `m_reqfile` (`ClientTCPSocket.cpp:635-645`) | an unasked grant goes to the holder's Awaited Grant first |
 | the A4AF files take the socket after the transfer | `SwapToAnotherFile` over the client's one socket, granted at once while it uploads (`UploadQueue.cpp:486-493`) | a grant on the standing calls every waiter to the holder's link |

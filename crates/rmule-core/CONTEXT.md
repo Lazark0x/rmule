@@ -520,6 +520,25 @@ to take it, the link gives the slot back with `0x56` (ADR-0056). A grant the hol
 this road or on its own ask, calls every other Awaited Grant under the peer's names to its link.
 _Avoid_: pending grant (that is the serve side's dial-back), standing (the record's own facts)
 
+**Own Position**:
+What the **Source Book**'s intake gate reads of us, taken per batch of sightings from the owner of
+each fact: our **User Hash**, the live session's id and server, the **Own Address** and the serve
+listener's port (ADR-0090). A sighting naming us is refused whole, on every channel.
+_Avoid_: self position (the serve brain's Low-ID posture)
+
+**Source Handover**:
+The peer's **Queue Standing** passing from a record holding no part we lack to another download's
+record of that peer, aMule's `SwapToAnotherFile` for a `DS_NONEEDEDPARTS` source (ADR-0090). No
+record moves and no run tells another: each reads its role off the Queue Standings, the taker's
+**Pooled Place** or standing outranking the giver's place. The taker asks by TCP on the peer's
+clock; the giver keeps its record uncounted, as aMule's A4AF entry, until the standing comes back.
+_Avoid_: swap, offer (nothing is offered: places are published)
+
+**Pooled Place**:
+A record still in a lane, published under its **Ask Names** beside the places in the **Queue
+Standings**, so a download holding a peer it has not reached yet can take a **Source Handover**. It
+outranks only a place holding no part we lack (ADR-0090).
+
 **Queue Standing**:
 rmule's one place in a remote uploader's queue, per peer across the **Download Set**, as aMule's
 uploader holds one queue entry per client and re-targets it between files (`SetUploadFileID`).
