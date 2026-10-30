@@ -516,8 +516,10 @@ fn a_ping_from_the_address_the_standing_hello_names_is_the_waiters() {
         state
             .on_reask_ping(t, from, &reask_ping(file))
             .iter()
-            .any(|decision| matches!(decision, ServeDecision::SendClientUdp { to, datagram, .. }
-                if *to == from && *datagram == ack))
+            .any(|decision| {
+                matches!(decision, ServeDecision::SendClientUdp { to, datagram, .. }
+                if *to == from && *datagram == ack)
+            })
     };
     assert!(answered(udp(client_v4, 6000)));
     assert!(!answered(udp(client_v4, 7000)));

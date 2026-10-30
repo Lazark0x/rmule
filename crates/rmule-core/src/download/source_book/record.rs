@@ -117,10 +117,9 @@ impl Stage {
     pub(super) const fn live(&self) -> Option<Live> {
         match self {
             Self::Dialing(live) | Self::Worker(live, _) => Some(*live),
-            Self::Pooled(_)
-            | Self::CallbackPending(_)
-            | Self::RemoteQueued(_)
-            | Self::RoadHeld => None,
+            Self::Pooled(_) | Self::CallbackPending(_) | Self::RemoteQueued(_) | Self::RoadHeld => {
+                None
+            }
         }
     }
 

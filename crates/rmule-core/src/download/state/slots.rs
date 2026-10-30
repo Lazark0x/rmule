@@ -9,13 +9,11 @@ use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
 use crate::DownloadFailure;
+use crate::adapters::CallbackKey;
 use crate::callback::CallbackSilence;
 use crate::diagnostics::{WorkerPhase, WorkerSlot};
-use crate::adapters::CallbackKey;
 use crate::download::queue_standings::{FillGate, Role};
-use crate::download::source_book::{
-    Deadline, DialEnd, NextDial, Release, WorkerEnd, reask_period,
-};
+use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd, reask_period};
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
 
 use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad, WorkerOpening};
@@ -88,8 +86,7 @@ impl DownloadState {
         let period = reask_period(self.callback_capability.reachable());
         match (self.standings.role(&place).fill_gate(now, period), dial) {
             (FillGate::OnALink(role), NextDial::Callback { candidate, road })
-                if *road != LowIdRoad::Callback
-                    || self.relayed_elsewhere(candidate).is_some() =>
+                if *road != LowIdRoad::Callback || self.relayed_elsewhere(candidate).is_some() =>
             {
                 FillGate::Parks(role)
             }

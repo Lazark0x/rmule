@@ -241,13 +241,22 @@ fn a_taker_a_callback_road_reaches_holds_the_road_on_the_peers_clock() {
     let before = taker.on_tick(t0() + FILE_REASK_TIME - Duration::from_secs(1));
     assert!(!asks_for_callback(&before), "{before:?}");
     let due = taker.on_tick(t0() + FILE_REASK_TIME);
-    assert!(asks_for_callback(&due), "its full ask opens the road: {due:?}");
+    assert!(
+        asks_for_callback(&due),
+        "its full ask opens the road: {due:?}"
+    );
 }
 
 fn asks_for_callback(decisions: &[Decision]) -> bool {
-    decisions
-        .iter()
-        .any(|decision| matches!(decision, Decision::RequestCallback { on_a_link: false, .. }))
+    decisions.iter().any(|decision| {
+        matches!(
+            decision,
+            Decision::RequestCallback {
+                on_a_link: false,
+                ..
+            }
+        )
+    })
 }
 
 /// The giver's place ended inside the peer's clock: a fill may ride a link
@@ -320,7 +329,10 @@ fn a_handed_over_source_is_listed_until_the_standing_comes_back() {
     let standings = QueueStandings::shared();
     let (mut giver, taker) = giver_and_taker(&standings);
     let _ = giver.on_tick(t0() + NO_NEEDED_PARTS_PURGE_SPACING);
-    assert_eq!(giver.handed_over().into_iter().collect::<Vec<_>>(), [peer(1)]);
+    assert_eq!(
+        giver.handed_over().into_iter().collect::<Vec<_>>(),
+        [peer(1)]
+    );
 
     drop(taker);
     let _ = giver.on_tick(t0() + NO_NEEDED_PARTS_PURGE_SPACING * 2);

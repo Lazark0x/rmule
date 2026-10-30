@@ -357,11 +357,7 @@ impl DiagnosticsState {
     /// Republish the sources `download_id` handed over to another download and
     /// still holds (ADR-0090): a level, read at the same settle as the part
     /// map.
-    pub fn set_handed_over(
-        &self,
-        download_id: DownloadId,
-        handed_over: BTreeSet<PeerEndpoint>,
-    ) {
+    pub fn set_handed_over(&self, download_id: DownloadId, handed_over: BTreeSet<PeerEndpoint>) {
         let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
         if let Some(dd) = inner.downloads.get_mut(&download_id) {
             dd.handed_over = handed_over;

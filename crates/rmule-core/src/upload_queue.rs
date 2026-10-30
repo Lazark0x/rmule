@@ -760,7 +760,10 @@ impl UploadSlotQueue {
             .iter()
             .find(|q| {
                 q.udp_port == Some(udp_src.port())
-                    && !matches!((q.peer, udp_src), (PeerEndpoint::V4(_), PeerEndpoint::V4(_)))
+                    && !matches!(
+                        (q.peer, udp_src),
+                        (PeerEndpoint::V4(_), PeerEndpoint::V4(_))
+                    )
                     && names(q.peer)
             })
             .map_or(ReaskResolution::Unknown, Queued::as_known)

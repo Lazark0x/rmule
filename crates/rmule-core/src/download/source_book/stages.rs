@@ -540,7 +540,10 @@ impl SourceBook {
                 })?
             }
         };
-        let holder = self.aliases.endpoint(other).filter(|&holder| holder != id)?;
+        let holder = self
+            .aliases
+            .endpoint(other)
+            .filter(|&holder| holder != id)?;
         let named = self.user_hashes(self.records.get(&holder)?);
         if named.iter().any(|&held| held != hash) {
             return None;
