@@ -345,7 +345,7 @@ pub(crate) fn fake_docker_with_mode(dir: &Path, log: &Path, mode: &str) -> PathB
     writeln!(script, "    esac").unwrap();
     writeln!(script, "    printf '%s\\n' \"container:$container_name\"").unwrap();
     writeln!(script, "    exit 0 ;;").unwrap();
-    writeln!(script, "  logs) if [ \"$mode\" = logs-fail ]; then printf '%s\\n' 'logs failed' >&2; exit 43; fi; if [ \"$mode\" = amule-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'custom-amule-ready'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'rmule-amule-download-complete'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'rmule-interop-rmule'; then printf '%s\\n' 'serve.files_announced file_count=1'; exit 0; fi; printf '%s\\n' \"logs:$2\"; exit 0 ;;").unwrap();
+    writeln!(script, "  logs) if [ \"$mode\" = logs-fail ]; then printf '%s\\n' 'logs failed' >&2; exit 43; fi; if [ \"$mode\" = amule-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'custom-amule-ready'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'amule'; then printf '%s\\n' 'rmule-amule-download-complete'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q -- '-tap$'; then printf '%s\\n' 'listening on eth0'; exit 0; fi; if [ \"$mode\" = reverse-ready ] && printf '%s' \"$2\" | grep -q 'rmule-interop-rmule'; then printf '%s\\n' 'serve.files_announced file_count=1'; exit 0; fi; printf '%s\\n' \"logs:$2\"; exit 0 ;;").unwrap();
     writeln!(script, "  inspect) printf '%s\\n' '172.18.0.3'; exit 0 ;;").unwrap();
     writeln!(script, "  rm) exit 0 ;;").unwrap();
     writeln!(script, "esac").unwrap();
