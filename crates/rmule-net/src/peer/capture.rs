@@ -460,6 +460,14 @@ fn server_toml(event: &ServerEvent) -> String {
             "type = \"SourcesRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
+        ServerEvent::BlockLeft {
+            file_hash,
+            start,
+            end,
+        } => format!(
+            "type = \"BlockLeft\"\nfile_hash = \"{}\"\nstart = {start}\nend = {end}\n",
+            file_hash.to_hex_upper()
+        ),
         ServerEvent::SourcesAnswered { file_hash, count } => format!(
             "type = \"SourcesAnswered\"\nfile_hash = \"{}\"\ncount = {count}\n",
             file_hash.to_hex_upper(),

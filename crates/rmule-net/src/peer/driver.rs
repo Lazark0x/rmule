@@ -58,6 +58,9 @@ impl DrivenSession for PeerDriven {
             PeerOutput::Close(reason) => DriverOutput::Close(reason),
         })
     }
+    fn written(&mut self) {
+        self.0.bytes_written();
+    }
     fn disconnect_command() -> PeerCommand {
         PeerCommand::Connection(ConnectionCommand::Disconnect)
     }

@@ -110,6 +110,10 @@ pub struct PeerSession {
     /// cancels it). The serve-side mirror of `active_slot`; the
     /// cross-connection queue/rank/budget lives in core (ADR-0031).
     served_slot: Option<FileHash>,
+    /// The file and range of the block this session framed last, until the
+    /// driver says it has left. A driver takes no command while a byte of
+    /// the last one is unwritten, so one is on its way at a time.
+    block_on_its_way: Option<(FileHash, u64, u64)>,
     /// Bundled-request answers awaiting composition into one `OP_MULTIPACKETANSWER`
     /// (ADR-0054), keyed by the file a peer's `OP_MULTIPACKET`/
     /// `OP_MULTIPACKET_EXT` named. Populated when the bundle is fanned in,
@@ -216,6 +220,7 @@ impl PeerSession {
             slot_offered: false,
             asked_ranges: AskedRanges::default(),
             served_slot: None,
+            block_on_its_way: None,
             served_multipacket: HashMap::new(),
             served_sources: HashMap::new(),
             peer_misc_options: None,
@@ -459,6 +464,19 @@ impl PeerSession {
     /// call, which is what keeps this state machine free of a clock.
     pub fn poll_output(&mut self) -> Option<PeerOutput> {
         self.core.poll_output()
+    }
+
+    /// Every byte this session has handed over is in the kernel, as its driver
+    /// sees it: a block on its way has left (ADR-0031).
+    pub fn bytes_written(&mut self) {
+        if let Some((file_hash, start, end)) = self.block_on_its_way.take() {
+            self.core
+                .push_event(PeerEvent::Server(ServerEvent::BlockLeft {
+                    file_hash,
+                    start,
+                    end,
+                }));
+        }
     }
 
     /// Serve answers must not put bytes on the wire before the hello

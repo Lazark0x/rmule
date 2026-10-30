@@ -366,6 +366,42 @@ fn send_block_after_grant_frames_sending_part() {
 }
 
 #[test]
+fn a_block_leaves_when_its_bytes_are_written_not_when_it_is_framed() {
+    let mut s = inbound_session();
+    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
+    let _ = drain(|| s.poll_output());
+    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
+        file_hash: fh,
+        start: 8,
+        end: 12,
+        bytes: vec![1, 2, 3, 4],
+    }));
+    let left = |output: &PeerOutput| {
+        matches!(
+            output,
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::BlockLeft {
+                file_hash,
+                start: 8,
+                end: 12,
+            })) if *file_hash == fh
+        )
+    };
+    assert!(!drain(|| s.poll_output()).iter().any(left));
+
+    s.bytes_written();
+
+    assert!(drain(|| s.poll_output()).iter().any(left));
+    s.bytes_written();
+    assert!(
+        drain(|| s.poll_output()).is_empty(),
+        "one block leaves once"
+    );
+}
+
+#[test]
 fn a_deflated_block_is_framed_as_compressed_parts() {
     let mut s = inbound_session_with_compression();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);

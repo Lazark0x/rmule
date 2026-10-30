@@ -172,6 +172,7 @@ impl PeerSession {
             for frame in SendingPart::block_frames(file_hash, start, &bytes) {
                 self.core.push_write(frame.into());
             }
+            self.block_on_its_way = Some((file_hash, start, start + bytes.len() as u64));
         }
     }
 
@@ -189,6 +190,7 @@ impl PeerSession {
             for frame in CompressedPart::block_frames(file_hash, start, end, &stream) {
                 self.core.push_write(frame.into());
             }
+            self.block_on_its_way = Some((file_hash, start, end));
         }
     }
 }

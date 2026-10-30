@@ -270,6 +270,15 @@ impl fmt::Display for ServerEvent {
                 "peer sources_answered file_hash={} count={count}",
                 file_hash.to_hex_upper()
             ),
+            ServerEvent::BlockLeft {
+                file_hash,
+                start,
+                end,
+            } => write!(
+                f,
+                "peer block_left file_hash={} start={start} end={end}",
+                file_hash.to_hex_upper()
+            ),
             ServerEvent::AichRequested {
                 file_hash, part, ..
             } => write!(

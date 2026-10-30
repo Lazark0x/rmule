@@ -457,7 +457,7 @@ impl ServeState {
             }
             // A part ask without a granted slot frames nothing: the session
             // reported it and kept the link, and core has no answer for it.
-            ServerEvent::PartsWithoutSlot { .. } => Vec::new(),
+            ServerEvent::PartsWithoutSlot { .. } | ServerEvent::BlockLeft { .. } => Vec::new(),
         }
     }
 

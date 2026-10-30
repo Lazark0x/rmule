@@ -107,6 +107,17 @@ pub enum ServerEvent {
         /// How many sources the framed answer carries.
         count: usize,
     },
+    /// The last byte of the block `start..end` is in the kernel, so core may
+    /// count it and read on (ADR-0031). Reported by the session because only
+    /// its driver sees the socket take it.
+    BlockLeft {
+        /// The file the block is of.
+        file_hash: FileHash,
+        /// Where the block starts.
+        start: u64,
+        /// Where the block ends.
+        end: u64,
+    },
     /// The remote peer asked for `file_hash` part `part`'s
     /// AICH recovery data (`OP_AICHREQUEST`), quoting the `root` it trusts. Core
     /// builds the file's `AichHashSet` and answers with the recovery data

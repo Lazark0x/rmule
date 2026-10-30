@@ -80,6 +80,7 @@ const fn asks_to_be_served(request: &ServerEvent) -> bool {
         | ServerEvent::AichFileHashRequested { .. } => true,
         ServerEvent::TransferCancelled { .. }
         | ServerEvent::PartsWithoutSlot { .. }
-        | ServerEvent::SourcesAnswered { .. } => false,
+        | ServerEvent::SourcesAnswered { .. }
+        | ServerEvent::BlockLeft { .. } => false,
     }
 }
