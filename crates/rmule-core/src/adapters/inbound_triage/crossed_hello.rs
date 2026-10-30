@@ -42,8 +42,9 @@ pub(super) async fn settle_hello(
                 return match conn.send(answer).await {
                     Ok(()) => Settled::Answered(accepted),
                     Err(_) => {
+                        let closed_by = close_reason(conn).await;
                         let _ = event_tx.send(ServeInput::closed_here()).await;
-                        Settled::Closed(PortTestClosedBy::DriverEnded)
+                        Settled::Closed(closed_by)
                     }
                 };
             }
@@ -66,6 +67,17 @@ pub(super) async fn settle_hello(
             }
         }
     }
+}
+
+/// Drain a connection whose driver has stopped, the peer having hung up before
+/// its answer could go, to its paired `Disconnected`: who closed it.
+async fn close_reason(conn: &mut PeerConnection) -> PortTestClosedBy {
+    while let Some(event) = conn.next_event().await {
+        if let PeerEvent::Connection(ConnectionEvent::Disconnected { reason }) = event {
+            return PortTestClosedBy::from(&reason);
+        }
+    }
+    PortTestClosedBy::DriverEnded
 }
 
 /// How a hold ended.
