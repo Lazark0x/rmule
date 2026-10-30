@@ -77,6 +77,7 @@ use crate::rmule::{
     CONTAINER_RUN_ROOT, RMULE_SERVE_TCP_PORT, RmuleClientContainer, release_held_download,
 };
 
+mod dead_dial;
 pub(crate) mod verdict;
 
 pub use self::verdict::score_run_dir;
@@ -126,6 +127,13 @@ pub enum CrossingLeg {
     ServeReask,
     /// A Low-ID waiter comes back while rmule's slot sits free.
     LowIdReturn,
+    /// The waiter holds its slot on rmule's dial-back and drops that link
+    /// with no close reaching rmule, then comes back on its own (a Dead Dial).
+    ServeDeadDial,
+    /// The same with the waiter's proof of its key held back on the dial, so
+    /// rmule's serve half lets a dialed link go with its Secure User
+    /// Identification unfinished.
+    ServeIdentifying,
     /// rmule's download dial is held at its SYN while its seed's link lands.
     DownloadYield,
     /// rmule's download dial has written its hello when its seed's link lands.
@@ -139,8 +147,19 @@ impl CrossingLeg {
     pub fn serves(self) -> bool {
         matches!(
             self,
-            Self::ServeCalledOff | Self::ServeCrossed | Self::ServeReask | Self::LowIdReturn
+            Self::ServeCalledOff
+                | Self::ServeCrossed
+                | Self::ServeReask
+                | Self::LowIdReturn
+                | Self::ServeDeadDial
+                | Self::ServeIdentifying
         )
+    }
+
+    /// Whether the leg ends with rmule's dial-back dead at the far end.
+    #[must_use]
+    pub fn dead_dial(self) -> bool {
+        matches!(self, Self::ServeDeadDial | Self::ServeIdentifying)
     }
 }
 
@@ -208,6 +227,17 @@ pub struct PeerCrossingOptions<'a> {
 /// An `iptables` rule set in `target`'s namespace by a one-shot container
 /// from `image`; `action` is `-A` to set it and `-D` to lift it.
 fn iptables(image: &str, target: &str, action: &str, rule: &[String]) -> RunContainer {
+    iptables_on("OUTPUT", image, target, action, rule)
+}
+
+/// [`iptables`] on `chain`.
+fn iptables_on(
+    chain: &str,
+    image: &str,
+    target: &str,
+    action: &str,
+    rule: &[String],
+) -> RunContainer {
     rule.iter().fold(
         RunContainer::new(image.to_owned())
             .remove_after_exit()
@@ -215,7 +245,7 @@ fn iptables(image: &str, target: &str, action: &str, rule: &[String]) -> RunCont
             .cap_add("NET_ADMIN")
             .entrypoint("iptables")
             .arg(action)
-            .arg("OUTPUT"),
+            .arg(chain),
         |container, arg| container.arg(arg),
     )
 }
@@ -378,6 +408,20 @@ fn start_downloader(
     )
 }
 
+/// Have `waiter` cancel the download of `link`.
+fn cancel_download(bench: &Bench, waiter: &str, link: &str) -> Result<()> {
+    let hash: String = parse_ed2k_file_hash(link)?
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    amulecmd(
+        bench,
+        waiter,
+        &format!("Cancel {hash}"),
+        "the waiter cancels its download",
+    )
+}
+
 /// `amulecmd` in `container`.
 fn amulecmd(bench: &Bench, container: &str, command: &str, phase: &str) -> Result<()> {
     run_checked(
@@ -494,7 +538,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
         let reask_secs = file_reask_secs(options.amule_env);
         let waits = if reask { reask_secs } else { shape.idle_secs };
         let deadline = 4 * options.timeout_secs + waits + 4 * shape.hold_secs;
-        let flags: Vec<String> = [
+        let mut flags: Vec<String> = [
             "--stamp-events",
             "--share",
             &format!("{CONTAINER_RUN_ROOT}/synthetic/{SLOT_FILE}"),
@@ -508,6 +552,10 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
         ]
         .map(str::to_owned)
         .to_vec();
+        let dead_dial = shape.leg.dead_dial();
+        if dead_dial {
+            flags.push("--persist-credit".to_owned());
+        }
         let download = options
             .rmule_client_container
             .download_start_detached_with_args(
@@ -585,7 +633,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 &waiter,
                 &wait_at_rmule,
                 WAIT_FILE,
-                (None, low_id),
+                (dead_dial.then_some(dead_dial::WAITER_KIB), low_id),
             )?;
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
             let asked_at = queued_at(&bench, &rmule_name)?;
@@ -609,6 +657,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                     )?;
                     holds.add(&bench, &waiter, hold(rmule_ip, RMULE_SERVE_TCP_PORT, true))?;
                 }
+                CrossingLeg::ServeIdentifying => {
+                    holds.add(&bench, &waiter, dead_dial::proof_hold(rmule_ip))?;
+                }
                 _ => {}
             }
             let reask_at = asked_at + reask_secs as f64;
@@ -630,17 +681,11 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 std::thread::sleep(Duration::from_secs(shape.idle_secs));
                 // W cancels before X stops: `amulecmd` takes seconds on the
                 // debug build. rmule keeps W queued, so the dial-back goes out
-                // all the same.
-                let hash: String = parse_ed2k_file_hash(&wait_link)?
-                    .iter()
-                    .map(|byte| format!("{byte:02X}"))
-                    .collect();
-                amulecmd(
-                    &bench,
-                    &waiter,
-                    &format!("Cancel {hash}"),
-                    "the waiter cancels its download",
-                )?;
+                // all the same. On the dead-dial legs W stays alive, to attach
+                // the dial.
+                if !dead_dial {
+                    cancel_download(&bench, &waiter, &wait_link)?;
+                }
             }
             marks.holder_stopped_at = Some(verdict::unix_now());
             let add_back = format!("Add {wait_at_rmule}");
@@ -680,7 +725,17 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 // The slot sits free for a while before the waiter comes back.
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
-            if reask {
+            if dead_dial {
+                dead_dial::drop_then_come_back(
+                    &bench,
+                    options.amule_image,
+                    (&rmule_name, rmule_ip),
+                    &waiter,
+                    (&wait_link, &add_back),
+                    timeout,
+                    &mut marks,
+                )?;
+            } else if reask {
                 // W's own connect has a 40 s clock, so its SYN goes through
                 // as soon as it is seen, and the dial's hello once W's own
                 // hello is held.
@@ -776,6 +831,15 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             marks,
         }
         .write(&root)?;
+        if shape.leg.dead_dial() {
+            // The stop is rmule's shutdown, which writes `clients.met`.
+            run_checked(
+                bench
+                    .docker
+                    .stop_container(rmule_name.clone(), STOP_GRACE_SECS),
+                "stop rmule",
+            )?;
+        }
         collect_rmule_logs(&bench.docker, options.layout, &rmule_name)?;
         collect_amule_role_logs(&bench.docker, options.layout, "seed", &seed)?;
         if shape.leg.serves() {

@@ -396,14 +396,14 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
 /// on Unix, Ctrl-C on Windows. Installed once before the loop, so a request
 /// that lands between two turns of it is held, not lost.
 #[cfg(unix)]
-struct StopRequest {
+pub(crate) struct StopRequest {
     terminate: tokio::signal::unix::Signal,
     interrupt: tokio::signal::unix::Signal,
 }
 
 #[cfg(unix)]
 impl StopRequest {
-    fn install() -> Result<Self> {
+    pub(crate) fn install() -> Result<Self> {
         use tokio::signal::unix::{SignalKind, signal};
         Ok(Self {
             terminate: signal(SignalKind::terminate()).context("install SIGTERM handler")?,
@@ -411,7 +411,7 @@ impl StopRequest {
         })
     }
 
-    async fn recv(&mut self) {
+    pub(crate) async fn recv(&mut self) {
         tokio::select! {
             _ = self.terminate.recv() => {}
             _ = self.interrupt.recv() => {}
@@ -420,19 +420,19 @@ impl StopRequest {
 }
 
 #[cfg(windows)]
-struct StopRequest {
+pub(crate) struct StopRequest {
     ctrl_c: tokio::signal::windows::CtrlC,
 }
 
 #[cfg(windows)]
 impl StopRequest {
-    fn install() -> Result<Self> {
+    pub(crate) fn install() -> Result<Self> {
         Ok(Self {
             ctrl_c: tokio::signal::windows::ctrl_c().context("install Ctrl-C handler")?,
         })
     }
 
-    async fn recv(&mut self) {
+    pub(crate) async fn recv(&mut self) {
         self.ctrl_c.recv().await;
     }
 }

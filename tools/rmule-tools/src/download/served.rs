@@ -49,6 +49,11 @@ pub(crate) struct ServedArgs {
     /// same host. Events met during a share's first pass print unstamped.
     #[arg(long)]
     pub(crate) stamp_events: bool,
+    /// Keep the credit ring as `clients.met` in the data directory, as the
+    /// operator's apps do, and take a stop request as the end of the run, so
+    /// the shutdown writes it.
+    #[arg(long)]
+    pub(crate) persist_credit: bool,
 }
 
 impl ServedArgs {

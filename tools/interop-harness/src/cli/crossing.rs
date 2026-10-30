@@ -43,6 +43,12 @@ pub(crate) enum LegArg {
     ServeReask,
     /// A Low-ID waiter comes back while rmule's slot sits free.
     LowIdReturn,
+    /// The waiter holds its slot on rmule's dial-back and drops that link
+    /// with no close reaching rmule, then comes back on its own.
+    ServeDeadDial,
+    /// The same with the waiter's proof of its key held back on the dial, so
+    /// rmule lets the dial go with its verification unfinished.
+    ServeIdentifying,
     /// rmule's download dial held at its SYN while its seed's link lands.
     DownloadYield,
     /// rmule's download dial has written its hello when its seed's link lands.
@@ -56,6 +62,8 @@ impl From<LegArg> for CrossingLeg {
             LegArg::ServeCrossed => Self::ServeCrossed,
             LegArg::ServeReask => Self::ServeReask,
             LegArg::LowIdReturn => Self::LowIdReturn,
+            LegArg::ServeDeadDial => Self::ServeDeadDial,
+            LegArg::ServeIdentifying => Self::ServeIdentifying,
             LegArg::DownloadYield => Self::DownloadYield,
             LegArg::DownloadCrossed => Self::DownloadCrossed,
         }

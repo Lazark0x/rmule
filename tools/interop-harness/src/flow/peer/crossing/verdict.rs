@@ -20,6 +20,8 @@ use super::{CrossingLeg, CrossingShape};
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{TcpCapture, records, tcp_capture};
 
+mod dead_dial;
+
 /// The flow's own dir under the run dir.
 pub(crate) const ROOT_DIR: &str = "peer-crossing";
 /// The tap in rmule's namespace.
@@ -31,6 +33,9 @@ const OP_HELLO: u8 = 0x01;
 const OP_HELLOANSWER: u8 = 0x4C;
 const OP_SENDINGPART: u8 = 0x46;
 const OP_ACCEPTUPLOADREQ: u8 = 0x55;
+const OP_PUBLICKEY: u8 = 0x85;
+const OP_SIGNATURE: u8 = 0x86;
+const OP_SECIDENTSTATE: u8 = 0x87;
 /// How soon after a returning waiter's hello its grant must follow.
 const GRANT_AFTER_HELLO_SECS: f64 = 1.0;
 
@@ -106,6 +111,9 @@ struct Link {
     grants_from_rmule: usize,
     parts_from_rmule: usize,
     parts_from_peer: usize,
+    /// rmule's `OP_SECIDENTSTATE` frames, and the aMule's `OP_SIGNATURE`.
+    sui_asks_from_rmule: usize,
+    proofs_from_peer: usize,
 }
 
 /// Every link between `rmule` and `peer` the tap saw a SYN for, in opening order.
@@ -148,12 +156,10 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
                 .find(|(_, op)| *op == opcode)
                 .map_or(-1.0, |(at, _)| *at)
         };
-        let parts = |frames: &[(f64, u8)]| {
-            frames
-                .iter()
-                .filter(|(_, op)| *op == OP_SENDINGPART)
-                .count()
+        let count = |frames: &[(f64, u8)], opcode: u8| {
+            frames.iter().filter(|(_, op)| *op == opcode).count()
         };
+        let parts = |frames: &[(f64, u8)]| count(frames, OP_SENDINGPART);
         links.push(Link {
             rmule_end: rmule_end.to_string(),
             peer_end: peer_end.to_string(),
@@ -179,6 +185,8 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
                 .count(),
             parts_from_rmule: parts(&out),
             parts_from_peer: parts(&back),
+            sui_asks_from_rmule: count(&out, OP_SECIDENTSTATE),
+            proofs_from_peer: count(&back, OP_SIGNATURE),
         });
     }
     links
@@ -361,6 +369,18 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         )
     };
     let claims = match at.shape.leg {
+        CrossingLeg::ServeDeadDial => dead_dial::dead_dial_claims(&rows, dial, own),
+        CrossingLeg::ServeIdentifying => {
+            let mut claims = dead_dial::dead_dial_claims(&rows, dial, own);
+            claims.extend(dead_dial::identity_claims(
+                &capture,
+                &log,
+                &run_dir.join("rmule"),
+                dial,
+                own,
+            ));
+            claims
+        }
         _ if at.shape.unheld() => {
             let carrier = raced
                 .iter()

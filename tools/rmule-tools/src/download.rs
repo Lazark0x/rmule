@@ -197,6 +197,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     // can adopt a called-back source. Without it the same wiring simply never
     // serves.
     let builder = args.identity.core_builder(config, settings, store)?;
+    let builder = if args.served.persist_credit {
+        builder.persist_credit_in(args.data_dir.clone())
+    } else {
+        builder
+    };
     // A pinned `--kad-id-hex` places the node; otherwise its store mints one.
     let mut core = match args.kad_id_hex.as_deref() {
         Some(hex) => builder.kad_id(KadId::from_bytes(parse_hex16("--kad-id-hex", hex)?)),
@@ -239,6 +244,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     let mut shared = args.served.share_at_start(&mut core).await?;
     let mut gates = Gates::new(&args.gates);
     let mut lingering = false;
+    let mut stop = args
+        .served
+        .persist_credit
+        .then(crate::serve::StopRequest::install)
+        .transpose()?;
 
     // The operator's word, given on the command line (ADR-0095): the one
     // login, which binds the listener if `--serve` has not, then the download
@@ -282,6 +292,7 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         // intentional, as `CoreEvent` itself notes.
         #[allow(clippy::large_enum_variant)]
         enum Step {
+            Stop,
             Deadline,
             Flip,
             PartsTick,
@@ -290,6 +301,12 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         }
         let step = tokio::select! {
             biased;
+            () = async {
+                match stop.as_mut() {
+                    Some(stop) => stop.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => Step::Stop,
             () = async {
                 match deadline {
                     Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -312,6 +329,10 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             event = core.next_event() => Step::Event(event),
         };
         let event = match step {
+            Step::Stop => {
+                core.shutdown().await;
+                return Ok(());
+            }
             Step::Deadline => {
                 println!(
                     "download deadline_reached id={}",
