@@ -32,6 +32,7 @@ mod ext_sx_kno;
 mod hello_surface;
 mod kad_tags;
 pub(crate) mod legs;
+mod oversized_range;
 mod v6_asker;
 pub(crate) mod verdict;
 
@@ -71,6 +72,9 @@ pub enum Ipv6Flow {
     UdpKey,
     /// emule-qt asks rmule over IPv6 while rmule holds it as a source.
     Asker,
+    /// Not a dialect row: a slot holder's `0..4 GiB` ask against rmule, by a
+    /// harness peer. It borrows this bench for its server and network.
+    OversizedRange,
     /// Not a dialect row: the three client bodies, each dialled by rmule, dialling
     /// rmule, serving it and served by it, with rmule meeting rmule beside them.
     /// It borrows this bench because the bench already holds them.
@@ -79,7 +83,7 @@ pub enum Ipv6Flow {
 
 impl Ipv6Flow {
     /// Every flow, in the order ADR-0092 lists them.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::HelloTags,
         Self::ExtSx,
         Self::ExtSxKno,
@@ -91,6 +95,7 @@ impl Ipv6Flow {
         Self::ServerSentinel,
         Self::UdpKey,
         Self::Asker,
+        Self::OversizedRange,
         Self::HelloSurface,
     ];
 
@@ -109,6 +114,7 @@ impl Ipv6Flow {
             Self::ServerSentinel => "ipv6-server-sentinel",
             Self::UdpKey => "ipv6-udp-key",
             Self::Asker => "ipv6-asker",
+            Self::OversizedRange => "peer-oversized-range",
             Self::HelloSurface => "peer-hello-surface",
         }
     }
@@ -179,6 +185,7 @@ impl Ipv6Flow {
                 | Self::ExtSxEmit
                 | Self::DownloadRung0
                 | Self::Asker
+                | Self::OversizedRange
                 | Self::ExtSxCore
                 | Self::HelloSurface
         )

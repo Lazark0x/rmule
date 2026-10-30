@@ -9,7 +9,7 @@ use clap::Args;
 use rmule_interop_harness::artifacts::Ed2kHashCommand;
 use rmule_interop_harness::flow::{
     PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
-    score_peer_one_link_silent, stage_reask_emit_files,
+    score_peer_one_link_silent, score_peer_one_link_stalled, stage_reask_emit_files,
 };
 use rmule_interop_harness::rmule::RmuleClientContainer;
 use serde::Serialize;
@@ -20,6 +20,8 @@ use crate::cli::bench::{
 use crate::cli::write_resolved_config;
 
 const FLOW: &str = "peer-one-link";
+/// The verdict a stalled run writes; its presence picks the stalled re-score.
+const STALLED_VERDICT: &str = "peer-one-link-stalled-verdict.toml";
 /// The verdict a severed run writes; its presence picks the severed re-score.
 const SEVERED_VERDICT: &str = "peer-one-link-severed-verdict.toml";
 /// The addresses a silent run writes before rmule starts; their presence
@@ -63,6 +65,12 @@ pub(crate) struct PeerOneLinkArgs {
     /// (verdict `peer-one-link-silent-verdict.toml`).
     #[arg(long, conflicts_with = "sever_after_secs")]
     pub(crate) silent_sharer: bool,
+    /// The stalled leg: lose the sharer's egress this many seconds after
+    /// rmule's first part assignment, with its link up, then watch rmule give
+    /// the slot back at its budget (verdict `peer-one-link-stalled-verdict.toml`).
+    /// rmule asks for the first file alone.
+    #[arg(long, conflicts_with_all = ["sever_after_secs", "silent_sharer"])]
+    pub(crate) stall_after_secs: Option<u64>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -82,6 +90,7 @@ struct ResolvedConfig {
     timeout_secs: u64,
     sever_after_secs: Option<u64>,
     silent_sharer: bool,
+    stall_after_secs: Option<u64>,
 }
 
 pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
@@ -106,6 +115,7 @@ pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
             timeout_secs: args.timeout,
             sever_after_secs: args.sever_after_secs,
             silent_sharer: args.silent_sharer,
+            stall_after_secs: args.stall_after_secs,
         },
     )?;
     let hash_command = args
@@ -133,6 +143,7 @@ pub(crate) fn peer_one_link(args: PeerOneLinkArgs) -> Result<()> {
         amule_env: &args.amule.amule_env,
         sever_after_secs: args.sever_after_secs,
         silent_sharer: args.silent_sharer,
+        stall_after_secs: args.stall_after_secs,
     })
 }
 
@@ -148,6 +159,8 @@ pub(crate) struct PeerOneLinkScoreArgs {
 pub(crate) fn peer_one_link_score(args: PeerOneLinkScoreArgs) -> Result<()> {
     let verdict = if args.run_dir.join(SILENT_ADDRESSES).exists() {
         score_peer_one_link_silent(&args.run_dir)?
+    } else if args.run_dir.join(STALLED_VERDICT).exists() {
+        score_peer_one_link_stalled(&args.run_dir)?
     } else if args.run_dir.join(SEVERED_VERDICT).exists() {
         score_peer_one_link_severed(&args.run_dir)?
     } else {

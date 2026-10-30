@@ -21,6 +21,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::artifacts::RunLayout;
+use crate::docker::RunContainer;
 use crate::flow::bench::{
     AMULE_PEER_TCP_PORT, Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked,
 };
@@ -32,10 +33,12 @@ use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod severed;
 mod silent;
+mod stalled;
 pub(crate) mod verdict;
 
 pub use self::severed::score_run_dir as score_severed_run_dir;
 pub use self::silent::score_run_dir as score_silent_run_dir;
+pub use self::stalled::score_run_dir as score_stalled_run_dir;
 pub use self::verdict::score_run_dir;
 
 /// The sharer's upload-rate cap (KiB/s): slow enough that the first file is
@@ -49,6 +52,9 @@ const SILENT_DIAL_END_WAIT_SECS: u64 = 120;
 /// (`SharedFileList.cpp:757-765`, `ED2KREPUBLISHTIME`), so a sharer frozen at
 /// once may never have been offered, and the server would not name it.
 const SILENT_OFFER_WAIT_SECS: u64 = 65;
+
+/// The image the stalled leg runs `tc` from, the one that carries `iproute2`.
+const TC_IMAGE: &str = "rmule/interop-rmule-tools:local";
 
 /// Options for [`run_peer_one_link`].
 pub struct PeerOneLinkOptions<'a> {
@@ -89,6 +95,10 @@ pub struct PeerOneLinkOptions<'a> {
     /// files and rmule dials under `--peer-crypt requested` (verdict
     /// `peer-one-link-silent-verdict.toml`).
     pub silent_sharer: bool,
+    /// The stalled leg: this many seconds after rmule's first part assignment
+    /// the sharer's egress is lost while its link stays up (verdict
+    /// `peer-one-link-stalled-verdict.toml`). rmule asks for the one file.
+    pub stall_after_secs: Option<u64>,
 }
 
 /// Run the flow: the eserver, a High-ID aMule sharer of the two staged files
@@ -211,7 +221,10 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
                 .prebuild_command(&bench.docker)?,
             "prebuild rmule-tools for the download container",
         )?;
-        let link_refs: Vec<&str> = links.iter().map(String::as_str).collect();
+        let mut link_refs: Vec<&str> = links.iter().map(String::as_str).collect();
+        if options.stall_after_secs.is_some() {
+            link_refs.truncate(1);
+        }
         let download = if options.silent_sharer {
             // Stamped records time the dial's end; `requested` obfuscates every
             // dial to an aMule the server names with its User Hash.
@@ -229,8 +242,8 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
                         "requested".to_owned(),
                     ],
                 )?
-        } else if options.sever_after_secs.is_some() {
-            // The severed verdict reads stamped records and per-download ticks.
+        } else if options.sever_after_secs.is_some() || options.stall_after_secs.is_some() {
+            // Both verdicts read stamped records and per-download ticks.
             options
                 .rmule_client_container
                 .download_start_detached_with_args(
@@ -305,6 +318,30 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
             )?;
             println!("peer_one_link severed sharer_stopped_after_secs={secs}");
             std::thread::sleep(Duration::from_secs(severed::WATCH_SECS));
+        } else if let Some(secs) = options.stall_after_secs {
+            wait_for_container_log(
+                &bench.docker,
+                &rmule_name,
+                "download.part_assigned",
+                timeout,
+            )?;
+            std::thread::sleep(Duration::from_secs(secs));
+            let applied = run_checked(
+                bench.docker.run_container(
+                    RunContainer::new(TC_IMAGE)
+                        .network(format!("container:{sharer}"))
+                        .cap_add("NET_ADMIN")
+                        .entrypoint("sh")
+                        .arg("-c")
+                        .arg("tc qdisc add dev eth0 root netem loss 100% && tc qdisc show dev eth0")
+                        .remove_after_exit(),
+                ),
+                "lose the sharer's egress",
+            )?;
+            fs::write(capture_dir.join("sharer-tc.txt"), applied)
+                .context("keep what tc shows on the sharer")?;
+            println!("peer_one_link stalled sharer_silent_after_secs={secs}");
+            std::thread::sleep(Duration::from_secs(stalled::WATCH_SECS));
         } else {
             for id in 1..=links.len() {
                 wait_for_container_log(
@@ -360,6 +397,11 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
     if options.silent_sharer {
         let verdict = silent::score_run_dir(options.layout.root())?;
         println!("peer_one_link silent_verdict={verdict}");
+        return Ok(());
+    }
+    if options.stall_after_secs.is_some() {
+        let verdict = stalled::score_run_dir(options.layout.root())?;
+        println!("peer_one_link stalled_verdict={verdict}");
         return Ok(());
     }
     if options.sever_after_secs.is_some() {

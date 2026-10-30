@@ -101,7 +101,7 @@ pub use self::peer::{
 };
 pub use self::peer::{
     PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
-    score_peer_one_link_silent,
+    score_peer_one_link_silent, score_peer_one_link_stalled,
 };
 pub use self::peer::{
     ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,

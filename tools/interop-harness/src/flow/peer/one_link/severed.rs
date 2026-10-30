@@ -101,7 +101,7 @@ struct Verdict<'a> {
 }
 
 /// A stamped record of rmule's run log: its name, download id and time.
-fn stamped(line: &str) -> Option<(&str, u32, f64)> {
+pub(super) fn stamped(line: &str) -> Option<(&str, u32, f64)> {
     let mut words = line.split_whitespace();
     let mut name = words.next()?;
     let mut fields: Vec<&str> = words.collect();
@@ -117,7 +117,7 @@ fn stamped(line: &str) -> Option<(&str, u32, f64)> {
 /// The download whose part was assigned last before `closed`, whether it
 /// failed, and its last tick after `closed` as known, asking, queued and
 /// transferring.
-fn after_close(log: &str, closed: f64) -> (u32, bool, [i64; 4]) {
+pub(super) fn after_close(log: &str, closed: f64) -> (u32, bool, [i64; 4]) {
     let rider = log
         .lines()
         .filter_map(stamped)

@@ -53,6 +53,7 @@ pub(crate) fn drive(
         Ipv6Flow::ServerSentinel => server_sentinel(bench, options, stage),
         Ipv6Flow::UdpKey => udp_key(bench, options, stage),
         Ipv6Flow::Asker => super::v6_asker::drive(bench, options, stage),
+        Ipv6Flow::OversizedRange => super::oversized_range::drive(bench, options, stage),
         Ipv6Flow::HelloSurface => super::hello_surface::drive(bench, options, stage),
     }
 }
