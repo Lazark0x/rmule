@@ -84,6 +84,18 @@ _Avoid_: server completion marker, search deadline, socket timeout
 The core-owned, cross-connection queue of remote peers requesting files we share, with a bounded slot budget and assigned queue rank — the serve-side sibling of the download scheduler (ADR-0026). A `PeerSession`'s **Server Capability** only reports inbound requests and obeys grant/queue/refuse commands; it holds no queue. Core computes rank, sends `OP_QUEUERANKING`, promotes on slot free — and, when nobody it could reach waited, at the hello of the next waiter whose link comes up — and pushes part bytes down via `SendBlock`.
 _Avoid_: upload manager, seed scheduler, slot (a slot is one grant within the queue)
 
+**Serve Flow**:
+What one slot holder has in motion in the **Serve State**: its asked ranges waiting, the one read out, and how far it has read ahead of the socket. It ends with the slot, and its number tells a late read or block from those of a slot the same peer was granted since (ADR-0031).
+_Avoid_: upload session, transfer
+
+**Send-Ahead**:
+The ten blocks a **Serve Flow** may have read and not yet left for the socket, past which it starts no read (ADR-0031).
+_Avoid_: read-ahead, upload buffer
+
+**Link Outbox**:
+The bounded queue of what the serve loop has for one link, which it fills without waiting. A full one means the peer asks faster than it reads, and its link ends (ADR-0031).
+_Avoid_: send queue, connection queue
+
 **Dial-Back Grant**:
 An upload slot the **Upload Slot Queue** holds for a waiter it promoted while no link of the
 waiter was up (ADR-0057), aMule's client in `US_CONNECTING`. The serve side dials the waiter where

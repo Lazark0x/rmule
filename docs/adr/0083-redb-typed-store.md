@@ -43,11 +43,16 @@ in filesystem files, not in the store.
 - **Durability: `Immediate` on every commit**, a real device flush (`F_FULLFSYNC` on
   macOS). Everything a caller is told is durable flushes where it is written: downloads,
   registry writes, the server list, `bind_public_key`. **One exception:** credit accrual
-  (`record_upload` / `record_download`, once per transferred block) commits through
-  `Store::begin_write_deferred` (`Durability::None`). Every later read sees it, and the
-  flush waits for the next immediate commit of any seam; `CreditStore::checkpoint` forces
-  one, and the core calls it on shutdown beside the `clients.met` save. A crash between
-  checkpoints loses that window of accrual.
+  (`record_upload` / `record_download`, once per transferred block) lands in the ledger's
+  memory, the whole ring's totals, loaded at the first call. Every read of the ring is
+  answered from there, so the serve loop and the download runner never wait on the store
+  to rank a peer or count a block (ADR-0031): one read costs 0.8 µs (release build, Apple
+  M1 Pro, 10,000 rows), so ranking 5,000 identified peers took 4.2 ms for every input the
+  loop saw, and an accrual queued behind any immediate commit's device flush. What moved
+  reaches the store as one `Durability::None` transaction at the next
+  `CreditStore::checkpoint`, immediately flushed: the actor calls it once a minute on the
+  blocking pool, and on shutdown beside the `clients.met` save. A crash between
+  checkpoints loses at most that window of accrual.
 - **Schema evolution: a store-wide version and a linear ladder.** A meta table holds
   `STORE_VERSION`. Each upgrade step opens the old table under the old `Record` type,
   rewrites it into the new one and drops the old, in one write transaction. A record

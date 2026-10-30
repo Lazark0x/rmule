@@ -51,9 +51,9 @@ slowly than transfers finish still sees every byte.
   `PeerWorkerEvent::BlockReceived`, before the scheduling brain judges the block. A
   duplicate range or a block a later hash check discards still crossed the socket.
   `received_bytes` is a transfer fact; verified parts remain the progress fact.
-- **Up** — in the serve enactor, when a `SendBlock` command is accepted by the peer's
-  connection writer, the last core-owned step before the socket. A command dropped into
-  a dead connection is never claimed. The upload row's lifetime follows the same
+- **Up** — in the serve enactor, when a block's session says it has left for the
+  socket (ADR-0031), the last core-owned step before the wire. A block dropped with a
+  dead connection or an ended flow is never claimed. The upload row's lifetime follows the same
   enactor's `UploadSlotGranted` / `UploadSlotReleased` facts.
 
 The sans-I/O `DownloadState` and `ServeState` brains stay clock-free and I/O-free; the
