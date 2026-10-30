@@ -200,7 +200,12 @@ Invariants every transition keeps:
      hello or within the close bound of its own dial's answer, and neither waits on the other.
 
    `serve.crossed_hello_held` records the hold. A download's dial given up at the bound ends as a
-   dial closed before its hello.
+   dial closed before its hello, and a dial-back so given up leaves the grant to L.
+
+   The hold starts at L's hello. A first contact's answer on D overtaking the hello L sent before
+   it, on two streams of one path, finds nothing held: L is answered at once, and a grant on D is
+   given back with `OP_CANCELTRANSFER`, the slot released and W's ask on L answered as a fresh one.
+   No hold can stage that order, and no draw has landed it.
 
    **A dial's hello wait.** A dial waits for the peer's hello as long as aMule's socket lets one
    (`CONNECTION_TIMEOUT`, 40 s, `Constants.h:34`, `EMSocket.cpp:61`), the connect of a callback
