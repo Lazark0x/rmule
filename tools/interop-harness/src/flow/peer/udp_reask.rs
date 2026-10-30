@@ -172,6 +172,7 @@ pub fn run_peer_udp_reask(options: PeerUdpReaskOptions<'_>) -> Result<()> {
             options.layout,
             options.rmule_serve_container,
             ServeKnobs {
+                shared_as: None,
                 upload_slots: Some(1),
                 peer_crypt: options.peer_crypt,
                 peer_crypt_flip: options.peer_crypt_flip,

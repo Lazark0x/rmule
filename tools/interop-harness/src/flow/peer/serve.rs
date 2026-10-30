@@ -60,6 +60,11 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
             },
         )?;
 
+        if let Some(name) = options.rmule_serve_file_name {
+            let shared = options.layout.synthetic_shared_file();
+            fs::hard_link(&shared, options.layout.synthetic_dir().join(name))
+                .with_context(|| format!("name {} {name}", shared.display()))?;
+        }
         let rmule_container_id = bench.start_rmule_serve(
             options.layout,
             options.rmule_serve_container,
@@ -67,6 +72,7 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
                 identity_dir: Some(SERVE_IDENTITY_DIR),
                 peer_crypt: options.rmule_peer_crypt,
                 peer_crypt_flip: options.rmule_peer_crypt_flip,
+                shared_as: options.rmule_serve_file_name,
                 ..ServeKnobs::default()
             },
             timeout,

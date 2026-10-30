@@ -79,7 +79,10 @@ impl RmuleServeContainer {
             .arg("serve")
             .arg("start")
             .arg("--file")
-            .arg(format!("{CONTAINER_RUN_ROOT}/synthetic/shared.bin"))
+            .arg(format!(
+                "{CONTAINER_RUN_ROOT}/synthetic/{}",
+                knobs.shared_as.unwrap_or("shared.bin")
+            ))
             .arg("--server")
             .arg(server_endpoint)
             .arg("--listen")
@@ -258,6 +261,8 @@ pub struct KadStimulusKnobs<'a> {
 /// serve command.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ServeKnobs<'a> {
+    /// The name in `synthetic/` to share instead of `shared.bin`.
+    pub shared_as: Option<&'a str>,
     /// `--upload-slots`. `Some(1)` holds a second requester **queued** — the
     /// peer-UDP reask consume precondition.
     pub upload_slots: Option<usize>,

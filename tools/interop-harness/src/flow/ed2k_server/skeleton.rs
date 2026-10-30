@@ -94,6 +94,9 @@ pub struct ServerSkeletonOptions<'a> {
     /// datagram and server crypt-ping after each change meet the new one.
     /// Read only by `rmule-serves-amule-downloads`.
     pub rmule_peer_crypt_flip: &'a [String],
+    /// The name the serving rmule shares the synthetic file under. Read only
+    /// by `rmule-serves-amule-downloads`.
+    pub rmule_serve_file_name: Option<&'a str>,
 }
 
 /// Run the skeleton: eserver + aMule sharer, then the one

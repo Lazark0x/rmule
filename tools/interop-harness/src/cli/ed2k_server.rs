@@ -116,6 +116,11 @@ pub(crate) struct AmuleServesRmuleDownloadsArgs {
     /// rmule marked are printed as `obfuscation_flips`.
     #[arg(long, value_parser = rmule_interop_harness::rmule::crypt_flip_arg)]
     pub(crate) peer_crypt_flip: Vec<String>,
+    /// Share the synthetic file under this name, so rmule's own read of the
+    /// file's class meets it; the link keeps `shared.bin`. Read only by
+    /// `rmule-serves-amule-downloads`.
+    #[arg(long)]
+    pub(crate) serve_file_name: Option<String>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -156,6 +161,7 @@ impl AmuleServesRmuleDownloadsArgs {
             server_env: self.eserver.server_env.clone(),
             amule_env: self.amule.amule_env.clone(),
             amule_ready_log_pattern: self.amule_ready_log_pattern.clone(),
+            serve_file_name: self.serve_file_name.clone(),
         }
     }
 }
@@ -179,6 +185,8 @@ pub(crate) struct ResolvedConfig {
     pub(crate) server_env: Vec<String>,
     pub(crate) amule_env: Vec<String>,
     pub(crate) amule_ready_log_pattern: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) serve_file_name: Option<String>,
 }
 
 /// Which skeleton leg a subcommand drives and with what posture.
@@ -227,6 +235,7 @@ fn skeleton(args: AmuleServesRmuleDownloadsArgs, leg: SkeletonLeg) -> Result<()>
         rmule_serve: leg.rmule_serve,
         rmule_peer_crypt: args.peer_crypt.as_deref(),
         rmule_peer_crypt_flip: &args.peer_crypt_flip,
+        rmule_serve_file_name: args.serve_file_name.as_deref(),
         rmule_client_action: leg.action,
     })
 }
