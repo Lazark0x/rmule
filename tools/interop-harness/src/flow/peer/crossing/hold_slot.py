@@ -41,20 +41,24 @@ def hello():
     return frame(OP_HELLO, payload + struct.pack("<IH", 0, 0))
 
 
-def frames(sock):
-    """Every frame read off `sock` until it goes quiet, as opcodes."""
-    buf = b""
-    while True:
+def read_into(sock, buf):
+    """Take what `sock` has into `buf`, and the opcodes of the frames it
+    completes; empty when it stayed quiet for its timeout."""
+    try:
         chunk = sock.recv(65536)
-        if not chunk:
-            raise SystemExit("rmule closed the link")
-        buf += chunk
-        while len(buf) >= 6:
-            size = struct.unpack_from("<I", buf, 1)[0]
-            if len(buf) < 5 + size:
-                break
-            yield buf[5]
-            buf = buf[5 + size :]
+    except socket.timeout:
+        return []
+    if not chunk:
+        raise SystemExit("rmule closed the link")
+    buf += chunk
+    opcodes = []
+    while len(buf) >= 6:
+        size = struct.unpack_from("<I", buf, 1)[0]
+        if len(buf) < 5 + size:
+            break
+        opcodes.append(buf[5])
+        del buf[: 5 + size]
+    return opcodes
 
 
 def main():
@@ -70,8 +74,8 @@ def main():
         + frame(OP_SETREQFILEID, file_hash)
         + frame(OP_STARTUPLOADREQ, file_hash)
     )
-    read = frames(sock)
-    while next(read) != OP_ACCEPTUPLOADREQ:
+    buf = bytearray()
+    while OP_ACCEPTUPLOADREQ not in read_into(sock, buf):
         pass
     print("granted", flush=True)
     sock.settimeout(1)
@@ -82,10 +86,7 @@ def main():
         start += BLOCK
         deadline = time.time() + ASK_EVERY
         while time.time() < deadline:
-            try:
-                next(read)
-            except socket.timeout:
-                pass
+            read_into(sock, buf)
 
 
 if __name__ == "__main__":
