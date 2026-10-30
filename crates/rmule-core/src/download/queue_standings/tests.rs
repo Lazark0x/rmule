@@ -19,6 +19,15 @@ fn place(asked: Option<Instant>, needs_parts: bool) -> Place {
         names: vec![peer()],
         asked,
         needs_parts,
+        pooled: false,
+    }
+}
+
+/// A record still in a lane, which has asked nothing.
+fn pooled() -> Place {
+    Place {
+        pooled: true,
+        ..place(None, true)
     }
 }
 
@@ -49,12 +58,38 @@ fn the_last_slot_ask_holds_and_a_holder_needing_nothing_yields() {
     second.publish(vec![place(Some(later), false)]);
     assert_eq!(
         first.role(&place(Some(t0), true)),
-        Role::Inherits { asked_at: later }
+        Role::Takes { asked_at: later }
     );
     assert!(matches!(
         second.role(&place(Some(later), false)),
         Role::Waits { .. }
     ));
+}
+
+/// A Pooled Place takes a standing only from a place needing nothing: against
+/// a place that may need a part, or another Pooled Place, it changes nothing,
+/// so two downloads that have not asked still meet on the Peer Link.
+#[test]
+fn a_pooled_place_outranks_only_a_place_needing_nothing() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let (holder, lane) = (seat(&standings, 1), seat(&standings, 2));
+    lane.publish(vec![pooled()]);
+
+    holder.publish(vec![place(Some(t0), true)]);
+    assert_eq!(holder.role(&place(Some(t0), true)), Role::Holds);
+    assert!(matches!(lane.role(&pooled()), Role::Waits { .. }));
+
+    holder.publish(vec![place(Some(t0), false)]);
+    assert!(matches!(
+        holder.role(&place(Some(t0), false)),
+        Role::Waits { .. }
+    ));
+    assert_eq!(lane.role(&pooled()), Role::Takes { asked_at: t0 });
+
+    holder.publish(vec![pooled()]);
+    assert!(lane.role(&pooled()).asks());
+    assert!(holder.role(&pooled()).asks());
 }
 
 /// The holder's last ask outlives its place: a waiter left alone when the

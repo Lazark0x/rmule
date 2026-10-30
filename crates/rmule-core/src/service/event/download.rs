@@ -260,6 +260,16 @@ pub enum DownloadEvent {
         /// The source it waits at.
         peer: rmule_primitives::PeerEndpoint,
     },
+    /// A source holding nothing this download needs passed to another of our
+    /// downloads that holds the peer and may need a part of it (a **Source
+    /// Handover**, ADR-0090): this download keeps its record and asks nothing
+    /// until the standing comes back.
+    SourceHandedOver {
+        /// The download that gave the source up.
+        download_id: DownloadId,
+        /// The source.
+        peer: rmule_primitives::PeerEndpoint,
+    },
     /// A pooled source answered our UDP reask ping with `OP_REASKACK` (`0x91`):
     /// the fresh `rank` was recorded and its standing refreshed (ADR-0057).
     SourceReaskAcked {

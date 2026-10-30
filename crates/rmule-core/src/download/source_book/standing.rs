@@ -162,6 +162,9 @@ pub(super) struct Standing {
     /// sweep (ADR-0107); only a holder whose file the peer's entry names
     /// pings.
     pub(super) role: Role,
+    /// Whether its Source Handover is reported: the giver's record has
+    /// waited on another download since (ADR-0090).
+    handed_over: bool,
 }
 
 impl Standing {
@@ -208,7 +211,34 @@ impl Standing {
             queue_full: false,
             no_needed_parts: false,
             role: Role::Waits { asked_at },
+            handed_over: false,
         }
+    }
+
+    /// The same standing reading `role`.
+    pub(super) const fn in_role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Take the role a purge tick read for a no-needed-parts record. Whether
+    /// that leaves a Source Handover unreported.
+    pub(super) fn read_at_purge(&mut self, role: Role) -> bool {
+        self.role = role;
+        self.handed_over &= !role.asks();
+        self.hands_over(role)
+    }
+
+    /// Whether `role` leaves a Source Handover unreported.
+    pub(super) const fn hands_over(&self, role: Role) -> bool {
+        !role.asks() && !self.handed_over
+    }
+
+    /// Report the handover: the peer's entry no longer names this file, so the
+    /// rank it stated is gone (aMule `DownloadClient.cpp:1501-1502`).
+    pub(super) const fn hand_over(&mut self) {
+        self.handed_over = true;
+        self.rank = None;
     }
 
     /// Read `role` at `now` against `period`: a waiter's clock follows the
@@ -220,7 +250,7 @@ impl Standing {
         self.role = role;
         match role {
             Role::Holds => true,
-            Role::Inherits { asked_at } => {
+            Role::Inherits { asked_at } | Role::Takes { asked_at } => {
                 self.last_reask = self.last_reask.max(asked_at);
                 true
             }
@@ -433,6 +463,7 @@ impl SourceBook {
             queue_full: false,
             no_needed_parts,
             role: Role::Holds,
+            handed_over: false,
         });
     }
 
@@ -520,7 +551,7 @@ impl SourceBook {
             }
             let elapsed = now.saturating_duration_since(standing.last_reask);
             if elapsed >= period {
-                self.full_ask(id, peer);
+                self.full_ask(id, peer, now);
                 standings.stamp(&names, now);
                 due.push(Reask::FullAsk { peer });
                 continue;
@@ -686,8 +717,10 @@ impl SourceBook {
     /// fill opens the road a fresh candidate would take: rung 0, a callback,
     /// its buddy or a punch (`TryToConnect`, `BaseClient.cpp:1395`). The
     /// connection that answers is the same record, and its next rank is the
-    /// standing again.
-    fn full_ask(&mut self, id: RecordId, peer: PeerEndpoint) {
+    /// standing again. Its ask is stamped at `now`, as `AskForDownload` stamps
+    /// the client's (`DownloadClient.cpp:156`), so the fill that takes it dials
+    /// it rather than parking it on the peer's clock again.
+    fn full_ask(&mut self, id: RecordId, peer: PeerEndpoint, now: Instant) {
         let candidate = self.records.get(&id).and_then(|record| record.candidate);
         let lane = match candidate {
             Some(candidate) => {
@@ -701,6 +734,7 @@ impl SourceBook {
         };
         let stated = record.standing.and_then(|standing| standing.stated_crypt());
         record.standing = None;
+        record.last_ask = Some(now);
         if let Some(stated) = stated {
             self.run.note_crypt(peer, stated);
         }

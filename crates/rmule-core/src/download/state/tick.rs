@@ -2,7 +2,7 @@
 //! [`DownloadState::next_wake`] named, and [`DownloadState::on_tick`] runs what
 //! has fallen due by then — the spent endpoints' period turn (ADR-0090), the
 //! **Hash-Set Deadline** (ADR-0026), the callback roads' deadlines earliest
-//! first (ADR-0039, ADR-0091), the purges, the reask sweep over every
+//! first (ADR-0039, ADR-0091), the **Source Handover** and the purges, the reask sweep over every
 //! queue standing (ADR-0057), and a fill the **Connection Budget** refused
 //! once its Dial Window turns (ADR-0116). Each sits on the record or block it governs, so a road or a
 //! standing that ends by any route takes its clock with it.
@@ -24,7 +24,13 @@ impl DownloadState {
             out.extend(self.expire(now, key, deadline));
         }
         // aMule purges before it reasks the same source (stock 2.3.3
-        // `PartFile.cpp:1406-1463`).
+        // `PartFile.cpp:1406-1463`), and tries the swap before it purges.
+        if let Some(peer) = self.sources.hand_over(now, &self.standings) {
+            out.push(Decision::Emit(DownloadEvent::SourceHandedOver {
+                download_id: self.download_id,
+                peer,
+            }));
+        }
         if let Some((kind, purged)) = self
             .sources
             .purge(now, &self.callback_capability, self.dial)
@@ -72,6 +78,7 @@ impl DownloadState {
                 .flatten(),
             self.sources
                 .next_purge(&self.callback_capability, self.dial),
+            self.sources.next_hand_over(&self.standings),
             self.budget_wake,
         ]
         .into_iter()

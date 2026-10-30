@@ -246,6 +246,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             "peer {} already queues us for another download; this one waits on that place and asks nothing",
             address(*peer)
         ),
+        D::SourceHandedOver { peer, .. } => format!(
+            "peer {} holds nothing this download needs; another download that may need it asks it from now on",
+            address(*peer)
+        ),
         D::SourceReaskAcked { peer, rank, .. } => {
             format!("peer {} answered the reask: rank {rank}", address(*peer))
         }

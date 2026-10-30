@@ -202,6 +202,9 @@ impl DownloadEvent {
                     .count("id", download_id.as_u64())
                     .peer_address("peer", peer)
             }
+            D::SourceHandedOver { download_id, peer } => Record::new("download.source_handed_over")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer),
             D::SourceReaskAcked {
                 download_id,
                 peer,

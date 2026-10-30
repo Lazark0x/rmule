@@ -9,12 +9,14 @@
 //! a record there waits on it and asks nothing.
 //!
 //! Each run holds one [`StandingSeat`] and republishes its **places** — every
-//! record holding a standing, under its **Ask Names** — after every step, never
-//! by hand, and stamps each ping and TCP full ask its sweep sends. A **stamp**
+//! record holding a standing, and as **Pooled Places** every record still in a
+//! lane, under its **Ask Names** — after every step, never by hand, and stamps
+//! each ping and TCP full ask its sweep sends. A **stamp**
 //! per name keeps the peer's last ask and the download whose slot ask it last
 //! read, past the place that made it, so a download the standing passes to
-//! asks on the peer's clock. Time is an argument, as everywhere in the
-//! download brain.
+//! asks on the peer's clock. A **Source Handover** (ADR-0090) is a role read
+//! here and nothing else: no run reads another's book or tells it anything.
+//! Time is an argument, as everywhere in the download brain.
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -40,6 +42,9 @@ pub(crate) struct Place {
     /// Whether the record may need a part of the peer: not the
     /// no-needed-parts mark (ADR-0112).
     pub(crate) needs_parts: bool,
+    /// Whether the record is still in a lane, holding no standing: a Pooled
+    /// Place, which outranks only a place needing nothing (ADR-0090).
+    pub(crate) pooled: bool,
 }
 
 /// What a record's download is to the peer's standing.
@@ -55,6 +60,14 @@ pub(crate) enum Role {
         /// The peer's last ask.
         asked_at: Instant,
     },
+    /// It takes the standing from another download's place, still published,
+    /// that needs no part of the peer (a **Source Handover**, ADR-0090): as
+    /// [`Self::Inherits`], and a fill reaching its pooled record parks it
+    /// rather than dialing it inside the peer's clock.
+    Takes {
+        /// The peer's last ask.
+        asked_at: Instant,
+    },
     /// Another download holds the standing: the record asks nothing, and its
     /// clock follows `asked_at`, the peer's last ask, when one is known.
     Waits {
@@ -67,6 +80,11 @@ impl Role {
     /// Whether the record re-asks the peer at all.
     pub(crate) const fn asks(self) -> bool {
         !matches!(self, Self::Waits { .. })
+    }
+
+    /// Whether a fill reaching a pooled record parks it rather than dialing.
+    pub(crate) const fn parks(self) -> bool {
+        matches!(self, Self::Waits { .. } | Self::Takes { .. })
     }
 }
 
@@ -99,7 +117,8 @@ impl QueueStandings {
     /// `download`'s role at the peer `place` names, read against every other
     /// download's published places that share one of its names: a place that
     /// may need a part outranks one that needs none, then the latest slot ask,
-    /// then the download added first.
+    /// then the download added first; a Pooled Place outranks only a place
+    /// that needs none.
     fn role(&self, download: DownloadId, place: &Place) -> Role {
         let mine = rank(download, place);
         let rivals: HashSet<DownloadId> = place
@@ -110,14 +129,21 @@ impl QueueStandings {
             .copied()
             .filter(|&other| other != download)
             .collect();
-        let outranked = rivals.into_iter().any(|other| {
-            self.places
-                .get(&other)
-                .into_iter()
-                .flatten()
-                .filter(|p| shares_a_name(place, p))
-                .any(|p| rank(other, p) > mine)
-        });
+        let rival_places: Vec<(DownloadId, &Place)> = rivals
+            .into_iter()
+            .flat_map(|other| {
+                self.places
+                    .get(&other)
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| shares_a_name(place, p))
+                    .map(move |p| (other, p))
+            })
+            .collect();
+        let outranked = rival_places
+            .iter()
+            .any(|&(other, p)| (!p.pooled || !place.needs_parts) && rank(other, p) > mine);
+        let stands_elsewhere = rival_places.iter().any(|&(_, p)| !p.pooled);
         let stamps: Vec<Stamp> = place
             .names
             .iter()
@@ -132,6 +158,7 @@ impl QueueStandings {
             .filter_map(|stamp| stamp.named)
             .any(|(by, at)| by != download && place.asked.is_none_or(|asked| at > asked));
         match asked_at {
+            Some(asked_at) if named_elsewhere && stands_elsewhere => Role::Takes { asked_at },
             Some(asked_at) if named_elsewhere => Role::Inherits { asked_at },
             _ => Role::Holds,
         }

@@ -257,10 +257,10 @@ impl DownloadState {
         self.sources.activity(|peer| self.slot_asks.granted(peer))
     }
 
-    /// Sources this run knows now — aMule's source count, republished beside
-    /// the part map: every record the **Source Book** holds, once.
+    /// Sources this run knows now, republished beside the part map: every
+    /// record the **Source Book** holds, once.
     pub(crate) fn known_sources(&self) -> u32 {
-        self.sources.counts().known
+        self.sources.held()
     }
 }
 

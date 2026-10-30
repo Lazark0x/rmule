@@ -25,8 +25,9 @@ impl DownloadState {
     /// enact it. A refused fill takes nothing from its lane and wakes at the
     /// Dial Window's turn. The same path serves the initial fill, the
     /// on-retirement backfill (ADR-0030) and a TCP full ask. A record whose
-    /// peer stands in another download's **Queue Standing** is not dialed: it
-    /// waits on that standing (ADR-0107).
+    /// peer stands in another download's **Queue Standing**, or that takes the
+    /// peer from a download needing nothing of it, is not dialed: it waits on
+    /// that standing (ADR-0107, ADR-0090).
     pub(super) fn fill(&mut self, now: Instant, out: &mut Vec<Decision>) {
         while self
             .sources
@@ -96,7 +97,9 @@ impl DownloadState {
     /// holds that peer's **Queue Standing**: the record waits on it, asking
     /// nothing and opening nothing, as aMule's A4AF file waits on its client
     /// (`AddRequestForAnotherFile`, stock 2.3.3 `DownloadClient.cpp:496-507`;
-    /// ADR-0107 invariant 13). Whether it waits.
+    /// ADR-0107 invariant 13). So does a record taking the peer from a
+    /// download that needs nothing of it, whose TCP full ask falls due on the
+    /// peer's clock (ADR-0090). Whether it waits.
     fn waits_on_standing(
         &mut self,
         now: Instant,
@@ -106,10 +109,8 @@ impl DownloadState {
         let Some(place) = self.sources.dial_place(peer) else {
             return false;
         };
-        let Role::Waits { asked_at } = self.standings.role(&place) else {
-            return false;
-        };
-        if !self.sources.wait_on_standing(peer, asked_at, now) {
+        let role = self.standings.role(&place);
+        if !role.parks() || !self.sources.wait_on_standing(peer, role, now) {
             return false;
         }
         out.push(Decision::Emit(DownloadEvent::SourceWaitsOnStanding {
@@ -136,7 +137,7 @@ impl DownloadState {
                 .dial_place(peer)
                 .and_then(|place| match self.standings.role(&place) {
                     Role::Holds => None,
-                    Role::Inherits { asked_at } => Some(asked_at),
+                    Role::Inherits { asked_at } | Role::Takes { asked_at } => Some(asked_at),
                     Role::Waits { asked_at } => asked_at,
                 });
         self.sources.handed_back(peer, asked_at, now);

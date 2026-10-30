@@ -326,23 +326,34 @@ impl SourceBook {
         record.stage.identity()
     }
 
-    /// The counts the source-ask rule reads (aMule's): every source the book
-    /// holds, and those on queue, downloading or connected
-    /// (`GetValidSourcesCount`, stock 2.3.3 `PartFile.cpp:3467-3496`) — each
-    /// once, because each is one record.
+    /// The counts the source limit, the purges and the source-ask rule read
+    /// (aMule's): every source the book holds, and those on queue, downloading
+    /// or connected (`GetValidSourcesCount`, stock 2.3.3
+    /// `PartFile.cpp:3467-3496`) — each once, because each is one record — and
+    /// neither takes a record waiting on another download's standing, as
+    /// aMule's A4AF list is not `m_SrcList` (ADR-0090).
     pub(crate) fn counts(&self) -> SourceCounts {
-        let valid = self
-            .records
-            .values()
+        let sources = || {
+            self.records
+                .values()
+                .filter(|record| !record.waits_elsewhere())
+        };
+        let valid = sources()
             .filter(|record| {
                 record.stage.live().is_some() || matches!(record.stage, Stage::RemoteQueued(_))
             })
             .count();
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         SourceCounts {
-            known: count(self.records.len()),
+            known: count(sources().count()),
             valid: count(valid),
         }
+    }
+
+    /// Every record the book holds, a record waiting on another download's
+    /// standing among them: what the operator reads.
+    pub(crate) fn held(&self) -> u32 {
+        u32::try_from(self.records.len()).unwrap_or(u32::MAX)
     }
 
     /// The book's sources by **Source Activity** (ADR-0116): every dial,

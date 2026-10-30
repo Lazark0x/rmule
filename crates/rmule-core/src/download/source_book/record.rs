@@ -153,10 +153,10 @@ pub(super) struct Record {
     pub(super) candidate: Option<LowIdCandidate>,
     /// The queue standing a worker of it earned (ADR-0057).
     pub(super) standing: Option<Standing>,
-    /// When a slot ask of its worker last earned the standing: the claim its
-    /// download holds on the peer's **Queue Standing** (ADR-0107). It
-    /// outlives the standing, so a holder out on its TCP full ask still
-    /// outranks the downloads waiting on it.
+    /// When it last asked — a slot ask of its worker earning the standing, or
+    /// its TCP full ask: the claim its download holds on the peer's **Queue
+    /// Standing** (ADR-0107). It outlives the standing, so a holder out on its
+    /// TCP full ask still outranks the downloads waiting on it.
     pub(super) last_ask: Option<Instant>,
     /// The endpoint it was restored at from a **Source Seed** (ADR-0109).
     pub(super) seed: Option<PeerEndpoint>,
@@ -181,6 +181,14 @@ impl Record {
             asks: AskFacts::default(),
             advertised: None,
         }
+    }
+
+    /// Whether it waits on another download's **Queue Standing**: aMule's A4AF
+    /// entry, which is not among the file's sources (`PartFile.h:144`,
+    /// ADR-0090).
+    pub(super) fn waits_elsewhere(&self) -> bool {
+        matches!(self.stage, Stage::RemoteQueued(_))
+            && self.standing.is_some_and(|standing| !standing.role.asks())
     }
 
     /// The worker on `endpoint`, if the record's live worker is there.
