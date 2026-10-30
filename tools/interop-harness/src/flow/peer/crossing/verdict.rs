@@ -97,8 +97,9 @@ struct Link {
     /// frames each side wrote.
     hello_from_rmule: f64,
     hello_from_peer: f64,
-    /// When rmule first answered a hello on it (`-1` without one).
+    /// When each side first answered a hello on it (`-1` without one).
     answer_from_rmule: f64,
+    answer_from_peer: f64,
     first_grant: f64,
     /// How many `OP_ACCEPTUPLOADREQ` rmule wrote on it.
     grants_from_rmule: usize,
@@ -169,6 +170,7 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
             hello_from_rmule: first(&out, OP_HELLO),
             hello_from_peer: first(&back, OP_HELLO),
             answer_from_rmule: first(&out, OP_HELLOANSWER),
+            answer_from_peer: first(&back, OP_HELLOANSWER),
             first_grant: first(&out, OP_ACCEPTUPLOADREQ),
             grants_from_rmule: out
                 .iter()
@@ -190,6 +192,12 @@ struct Rows {
     /// Links opened after the race began and still up when the watch ended.
     left_open: usize,
     copy_equal: bool,
+    /// Seconds from the aMule's close of its own link to its answer on
+    /// rmule's dial, where it closed that link: its attach, timed on the tap.
+    close_to_answer_secs: Option<f64>,
+    /// Seconds from the aMule's answer on rmule's dial to rmule's answer on
+    /// the aMule's own link, where rmule answered: the close bound as it ran.
+    answer_to_answer_secs: Option<f64>,
 }
 
 /// The verdict file.
@@ -213,7 +221,8 @@ fn records_about(log: &str, peer: Ipv4Addr) -> Vec<String> {
             (line.starts_with("serve.") || line.starts_with("download.dial_ended"))
                 && (line.contains(&peer)
                     || line.starts_with("serve.crossed_hello_held")
-                    || line.starts_with("serve.crossed_link_let_go"))
+                    || line.starts_with("serve.crossed_dial_kept")
+                    || line.starts_with("serve.crossed_dial_refused"))
         })
         .map(str::to_owned)
         .collect()
@@ -254,6 +263,15 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .iter()
         .filter(|link| link.opened_at >= race_began)
         .collect();
+    let returned = at.marks.returned_at.unwrap_or(f64::MAX);
+    // The aMule's own link, opened at its `Add` or its reask, and rmule's dial
+    // raced against it.
+    let own = raced
+        .iter()
+        .find(|link| !link.rmule_opened && link.opened_at >= returned)
+        .copied();
+    let dial = raced.iter().find(|link| link.rmule_opened).copied();
+    let spans = own.zip(dial);
     let rows = Rows {
         left_open: raced
             .iter()
@@ -262,14 +280,17 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         records: records_about(&log, at.peer),
         links: links.clone(),
         copy_equal,
+        close_to_answer_secs: spans
+            .filter(|(own, dial)| {
+                own.closed_by == "peer"
+                    && own.answer_from_rmule < 0.0
+                    && dial.answer_from_peer > 0.0
+            })
+            .map(|(own, dial)| dial.answer_from_peer - own.closed_at),
+        answer_to_answer_secs: spans
+            .filter(|(own, dial)| own.answer_from_rmule > 0.0 && dial.answer_from_peer > 0.0)
+            .map(|(own, dial)| own.answer_from_rmule - dial.answer_from_peer),
     };
-    let returned = at.marks.returned_at.unwrap_or(f64::MAX);
-    // The aMule's own link opened by its `Add`, and rmule's dial raced against it.
-    let own = raced
-        .iter()
-        .find(|link| !link.rmule_opened && link.opened_at >= returned)
-        .copied();
-    let dial = raced.iter().find(|link| link.rmule_opened).copied();
     let granted_on = raced
         .iter()
         .filter(|link| link.first_grant > 0.0)
@@ -300,11 +321,31 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             )
         })
     };
-    let held = rows
-        .records
-        .iter()
-        .any(|line| line.starts_with("serve.crossed_hello_held"));
-    let unanswered = |link: Option<&Link>| link.is_some_and(|link| link.answer_from_rmule < 0.0);
+    let logged = |record: &str| rows.records.iter().any(|line| line.starts_with(record));
+    let held = logged("serve.crossed_hello_held");
+    // The far end answered the dial, and rmule answered its own link only
+    // past that, the dial let go with no grant on it.
+    let refused = {
+        let answered_past = spans.is_some_and(|(own, dial)| {
+            dial.answer_from_peer > 0.0 && own.answer_from_rmule > dial.answer_from_peer
+        });
+        Claim::about(
+            "its-hello-was-held-past-the-dials-answer-and-answered-then",
+            held && logged("serve.crossed_dial_refused") && answered_past,
+            Evidence::Captured,
+            format!(
+                "serve.crossed_hello_held: {held}; rmule's answer on the aMule's own link {:?} s after the aMule's answer on the dial; its own link: {}",
+                rows.answer_to_answer_secs,
+                describe(own)
+            ),
+        )
+    };
+    let dial_let_go = Claim::about(
+        "the-dial-carried-no-grant-and-rmule-let-it-go",
+        dial.is_some_and(|link| link.grants_from_rmule == 0 && link.closed_by == "rmule"),
+        Evidence::Captured,
+        format!("rmule's dial: {}", describe(dial)),
+    );
     // A returning waiter drops the grant that follows its hello and asks, so
     // the wire carries two; the Run Log writes the one slot once (ADR-0057).
     let one_slot = |link: Option<&Link>| {
@@ -324,8 +365,8 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         )
     };
     let claims = match at.shape.leg {
-        CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed => {
-            let on_dial = at.shape.leg == CrossingLeg::ServeCrossed;
+        CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed | CrossingLeg::ServeReask => {
+            let on_dial = at.shape.leg == CrossingLeg::ServeReask;
             let mut claims = vec![
                 Claim::about(
                     if on_dial {
@@ -354,14 +395,29 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             if !on_dial {
                 claims.push(one_slot(granted_on));
             }
+            if at.shape.leg == CrossingLeg::ServeCrossed {
+                claims.push(refused);
+                claims.push(dial_let_go);
+            }
             if on_dial {
+                let closed = own.is_some_and(|link| link.closed_by == "peer");
                 claims.push(Claim::about(
-                    "the-waiters-hello-was-held-and-never-answered",
-                    held && unanswered(own),
+                    "the-waiter-closed-its-own-link-unanswered",
+                    held && closed && own.is_some_and(|link| link.answer_from_rmule < 0.0),
                     Evidence::Captured,
                     format!(
                         "serve.crossed_hello_held in the Run Log: {held}; the waiter's own link: {}",
                         describe(own)
+                    ),
+                ));
+                claims.push(Claim::about(
+                    "no-grant-went-before-that-close",
+                    spans.is_some_and(|(own, dial)| dial.first_grant > own.closed_at),
+                    Evidence::Captured,
+                    format!(
+                        "the aMule's close to its answer on the dial: {:?} s; first OP_ACCEPTUPLOADREQ on the dial at {:.3}",
+                        rows.close_to_answer_secs,
+                        dial.map_or(-1.0, |link| link.first_grant)
                     ),
                 ));
             }
@@ -413,12 +469,8 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 .copied();
             let mut claims = vec![
                 Claim::about(
-                    if on_dial {
-                        "the-download-carried-on-over-the-dial"
-                    } else {
-                        "the-download-rode-the-seeds-own-link"
-                    },
-                    carrier.is_some_and(|link| link.rmule_opened == on_dial),
+                    "the-download-rode-the-seeds-own-link",
+                    carrier.is_some_and(|link| !link.rmule_opened),
                     Evidence::Captured,
                     format!(
                         "the link that carried most of S's OP_SENDINGPART: {} ({} frames); rmule's dial: {}",
@@ -436,14 +488,15 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 one_left,
             ];
             if on_dial {
+                claims.push(refused);
+                claims.push(dial_let_go);
                 claims.push(Claim::about(
-                    "the-seeds-own-ask-ran-on-the-dial",
-                    unanswered(own) && dial.is_some_and(|link| link.parts_from_rmule > 0),
+                    "the-seeds-own-ask-ran-on-its-own-link",
+                    own.is_some_and(|link| link.parts_from_rmule > 0),
                     Evidence::Captured,
                     format!(
-                        "S's own link: {}; rmule's dial: {}",
-                        describe(own),
-                        describe(dial)
+                        "OP_SENDINGPART rmule wrote on S's own link: {}",
+                        own.map_or(0, |link| link.parts_from_rmule)
                     ),
                 ));
             }

@@ -24,12 +24,21 @@
 //!   and no second link stays up.
 //! - `serve-crossed`: the same, but rmule's dial-back connects and its hello
 //!   is held, and W's own connect is held until the dial's hello is out.
-//!   Claims: W's hello is held and never answered, the slot lands on the
-//!   dial, the transfer runs on it, and no second link stays up.
 //!   `Add` makes W a new client with no address until a hello is read
 //!   (`BaseClient.cpp:239`, `:661`), and `AttachToAlreadyKnown` will not
-//!   attach a hello to such a connected client (`ClientList.cpp:388-397`):
-//!   this leg draws the first-contact order, not a queued client's reask.
+//!   attach a hello to such a connected client (`ClientList.cpp:388-397`), so
+//!   W answers the dial and stays on its own link: the first-contact order.
+//!   Claims: W's hello is held past the dial's answer and answered then, no
+//!   grant goes on the dial, the slot lands on W's own link, the transfer
+//!   runs on it, and no second link stays up.
+//! - `serve-reask`: the same crossing, W's client alive with its address: W
+//!   stays queued, and its own link is its reask at aMule's `FILEREASKTIME`
+//!   (`PartFile.cpp:1477`), its UDP reask dropped. X holds the slot that long
+//!   at a higher rate, and stops just ahead of the reask. W attaches the dial
+//!   (`ClientList.cpp:400-403`). Claims: W closes its own link unanswered, no
+//!   grant goes before that, the slot lands on the dial, the transfer runs on
+//!   it, and no second link stays up. The verdict's rows time the close
+//!   against the answer.
 //! - `low-id-return`: W is Low ID, so rmule cannot dial it back; X stops,
 //!   the slot sits free, W comes back. Claim: `OP_ACCEPTUPLOADREQ` on its
 //!   returning link within a second of its hello.
@@ -37,9 +46,10 @@
 //!   SYN while S's own link lands. Claims: the download rides S's link and
 //!   completes, and no second link stays up.
 //! - `download-crossed`: rmule's dial connects with its hello held, S's own
-//!   connect is held until then. Claims: the download carries on over the
-//!   dial and completes, S's own ask runs on the dial with its hello never
-//!   answered on its own link, and no second link stays up.
+//!   connect is held until then. `Add` is S's first contact, so S answers the
+//!   dial and stays on its own link. Claims: that link is answered past the
+//!   dial's answer, the download moves onto it and completes, S's own ask
+//!   runs on it, and no second link stays up.
 
 use std::fs;
 use std::net::Ipv4Addr;
@@ -77,6 +87,17 @@ const X_KIB: u32 = 2;
 /// S's upload cap, KiB/s: rmule's 1 MiB download takes about 16 s.
 const SEED_MAX_UPLOAD_KIB: &str = "64";
 const STOP_GRACE_SECS: u64 = 10;
+/// aMule's `FILEREASKTIME` (21:40, `protocol/ed2k/Constants.h:35`): how long
+/// after its ask W reasks over TCP, its UDP reask unanswered.
+const FILE_REASK_SECS: u64 = 1300;
+/// The rate X holds the slot at through W's reask period: the served file
+/// lasts it out, and `AMULE_MAX_DOWNLOAD` keeps it from ending sooner.
+const REASK_X_KIB: u32 = 16;
+/// How long before W's reask X stops, so the dial's hello is out when W's
+/// own connect goes.
+const REASK_LEAD_SECS: u64 = 8;
+/// How long past W's reask its held SYN is let through.
+const REASK_LAND_SECS: u64 = 4;
 /// IP packets longer than a bare ACK (20-byte IP and 32-byte TCP headers
 /// with timestamps): with the SYN excluded (a SYN with its options is 60
 /// bytes), a data hold drops what carries eD2k bytes and lets the handshake
@@ -89,8 +110,11 @@ const DATA_HOLD_MIN_LEN: &str = "53:65535";
 pub enum CrossingLeg {
     /// rmule's dial-back is held at its SYN while the waiter comes back.
     ServeCalledOff,
-    /// rmule's dial-back has written its hello when the waiter's link lands.
+    /// rmule's dial-back has written its hello when the waiter's link lands,
+    /// the waiter's client new.
     ServeCrossed,
+    /// The same with the waiter's client alive: its own reask.
+    ServeReask,
     /// A Low-ID waiter comes back while rmule's slot sits free.
     LowIdReturn,
     /// rmule's download dial is held at its SYN while its seed's link lands.
@@ -105,7 +129,7 @@ impl CrossingLeg {
     pub(crate) fn serves(self) -> bool {
         matches!(
             self,
-            Self::ServeCalledOff | Self::ServeCrossed | Self::LowIdReturn
+            Self::ServeCalledOff | Self::ServeCrossed | Self::ServeReask | Self::LowIdReturn
         )
     }
 }
@@ -192,6 +216,21 @@ fn hold(to: Ipv4Addr, port: u16, syn: bool) -> Vec<String> {
     }
     rule.extend(["-j", "DROP"].map(str::to_owned));
     rule
+}
+
+/// A rule dropping every UDP datagram `target`'s namespace sends to `to`.
+fn no_udp_to(to: Ipv4Addr) -> Vec<String> {
+    ["-p", "udp", "-d", &to.to_string(), "-j", "DROP"]
+        .map(str::to_owned)
+        .to_vec()
+}
+
+/// Sleep until the wall clock reads `at`, unix seconds.
+fn sleep_until(at: f64) {
+    let left = at - verdict::unix_now();
+    if left > 0.0 {
+        std::thread::sleep(Duration::from_secs_f64(left));
+    }
 }
 
 /// The holds a leg stands up, each as (namespace's container, rule).
@@ -380,7 +419,13 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 .prebuild_command(&bench.docker)?,
             "prebuild rmule-tools for the download container",
         )?;
-        let deadline = 4 * options.timeout_secs + shape.idle_secs + 4 * shape.hold_secs;
+        let reask = shape.leg == CrossingLeg::ServeReask;
+        let waits = if reask {
+            FILE_REASK_SECS
+        } else {
+            shape.idle_secs
+        };
+        let deadline = 4 * options.timeout_secs + waits + 4 * shape.hold_secs;
         let flags: Vec<String> = [
             "--stamp-events",
             "--share",
@@ -437,7 +482,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 &holder,
                 &slot_at_rmule,
                 SLOT_FILE,
-                (Some(X_KIB), false),
+                (Some(if reask { REASK_X_KIB } else { X_KIB }), false),
             )?;
             wait_for_container_log(
                 &bench.docker,
@@ -455,6 +500,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 (None, low_id),
             )?;
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
+            let asked_at = verdict::unix_now();
             let waiter_ip = container_ip(&bench, &waiter)?;
             // Set now: no hold touches W's queued link (rmule's end is its
             // listener), and X must stop well inside the 100 s an aMule
@@ -467,7 +513,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                         hold(waiter_ip, AMULE_PEER_TCP_PORT, true),
                     )?;
                 }
-                CrossingLeg::ServeCrossed => {
+                CrossingLeg::ServeCrossed | CrossingLeg::ServeReask => {
                     holds.add(
                         &bench,
                         &rmule_name,
@@ -477,21 +523,37 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 }
                 _ => {}
             }
-            // Past aMule's idle close, so the waiter has no link when X stops.
-            std::thread::sleep(Duration::from_secs(shape.idle_secs));
-            // W cancels before X stops: `amulecmd` takes seconds on the debug
-            // build, and rmule's dial-back hears W inside 15 s or ends. rmule
-            // keeps W queued, so the dial-back goes out all the same.
-            let hash: String = parse_ed2k_file_hash(&wait_link)?
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect();
-            amulecmd(
-                &bench,
-                &waiter,
-                &format!("Cancel {hash}"),
-                "the waiter cancels its download",
-            )?;
+            let reask_at = asked_at + FILE_REASK_SECS as f64;
+            if reask {
+                // Never lifted: W's reask has to come over TCP.
+                run_checked(
+                    bench.docker.run_container(iptables(
+                        options.amule_image,
+                        &waiter,
+                        "-A",
+                        &no_udp_to(rmule_ip),
+                    )),
+                    "drop W's UDP reask",
+                )?;
+                sleep_until(reask_at - REASK_LEAD_SECS as f64);
+            } else {
+                // Past aMule's idle close, so the waiter has no link when X
+                // stops.
+                std::thread::sleep(Duration::from_secs(shape.idle_secs));
+                // W cancels before X stops: `amulecmd` takes seconds on the
+                // debug build. rmule keeps W queued, so the dial-back goes out
+                // all the same.
+                let hash: String = parse_ed2k_file_hash(&wait_link)?
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect();
+                amulecmd(
+                    &bench,
+                    &waiter,
+                    &format!("Cancel {hash}"),
+                    "the waiter cancels its download",
+                )?;
+            }
             marks.holder_stopped_at = Some(verdict::unix_now());
             run_checked(
                 bench.docker.stop_container(holder.clone(), STOP_GRACE_SECS),
@@ -504,7 +566,10 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             };
             let dialed = wait_for_container_log(&bench.docker, &rmule_name, freed, timeout).is_ok();
             println!("peer_crossing slot_freed {freed} logged={dialed}");
-            if shape.leg == CrossingLeg::ServeCrossed {
+            if matches!(
+                shape.leg,
+                CrossingLeg::ServeCrossed | CrossingLeg::ServeReask
+            ) {
                 // The dial connects through the SYN; its hello is written and held.
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -513,12 +578,17 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
             marks.returned_at = Some(verdict::unix_now());
-            amulecmd(
-                &bench,
-                &waiter,
-                &format!("Add {wait_at_rmule}"),
-                "the waiter adds it again",
-            )?;
+            if reask {
+                // W's own connect has gone by now, its SYN held.
+                sleep_until(reask_at + REASK_LAND_SECS as f64);
+            } else {
+                amulecmd(
+                    &bench,
+                    &waiter,
+                    &format!("Add {wait_at_rmule}"),
+                    "the waiter adds it again",
+                )?;
+            }
             for index in (0..holds.set.len()).rev() {
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
                 marks.lifted_at.push(holds.lift(&bench, index)?);
