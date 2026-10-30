@@ -143,7 +143,7 @@ fn the_taker_asks_by_tcp_on_the_peers_clock_and_the_giver_asks_nothing() {
 /// nobody to take it the same source is.
 #[test]
 fn at_the_threshold_only_a_source_nobody_takes_is_let_go() {
-    let pool: Vec<PeerEndpoint> = (1..=SOURCE_PURGE_AT)
+    let pool: Vec<PeerEndpoint> = (1..=SOURCE_PURGE_AT + 2)
         .map(|n| peer(u8::try_from(n % 250).expect("fits a test address")))
         .collect();
     for taker_holds_it in [true, false] {
