@@ -230,7 +230,7 @@ pub(crate) fn part_of(frame: &Ed2kFrame) -> Option<[u8; 16]> {
 }
 
 /// The file a file request names: the 16 bytes its payload opens with.
-fn requested(frame: &Ed2kFrame) -> Option<[u8; 16]> {
+pub(crate) fn requested(frame: &Ed2kFrame) -> Option<[u8; 16]> {
     let request = (frame.protocol == OP_EDONKEYPROT
         && EDONKEY_FILE_REQUESTS.contains(&frame.opcode))
         || (frame.protocol == OP_EMULEPROT && EMULE_FILE_REQUESTS.contains(&frame.opcode));

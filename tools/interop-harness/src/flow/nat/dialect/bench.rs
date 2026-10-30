@@ -650,16 +650,10 @@ pub(crate) fn start_detached_driver(
     args: &[String],
     marker: &str,
 ) -> Result<(String, bool)> {
-    start_detached_driver_with_env(bench, options, stage, role, host, args, marker, None)
+    start_detached_driver_with_env(bench, options, stage, role, host, args, marker, &[])
 }
 
-/// One environment variable a detached driver's entrypoint reads.
-pub(crate) struct DriverEnv {
-    pub(crate) name: &'static str,
-    pub(crate) value: String,
-}
-
-/// [`start_detached_driver`] with one variable set for its entrypoint.
+/// [`start_detached_driver`] with variables set for its entrypoint.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn start_detached_driver_with_env(
     bench: &mut Bench,
@@ -669,7 +663,7 @@ pub(crate) fn start_detached_driver_with_env(
     host: usize,
     args: &[String],
     marker: &str,
-    env: Option<DriverEnv>,
+    env: &[(&str, String)],
 ) -> Result<(String, bool)> {
     let name = container_name(options.layout, role)?;
     let mut container = RunContainer::new(options.rmule_tools_image)
@@ -680,8 +674,8 @@ pub(crate) fn start_detached_driver_with_env(
         .ip6(stage.v6(host))
         .cap_add("NET_ADMIN")
         .volume(&stage.leg_dir, "/out");
-    if let Some(env) = env {
-        container = container.env(env.name, env.value);
+    for (name, value) in env {
+        container = container.env(name, value);
     }
     for arg in args {
         container = container.arg(arg.clone());
