@@ -25,6 +25,4 @@ path was never exercised before cycle-11 (`amule_low_id` defaults false).
 in-process `FakeEd2kServer` (`crates/rmule-core/tests/common/fake_ed2k_server.rs`), which
 models the back-connect probe, Low-ID assignment, and the callback relay faithfully. This
 Docker scenario stays an **opt-in, best-effort smoke** (`#[ignore]`); do not treat its
-flakiness on the Low-ID topology as a rmule regression. A native open-source eD2k server
-(eNode, Node.js) is filed as a follow-up for a greener real smoke — see the first-class-peer
-issue tracker.
+flakiness on the Low-ID topology as a rmule regression.

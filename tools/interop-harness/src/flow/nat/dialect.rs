@@ -19,9 +19,9 @@
 //! **Evidence class per surface** is carried in the verdict rather than left to
 //! a reader: the hello block and the UDP key have two independent oracles
 //! (emule-qt `73fff714` and kno's aMule `ab483654`), while `0x26` and
-//! `OP_SERVERLIST`'s trailing v6 block have exactly one (eNode-go), which
-//! ADR-0087 already says and every verdict here repeats as a
-//! `single-oracle` row.
+//! `OP_SERVERLIST`'s trailing v6 block have none among the pinned bodies,
+//! which ADR-0087 already says and every verdict here repeats as a
+//! source-derived, undriven row.
 
 pub(crate) mod bench;
 mod download_rung0;

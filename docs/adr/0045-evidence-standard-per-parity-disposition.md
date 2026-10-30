@@ -115,7 +115,7 @@ the same run. The reflector proves the bench, never a counterparty.
 - Capture recipes and scenarios live in the interop harness; golden vectors land beside
   the deterministic tests they feed.
 - Fixtures captured against a third-party server carry a body prefix (`ed2ksrv-*`,
-  `enode-*`, `amule-kno-*`) and a provenance note naming the pinned commit.
+  `amule-kno-*`) and a provenance note naming the pinned commit.
 - The Compatibility Tier stays opt-in and outside CI. This standard makes its evidence
   required when a gap closes, not continuously green.
 

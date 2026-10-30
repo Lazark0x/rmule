@@ -95,7 +95,7 @@ impl GlobServStatReq {
 /// length is free to be clamped. Two counterparty acceptance windows constrain
 /// it, and only their intersection is universally deliverable:
 ///
-/// - the **eserver family** (Lugdunum, eNode) admits an obfuscated ping of
+/// - the **eserver family** (Lugdunum) admits an obfuscated ping of
 ///   `4..=18` bytes;
 /// - **ed2k-server** (`andrey23127/ed2k-server` @`eacf7f1`) reads that same
 ///   `4..=18` arm, but its pre-flight drops anything shorter than 10 bytes

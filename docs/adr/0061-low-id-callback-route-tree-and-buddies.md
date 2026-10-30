@@ -257,7 +257,7 @@ one**:
   dial-back is proven on the bench: a High-ID stock aMule downloaded a byte-equal file from
   a Low-ID rmule through ed2k-server over rmule's dial-back alone (`server-callback-serve`,
   `PASS`, 8 of 8). The `0x35` crypt extension stays source-derived, and `0x26` stays
-  single-oracle (eNode-go).
+  source-derived: no pinned server emits it.
 - A two-node swarm pings its one contact every 15 s while the extern port is unknown and
   trips both sides' flood bans; a flow that needs a held link places routing contacts.
 - The two buddy-hash families' incompatibility is an upstream matter for eMule 0.70b and

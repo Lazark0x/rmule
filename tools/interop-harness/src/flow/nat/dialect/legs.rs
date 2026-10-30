@@ -729,9 +729,9 @@ fn server_sentinel(
                 row.int("server_list_v6_count") > 0,
                 Evidence::SingleOracle,
                 format!(
-                    "{} IPv6 servers in the trailing block. ADR-0087 classifies this surface \
-                     and OP_CALLBACKREQUESTED_IPV6 (0x26) as single-oracle: eNode-go is the \
-                     only implementation known to emit them.",
+                    "{} IPv6 servers in the trailing block. A re-pinned ed2k-server \
+                     is then the one implementation known to emit the block, so the claim \
+                     is single-oracle.",
                     row.int("server_list_v6_count")
                 ),
             ),
@@ -776,9 +776,8 @@ fn server_sentinel(
         ));
         claims.push(Claim::blocked(
             "op-callbackrequested-ipv6-0x26-consumed-from-a-server",
-            "single-oracle and undriven: ADR-0087 records eNode-go as the only implementation \
-             that emits 0x26 or the OP_SERVERLIST v6 block, and the bench carries no eNode-go \
-             pin.",
+            "source-derived and undriven: no pinned server emits 0x26 or the OP_SERVERLIST \
+             v6 block, so ADR-0087 rests them on the emule-qt IPv6 spec alone.",
         ));
     }
 

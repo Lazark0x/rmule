@@ -35,8 +35,7 @@ pub(crate) enum Evidence {
     /// can produce them.
     Captured,
     /// A counterparty's own bytes settled it, but exactly one implementation
-    /// exists that can produce them (ADR-0087's `0x26` and the `OP_SERVERLIST`
-    /// v6 block, on eNode-go alone; a `0xB2` frame only kno's fork answers).
+    /// exists that can produce them (a `0xB2` frame only kno's fork answers).
     /// Captured and flagged, never at parity.
     SingleOracle,
     /// No external byte can exist for this row — both ends are rmule (the

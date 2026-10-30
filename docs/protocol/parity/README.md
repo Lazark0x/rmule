@@ -72,7 +72,7 @@ values below, when an evidence path does not exist, or when a `partial` or
 **Evidence.**
 
 - A path under `crates/*/tests/fixtures/` — counterparty-authored bytes from a
-  pinned local counterparty (aMule, eMule Qt, Lugdunum, ed2k-server, eNode),
+  pinned local counterparty (aMule, eMule Qt, Lugdunum, ed2k-server),
   cut from a capture and never edited. For an emit row it is the counterparty's
   answer to rmule's bytes: rmule's own bytes are never counted as evidence.
 - `code only` — the behavior is in the code and its tests, but no counterparty

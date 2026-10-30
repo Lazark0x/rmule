@@ -199,8 +199,7 @@ fn from_identity_preserves_non_utf8_nickname_bytes() {
 /// one server implementing the dialect has no pinnable artefact — its `master`
 /// carries no IPv6 at all and the last release predates the work — so these
 /// bytes are the spec's, not a capture's. The row upgrades to captured when a pinned
-/// ed2k-server build exists; eNode-go is the second oracle for the shared
-/// login surface, which is why this row is *not* `single-oracle`.
+/// ed2k-server build exists.
 #[test]
 fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
     let address: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();

@@ -246,7 +246,7 @@ send one crypt-ping with a logged challenge to the container's TCP + 12, record 
 encrypted reply datagram, and confirm it decrypts under the challenge to the golden
 progressive `0x97` body — pinned beside the datagram primitive KATs. **Blocked**:
 Lugdunum 17.15 crypt support is **unverified** (ADR-0046); the documented-attempt
-path (image configuration, alternative build, eNode) applies if it can't advertise
+path (image configuration, alternative build) applies if it can't advertise
 `SRV_UDPFLG_UDPOBFUSCATION`. Do not run unattended.
 
 ## Server description pair: `OP_SERVER_DESC_REQ` (0xA2) / `OP_SERVER_DESC_RES` (0xA3) — ADR-0068

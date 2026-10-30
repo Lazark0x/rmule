@@ -44,14 +44,13 @@ mod session_shutdown;
 mod session_source_lookup;
 mod session_welcome;
 
-// Captured: frames a genuine Lugdunum, eserver or eNode actually sent, decoded
+// Captured: frames a genuine Lugdunum or eserver actually sent, decoded
 // and re-encoded byte-exact.
 mod captured_ed2ksrv_callback;
 mod captured_ed2ksrv_crypt_ping;
 mod captured_ed2ksrv_glob_search;
 mod captured_ed2ksrv_holepunch;
 mod captured_ed2ksrv_holepunch_fail;
-mod captured_enode_crypt;
 mod captured_fixture_round_trip;
 mod captured_search_wire;
 mod captured_server_ident;

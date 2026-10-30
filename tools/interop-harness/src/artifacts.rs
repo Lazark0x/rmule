@@ -129,9 +129,7 @@ impl RunLayout {
         self.probe_dir().join("stderr.log")
     }
 
-    /// The distilled `bench-smoke` verdict (compression + crypt advert), the
-    /// decision input that resolves whether an obfuscation-capable eNode is
-    /// ever needed.
+    /// The distilled `bench-smoke` verdict (compression + crypt advert),
     /// `bench-smoke-summary.toml/` under the run dir.
     pub fn bench_smoke_summary_file(&self) -> PathBuf {
         self.root.join("bench-smoke-summary.toml")

@@ -16,7 +16,7 @@
 # the bench overrides it by bind-mounting `config.toml` from this directory over
 # `/etc/ed2k-server/config.toml` (see README.md).
 #
-# Native-arch build: unlike the amule/eserver/enode images this is not amd64-only,
+# Native-arch build: unlike the amule/eserver images this is not amd64-only,
 # so no `--platform` and no qemu emulation.
 
 FROM rust:1-bookworm AS builder

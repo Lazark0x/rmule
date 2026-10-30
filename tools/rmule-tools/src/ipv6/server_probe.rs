@@ -101,7 +101,7 @@ struct ServerProbeRow {
     ipv6_status_present: bool,
     ipv6_status_bits: u32,
     /// Whether the trailing IPv6 block of `OP_SERVERLIST` carried anything —
-    /// the surface ADR-0087 classifies as **`single-oracle`** (eNode-go alone).
+    /// a surface no pinned server emits (ADR-0087 classifies it source-derived).
     server_list_received: bool,
     server_list_v4_count: usize,
     server_list_v6_count: usize,

@@ -3,7 +3,7 @@
 ## Context
 
 The eD2k IPv6 dialect has three client implementations — emule-qt, eMuleAI, and aMule on
-kno's fork — and two servers, eNode-go and ed2k-server. Its core never widens a 32-bit
+kno's fork — and a server, ed2k-server. Its core never widens a 32-bit
 field: IPv6 rides as tags in the hello, the login and the ExtSX record, as a Sentinel
 Source record's inline address in source lists (ADR-0085), as two string tags in Kad
 publishes, and as one new client↔client opcode. Kad itself stays IPv4 end to end.
@@ -29,8 +29,8 @@ speak them. Each surface states its oracles, and a surface with one says so:
 | Hello tags, `0xAC`, UDP key, buddy v6 tag | emule-qt + kno |
 | ExtSX | emule-qt alone — kno writes none |
 | Kad `ip6` / `bi6` | emule-qt + kno (kno writes `ip6`, stores and reads both, writes no `bi6`) |
-| Sentinel sources, `0x4000`, `0xAB` / `0xAF`, login tags | ed2k-server + eNode-go |
-| `0x26`, the `OP_SERVERLIST` v6 block | eNode-go alone |
+| Sentinel sources, `0x4000`, `0xAB` / `0xAF`, login tags | ed2k-server |
+| `0x26`, the `OP_SERVERLIST` v6 block | none pinned: the emule-qt spec alone, source-derived |
 | Legacy ignore | aMule 2.3.3 |
 
 Captures: emule-qt's `OP_ANSWERSOURCES2` carrying `CT_MOD_IP_V6`
@@ -291,9 +291,9 @@ no address (`Server.cpp:190-196`) and whose writer writes it only for an IPv6-on
 - **Family decisions at each dial site.** Rejected: three copies of the rule ADR-0061 collapsed.
 - **Two candidates for a dual-stack source.** Rejected: one peer dialed twice, one queue place
   and credit record described twice.
-- **Gate `0x26` and the `SERVERLIST` block on a second server oracle.** Rejected: an 18-byte
-  consume that, ungated, would leave an IPv6-only rmule unable to take its one server's
-  callback; the evidence table is the honest form of the gate.
+- **Gate `0x26` and the `SERVERLIST` block on a pinned server that emits them.** Rejected:
+  an 18-byte consume that, ungated, would leave an IPv6-only rmule unable to take a server's
+  callback the day one emits it; the evidence table is the honest form of the gate.
 - **A reader tolerant of kno's short tag count, or a locally patched kno.** Rejected: the
   first accepts a count the bytes do not back; the second makes the surface partly
   self-authored (ADR-0045).
