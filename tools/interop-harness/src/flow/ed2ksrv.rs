@@ -22,6 +22,27 @@ use crate::flow::pinned_image::Counterparty;
 /// source.
 const PIN_ENV: &str = include_str!("../../images/ed2ksrv/pin.env");
 
+/// The bench config a flow gets when the server image is all it names. Its
+/// `this_ip` is rendered per run.
+const BENCH_CONFIG: &str = include_str!("../../images/ed2ksrv/config.toml");
+
+/// [`BENCH_CONFIG`] for a server at `this_ip`: the value must be the container's
+/// own address, because it feeds the login's reported address and the
+/// obfuscation key.
+pub(crate) fn render_bench_config(this_ip: &str) -> String {
+    BENCH_CONFIG
+        .lines()
+        .map(|line| {
+            if line.starts_with("this_ip") {
+                format!("this_ip = \"{this_ip}\"")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Set to an existing clone of the server's repository to build from it
 /// instead of a fresh clone; `build.sh` still refuses it unless it sits clean
 /// at the pin.

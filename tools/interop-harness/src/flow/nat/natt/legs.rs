@@ -625,11 +625,10 @@ pub(crate) fn punch_claims(
         note: format!(
             "Both ends of the punch are rmule, so every row above is `rmule-only` and is \
              scored exercised rather than captured; the counterparty bytes are the \
-             ed2ksrv's own, off its attachment at {server_v4}. One gateway per peer \
-             ({}), because ed2k-server `{}` keys `observed_udp_ports` by IPv4 address \
-             alone and two NAT-T clients behind one NAT overwrite each other's observed port.",
-            gateways.join(", "),
+             ed2ksrv's own ({}), off its attachment at {server_v4}. One gateway per peer \
+             ({}): the punch is between two gateways.",
             crate::flow::ed2ksrv::pin_text(),
+            gateways.join(", "),
         ),
         tunnel_rose: None,
     }

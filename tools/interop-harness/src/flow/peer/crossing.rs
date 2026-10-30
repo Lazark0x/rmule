@@ -326,7 +326,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
     };
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(options.layout, bench.subnet_for(options.server_image))?;
         bench.start_eserver(
             options.layout,
             &Eserver {

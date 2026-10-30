@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::cli::bench::{
     AmuleArgs, BenchArgs, CaptureArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE,
-    DEFAULT_TIMEOUT_SECS, EserverArgs, stage_synthetic,
+    DEFAULT_TIMEOUT_SECS, EserverArgs, FirstServerArgs, stage_synthetic,
 };
 use crate::cli::nat::{
     DEFAULT_ED2KSRV_BUILD_CONTEXT, DEFAULT_ED2KSRV_CONFIG, DEFAULT_ED2KSRV_IMAGE,
@@ -43,7 +43,7 @@ pub(crate) struct BenchSmokeArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     /// Rust image used to run the rmule probe inside the interop network.
     #[arg(long, default_value = DEFAULT_RMULE_CLIENT_IMAGE)]
     pub(crate) rmule_client_image: String,
@@ -732,9 +732,9 @@ pub(crate) struct ServerLoginCryptArgs {
     /// rmule's obfuscation policy: off, supported, requested or required.
     #[arg(long, default_value = "requested")]
     pub(crate) policy: String,
-    /// Log in to ed2k-server at its pin instead of Lugdunum.
+    /// Log in to Lugdunum instead of ed2k-server at its pin.
     #[arg(long)]
-    pub(crate) ed2ksrv: bool,
+    pub(crate) lugdunum: bool,
     /// The ed2k-server image (refused unless its commit label matches the pin).
     #[arg(long, default_value = DEFAULT_ED2KSRV_IMAGE)]
     pub(crate) ed2ksrv_image: String,
@@ -774,10 +774,10 @@ pub(crate) fn server_login_crypt(args: ServerLoginCryptArgs) -> Result<()> {
             flow: "server-login-crypt",
             policy: args.policy.clone(),
             by_name: args.by_name,
-            server_image: if args.ed2ksrv {
-                args.ed2ksrv_image.clone()
-            } else {
+            server_image: if args.lugdunum {
                 args.eserver.server_image.clone()
+            } else {
+                args.ed2ksrv_image.clone()
             },
             rmule_tools_image: args.rmule_tools_image.clone(),
             capture_image: args.capture.capture_image.clone(),
@@ -796,8 +796,7 @@ pub(crate) fn server_login_crypt(args: ServerLoginCryptArgs) -> Result<()> {
         rmule_tools_image: &args.rmule_tools_image,
         capture_image: &args.capture.capture_image,
         policy: &args.policy,
-        ed2ksrv: args
-            .ed2ksrv
+        ed2ksrv: (!args.lugdunum)
             .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
         by_name: args.by_name,
     })

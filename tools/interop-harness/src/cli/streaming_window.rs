@@ -17,7 +17,7 @@ use rmule_interop_harness::flow::{
 use rmule_primitives::{ED2K_PART_SIZE, part_count};
 use serde::Serialize;
 
-use crate::cli::bench::{AmuleArgs, BenchArgs, CaptureArgs, EserverArgs};
+use crate::cli::bench::{AmuleArgs, BenchArgs, CaptureArgs, FirstServerArgs};
 use crate::cli::nat::{DEFAULT_RMULE_TOOLS_DOCKERFILE, DEFAULT_RMULE_TOOLS_IMAGE};
 use crate::cli::write_resolved_config;
 
@@ -33,7 +33,7 @@ pub(crate) struct PeerStreamingWindowArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     #[command(flatten)]
     pub(crate) amule: AmuleArgs,
     #[command(flatten)]

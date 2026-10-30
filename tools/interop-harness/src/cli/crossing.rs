@@ -15,7 +15,7 @@ use rmule_interop_harness::rmule::RmuleClientContainer;
 use serde::Serialize;
 
 use crate::cli::bench::{
-    AmuleArgs, BenchArgs, CaptureArgs, DEFAULT_RMULE_CLIENT_IMAGE, EserverArgs,
+    AmuleArgs, BenchArgs, CaptureArgs, DEFAULT_RMULE_CLIENT_IMAGE, FirstServerArgs,
 };
 use crate::cli::write_resolved_config;
 
@@ -60,7 +60,7 @@ pub(crate) struct PeerCrossingArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     #[command(flatten)]
     pub(crate) amule: AmuleArgs,
     #[command(flatten)]

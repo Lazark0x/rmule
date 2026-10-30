@@ -1,11 +1,9 @@
 //! The `natt-server-punch-{cone,symmetric}` topology: an `ed2ksrv` on the
 //! fake-public WAN and **two rmule peers, each behind its own NAT Gateway**.
 //!
-//! One gateway per peer is not tidiness. ADR-0091 records that
-//! `ed2k-server` `4da4774` keys `observed_udp_ports` by IPv4 address alone, so
-//! two NAT-T clients behind one NAT overwrite each other's observed port and
-//! each is introduced at whichever `0x9F` keepalive landed last. Two gateways
-//! give the server two addresses to key on.
+//! One gateway per peer keeps each NAT's own mapping on the wire: the punch is
+//! between two gateways. ed2k-server before v0.9.84 also kept one observed port
+//! per address, so two clients behind one gateway overwrote each other's.
 //!
 //! **Both ends of the punch are rmule**, so this is an `rmule-only` row
 //! (ADR-0045's 2026-09-16 amendment): what the *server* emits — `0x60` in,

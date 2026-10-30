@@ -398,6 +398,10 @@ impl BenchNames {
 /// The line the eserver image's entrypoint prints just before it starts the
 /// server.
 pub(crate) const ESERVER_ENTRYPOINT_LOG: &str = "starting Lugdunum eserver on tcp/";
+/// The line ed2k-server logs once it accepts.
+const ED2KSRV_READY_LOG: &str = "TCP listener ready";
+/// The fake-public subnet a flow with no address plan stands ed2k-server on.
+const ED2KSRV_BENCH_SUBNET: &str = "203.0.113.0/24";
 
 /// The eserver as the bench stands it up: its image, the host port its
 /// container port is published on (the readiness probe target), its extra
@@ -425,6 +429,8 @@ pub(crate) struct Bench {
     /// Networks beyond the bench's own, in creation order — a NAT topology
     /// needs a fake-public WAN and a masquerade-free LAN at once.
     extra_networks: Vec<String>,
+    /// The subnet the bench's own network was made with.
+    subnet: Option<String>,
 }
 
 impl Bench {
@@ -443,7 +449,54 @@ impl Bench {
             rmule_started: false,
             extra: Vec::new(),
             extra_networks: Vec::new(),
+            subnet: None,
         })
+    }
+
+    /// The subnet a flow with no address plan of its own stands `image` on.
+    /// ed2k-server treats a private peer as local, so it only behaves as a
+    /// public server does on a fake-public network; Lugdunum takes the
+    /// runtime's bridge.
+    pub(crate) fn subnet_for(&self, image: &str) -> Option<&'static str> {
+        crate::flow::ed2ksrv::ED2KSRV
+            .built(&self.docker, image)
+            .then_some(ED2KSRV_BENCH_SUBNET)
+    }
+
+    /// The server role container when `image` is ed2k-server: on the bench's
+    /// fake-public subnet at `.200`, its bench config rendered for that address
+    /// and mounted, under the role's one name so a flow addresses it as it
+    /// addresses Lugdunum. `None` for any other image. It reads no `--server-env`.
+    fn ed2ksrv_role_container(
+        &self,
+        layout: &RunLayout,
+        image: &str,
+    ) -> Result<Option<RunContainer>> {
+        let ed2ksrv = &crate::flow::ed2ksrv::ED2KSRV;
+        if !ed2ksrv.built(&self.docker, image) {
+            return Ok(None);
+        }
+        let subnet = self
+            .subnet
+            .as_deref()
+            .context("ed2k-server needs a fake-public subnet: the flow must pass one")?;
+        let (prefix, _) = subnet
+            .rsplit_once('.')
+            .with_context(|| format!("subnet {subnet} has no host octet"))?;
+        let ip = format!("{prefix}.200");
+        let config = layout.root().join("ed2ksrv-config.toml");
+        fs::write(&config, crate::flow::ed2ksrv::render_bench_config(&ip))
+            .with_context(|| format!("write {}", config.display()))?;
+        Ok(Some(
+            ed2ksrv
+                .check(&self.docker, image)?
+                .container()
+                .detach()
+                .name(self.names.server_container_name.clone())
+                .network(self.names.network_name.clone())
+                .ip(ip)
+                .volume(&config, "/etc/ed2k-server/config.toml"),
+        ))
     }
 
     /// This bench as one rmule container's staging: its runtime, the run dir
@@ -471,6 +524,7 @@ impl Bench {
                 layout.docker_dir().display()
             )
         })?;
+        self.subnet = subnet.map(ToOwned::to_owned);
         let name = self.names.network_name.clone();
         let command = match subnet {
             Some(subnet) => self.docker.create_network_with_subnet(name, subnet),
@@ -513,15 +567,22 @@ impl Bench {
         layout: &RunLayout,
         eserver: &Eserver<'_>,
     ) -> Result<()> {
-        let server = RunContainer::new(eserver.image.to_owned())
-            .detach()
-            .name(self.names.server_container_name.clone())
-            .network(self.names.network_name.clone())
-            .publish(
+        let publish = |container: RunContainer| {
+            container.publish(
                 eserver.host_port.to_string(),
                 format!("{ED2K_SERVER_PORT}/tcp"),
             )
-            .env_assignments(eserver.env);
+        };
+        let server = match self.ed2ksrv_role_container(layout, eserver.image)? {
+            Some(ed2ksrv) => publish(ed2ksrv),
+            None => publish(
+                RunContainer::new(eserver.image.to_owned())
+                    .detach()
+                    .name(self.names.server_container_name.clone())
+                    .network(self.names.network_name.clone()),
+            )
+            .env_assignments(eserver.env),
+        };
         self.start_server_container(layout, server)?;
 
         let server_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), eserver.host_port);
@@ -550,16 +611,22 @@ impl Bench {
         env: &[String],
         timeout: Duration,
     ) -> Result<()> {
-        let server = RunContainer::new(image.to_owned())
-            .detach()
-            .name(self.names.server_container_name.clone())
-            .network(self.names.network_name.clone())
-            .env_assignments(env);
+        let (server, ready) = match self.ed2ksrv_role_container(layout, image)? {
+            Some(ed2ksrv) => (ed2ksrv, ED2KSRV_READY_LOG),
+            None => (
+                RunContainer::new(image.to_owned())
+                    .detach()
+                    .name(self.names.server_container_name.clone())
+                    .network(self.names.network_name.clone())
+                    .env_assignments(env),
+                ESERVER_ENTRYPOINT_LOG,
+            ),
+        };
         self.start_server_container(layout, server)?;
         wait_for_container_log(
             &self.docker,
             &self.names.server_container_name,
-            ESERVER_ENTRYPOINT_LOG,
+            ready,
             timeout,
         )?;
         collect_server_logs(&self.docker, layout, &self.names.server_container_name)
@@ -699,6 +766,10 @@ impl Bench {
 
     /// Build `tag` from `context`; `role` names the image in the failure.
     pub(crate) fn build_image(&self, role: &str, tag: &str, context: &Path) -> Result<()> {
+        // ed2k-server builds from a clone at its pin, never from its recipe dir.
+        if context.ends_with("images/ed2ksrv") {
+            return crate::flow::ed2ksrv::build(tag, context, &std::env::temp_dir());
+        }
         run_checked(
             self.docker.build_image(tag, context),
             &format!("build {role} image"),

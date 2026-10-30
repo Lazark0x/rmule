@@ -154,6 +154,41 @@ pub(crate) struct EserverArgs {
     pub(crate) server_env: Vec<String>,
 }
 
+/// [`EserverArgs`]' flags for a flow whose question is not about the server:
+/// ed2k-server by default, rmule's first server counterparty. The flow reads the
+/// same fields; `--server-image rmule/interop-eserver:local` runs it on Lugdunum.
+#[derive(Debug, Args)]
+pub(crate) struct FirstServerArgs {
+    /// Real eD2k server container image to run.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) server_image: String,
+    /// Build context directory for the real eD2k server image.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_BUILD_CONTEXT)]
+    pub(crate) server_build_context: PathBuf,
+    /// Host TCP port mapped to the real eD2k server container (readiness probe).
+    #[arg(long, default_value_t = 4661)]
+    pub(crate) server_host_port: u16,
+    /// Extra environment variable for a Lugdunum server container. ed2k-server
+    /// reads its config and no environment.
+    #[arg(long = "server-env", value_parser = parse_env_assignment)]
+    pub(crate) server_env: Vec<String>,
+}
+
+impl FirstServerArgs {
+    /// Port 0 would mean "let docker pick", which the host readiness probe
+    /// cannot discover.
+    pub(crate) fn reject_zero_host_port(&self) -> Result<()> {
+        if self.server_host_port == 0 {
+            bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
+        }
+        Ok(())
+    }
+
+    pub(crate) fn build_context(&self) -> (&str, &Path) {
+        ("server", &self.server_build_context)
+    }
+}
+
 impl EserverArgs {
     /// Port 0 would mean "let docker pick", which the host readiness probe
     /// cannot discover.

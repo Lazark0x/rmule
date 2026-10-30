@@ -235,7 +235,7 @@ pub fn run_peer_queue_fanout(options: PeerQueueFanoutOptions<'_>) -> Result<()> 
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(options.layout, bench.subnet_for(options.server_image))?;
         bench.start_eserver(
             options.layout,
             &Eserver {

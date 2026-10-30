@@ -135,6 +135,12 @@ impl Counterparty {
         }
     }
 
+    /// Whether `image` was built from this counterparty's recipe at all, at
+    /// any commit: the label's presence, not its value.
+    pub(crate) fn built(&self, docker: &Docker, image: &str) -> bool {
+        !self.read(docker, image).commit.is_empty()
+    }
+
     /// Read `image`'s labels and refuse it unless they are the pin's, or the
     /// run set the off-pin variable.
     ///

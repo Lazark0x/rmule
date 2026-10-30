@@ -11,12 +11,11 @@
 //! `READER_READINESS_MARKER` is the one this repository ships. No probe (or a
 //! probe that fails) writes a documented `SKIPPED`, never a silent pass.
 //!
-//! **aMule's half — the legacy leg.** ADR-0092 originally named `ed2ksrv` as
-//! the body that would emit the sentinel row, but the pinned `ed2ksrv` is
-//! v4-only and has no config surface for emitting one, so
-//! that row could not be driven by its own named bodies. The question it asks
-//! — *what does a stock 2.3.3 do with the shape?* — does not need `ed2ksrv` at
-//! all: rmule owns the encoders, so rmule emits the list as **Stimulus** and
+//! **aMule's half — the legacy leg.** The question it asks — *what does a stock
+//! 2.3.3 do with the shape?* — needs no server that emits sentinels:
+//! ed2k-server sends one only to a session that named an IPv6, which a stock
+//! aMule never does (`ed2ksrv-server-surface` draws the server's half). rmule
+//! owns the encoders, so rmule emits the list as **Stimulus** and
 //! aMule's reaction is the evidence (the Kad Stimulus Node and the Registrant are the same
 //! posture). `--drive-legacy` runs that leg; without
 //! it the flow is the gate alone, and says so.

@@ -220,7 +220,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
     let tap = format!("rmule-interop-streaming-tap-{suffix}");
     let mut finished = false;
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(options.layout, bench.subnet_for(options.server_image))?;
         bench.start_eserver(
             options.layout,
             &Eserver {

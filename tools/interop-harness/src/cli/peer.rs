@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use crate::cli::bench::{
     AmuleArgs, BenchArgs, CaptureArgs, DEFAULT_FILE_SIZE, DEFAULT_RMULE_CLIENT_IMAGE,
-    DEFAULT_TIMEOUT_SECS, EserverArgs, stage_synthetic,
+    DEFAULT_TIMEOUT_SECS, EserverArgs, FirstServerArgs, stage_synthetic,
 };
 use crate::cli::write_resolved_config;
 use anyhow::{Result, bail};
@@ -379,7 +379,7 @@ pub(crate) struct TwoHellosArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     #[command(flatten)]
     pub(crate) amule: AmuleArgs,
     /// An image carrying `python3`, which runs the probe.
@@ -443,7 +443,7 @@ pub(crate) struct Sx1GateArgs {
     #[command(flatten)]
     pub(crate) bench: BenchArgs,
     #[command(flatten)]
-    pub(crate) eserver: EserverArgs,
+    pub(crate) eserver: FirstServerArgs,
     /// The `rmule-tools` image (build it from the tip under test).
     #[arg(long, default_value = crate::cli::nat::DEFAULT_RMULE_TOOLS_IMAGE)]
     pub(crate) rmule_tools_image: String,

@@ -139,7 +139,7 @@ pub fn run_peer_one_link(options: PeerOneLinkOptions<'_>) -> Result<()> {
         .with_context(|| format!("create {}", capture_dir.display()))?;
 
     let result = (|| -> Result<()> {
-        bench.create_network(options.layout, None)?;
+        bench.create_network(options.layout, bench.subnet_for(options.server_image))?;
         bench.start_eserver(
             options.layout,
             &Eserver {
