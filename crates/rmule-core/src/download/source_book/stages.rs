@@ -4,13 +4,15 @@
 //! holds a queue standing — and a worker's identity rides its Worker stage
 //! (ADR-0090). Every transition moves one record from one stage to one other.
 
+use std::net::Ipv4Addr;
+
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
 use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
-use super::{Adopted, DialEnd, NextDial, Release, SourceBook, WorkerEnd};
+use super::{Adopted, DialEnd, MergeEnd, NextDial, Release, SourceBook, WorkerEnd};
 use crate::adapters::CallbackKey;
 use crate::dialable::{DialPosition, choose_dial};
 use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
@@ -516,6 +518,34 @@ impl SourceBook {
             self.hello_buddy(hash, buddy.buddy_udp);
         }
         self.blocks.distrusts(Some(hash))
+    }
+
+    /// The hello of the worker at `endpoint` names the peer's other address
+    /// on its listen port, and another record holds that endpoint: the two
+    /// are one source, folded here (ADR-0087). A record naming another User
+    /// Hash stays apart: a hello proves its own address, not who holds that
+    /// one. What the merge ended, for the brain to end.
+    pub(crate) fn fold_named_half(&mut self, endpoint: PeerEndpoint) -> Option<MergeEnd> {
+        let id = self.aliases.endpoint(endpoint)?;
+        let identity = self.records.get(&id)?.stage.identity()?;
+        let hash = identity.user_hash();
+        let port = identity.tcp_port();
+        let other = match endpoint {
+            PeerEndpoint::V4(_) => PeerEndpoint::V6(Ipv6Endpoint::new(identity.peer_ipv6()?, port)),
+            PeerEndpoint::V6(_) => {
+                let id = identity.client_id();
+                id.is_high_id().then(|| {
+                    let ip = Ipv4Addr::from(id.as_u32().to_le_bytes());
+                    PeerEndpoint::V4(Ipv4Endpoint::new(ip, port))
+                })?
+            }
+        };
+        let holder = self.aliases.endpoint(other).filter(|&holder| holder != id)?;
+        let named = self.user_hashes(self.records.get(&holder)?);
+        if named.iter().any(|&held| held != hash) {
+            return None;
+        }
+        self.merge(id, holder)
     }
 
     /// The source `hash` named its **serving buddy** in its own hello

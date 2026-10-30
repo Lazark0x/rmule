@@ -214,7 +214,12 @@ impl DownloadState {
     }
 
     /// End what the record that gave way in a merge had in flight.
-    fn end_merged(&mut self, now: Instant, ended: Option<MergeEnd>, out: &mut Vec<Decision>) {
+    pub(super) fn end_merged(
+        &mut self,
+        now: Instant,
+        ended: Option<MergeEnd>,
+        out: &mut Vec<Decision>,
+    ) {
         match ended {
             Some(MergeEnd::Worker(peer)) => {
                 out.push(Decision::Emit(DownloadEvent::PeerRetired {

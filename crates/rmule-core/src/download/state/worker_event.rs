@@ -92,6 +92,9 @@ impl DownloadState {
                         reason: PeerRetirementReason::Distrusted,
                     }));
                     self.release(now, peer, PeerRetirementReason::Distrusted, &mut out);
+                } else {
+                    let ended = self.sources.fold_named_half(peer);
+                    self.end_merged(now, ended, &mut out);
                 }
             }
             // The source-ask gate's stamps (ADR-0108), on the peer's record:

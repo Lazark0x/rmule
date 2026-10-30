@@ -6,7 +6,9 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting};
+use rmule_primitives::{
+    ClientId, Informant, Ipv4Endpoint, Ipv6Endpoint, PeerSource, SourceSighting, UserHash,
+};
 
 use super::*;
 
@@ -306,4 +308,70 @@ fn a_spent_endpoint_is_redialled_after_it_sits_out_a_reask_period() {
     );
     let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);
+}
+
+/// One client's two addresses as two records, both dialed: the IPv4 one named
+/// `named`, as a source-exchange row may name a hash.
+fn two_records_dialed(named: Option<UserHash>) -> DownloadState {
+    let ipv6 = SourceSighting::plain(PeerSource::Ipv6(v6()), Informant::Own);
+    let ipv4 = SourceSighting::new(
+        PeerSource::HighId(v4()),
+        named,
+        Some(rmule_primitives::SourceCryptOptions::from_byte(0)),
+        Informant::Own,
+    );
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            dial: known_ipv6(),
+            ..QUIET_POSTURE
+        },
+        2,
+        no_facts(),
+        vec![(Channel::Server, vec![ipv6, ipv4])],
+        Vec::new(),
+    );
+    assert_eq!(spawned(&state.start(t0())).len(), 2);
+    state
+}
+
+/// The hello of the client at [`v6`], on the IPv6 link: it names [`v4`] as its
+/// High ID, on the same listen port.
+fn hello_naming_v4(state: &mut DownloadState) -> Vec<Decision> {
+    let at = PeerEndpoint::V6(v6());
+    let hello = HelloFacts {
+        client_id: ClientId::from_u32(u32::from_le_bytes(v4().ip.octets())),
+        tcp_port: v4().port,
+        ..HelloFacts::of(UserHash::from_bytes([0x41; UserHash::BYTE_LEN]))
+    };
+    let _ = state.on_worker_event(t0(), at, PeerWorkerEvent::Connected);
+    state.on_worker_event(t0(), at, PeerWorkerEvent::Identity(hello.identity()))
+}
+
+/// Run `1793356626`'s shape: two channels sighted one client's two families
+/// apart, and both were dialed. The hello of the first says the second is the
+/// same client, whose dial ends as the same source (ADR-0087).
+#[test]
+fn a_hello_naming_the_other_record_folds_the_two_into_one_source() {
+    let mut state = two_records_dialed(None);
+    assert_eq!(state.known_sources(), 2);
+
+    let decisions = hello_naming_v4(&mut state);
+
+    assert_eq!(state.known_sources(), 1);
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::EndWorker { peer, .. } if *peer == PeerEndpoint::V4(v4())
+    )));
+}
+
+/// A hello proves its own address, not who holds the one it names: a record
+/// that named another User Hash stays apart.
+#[test]
+fn a_record_naming_another_hash_is_not_folded_by_a_hello_naming_its_address() {
+    let mut state = two_records_dialed(Some(UserHash::from_bytes([0x42; UserHash::BYTE_LEN])));
+
+    let _ = hello_naming_v4(&mut state);
+
+    assert_eq!(state.known_sources(), 2);
 }
