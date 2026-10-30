@@ -83,6 +83,9 @@ pub(crate) struct PeerCrossingArgs {
     /// Seconds the flow watches after the last hold is lifted.
     #[arg(long, default_value_t = 30)]
     pub(crate) watch: u64,
+    /// `serve-crossed-known` with no hold: the race falls as it will.
+    #[arg(long)]
+    pub(crate) unheld: bool,
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = 300)]
     pub(crate) timeout: u64,
@@ -112,6 +115,7 @@ pub(crate) fn peer_crossing(args: PeerCrossingArgs) -> Result<()> {
         idle_secs: args.idle,
         hold_secs: args.hold,
         watch_secs: args.watch,
+        unheld: args.unheld,
     };
     args.bench.prepare(&[
         args.eserver.build_context(),

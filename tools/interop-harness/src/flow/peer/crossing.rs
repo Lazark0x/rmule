@@ -131,6 +131,10 @@ pub struct CrossingShape {
     pub hold_secs: u64,
     /// Seconds the flow watches after the last hold is lifted.
     pub watch_secs: u64,
+    /// `serve-crossed-known` with no hold at all: W's ask and rmule's dial
+    /// race as they fall, one round trip wide.
+    #[serde(default)]
+    pub unheld: bool,
 }
 
 /// Options for [`run_peer_crossing`].
@@ -479,6 +483,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             // listener), and X must stop well inside the 100 s an aMule
             // downloader waits for a packet (`DownloadClient.cpp:1189`).
             match shape.leg {
+                _ if shape.unheld => {}
                 CrossingLeg::ServeCalledOff => {
                     holds.add(
                         &bench,
@@ -506,7 +511,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 .map(|byte| format!("{byte:02X}"))
                 .collect();
             let cancel = format!("Cancel {hash}");
-            if !known {
+            if !known || shape.unheld {
+                // Unheld: W's next tick asks, about when rmule's dial goes out.
+                marks.returned_at = Some(verdict::unix_now());
                 amulecmd(&bench, &waiter, &cancel, "the waiter cancels its download")?;
             }
             marks.holder_stopped_at = Some(verdict::unix_now());
@@ -521,10 +528,12 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             };
             let dialed = wait_for_container_log(&bench.docker, &rmule_name, freed, timeout).is_ok();
             println!("peer_crossing slot_freed {freed} logged={dialed}");
-            if matches!(
-                shape.leg,
-                CrossingLeg::ServeCrossed | CrossingLeg::ServeCrossedKnown
-            ) {
+            if !shape.unheld
+                && matches!(
+                    shape.leg,
+                    CrossingLeg::ServeCrossed | CrossingLeg::ServeCrossedKnown
+                )
+            {
                 // The dial connects through the SYN; its hello is written and held.
                 std::thread::sleep(Duration::from_secs(2));
             }
@@ -532,10 +541,13 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 // The slot sits free for a while before the waiter comes back.
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
-            marks.returned_at = Some(verdict::unix_now());
-            if known {
+            if shape.unheld {
+                // W's Cancel went out before X stopped.
+            } else if known {
+                marks.returned_at = Some(verdict::unix_now());
                 amulecmd(&bench, &waiter, &cancel, "the waiter swaps to its second file")?;
             } else {
+                marks.returned_at = Some(verdict::unix_now());
                 amulecmd(
                     &bench,
                     &waiter,
