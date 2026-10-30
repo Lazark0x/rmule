@@ -40,7 +40,7 @@ use self::aliases::Aliases;
 pub(crate) use self::asks::AskName;
 use self::blocks::Blocks;
 use self::frequency::PartFrequency;
-pub(crate) use self::gate::Gate;
+pub(crate) use self::gate::{Gate, OwnPosition};
 use self::lanes::Lanes;
 #[cfg(test)]
 pub(crate) use self::purge::{
@@ -79,6 +79,8 @@ pub(crate) enum Sighted {
 /// Why a sighting pooled nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Blocked {
+    /// It names us (ADR-0090; aMule `CanAddSource`, `CheckAndAddSource`).
+    Ourselves,
     /// Every address it named lies in a Reserved Range its Informant cannot
     /// vouch for (ADR-0085; aMule `IsGoodIP`).
     Reserved,

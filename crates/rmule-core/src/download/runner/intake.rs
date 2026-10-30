@@ -1,7 +1,7 @@
 //! Where the runner lends the brain the intake gate: the IP filter's current
-//! view and our Dial Position, taken once per batch of sightings (ADR-0090). A
-//! filter reload applies from the next batch; sources already pooled stay as
-//! they are.
+//! view, our Dial Position and our **Own Position**, taken once per batch of
+//! sightings (ADR-0090). A filter reload or a login applies from the next
+//! batch; sources already pooled stay as they are.
 
 use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting};
 
@@ -22,6 +22,7 @@ pub(super) fn sight<S, P>(
     let gate = Gate {
         filter: &filter,
         dial: runner.dial_position(),
+        own: runner.own_position(),
     };
     let taken = state.on_sightings(super::now(), channel, sightings, &gate);
     for _ in 0..taken.tally.family_unreachable {
@@ -40,6 +41,7 @@ pub(super) fn any_admitted<S, P>(
     let gate = Gate {
         filter: &filter,
         dial: runner.dial_position(),
+        own: runner.own_position(),
     };
     sightings.iter().any(|&sighting| gate.admits(sighting))
 }
@@ -75,13 +77,14 @@ mod tests {
         let gate = Gate {
             filter: &filter,
             dial: DialPosition::default(),
+            own: Default::default(),
         };
         let loopback = PeerSource::HighId(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4662));
         let remote = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4662);
         let local = Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4663);
 
         for sighting in global_answer(remote, vec![loopback]) {
-            assert_eq!(gate.judge(sighting), Err(Blocked::Reserved));
+            assert_eq!(gate.judge(sighting, None), Err(Blocked::Reserved));
         }
         for sighting in global_answer(local, vec![loopback]) {
             assert!(gate.admits(sighting));

@@ -17,6 +17,7 @@ fn sight_on(book: &mut SourceBook, id: u32, server: Option<Ipv4Endpoint>) -> Sig
         &Gate {
             filter: &filter,
             dial: ours(),
+            own: Default::default(),
         },
     )
 }

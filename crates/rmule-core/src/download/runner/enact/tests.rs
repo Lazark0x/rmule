@@ -153,6 +153,7 @@ mod buddy_hash_spelling {
         let gate = Gate {
             filter: &filter,
             dial: crate::dialable::DialPosition::default(),
+            own: Default::default(),
         };
         state.on_sightings(at, Channel::Kad, rows, &gate).decisions
     }
@@ -422,6 +423,7 @@ mod server_callback_never_left {
         let gate = Gate {
             filter: &filter,
             dial: crate::dialable::DialPosition::default(),
+            own: Default::default(),
         };
         let row = SourceSighting::plain(
             PeerSource::new(ClientId::from_u32(7), 4662),
@@ -542,6 +544,7 @@ mod queued_roster {
         let gate = Gate {
             filter: &filter,
             dial: dual_stack(),
+            own: Default::default(),
         };
         let _ = state.on_sightings(std::time::Instant::now(), Channel::Link, rows, &gate);
     }

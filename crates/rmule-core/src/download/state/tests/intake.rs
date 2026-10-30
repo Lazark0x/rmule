@@ -27,6 +27,7 @@ fn take_through(
     let gate = Gate {
         filter,
         dial: state.dial,
+        own: Default::default(),
     };
     state.on_sightings(t0(), channel, sightings, &gate)
 }
@@ -443,5 +444,65 @@ fn no_channel_joins_past_the_source_limit() {
         let taken = take(&mut state, channel, vec![nth_source(SOURCE_LIMIT + 1)]);
         assert_eq!(state.known_sources(), SOURCE_LIMIT, "none past the limit");
         assert_eq!((taken.tally.received, taken.tally.admitted), (1, 0));
+    }
+}
+
+/// No channel's row naming us dials, pools or counts as admitted: a started
+/// download with a free slot is left holding nothing (ADR-0090).
+#[test]
+fn no_channel_dials_a_row_naming_our_user_hash() {
+    let ours = rmule_primitives::UserHash::from_bytes([0x77; 16]);
+    let at = Ipv4Endpoint::new(std::net::Ipv4Addr::new(45, 55, 200, 9), 4662);
+    let row = rmule_primitives::SourceClaim::new(PeerSource::HighId(at), Some(ours), None)
+        .stated_by(Informant::Own);
+    let filter = IpFilter::default();
+    for channel in every_channel() {
+        let mut state = unstarted(1);
+        let _ = state.start(t0());
+        let gate = Gate {
+            filter: &filter,
+            dial: state.dial,
+            own: crate::download::source_book::OwnPosition {
+                user_hash: Some(ours),
+                ..Default::default()
+            },
+        };
+        let taken = state.on_sightings(t0(), channel, [row], &gate);
+        assert!(spawned(&taken.decisions).is_empty(), "{channel:?}");
+        assert_eq!(taken.tally.admitted, 0, "{channel:?}");
+        assert_eq!(state.known_sources(), 0, "{channel:?}");
+    }
+}
+
+/// A global answer's Low-ID row is read in that server's namespace, so our
+/// own id is refused from our server's answer and pooled from another's.
+#[test]
+fn a_global_row_is_ours_only_from_the_server_that_gave_us_the_id() {
+    let our_id = rmule_primitives::ClientId::from_u32(42);
+    let row = SourceSighting::plain(PeerSource::new(our_id, 4662), Informant::Own);
+    let filter = IpFilter::default();
+    let ours = source_server(9);
+    let gate = |state: &DownloadState| {
+        (
+            state.dial,
+            crate::download::source_book::OwnPosition {
+                session: Some(crate::own_identity::ConnectedSession {
+                    server: Some(ours),
+                    client_id: our_id,
+                }),
+                ..Default::default()
+            },
+        )
+    };
+    for (server, known) in [(ours, 0), (source_server(8), 1)] {
+        let mut state = unstarted(1);
+        let (dial, own) = gate(&state);
+        let gate = Gate {
+            filter: &filter,
+            dial,
+            own,
+        };
+        let _ = state.on_sightings(t0(), Channel::Global(server), [row], &gate);
+        assert_eq!(state.known_sources(), known, "{server}");
     }
 }

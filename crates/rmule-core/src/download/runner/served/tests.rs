@@ -152,6 +152,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
     let gate = Gate {
         filter: &filter,
         dial: crate::dialable::DialPosition::default(),
+        own: Default::default(),
     };
     let _ = state.on_sightings(
         now,

@@ -187,6 +187,11 @@ impl SharedSelfReach {
             .is_some_and(|session| session.client_id.is_high_id())
     }
 
+    /// Our own User Hash, `None` only on a test cell no builder fixed.
+    pub(crate) fn user_hash(&self) -> Option<rmule_primitives::UserHash> {
+        self.own.user_hash()
+    }
+
     /// The live session's self-facts as the High-ID family reads them —
     /// for a reader that also needs *which* id (a global callback's
     /// requester contact), so it asks the same owner rather than a second

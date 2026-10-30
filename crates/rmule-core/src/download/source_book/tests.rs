@@ -80,7 +80,15 @@ fn sight_through(
     filter: &IpFilter,
     dial: DialPosition,
 ) -> Sighted {
-    book.sight(sighting, None, &Gate { filter, dial })
+    book.sight(
+        sighting,
+        None,
+        &Gate {
+            filter,
+            dial,
+            own: Default::default(),
+        },
+    )
 }
 
 /// A filter blocking `45.55.200.<n>` for each `n`.

@@ -221,6 +221,7 @@ fn take(
     let gate = Gate {
         filter: &filter,
         dial: state.dial,
+        own: Default::default(),
     };
     state.on_sightings(t0(), channel, sightings, &gate)
 }

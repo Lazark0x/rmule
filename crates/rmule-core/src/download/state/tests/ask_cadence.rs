@@ -127,6 +127,7 @@ fn sighted_at(state: &mut DownloadState, now: Instant, at: &[PeerEndpoint]) -> V
     let gate = Gate {
         filter: &filter,
         dial: state.dial,
+        own: Default::default(),
     };
     state
         .on_sightings(now, Channel::Server, plain_sightings(at), &gate)

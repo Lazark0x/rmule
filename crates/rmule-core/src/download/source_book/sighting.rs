@@ -27,7 +27,7 @@ impl SourceBook {
         source_server: Option<Ipv4Endpoint>,
         gate: &Gate<'_>,
     ) -> Sighted {
-        let sighting = match gate.judge(sighting) {
+        let sighting = match gate.judge(sighting, source_server) {
             Ok(judged) => judged,
             Err(why) => return Sighted::Blocked(why),
         };

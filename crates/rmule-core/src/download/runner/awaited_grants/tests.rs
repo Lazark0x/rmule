@@ -62,6 +62,7 @@ fn queued_under_a_hello() -> DownloadState {
     let gate = Gate {
         filter: &filter,
         dial: crate::dialable::DialPosition::default(),
+        own: Default::default(),
     };
     let PeerEndpoint::V4(v4) = at() else {
         unreachable!()

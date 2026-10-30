@@ -75,8 +75,8 @@ impl Channel {
 pub(crate) struct Tally {
     /// Sightings handed in.
     pub(crate) received: usize,
-    /// Those that passed the gate: neither filtered nor of an unreachable
-    /// family.
+    /// Those that passed the gate: naming not us, neither filtered nor of an
+    /// unreachable family.
     pub(crate) admitted: usize,
     /// Admitted sightings with a dialable address — a High ID or an IPv6 one.
     pub(crate) dialable: usize,
@@ -165,7 +165,7 @@ impl DownloadState {
             tally.received += 1;
             match sighted {
                 Sighted::Blocked(Blocked::FamilyUnreachable) => tally.family_unreachable += 1,
-                Sighted::Blocked(Blocked::IpFiltered | Blocked::Reserved) => {}
+                Sighted::Blocked(Blocked::Ourselves | Blocked::IpFiltered | Blocked::Reserved) => {}
                 _ => {
                     tally.admitted += 1;
                     tally.dialable += usize::from(dialable.is_some());

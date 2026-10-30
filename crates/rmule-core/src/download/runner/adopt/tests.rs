@@ -89,6 +89,7 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
     let gate = Gate {
         filter: &filter,
         dial: crate::dialable::DialPosition::default(),
+        own: Default::default(),
     };
     let _ = state.on_sightings(at, Channel::Server, sightings, &gate);
     let _ = state.start(at);

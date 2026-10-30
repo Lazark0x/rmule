@@ -229,6 +229,19 @@ impl<S, P> RunnerContext<S, P> {
             known_ipv6: self.rt.ipv6_advert.get(),
         }
     }
+
+    /// What the intake gate reads of us, read fresh for each batch of
+    /// sightings: a login or a new address applies from the next one
+    /// (ADR-0090).
+    pub(crate) fn own_position(&self) -> crate::download::source_book::OwnPosition {
+        let reach = &self.rt.reach;
+        crate::download::source_book::OwnPosition {
+            user_hash: reach.user_hash(),
+            session: reach.session(),
+            public_ip: reach.public_ip(),
+            tcp_port: reach.listener_port(),
+        }
+    }
 }
 
 pub(crate) struct DownloadTask<S, P> {
