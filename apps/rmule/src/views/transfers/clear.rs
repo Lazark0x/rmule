@@ -16,6 +16,7 @@ use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::{Modal, scroll_key};
+use crate::words::readd as readd_words;
 use crate::wrap::wrapped_lines;
 
 /// The downloads the list shows as completed, in id order.
@@ -81,21 +82,19 @@ impl TransfersView {
     ) {
         let count = counted.len();
         let width = 46u16.min(area.width);
-        let noun = if count == 1 { "download" } else { "downloads" };
         let lines = |width: u16| {
             let text_w = usize::from(width).saturating_sub(2).max(1);
             let mut lines: Vec<Line<'static>> = Vec::new();
             lines.extend(wrapped_lines(
-                &format!("Clear {count} completed {noun} from the list?"),
+                &readd_words::clear_question(count),
                 text_w,
                 Style::new().fg(theme.fg),
             ));
-            let kept = if count == 1 {
-                "The file stays on disk and shared."
-            } else {
-                "The files stay on disk and shared."
-            };
-            lines.extend(wrapped_lines(kept, text_w, theme.dim_text()));
+            lines.extend(wrapped_lines(
+                readd_words::clear_keeps(count),
+                text_w,
+                theme.dim_text(),
+            ));
             lines.push(Line::raw(""));
             lines.push(Line::from(vec![
                 Span::styled(
