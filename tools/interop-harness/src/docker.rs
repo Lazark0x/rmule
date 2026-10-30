@@ -434,7 +434,7 @@ impl Docker {
         args: impl IntoIterator<Item = OsString>,
     ) -> DockerCommand {
         let mut command_args = vec![OsString::from("exec"), container.into()];
-        command_args.extend(args);
+        command_args.extend(crate::fastclock::stretched(args.into_iter().collect()));
         self.command(command_args)
     }
 
@@ -589,6 +589,7 @@ impl RunContainer {
         if !rmule || runs(&|arg| arg == "cargo") {
             return self;
         }
+        self.args = crate::fastclock::stretched(self.args);
         let (library, mount) = crate::fastclock::library_volume();
         crate::fastclock::rmule_env()
             .into_iter()

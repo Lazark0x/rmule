@@ -7,6 +7,7 @@
 //! command only: a container that runs cargo stays on the real clock, because
 //! a faked clock would break the build's mtimes. Lugdunum stays real.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -16,6 +17,9 @@ pub(crate) const SWITCH: &str = "AMULE_CLOCK_SCALE";
 const LIBRARY_MOUNT: &str = "/fastclock/libfaketimeMT.so.1";
 /// The bookworm build of the library, beside the workspace's other caches.
 const LIBRARY: &str = ".scratch/fastclock/libfaketimeMT.so.1";
+
+/// The rmule-tools flags that bound a run in seconds.
+const BOUNDS: [&str; 3] = ["--max-seconds", "--run-secs", "--hold-secs"];
 
 static SCALE: OnceLock<u64> = OnceLock::new();
 
@@ -33,6 +37,22 @@ pub fn scale() -> u64 {
 /// How long `app_secs` of an app's clock takes on the wall, never nothing.
 pub fn wall_secs(app_secs: u64) -> u64 {
     (app_secs / scale()).max(1)
+}
+
+/// `args` with every run bound stretched: rmule-tools reads it on its own
+/// clock, so a wall bound would run out `scale` times too soon.
+pub(crate) fn stretched(args: Vec<OsString>) -> Vec<OsString> {
+    let mut bound_follows = false;
+    args.into_iter()
+        .map(|arg| {
+            let stretched = bound_follows
+                .then(|| arg.to_str()?.parse::<u64>().ok())
+                .flatten()
+                .map(|secs| (secs * scale()).to_string().into());
+            bound_follows = BOUNDS.iter().any(|bound| arg == *bound);
+            stretched.unwrap_or(arg)
+        })
+        .collect()
 }
 
 /// The fast-clock image of a stock counterparty.
