@@ -27,11 +27,18 @@ Facts the bench has to respect:
   the 180 s UDP timeout.
 - aMule accepts one Kad contact per IP (`MAX_CONTACTS_IP 1`), and aMule and emule-qt both
   accept only `45.55.200.0/24` among the fake-public prefixes tried.
-- A stock aMule 2.3.3 reading a sentinel-bearing `OP_FOUNDSOURCES` dials the records either
-  side of the sentinel and keeps its session; the same shape inside a packed
-  `OP_GLOBFOUNDSOURCES` datagram costs the next packed body (aMule logs "Server sources reply
-  got additional bogus bytes"). So a sentinel-bearing `0x9B` body must be the last in its
-  datagram (ADR-0087).
+- A stock aMule 2.3.3 reading the inline layout (ADR-0096) walks six bytes a record: it
+  dials the records before a sentinel, reads the sentinel's id as an address and drops it,
+  takes the first six inline address bytes for the next record and dials the endpoint they
+  spell, and never reaches the records after it. Its count runs out, the rest of the frame
+  is ignored, and the session survives. Handed `[.50:5001][sentinel 3fff:abcd:1::2]
+  [.60:5003]`, it sent ten SYNs at `63.255.171.205:256` and none at `.60:5003` (run
+  `1793353467`). So a server must send sentinel-bearing lists to capable sessions only.
+  rmule's reader takes the same list whole, and from a list that does not measure it keeps
+  the records before the first sentinel. The same shape inside a packed
+  `OP_GLOBFOUNDSOURCES` datagram costs the next packed body (aMule logs "Server sources
+  reply got additional bogus bytes"), so a sentinel-bearing `0x9B` body must be the last in
+  its datagram (ADR-0087).
 
 ## Decision
 
@@ -140,7 +147,7 @@ its NAT Type Proof; every `-symmetric` variant runs the reflector probe in the s
 |---|---|---|---|
 | `natgw-selfproof` | natgw × 4 types, natprobe | probed behaviour equals the claimed type on all three axes | fast |
 | `ipv6-net-accept` | amule-kno, emuleqt | each logs its `3fff` address as global | fast |
-| `sentinel-sources-legacy` | rmule (stimulus), stock aMule | aMule reads a sentinel-bearing list without desync; the packed UDP form costs the next body | fast |
+| `sentinel-sources-legacy` | rmule (stimulus), stock aMule | aMule's six-byte stride takes the inline address for a record and loses what follows, and keeps its session; the packed UDP form costs the next body | fast |
 | `portmap-highid` | miniupnpd gateway, rmule, two stock-aMule Kad helpers | mapping in the gateway table, exact port, a renewal, the Kad verdict flips open | slow |
 | `portmap-mismatch` | miniupnpd gateway with a pre-claimed port | `Degraded`, never advertised | fast |
 | `portmap-ipv6-pinhole` | miniupnpd gateway (PCP v6) | pinhole granted for the Known IPv6 | fast |
