@@ -51,6 +51,8 @@ const RMULE_READY: &str = "download";
 const ASK_ANSWERED: &str = "serve.upload_slot_granted";
 
 const OP_HELLO: u8 = 0x01;
+const OP_STARTUPLOADREQ: u8 = 0x54;
+const OP_ACCEPTUPLOADREQ: u8 = 0x55;
 
 /// `link` naming `[v6]:port` as an IPv6 source (ADR-0089 §6.2).
 fn with_v6_source(link: &str, v6: &str, port: u16) -> Result<String> {
@@ -127,6 +129,10 @@ pub(super) fn drive(
             BODY_PEER_TCP_PORT.to_string(),
         ),
         ("RMULE_TCP_ACCEPT_FROM", stage.v4(HOST_ED2KSRV).to_owned()),
+        (
+            "RMULE_LOG",
+            "info,rmule_core::serve=debug,rmule_core::adapters=debug".to_owned(),
+        ),
     ];
     let (rmule, _) = start_detached_driver_with_env(
         bench,
@@ -287,6 +293,17 @@ impl Links<'_> {
         let our_asks = on_link(false, &requested, held);
         let their_parts = on_link(true, &part_of, held);
         let our_parts = on_link(false, &part_of, asked);
+        let slot_ask = |frame: &Ed2kFrame| {
+            (frame.opcode == OP_STARTUPLOADREQ)
+                .then(|| frame.bytes.get(6..22)?.try_into().ok())
+                .flatten()
+        };
+        let slot_asks = on_link(true, &slot_ask, asked);
+        let grants = streams()
+            .filter(|stream| stream.source == self.rmule && stream.destination.port() == asker_port)
+            .flat_map(|stream| stream.ed2k_frames())
+            .filter(|frame| frame.opcode == OP_ACCEPTUPLOADREQ)
+            .count();
         let v4_links = self
             .capture
             .opens
@@ -322,6 +339,15 @@ impl Links<'_> {
                     "on the link emule-qt opened: {our_asks} name asks from rmule for the held \
                      file, {their_parts} part frames of it from emule-qt, {our_parts} part \
                      frames of the shared file from rmule"
+                ),
+            ),
+            Claim::about(
+                "rmule-answered-the-slot-ask-on-the-shared-link",
+                slot_asks > 0 && grants > 0,
+                Evidence::Captured,
+                format!(
+                    "{slot_asks} slot asks from emule-qt for the shared file, {grants} grants \
+                     from rmule"
                 ),
             ),
             Claim::about(
