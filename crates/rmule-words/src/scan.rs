@@ -342,3 +342,45 @@ pub const ADD_RELATIVE: &str = "a shared directory is named by its absolute path
 
 /// The remove confirm's title.
 pub const REMOVE_TITLE: &str = " Stop sharing? ";
+
+/// The CLI's line for the Download Directory: where it is, or that none is
+/// set yet.
+#[must_use]
+pub fn download_dir_line(dir: Option<&Path>) -> String {
+    match dir {
+        Some(dir) => format!("download_dir {}", dir.display()),
+        None => "download_dir <unset>".to_string(),
+    }
+}
+
+/// The CLI's line for the Temp Directory: where it is, and when that is the
+/// default beside the data directory rather than one the operator chose.
+#[must_use]
+pub fn temp_dir_line(dir: &Path, is_default: bool) -> String {
+    if is_default {
+        format!("temp_dir {} (default)", dir.display())
+    } else {
+        format!("temp_dir {}", dir.display())
+    }
+}
+
+/// The CLI's refusal when the Download Directory was not taken, `reason`
+/// being the refusal's own words.
+#[must_use]
+pub fn download_dir_not_set(dir: &Path, reason: &DirectoryRefusal) -> String {
+    format!(
+        "{} is not set as the download directory: everything under it is shared, and {}",
+        dir.display(),
+        download_dir_refusal(reason)
+    )
+}
+
+/// The CLI's refusal when the Temp Directory was not taken.
+#[must_use]
+pub fn temp_dir_not_set(dir: &Path, reason: &DirectoryRefusal) -> String {
+    format!(
+        "{} is not set as the Temp Directory: {}",
+        dir.display(),
+        temp_dir_refusal(reason)
+    )
+}
