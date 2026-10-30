@@ -23,7 +23,7 @@ use rmule_primitives::Ed2kFileLink;
 use tokio::sync::oneshot;
 
 use super::{RunnerContext, served, stop_reason, wait_until_stop};
-use crate::content::{ContentFileStore, on_pool};
+use crate::content::{ContentFileStore, copy_path, on_pool};
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
 use crate::service::{CompletionStep, DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
@@ -36,7 +36,6 @@ mod gate;
 mod in_place;
 
 use across::copy_into_place;
-use copy::copy_path;
 use fs::Refusal;
 pub(crate) use fs::{CompletionFs, OsCompletionFs};
 pub(crate) use gate::{CompletionGate, StopAnswer};

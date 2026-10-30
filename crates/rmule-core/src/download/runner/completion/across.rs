@@ -9,9 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmule_primitives::{Ed2kFileLink, FileHash};
 
-use super::copy::{Copied, copy_hashed, copy_path, sync_directory};
+use super::copy::{Copied, copy_hashed, sync_directory};
 use super::{land_free, on_pool, refused, remove_quietly, stopped, tell};
 use crate::DownloadPaths;
+use crate::content::copy_path;
 use crate::download::runner::RunnerContext;
 use crate::error::{DownloadFailure, FinalizeError};
 use crate::service::{CompletionStep, DownloadId};
@@ -102,8 +103,11 @@ async fn copy_answering_stop<S, P>(
     let copied = match runner.until_stop(&mut task).await {
         Ok(copied) => copied,
         Err(failure) => {
+            // The stop may reach the copy after its last look, so whatever
+            // the task answers, no copy stands once the stop is answered.
             drop(raise);
             let _ = task.await;
+            remove_quietly(copy.to_path_buf()).await;
             return Err(failure);
         }
     };

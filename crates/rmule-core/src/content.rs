@@ -48,6 +48,13 @@ pub(crate) fn dot_sibling(path: &Path, suffix: &str) -> Option<PathBuf> {
     Some(path.with_file_name(sibling))
 }
 
+/// Where the Completion Copy for `destination` is written: beside it,
+/// dot-prefixed (ADR-0115).
+pub(crate) fn copy_path(destination: &Path) -> PathBuf {
+    dot_sibling(destination, ".completing")
+        .unwrap_or_else(|| destination.with_file_name(".completing"))
+}
+
 /// Run `work` on the blocking pool and answer what it returned: the one way
 /// core's file work leaves the async threads. A panic in `work` resumes on
 /// the caller, as if it had run there; what the work itself can fail with is
@@ -157,11 +164,13 @@ impl ContentFileStore {
         })
     }
 
-    /// Remove the `.part` file and the Hole Probe's file beside it.
-    /// Idempotent: an already-absent file is success, so a cancel after a
-    /// finalize is not an error.
+    /// Remove the `.part` file, the Hole Probe's file beside it and any
+    /// Completion Copy a past process or a failed delete left at the
+    /// destination, which no later move would. Idempotent: an already-absent
+    /// file is success, so a cancel after a finalize is not an error.
     pub async fn delete_part(paths: &DownloadPaths) -> Result<(), CoreError> {
         remove_if_present(paths.part_path()).await?;
+        remove_if_present(&copy_path(paths.final_path())).await?;
         match sparse::probe_path(paths.part_path()) {
             Some(probe) => remove_if_present(&probe).await,
             None => Ok(()),

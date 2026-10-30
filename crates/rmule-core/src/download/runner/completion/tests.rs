@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink};
 use tokio::sync::mpsc;
 
-use super::copy::copy_path;
 use super::fs::{CompletionFs, OsCompletionFs, Refusal};
 use super::{CompletionGate, FinalFileInPlace, Recovered, StopAnswer, complete, recover};
+use crate::content::copy_path;
 use crate::diagnostics::DiagnosticsState;
 use crate::download::runner::test_context::{Held, runner_context};
 use crate::download::runner::{RunnerContext, StopReason};
@@ -589,6 +589,22 @@ async fn a_pause_while_the_copy_waits_its_turn_leaves_the_part_file_and_no_copy(
     assert_eq!(std::fs::read(leg.paths.part_path()).unwrap(), leg.bytes);
     assert!(!copy_path(leg.paths.final_path()).exists());
     assert!(!leg.paths.final_path().exists());
+}
+
+/// A copy a past process left is only ever deleted by the next move, and a
+/// Cancel has none: dropping the download's files takes it too.
+#[tokio::test]
+async fn dropping_a_downloads_files_takes_the_copy_left_at_its_destination() {
+    let leg = finished(300_000, Arc::new(OsCompletionFs));
+    let copy = copy_path(leg.paths.final_path());
+    std::fs::write(&copy, &leg.bytes).unwrap();
+
+    crate::content::ContentFileStore::delete_part(&leg.paths)
+        .await
+        .unwrap();
+
+    assert!(!copy.exists());
+    assert!(!leg.paths.part_path().exists());
 }
 
 /// A Pause that stops the move after it let the held part file go leaves

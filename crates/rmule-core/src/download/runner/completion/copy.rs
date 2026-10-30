@@ -6,17 +6,11 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ed2k::digest::Digest;
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
-
-/// Where the copy for `destination` is written: beside it, dot-prefixed.
-pub(crate) fn copy_path(destination: &Path) -> PathBuf {
-    crate::content::dot_sibling(destination, ".completing")
-        .unwrap_or_else(|| destination.with_file_name(".completing"))
-}
 
 /// How a copy ended.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,8 +24,8 @@ pub(crate) enum Copied {
 /// Copy the first `size` bytes of `from` to `to`, a path nothing stands at,
 /// one part at a time, hashing what it reads and telling `copied` the bytes
 /// written after each part, then sync the copy to disk. `stop` is looked at
-/// before each part. On a stop or an error the partial copy is deleted.
-/// Blocking.
+/// before each part and once the copy is synced, which can outlast them all.
+/// On a stop or an error the copy is deleted. Blocking.
 pub(crate) fn copy_hashed(
     from: &Path,
     to: &Path,
@@ -72,6 +66,9 @@ fn copy_into(
         copied(written);
     }
     copy.sync_all()?;
+    if stop.load(Ordering::Relaxed) {
+        return Ok(Copied::Stopped);
+    }
     Ok(Copied::Whole(FileHash::from_bytes(
         hasher.finalize().into(),
     )))
@@ -97,7 +94,8 @@ mod tests {
 
     use rmule_primitives::ED2K_PART_SIZE;
 
-    use super::{Copied, copy_hashed, copy_path};
+    use super::{Copied, copy_hashed};
+    use crate::content::copy_path;
     use crate::hashing::file_hash_streamed;
 
     #[test]
@@ -122,6 +120,16 @@ mod tests {
         assert_eq!(std::fs::read(&to).unwrap(), bytes);
         assert_eq!(told, [ED2K_PART_SIZE, size]);
         std::fs::remove_file(&to).unwrap();
+
+        // A stop raised as the last part is written still ends the copy: no
+        // whole copy stands after one.
+        let stop = AtomicBool::new(false);
+        let copied = copy_hashed(&from, &to, size, &stop, &mut |written| {
+            stop.store(written == size, Ordering::Relaxed);
+        })
+        .unwrap();
+        assert_eq!(copied, Copied::Stopped);
+        assert!(!to.exists(), "the full-size copy is deleted");
 
         // A stop raised once the first part is written ends the copy there.
         let stop = AtomicBool::new(false);
