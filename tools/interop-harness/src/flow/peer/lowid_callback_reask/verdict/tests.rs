@@ -5,6 +5,7 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use super::{ANSWERED, Addresses, NO_SECOND_CALLBACK, Observed, PINGED, SX_ANSWERED, claims};
+use crate::fixture::{at, frame, open};
 use crate::flow::nat::claims::{Claim, label};
 use crate::flow::pcap::{Ed2kFrame, TcpOpen, Udp4Datagram};
 
@@ -24,45 +25,12 @@ fn addresses() -> Addresses {
     }
 }
 
-fn at(ip: Ipv4Addr, port: u16) -> SocketAddr {
-    SocketAddr::V4(SocketAddrV4::new(ip, port))
-}
-
 fn server() -> SocketAddr {
     SocketAddr::V4(SERVER)
 }
 
 fn listener() -> SocketAddr {
     at(RMULE, LISTENER_PORT)
-}
-
-fn frame(
-    when: f64,
-    source: SocketAddr,
-    destination: SocketAddr,
-    (protocol, opcode): (u8, u8),
-    body: &[u8],
-) -> Ed2kFrame {
-    let mut bytes = vec![protocol];
-    bytes.extend_from_slice(&u32::try_from(body.len() + 1).unwrap().to_le_bytes());
-    bytes.push(opcode);
-    bytes.extend_from_slice(body);
-    Ed2kFrame {
-        at: when,
-        source,
-        destination,
-        protocol,
-        opcode,
-        bytes,
-    }
-}
-
-fn open(when: f64, source: SocketAddr, destination: SocketAddr) -> TcpOpen {
-    TcpOpen {
-        at: when,
-        source,
-        destination,
-    }
 }
 
 fn callback_request(when: f64) -> Ed2kFrame {

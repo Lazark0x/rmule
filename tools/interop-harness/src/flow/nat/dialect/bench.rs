@@ -587,7 +587,7 @@ fn wan_v4(host: usize) -> Result<String> {
 fn image_present(bench: &Bench, tag: &str) -> bool {
     bench
         .docker
-        .inspect_image(tag.to_owned())
+        .image_id(tag.to_owned())
         .to_command()
         .output()
         .is_ok_and(|output| output.status.success())

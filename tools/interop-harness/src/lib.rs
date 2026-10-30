@@ -12,6 +12,8 @@ pub mod docker;
 pub mod fake_public;
 pub mod fake_public_v6;
 pub mod fastclock;
+#[cfg(test)]
+mod fixture;
 pub mod flow;
 pub mod kad_distance_design;
 pub mod kad_seed;

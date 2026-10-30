@@ -301,20 +301,6 @@ impl Docker {
         ])
     }
 
-    /// `docker image inspect -f {{.Id}} <tag>` — whether an image is present
-    /// locally at all. A flow whose counterparty image was never built records a
-    /// **Documented Absence** naming that, rather than failing in a way that
-    /// looks like the counterparty refused something.
-    pub fn inspect_image(&self, tag: impl Into<OsString>) -> DockerCommand {
-        self.command(vec![
-            OsString::from("image"),
-            OsString::from("inspect"),
-            OsString::from("-f"),
-            OsString::from("{{.Id}}"),
-            tag.into(),
-        ])
-    }
-
     /// `docker image inspect -f '{{ index .Config.Labels "<key>" }}' <tag>` —
     /// one label off an image, which prints `<no value>` when it is unset.
     pub fn image_label(&self, tag: impl Into<OsString>, key: &str) -> DockerCommand {
@@ -328,7 +314,10 @@ impl Docker {
     }
 
     /// `docker image inspect -f '{{.Id}}' <tag>` — the image's content id, which
-    /// tells two builds of one tag apart.
+    /// tells two builds of one tag apart, and whether the image is present at
+    /// all: a flow whose counterparty image was never built records a
+    /// **Documented Absence** naming that, rather than failing in a way that
+    /// looks like the counterparty refused something.
     pub fn image_id(&self, tag: impl Into<OsString>) -> DockerCommand {
         self.command(vec![
             OsString::from("image"),

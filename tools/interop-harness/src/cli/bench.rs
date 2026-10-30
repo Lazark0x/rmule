@@ -174,14 +174,18 @@ pub(crate) struct FirstServerArgs {
     pub(crate) server_env: Vec<String>,
 }
 
+/// Port 0 would mean "let docker pick", which the host readiness probe cannot
+/// discover.
+fn reject_zero_server_port(port: u16) -> Result<()> {
+    if port == 0 {
+        bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
+    }
+    Ok(())
+}
+
 impl FirstServerArgs {
-    /// Port 0 would mean "let docker pick", which the host readiness probe
-    /// cannot discover.
     pub(crate) fn reject_zero_host_port(&self) -> Result<()> {
-        if self.server_host_port == 0 {
-            bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
-        }
-        Ok(())
+        reject_zero_server_port(self.server_host_port)
     }
 
     pub(crate) fn build_context(&self) -> (&str, &Path) {
@@ -190,13 +194,8 @@ impl FirstServerArgs {
 }
 
 impl EserverArgs {
-    /// Port 0 would mean "let docker pick", which the host readiness probe
-    /// cannot discover.
     pub(crate) fn reject_zero_host_port(&self) -> Result<()> {
-        if self.server_host_port == 0 {
-            bail!("--server-host-port must be non-zero; mapped-port discovery is not implemented");
-        }
-        Ok(())
+        reject_zero_server_port(self.server_host_port)
     }
 
     pub(crate) fn build_context(&self) -> (&str, &Path) {
