@@ -10,9 +10,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::flow::bench::{Bench, Eserver, fallback_id, run_checked, write_id};
+use crate::flow::bench::{
+    Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, fallback_id, run_checked, write_id,
+};
 use crate::flow::ed2k_server::skeleton::ServerSkeletonOptions;
 use crate::flow::evidence::verify_bytes;
+use crate::flow::gate::wait_for_container_log;
 use crate::flow::identity::ed2k_link_with_source;
 use crate::flow::logs::collect_rmule_logs;
 use crate::rmule::{RMULE_SERVE_TCP_PORT, ServeKnobs};
@@ -99,6 +102,20 @@ pub fn run_rmule_serves_amule_downloads(options: ServerSkeletonOptions<'_>) -> R
         let expected_size = fs::metadata(options.layout.synthetic_shared_file())
             .with_context(|| format!("stat {}", options.layout.synthetic_shared_file().display()))?
             .len();
+        // The link's frames, for the claims the verdict below does not read.
+        let rmule_container = bench.names.rmule_container_name.clone();
+        let tap = format!("{rmule_container}-tap");
+        let sidecar = CaptureSidecar {
+            image: "rmule/interop-capture:local",
+            name: &tap,
+            target_container: &rmule_container,
+            interface: DEFAULT_TAP_INTERFACE,
+            host_dir: options.layout.root().to_path_buf(),
+            pcap_file: "rmule-tap.pcap",
+            bpf: &format!("tcp port {RMULE_SERVE_TCP_PORT}"),
+        };
+        bench.start_extra(&tap, sidecar.container(), "run rmule's tap")?;
+        wait_for_container_log(&bench.docker, &tap, "listening on", timeout)?;
         let amule = bench
             .amule_role_container(options.amule_image)
             .volume(options.layout.amule_dir(), "/incoming")
