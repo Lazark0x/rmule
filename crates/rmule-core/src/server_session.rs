@@ -17,6 +17,7 @@ mod establishment;
 mod hello;
 mod link;
 mod multiplexer;
+mod offers;
 mod slot;
 
 pub(crate) use dial_backs::ServerCallbackDialBacks;
@@ -51,7 +52,13 @@ pub(crate) mod tests {
     }
 
     impl ServerLink for FakeLink {
+        /// The session's opening `OP_GETSERVERLIST` is left out of `sent`: it
+        /// has its own test, and every other test reads what its own drive
+        /// put on the link.
         async fn send(&self, command: Ed2kCommand) -> Result<(), ()> {
+            if matches!(command, Ed2kCommand::RequestServerList) {
+                return Ok(());
+            }
             self.sent.send(command).await.map_err(|_| ())
         }
         async fn next_event(&mut self) -> Option<Ed2kEvent> {
@@ -112,13 +119,34 @@ pub(crate) mod tests {
         tokio::sync::mpsc::Sender<rmule_ed2k::Ed2kEvent>,
         tokio::sync::mpsc::Receiver<rmule_ed2k::Ed2kCommand>,
     ) {
+        fake_session_reporting(server, grants, ServerFacts::default())
+    }
+
+    /// [`fake_session`] writing its server's facts to `facts`.
+    pub(crate) fn fake_session_reporting(
+        server: rmule_primitives::ServerEndpoint,
+        grants: rmule_ed2k::ServerGrants,
+        facts: ServerFacts,
+    ) -> (
+        super::ServerSessionHandle,
+        tokio::sync::mpsc::Sender<rmule_ed2k::Ed2kEvent>,
+        tokio::sync::mpsc::Receiver<rmule_ed2k::Ed2kCommand>,
+    ) {
         let (events_tx, events) = tokio::sync::mpsc::channel(8);
         let (sent, sent_rx) = tokio::sync::mpsc::channel(8);
         let mut sinks = test_sinks(crate::own_identity::SharedOwnIdentity::default());
         sinks.server = server;
         sinks.grants = grants;
+        sinks.facts = facts;
         let handle =
             super::multiplexer::ServerSession::spawn(FakeLink { events, sent }, client_id(), sinks);
+        // A server that identifies itself at once, so a test's offer has no
+        // ident to wait for.
+        events_tx
+            .try_send(rmule_ed2k::Ed2kEvent::ServerIdentified {
+                identity: rmule_primitives::ServerIdentity::default(),
+            })
+            .expect("an empty channel takes the ident");
         (handle, events_tx, sent_rx)
     }
 }

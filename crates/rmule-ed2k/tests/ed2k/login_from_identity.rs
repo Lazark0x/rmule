@@ -209,6 +209,7 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_and_leaves_the_flags_alone() {
         LoginAdvert {
             ipv6: Some(address),
             udp_ports: None,
+            offer_pace: false,
         },
     );
     let tags = request.tags();
@@ -295,6 +296,7 @@ fn the_udp_ports_advert_rides_last_and_only_when_given() {
         LoginAdvert {
             ipv6: Some(address),
             udp_ports: Some(ports),
+            offer_pace: false,
         },
     );
     let ids: Vec<_> = request.tags().iter().map(|t| t.name().id()).collect();
@@ -319,4 +321,26 @@ fn the_udp_ports_advert_rides_last_and_only_when_given() {
 
     let plain = LoginRequest::from_identity(&sample_identity(), &shipped_no_crypt());
     assert!(plain.tags().iter().all(|t| t.name().id() != Some(0xF9)));
+}
+
+/// ed2k-server's contract, *OFFERFILES v1*: a string-named `uint32` in the
+/// old tag format, which a server that does not know it skips. Only the login
+/// writes it, after every advert, and a login without it is aMule's.
+#[test]
+fn the_offer_pace_request_is_an_old_format_text_tag_after_the_adverts() {
+    let identity = sample_identity();
+    let request = LoginRequest::from_identity_advertising(
+        &identity,
+        &shipped_no_crypt(),
+        LoginAdvert {
+            offer_pace: true,
+            ..LoginAdvert::default()
+        },
+    );
+    let last = request.tags().last().expect("a tag");
+    let mut wire = vec![0x03, 12, 0];
+    wire.extend_from_slice(b"offerfiles_v");
+    wire.extend_from_slice(&1u32.to_le_bytes());
+    assert_eq!(last.encode(), wire);
+    assert_eq!(request.tags().len(), 5);
 }

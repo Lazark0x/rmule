@@ -13,7 +13,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use rmule_ed2k::{
-    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, OfferedFile,
+    CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, OfferPace, OfferedFile,
     SearchResultSkipReason, ServerCapability, ServerGrants,
 };
 use rmule_net::ed2k::Connection as Ed2kConnection;
@@ -22,6 +22,7 @@ use rmule_primitives::{
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
+use super::offers::OfferQueue;
 use crate::adapters::SourceLookupOutcome;
 use crate::firewalled::server_callback::ServerCallbackConsume;
 use crate::own_identity::SharedOwnIdentity;
@@ -54,6 +55,7 @@ enum ServerRequest {
         files: Vec<OfferedFile>,
         reply: oneshot::Sender<Result<(), CoreError>>,
     },
+    HaltOffers,
     Search {
         search_id: SearchId,
         ask: Ask,
@@ -305,6 +307,11 @@ impl ServerSessionHandle {
             .map_err(|_| CoreError::Repository("server session closed".into()))?
     }
 
+    /// Send no more of the set (ADR-0099): what was told stays told.
+    pub(crate) async fn halt_offers(&self) {
+        let _ = self.request_tx.send(ServerRequest::HaltOffers).await;
+    }
+
     /// Put `search_id`'s request on the link in turn, the search spacing after
     /// the last one at the soonest ([`answer_order`]). Its answer's rows reach `live`'s searches by what
     /// they contain; the stream carries the leg's own news and closes after the
@@ -542,7 +549,17 @@ async fn run_session<L: ServerLink>(
     // into a fall-through to the target's buddy.
     let mut introductions = tokio::time::interval(crate::natt::server_punch::INTRODUCTION_POLL);
     introductions.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut offers = OfferQueue::new(tokio::time::Instant::now());
+    // Once, right after login, where aMule's goes (`ServerConnect.cpp:289`):
+    // a server names itself and states its limits in the ident that follows
+    // the answer, on a login that drew none (ADR-0080).
+    let mut opened = false;
     loop {
+        if !std::mem::replace(&mut opened, true)
+            && link.send(Ed2kCommand::RequestServerList).await.is_err()
+        {
+            break;
+        }
         tokio::select! {
             // `changed` is cancel-safe and the address is read after it, so a
             // lost race costs nothing. A server that took no update keeps what
@@ -565,6 +582,24 @@ async fn run_session<L: ServerLink>(
                     && link.send(command).await.is_err()
                 {
                     break;
+                }
+            }
+            // The batch whose turn has come (ADR-0099). An offer reads the
+            // Presented Client ID as Self Reach answers it now.
+            () = answer_wait_expiry(offers.next_send()) => {
+                let now = tokio::time::Instant::now();
+                if let Some(files) = offers.release(now, || facts.file_limits(&server)) {
+                    let presented_id = reach
+                        .as_ref()
+                        .map(crate::reachability::SharedSelfReach::presented_client_id);
+                    if link
+                        .send(Ed2kCommand::OfferFiles { files, presented_id })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    facts.shares_told(&server, offers.level());
                 }
             }
             _ = introductions.tick() => {
@@ -595,19 +630,11 @@ async fn run_session<L: ServerLink>(
                         }
                     }
                     ServerRequest::Announce { files, reply } => {
-                        let result = link
-                            .send(Ed2kCommand::OfferFiles {
-                                files,
-                                presented_id: reach
-                                    .as_ref()
-                                    .map(crate::reachability::SharedSelfReach::presented_client_id),
-                            })
-                            .await
-                            .map_err(|()| CoreError::Repository("announce send failed".into()));
-                        let dead = result.is_err();
-                        let _ = reply.send(result);
-                        if dead { break; }
+                        offers.hand(files, grants_tx.borrow().large_files);
+                        facts.shares_told(&server, offers.level());
+                        let _ = reply.send(Ok(()));
                     }
+                    ServerRequest::HaltOffers => offers.halt(),
                     ServerRequest::Search { search_id, ask, answer_wait, live, reply } => {
                         let (stream, now) = searches.ask(
                             search_id,
@@ -795,6 +822,10 @@ async fn run_session<L: ServerLink>(
                     // read a mirror still learns the name of the server it
                     // connected to.
                     Some(Ed2kEvent::ServerIdentified { identity }) => {
+                        if offers.unsettled() {
+                            let known = facts.file_limits(&server);
+                            offers.settle(OfferPace::from_ident(&identity.extra_tags, known));
+                        }
                         // ADR-0087 §4.3, before the name and description are
                         // moved into the list: only a *stated* verdict writes
                         // the cell. A server sends a second ident in reply to

@@ -60,8 +60,8 @@ fn decide(withhold: bool, related_search: bool, told: Option<Told>, fresh_set: b
 #[derive(Default)]
 struct Announcing {
     /// The latest share set handed to [`hand`](SessionFollower::hand).
-    /// The latest wins: `OP_OFFERFILES` is a whole-set statement, so an older
-    /// set would be a lie the moment a newer one exists.
+    /// The latest wins: the session's Offer Queue is owed the newest set, and
+    /// an older one would be a lie the moment a newer one exists.
     share: Option<Vec<OfferedFile>>,
     /// What the follower told a session, with the session it was.
     told: Option<(ServerSessionHandle, Told)>,
@@ -244,6 +244,7 @@ async fn tell(
                     SharesToServer::Withheld
                 }
                 SharesWithheld::RelatedSearchGrantedAfterAnnounce => {
+                    handle.halt_offers().await;
                     SharesToServer::AnnouncedBeforeWithholding
                 }
             };
@@ -263,7 +264,6 @@ async fn tell(
             let file_count = files.len();
             handle.announce(files).await?;
             state.told = Some((handle.clone(), Told::Announced));
-            facts.shares_told(handle.server(), SharesToServer::Announced);
             AnnounceOutcome::Announced { file_count }
         }
     };
@@ -297,7 +297,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::*;
-    use crate::server_session::tests::fake_session;
+    use crate::server_session::tests::{fake_session, fake_session_reporting};
 
     /// A file whose hash no other test file shares, nor any other byte of it.
     fn file(seed: u8, name: &str) -> OfferedFile {
@@ -477,7 +477,14 @@ mod tests {
         follower.announce(shared.clone()).await.unwrap();
 
         let server = ServerEndpoint::new("192.0.2.140", 4661).unwrap();
-        let (live, _link, mut sent) = fake_session(server.clone(), related_search());
+        let (live, _link, mut sent) = fake_session_reporting(
+            server.clone(),
+            related_search(),
+            session.server_facts().clone(),
+        );
+        // Kept up past the swap below: an establishment ends the old session
+        // first, and this one's end would clear the level the next one set.
+        let _first = live.clone();
         install(&session, live).await;
         assert_eq!(offered(&mut sent).await, shared);
 
@@ -502,7 +509,11 @@ mod tests {
         );
 
         let other = ServerEndpoint::new("198.51.100.77", 5000).unwrap();
-        let (second, _second_link, mut second_sent) = fake_session(other.clone(), related_search());
+        let (second, _second_link, mut second_sent) = fake_session_reporting(
+            other.clone(),
+            related_search(),
+            session.server_facts().clone(),
+        );
         install(&session, second).await;
         told(&diagnostics, &other, SharesToServer::Withheld).await;
         session.set_withhold_shares(false);

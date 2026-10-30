@@ -17,6 +17,7 @@ use super::*;
 
 mod callback;
 mod more_results;
+mod offers;
 mod related_search;
 mod search;
 mod server_facts;
@@ -383,7 +384,7 @@ async fn a_command_rejection_fails_the_lookup() {
     ));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn announce_rides_the_session_as_offer_files() {
     let (_evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
@@ -411,7 +412,7 @@ async fn announce_rides_the_session_as_offer_files() {
 /// An offer carries the Presented Client ID as Self Reach answers it when the
 /// offer is sent: an open Kad node names its confirmed address, not the id its
 /// server assigned.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn an_offer_names_the_presented_id_self_reach_answers() {
     use crate::address_learning::AddressObservation;
     use crate::natt::front::SharedNattFront;
@@ -448,7 +449,12 @@ async fn an_offer_names_the_presented_id_self_reach_answers() {
         },
     );
 
-    handle.announce(Vec::new()).await.unwrap();
+    let file = OfferedFile::new(
+        FileHash::from_bytes([0x01; FileHash::BYTE_LEN]),
+        1024,
+        Ed2kText::from_utf8("a.bin"),
+    );
+    handle.announce(vec![file]).await.unwrap();
 
     match cmd_rx.recv().await.unwrap() {
         Ed2kCommand::OfferFiles { presented_id, .. } => assert_eq!(

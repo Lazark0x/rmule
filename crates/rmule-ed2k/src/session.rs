@@ -50,6 +50,9 @@ pub struct Ed2kSession {
     /// `None` — the default — sends none, which tells an ed2k-server this
     /// client cannot be punched.
     udp_ports_advert: Option<UdpPortsAdvert>,
+    /// Whether the login asks for OFFERFILES v1. Set through
+    /// [`with_offer_pace_request`](Self::with_offer_pace_request).
+    offer_pace_request: bool,
     core: SessionCore<Ed2kEvent, CloseReason>,
 }
 
@@ -112,6 +115,7 @@ impl Ed2kSession {
             facts: ServerAssignedFacts::default(),
             ipv6_advert: None,
             udp_ports_advert: None,
+            offer_pace_request: false,
             core: SessionCore::new(),
         }
     }
@@ -140,6 +144,13 @@ impl Ed2kSession {
     #[must_use]
     pub const fn with_udp_ports_advertisement(mut self, ports: UdpPortsAdvert) -> Self {
         self.udp_ports_advert = Some(ports);
+        self
+    }
+
+    /// Ask for OFFERFILES v1 in the login (ADR-0099).
+    #[must_use]
+    pub const fn with_offer_pace_request(mut self) -> Self {
+        self.offer_pace_request = true;
         self
     }
 
@@ -193,6 +204,7 @@ impl Ed2kSession {
             LoginAdvert {
                 ipv6: self.ipv6_advert,
                 udp_ports: self.udp_ports_advert,
+                offer_pace: self.offer_pace_request,
             },
         )
         .encode_packet()

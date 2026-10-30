@@ -76,6 +76,9 @@ impl Connection {
         if let Some(ports) = options.udp_ports {
             session = session.with_udp_ports_advertisement(ports);
         }
+        if options.offer_pace {
+            session = session.with_offer_pace_request();
+        }
         if options.obfuscated_port.is_none() {
             return Ok(Self::spawn_with_options(session, stream, options).with_resolved(resolved));
         }

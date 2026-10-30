@@ -10,9 +10,9 @@ use rmule_primitives::{Ed2kText, Tag, TagName, TagValue};
 /// `ST_PING` — the last measured round trip, in milliseconds.
 const ST_PING: u8 = 0x0C;
 /// `ST_SOFTFILES` — the server's soft file limit.
-const ST_SOFTFILES: u8 = 0x88;
+pub(crate) const ST_SOFTFILES: u8 = 0x88;
 /// `ST_HARDFILES` — the server's hard file limit.
-const ST_HARDFILES: u8 = 0x89;
+pub(crate) const ST_HARDFILES: u8 = 0x89;
 /// `ST_LASTPING` — when the server last answered, Unix seconds.
 const ST_LASTPING: u8 = 0x90;
 /// `ST_VERSION` — the server's version, a string or a packed `hi16.lo16`.

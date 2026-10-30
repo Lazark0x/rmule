@@ -131,6 +131,14 @@ pub(crate) enum PingProbe {
 pub enum SharesToServer {
     /// The share set was announced (`OP_OFFERFILES`).
     Announced,
+    /// The Offer Queue has told the server `told` of the set's `of` files:
+    /// the rest are on their way, or past the server's soft budget.
+    Announcing {
+        /// Files of the set the server has been told.
+        told: usize,
+        /// Files of the set it can take.
+        of: usize,
+    },
     /// Nothing was announced on purpose: the **Announce Policy** withholds
     /// the set from a server that grants related search.
     Withheld,

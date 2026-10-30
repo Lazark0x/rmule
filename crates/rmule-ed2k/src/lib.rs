@@ -24,6 +24,7 @@ mod ipv6_update;
 mod login;
 mod obfuscation;
 mod offer_files;
+mod offer_pace;
 mod opcode;
 mod peer_callback;
 mod reject;
@@ -63,6 +64,7 @@ pub use offer_files::{
     COMPLETE_FILE_ID, COMPLETE_FILE_PORT, FileCompleteness, INCOMPLETE_FILE_ID,
     INCOMPLETE_FILE_PORT, OfferEntry, OfferFiles, OfferedFile,
 };
+pub use offer_pace::{OfferAdvert, OfferPace, ServerFileLimits};
 pub use opcode::Opcode;
 pub use peer_callback::{PeerCallback, PeerCallbackCrypt, PeerCallbackIpv6};
 pub use reject::Reject;

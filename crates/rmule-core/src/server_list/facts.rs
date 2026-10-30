@@ -239,6 +239,20 @@ impl ServerFacts {
         self.diagnostics.set_share_announcement(endpoint, shares);
     }
 
+    /// What the list knows of `endpoint`'s file limits, from `server.met` and
+    /// its status answers (ADR-0099).
+    pub(crate) fn file_limits(&self, endpoint: &ServerEndpoint) -> rmule_ed2k::ServerFileLimits {
+        let figures = self
+            .listed()
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row.endpoint == *endpoint))
+            .and_then(|row| row.figures);
+        figures.map_or_else(Default::default, |figures| rmule_ed2k::ServerFileLimits {
+            soft: figures.soft_files.filter(|limit| *limit > 0),
+            hard: figures.hard_files.filter(|limit| *limit > 0),
+        })
+    }
+
     /// The policy servers are judged under now (ADR-0052).
     pub(crate) fn policy(&self) -> super::ServerPolicy {
         self.diagnostics.server_policy()

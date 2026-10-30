@@ -16,14 +16,15 @@ use std::time::Duration;
 
 use rmule_ed2k::{
     CallbackRequest, FoundSources, GetSourcesRequest, IdChange, LoginRequest, Opcode, PeerCallback,
-    SearchRequest, SearchResults, ServerTcpFlags,
+    SearchRequest, SearchResults, ServerIdent, ServerTcpFlags,
 };
 use rmule_net::driver::CryptStream;
 use rmule_net::ed2k::ServerObfuscationTransport;
 use rmule_peer::HelloAnswer;
 use rmule_primitives::{
     ClientId, FileHash, Ipv4Endpoint, KeywordQuery, Packet, PacketProtocol, PeerSource,
-    PrimitiveError, SearchResult, ServerEndpoint, TagValue, UserHash, is_plaintext_marker,
+    PrimitiveError, SearchResult, ServerEndpoint, ServerHash, TagValue, UserHash,
+    is_plaintext_marker,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -534,6 +535,15 @@ where
     let tag_ids: Vec<Option<u8>> = login.tags().iter().map(|t| t.name().id()).collect();
     let canonical = [Some(0x01), Some(0x11), Some(0x20), Some(0xFB)];
     let adverts: &[Option<u8>] = tag_ids.get(canonical.len()..).unwrap_or(&[]);
+    // ADR-0099's `offerfiles_v` rides last, the one text-named tag.
+    let asks_offer_pace = login.tags().last().is_some_and(|tag| {
+        tag.name().text_value() == Some("offerfiles_v") && *tag.value() == TagValue::U32(1)
+    });
+    let adverts = if asks_offer_pace {
+        adverts.split_last().map_or(adverts, |(_, rest)| rest)
+    } else {
+        adverts
+    };
     let adverts_ok = matches!(
         adverts,
         [] | [Some(0xAE)] | [Some(0xF9)] | [Some(0xAE), Some(0xF9)]
@@ -636,7 +646,16 @@ where
         };
         let Some(packet) = packet else { break };
         let opcode = packet.opcode();
-        if opcode == Opcode::GetSources.as_u8() {
+        if opcode == Opcode::GetServerList.as_u8() {
+            // As both measured servers answer it: the list, then the ident
+            // that names the server. An empty list, and an ident of no tags.
+            let ident = ServerIdent::new(
+                ServerHash::from_bytes([0x5E; ServerHash::BYTE_LEN]),
+                Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, standard_port),
+                Vec::new(),
+            );
+            let _ = wtx.send(ident.encode_packet().encode()).await;
+        } else if opcode == Opcode::GetSources.as_u8() {
             let Ok(request) = GetSourcesRequest::decode_packet(&packet) else {
                 continue;
             };

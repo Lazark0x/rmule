@@ -360,6 +360,7 @@ async fn establish(
         obfuscated_port: link.obfuscated_port(),
         advertised_ipv6,
         udp_ports,
+        offer_pace: true,
         login_timeout,
         ..Ed2kConnectOptions::default()
     };

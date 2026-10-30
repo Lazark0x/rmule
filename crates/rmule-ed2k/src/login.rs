@@ -12,6 +12,7 @@ use rmule_primitives::{
     TagValue, UserHash, ipv6_address_tag,
 };
 
+use crate::offer_pace::{is_offer_pace_request, offer_pace_request_tag};
 use crate::{Ed2kError, Opcode, Result};
 
 /// aMule client login tag IDs (per the handwritten login fixture and
@@ -120,6 +121,8 @@ pub struct LoginAdvert {
     pub ipv6: Option<Ipv6Addr>,
     /// ADR-0091: the `0xF9` tag, when a client-UDP socket is bound.
     pub udp_ports: Option<UdpPortsAdvert>,
+    /// ADR-0099: ask for OFFERFILES v1 with the `offerfiles_v` tag.
+    pub offer_pace: bool,
 }
 
 /// `OP_LOGINREQUEST`: who we are and what we can do, the first thing a client
@@ -228,10 +231,13 @@ impl LoginRequest {
                 TagValue::U32(ports.word()),
             ));
         }
+        if advert.offer_pace {
+            tags.push(offer_pace_request_tag());
+        }
         tags.extend(
             extras
                 .iter()
-                .filter(|t| !is_canonical_login_tag(t))
+                .filter(|t| !is_canonical_login_tag(t) && !is_offer_pace_request(t))
                 .cloned(),
         );
         Self {

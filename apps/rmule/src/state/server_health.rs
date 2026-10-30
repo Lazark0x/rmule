@@ -88,7 +88,7 @@ impl HealthLevel {
             && self.shares.as_ref() != Some(told)
         {
             match told.shares {
-                SharesToServer::Announced => {}
+                SharesToServer::Announced | SharesToServer::Announcing { .. } => {}
                 SharesToServer::Withheld | SharesToServer::AnnouncedBeforeWithholding => {
                     edges.push(HealthEdge::Shares(told.clone()));
                 }

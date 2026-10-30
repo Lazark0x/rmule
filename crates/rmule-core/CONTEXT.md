@@ -269,6 +269,12 @@ session the operator makes it announces the share set (`OP_OFFERFILES`) — unle
 **Announce Policy** withholds it from a server that grants related search. The listener's hellos
 are not sent by it: they read the live session through the **Hello Source**.
 
+**Offer Queue**:
+What one session still owes its server of the share set (ADR-0099). The **Session Follower**
+hands it whole sets; it keeps what this connection was told and sends the difference in batches,
+at the pace the session's first `OP_SERVERIDENT` settled: OFFERFILES v1 when the server advertised
+it, else aMule's 200 records a minute.
+
 **Hello Source**:
 Where a long-lived surface reads the hello it presents: our identity under the **Presented
 Client ID** and the live session's server, read from **Self Reach** at each connection, never

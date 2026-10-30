@@ -24,7 +24,7 @@ use rmule_primitives::{
 use thiserror::Error;
 
 mod encode;
-mod figures;
+pub(crate) mod figures;
 mod obfuscation;
 
 pub use figures::ServerMetFigures;

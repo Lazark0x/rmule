@@ -120,6 +120,7 @@ async fn a_login_claiming_the_nat_callback_is_dropped() {
         LoginAdvert {
             ipv6: Some("2001:db8::9".parse().unwrap()),
             udp_ports: None,
+            offer_pace: false,
         },
     );
     let claiming = LoginRequest::new(

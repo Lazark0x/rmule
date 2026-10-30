@@ -226,6 +226,9 @@ fn health_words(row: &ServerDiagnostics, limit: u32, age: &impl Fn(Duration) -> 
 /// Whether the server has the shares: for the connected one, what its
 /// session was told; for any other, what its next login would do.
 fn shares_sentence(row: &ServerDiagnostics, context: DetailContext) -> String {
+    if let Some(SharesToServer::Announcing { told, of }) = context.told {
+        return format!("Shares: this server has been told {told} of {of} files");
+    }
     if let Some(told) = context.told {
         return shares_line(told)
             .unwrap_or(super::SHARES_ANNOUNCED)
@@ -258,7 +261,7 @@ fn shares_sentence(row: &ServerDiagnostics, context: DetailContext) -> String {
 pub fn shares_line(shares: SharesToServer) -> Option<&'static str> {
     use SharesToServer as S;
     match shares {
-        S::Announced => None,
+        S::Announced | S::Announcing { .. } => None,
         S::Withheld => Some(
             "Shares withheld from this server: it answers related searches, which would tell \
              anyone which files you share together. Kad and other servers still have them",

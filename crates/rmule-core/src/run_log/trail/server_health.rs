@@ -152,7 +152,7 @@ fn edges(last: &ServerLevel, next: &ServerLevel) -> Vec<Record> {
         && last.shares.as_ref() != Some(told)
     {
         let shares = match told.shares {
-            SharesToServer::Announced => None,
+            SharesToServer::Announced | SharesToServer::Announcing { .. } => None,
             SharesToServer::Withheld => Some("withheld"),
             SharesToServer::AnnouncedBeforeWithholding => Some("announced_before_withholding"),
         };
