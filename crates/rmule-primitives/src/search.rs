@@ -8,6 +8,7 @@ use crate::{
 };
 
 mod kind;
+mod named_file;
 mod satisfaction;
 mod terms;
 

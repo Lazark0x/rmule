@@ -275,6 +275,32 @@ mod tests {
             .into()
     }
 
+    /// `ed2k::HASH` is answered from the server's hash index over UDP too
+    /// (ed2k-server `udp.rs:2098`), under the file's own name: the row proves
+    /// the search by its hash, so it is shown and not counted as unattributed.
+    #[test]
+    fn a_global_answer_reaches_the_search_that_named_its_hash() {
+        let diagnostics = DiagnosticsState::default();
+        let live = LiveSearches::new(diagnostics.clone());
+        let hash = "A".repeat(FileHash::BYTE_LEN * 2);
+        let mut named = live.register(SearchId::from_u64(1), query(&format!("ed2k::{hash}")));
+        let elsewhere = format!("ed2k::{}", "B".repeat(32));
+        let mut other = live.register(SearchId::from_u64(2), query(&elsewhere));
+
+        let server = rmule_primitives::Ipv4Endpoint::new([45, 55, 200, 9].into(), 4661);
+        live.deliver_udp_answer(vec![row("field-recording.wav")], server);
+
+        assert_eq!(named.drain().len(), 1);
+        assert!(other.drain().is_empty(), "another hash proves nothing");
+        assert_eq!(
+            diagnostics
+                .snapshot()
+                .session
+                .search_rows_unattributed_total,
+            0
+        );
+    }
+
     /// Holding a row is no licence to be updated by an answer that is not the
     /// search's own: the row must prove the query, held or not.
     #[test]

@@ -78,8 +78,16 @@ impl KeywordQuery {
     /// ASCII case-insensitive. A field the row does not carry proves nothing,
     /// so the row does not match — aMule drops a result of unknown type the
     /// same way (`SearchList.cpp:1130-1140`).
+    ///
+    /// **A query naming one file** by its hash proves by that hash and any
+    /// size it gave, and by nothing else: the answer comes from a hash index
+    /// and carries none of the phrase's words.
     #[must_use]
     pub fn matches(&self, result: &SearchResult) -> bool {
+        if let Some(named) = self.named_file() {
+            return result.file_hash() == named.file_hash
+                && named.size.is_none_or(|size| result.file_size() == size);
+        }
         self.keywords_in(result)
             && self
                 .constraint_verdicts(result)
