@@ -475,6 +475,19 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             }
             // Past aMule's idle close, so the waiter has no link when X stops.
             std::thread::sleep(Duration::from_secs(shape.idle_secs));
+            // W cancels before X stops: `amulecmd` takes seconds on the debug
+            // build, and rmule's dial-back hears W inside 15 s or ends. rmule
+            // keeps W queued, so the dial-back goes out all the same.
+            let hash: String = parse_ed2k_file_hash(&wait_link)?
+                .iter()
+                .map(|byte| format!("{byte:02X}"))
+                .collect();
+            amulecmd(
+                &bench,
+                &waiter,
+                &format!("Cancel {hash}"),
+                "the waiter cancels its download",
+            )?;
             marks.holder_stopped_at = Some(verdict::unix_now());
             run_checked(
                 bench.docker.stop_container(holder.clone(), STOP_GRACE_SECS),
@@ -495,16 +508,6 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 // The slot sits free for a while before the waiter comes back.
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
-            let hash: String = parse_ed2k_file_hash(&wait_link)?
-                .iter()
-                .map(|byte| format!("{byte:02X}"))
-                .collect();
-            amulecmd(
-                &bench,
-                &waiter,
-                &format!("Cancel {hash}"),
-                "the waiter cancels its download",
-            )?;
             marks.returned_at = Some(verdict::unix_now());
             amulecmd(
                 &bench,
