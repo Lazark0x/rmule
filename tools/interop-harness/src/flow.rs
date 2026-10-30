@@ -101,7 +101,6 @@ pub use self::peer::{
     PeerDialBackGrantOptions, run_peer_dial_back_grant, score_peer_dial_back_grant,
     stage_dial_back_files,
 };
-pub use self::peer::{SourceHandoverOptions, run_source_handover, score_source_handover};
 pub use self::peer::{
     PeerOneLinkOptions, run_peer_one_link, score_peer_one_link, score_peer_one_link_severed,
     score_peer_one_link_silent, score_peer_one_link_stalled,
@@ -109,3 +108,4 @@ pub use self::peer::{
 pub use self::peer::{
     ServerCallbackServeOptions, run_server_callback_serve, score_server_callback_serve,
 };
+pub use self::peer::{SourceHandoverOptions, run_source_handover, score_source_handover};

@@ -32,9 +32,7 @@ use super::streaming_window::{
     AMULE_READY, SEED_INCOMING_MOUNT, SEED_TEMP_MOUNT, wait_for_share, with_sources,
 };
 use crate::artifacts::RunLayout;
-use crate::flow::bench::{
-    Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked,
-};
+use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, Eserver, run_checked};
 use crate::flow::gate::{wait_for_amule_ready, wait_for_container_log};
 use crate::flow::logs::{collect_amule_logs, collect_rmule_logs, collect_server_logs};
 use crate::rmule::{RmuleClientContainer, release_held_download};
@@ -176,13 +174,7 @@ pub fn run_source_handover(options: SourceHandoverOptions<'_>) -> Result<()> {
             .env("AMULE_MAX_UPLOAD", SHARER_MAX_UPLOAD_KIB.to_string())
             .env_assignments(options.amule_env);
         bench.start_extra(&sharer, container, "run the sharer aMule")?;
-        wait_for_amule_ready(
-            &bench.docker,
-            options.layout,
-            &sharer,
-            timeout,
-            AMULE_READY,
-        )?;
+        wait_for_amule_ready(&bench.docker, options.layout, &sharer, timeout, AMULE_READY)?;
         wait_for_share(&bench.docker, &sharer, 2, timeout)?;
         let sharer_ip = run_checked(
             bench.docker.container_ip(sharer.clone()),

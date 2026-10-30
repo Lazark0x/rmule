@@ -167,9 +167,7 @@ fn link_end(capture: &TcpCapture, rmule_side: SocketAddr, opened: f64) -> f64 {
 
 /// Whether no two of `links` (`(opened, ended)`) stood at once.
 fn one_at_a_time(links: &[(f64, f64)]) -> bool {
-    links
-        .windows(2)
-        .all(|pair| pair[0].1 <= pair[1].0)
+    links.windows(2).all(|pair| pair[0].1 <= pair[1].0)
 }
 
 fn claims(at: &Addresses, seen: &Observed) -> (Vec<Claim>, Rows) {

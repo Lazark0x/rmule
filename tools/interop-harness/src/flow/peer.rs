@@ -16,12 +16,12 @@ pub(crate) mod dial_back_grant;
 pub(crate) mod direct_sui;
 pub(crate) mod lowid_callback_reask;
 pub(crate) mod one_link;
-pub(crate) mod source_handover;
 pub(crate) mod partial_share;
 pub(crate) mod queue_fanout;
 pub(crate) mod reciprocity;
 pub(crate) mod serve;
 pub(crate) mod server_callback_serve;
+pub(crate) mod source_handover;
 pub(crate) mod streaming_window;
 pub(crate) mod sx1_gate;
 pub(crate) mod two_hellos;
@@ -40,9 +40,6 @@ pub use self::direct_sui::{DirectSuiOptions, run_amule_direct_sui};
 pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callback_reask;
 pub use self::lowid_callback_reask::{
     PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,
-};
-pub use self::source_handover::{
-    SourceHandoverOptions, run_source_handover, score_run_dir as score_source_handover,
 };
 pub use self::one_link::{
     PeerOneLinkOptions, run_peer_one_link, score_run_dir as score_peer_one_link,
@@ -64,6 +61,9 @@ pub use self::reciprocity::{
 pub use self::serve::run_rmule_serves_amule_downloads;
 pub use self::server_callback_serve::verdict::score_run_dir as score_server_callback_serve;
 pub use self::server_callback_serve::{ServerCallbackServeOptions, run_server_callback_serve};
+pub use self::source_handover::{
+    SourceHandoverOptions, run_source_handover, score_run_dir as score_source_handover,
+};
 pub use self::streaming_window::{
     CorruptSeed, SeedHolding, StreamingWindowOptions,
     collect_kept_run as collect_streaming_window_run, corrupt_seed_arg, default_seeds,

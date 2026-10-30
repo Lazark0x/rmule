@@ -484,18 +484,13 @@ impl Bench {
             .rsplit_once('.')
             .with_context(|| format!("subnet {subnet} has no host octet"))?;
         let ip = format!("{prefix}.200");
-        let config = layout.root().join("ed2ksrv-config.toml");
-        fs::write(&config, crate::flow::ed2ksrv::render_bench_config(&ip))
-            .with_context(|| format!("write {}", config.display()))?;
+        let pinned = ed2ksrv.check(&self.docker, image)?;
         Ok(Some(
-            ed2ksrv
-                .check(&self.docker, image)?
-                .container()
+            crate::flow::ed2ksrv::configured(&pinned, layout.root(), &ip)?
                 .detach()
                 .name(self.names.server_container_name.clone())
                 .network(self.names.network_name.clone())
-                .ip(ip)
-                .volume(&config, "/etc/ed2k-server/config.toml"),
+                .ip(ip),
         ))
     }
 

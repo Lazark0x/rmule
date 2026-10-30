@@ -22,7 +22,7 @@ use crate::docker::{InternalNetwork, RunContainer};
 use crate::fake_public::subnet_cidr;
 use crate::fake_public_v6::FakePublicV6Plan;
 use crate::flow::bench::{Bench, DEFAULT_TAP_INTERFACE, run_checked};
-use crate::flow::ed2ksrv::ED2KSRV;
+use crate::flow::ed2ksrv::{self, ED2KSRV};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::verdict::{Body, Claim, Ipv6Verdict, label, write};
 use crate::flow::nat::dialect::{Ipv6Flow, WAN_SUBNET_INDEX, WAN_V6_NET};
@@ -520,8 +520,7 @@ fn start_bodies(
         let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
         bench.start_extra(
             &name,
-            ed2ksrv
-                .container()
+            ed2ksrv::configured(&ed2ksrv, &stage.leg_dir, stage.v4(HOST_ED2KSRV))?
                 .detach()
                 .name(&name)
                 .network(&stage.network)

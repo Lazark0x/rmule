@@ -42,7 +42,7 @@ use anyhow::{Context, Result};
 
 use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
-use crate::flow::ed2ksrv::ED2KSRV;
+use crate::flow::ed2ksrv::{self, ED2KSRV};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::nat::dialect::bench::{
     HOST_AMULE_KNO, HOST_ED2KSRV, HOST_EMULEQT, HOST_LEGACY_AMULE, Ipv6DialectOptions, Stage,
@@ -127,8 +127,7 @@ pub(super) fn start(
     let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
-        ed2ksrv
-            .container()
+        ed2ksrv::configured(&ed2ksrv, &stage.leg_dir, &server_v4)?
             .detach()
             .name(&server)
             .network(&stage.network)

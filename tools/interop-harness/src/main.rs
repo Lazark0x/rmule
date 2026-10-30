@@ -57,10 +57,6 @@ use crate::cli::nat::{
     SentinelSourcesLegacyArgs, ipv6_dialect, ipv6_net_accept, natgw_selfproof, natt, portmap,
     sentinel_sources_legacy,
 };
-use crate::cli::source_handover::{
-    PeerSourceHandoverArgs, PeerSourceHandoverScoreArgs, peer_source_handover,
-    peer_source_handover_score,
-};
 use crate::cli::one_link::{
     PeerOneLinkArgs, PeerOneLinkScoreArgs, peer_one_link, peer_one_link_score,
 };
@@ -82,6 +78,10 @@ use crate::cli::server_callback_serve::{
 };
 use crate::cli::server_surface::{
     ServerSurfaceArgs, ServerSurfaceScoreArgs, server_surface, server_surface_score,
+};
+use crate::cli::source_handover::{
+    PeerSourceHandoverArgs, PeerSourceHandoverScoreArgs, peer_source_handover,
+    peer_source_handover_score,
 };
 
 #[derive(Debug, Parser)]

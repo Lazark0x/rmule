@@ -63,7 +63,7 @@ use anyhow::{Context, Result, anyhow};
 use rmule_kad::{Kad2Message, KadDecoded, KadPublishedSource, KadSourceCandidate};
 
 use crate::flow::bench::Bench;
-use crate::flow::ed2ksrv::ED2KSRV;
+use crate::flow::ed2ksrv::{self, ED2KSRV};
 use crate::flow::evidence::{count_pcap_rows, write_pcap_first_match};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::identity::{hex_lower, parse_ed2k_file_hash, parse_ipv4_octets};
@@ -179,8 +179,7 @@ pub(super) fn start(
     let ed2ksrv = ED2KSRV.check(&bench.docker, options.ed2ksrv_image)?;
     bench.start_extra(
         &server,
-        ed2ksrv
-            .container()
+        ed2ksrv::configured(&ed2ksrv, &stage.leg_dir, stage.v4(HOST_ED2KSRV))?
             .detach()
             .name(&server)
             .network(&stage.network)

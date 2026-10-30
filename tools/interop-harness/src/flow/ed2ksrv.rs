@@ -11,12 +11,14 @@
 //! `build.sh`. A bare `docker build` of the recipe directory cannot work — the
 //! build context is the server's source tree, not the recipe.
 
+use std::fs;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::flow::pinned_image::Counterparty;
+use crate::docker::RunContainer;
+use crate::flow::pinned_image::{Counterparty, PinnedImage};
 
 /// The recipe's pin file, compiled in so the harness and `build.sh` read one
 /// source.
@@ -26,10 +28,25 @@ const PIN_ENV: &str = include_str!("../../images/ed2ksrv/pin.env");
 /// `this_ip` is rendered per run.
 const BENCH_CONFIG: &str = include_str!("../../images/ed2ksrv/config.toml");
 
+/// `pinned`'s container with [`BENCH_CONFIG`] rendered for `this_ip` under `dir`
+/// and mounted. The image's own config is upstream's template, which the server
+/// refuses to start from.
+///
+/// # Errors
+/// If the rendered config cannot be written.
+pub(crate) fn configured(pinned: &PinnedImage, dir: &Path, this_ip: &str) -> Result<RunContainer> {
+    let config = dir.join("ed2ksrv-config.toml");
+    fs::write(&config, render_bench_config(this_ip))
+        .with_context(|| format!("write {}", config.display()))?;
+    Ok(pinned
+        .container()
+        .volume(&config, "/etc/ed2k-server/config.toml"))
+}
+
 /// [`BENCH_CONFIG`] for a server at `this_ip`: the value must be the container's
 /// own address, because it feeds the login's reported address and the
 /// obfuscation key.
-pub(crate) fn render_bench_config(this_ip: &str) -> String {
+fn render_bench_config(this_ip: &str) -> String {
     BENCH_CONFIG
         .lines()
         .map(|line| {
