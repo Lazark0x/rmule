@@ -33,8 +33,9 @@
 //!   runs on it, and no second link stays up.
 //! - `serve-reask`: the same crossing, W's client alive with its address: W
 //!   stays queued, and its own link is its reask at aMule's `FILEREASKTIME`
-//!   (`PartFile.cpp:1477`), its UDP reask dropped. X holds the slot that long
-//!   at a higher rate, and stops just ahead of the reask. W attaches the dial
+//!   (`PartFile.cpp:1477`), its UDP reask dropped. `hold_slot.py` holds the
+//!   slot that long, a stock aMule capped low stopping reading well short of
+//!   it, and stops just ahead of the reask. W attaches the dial
 //!   (`ClientList.cpp:400-403`). Claims: W closes its own link unanswered, no
 //!   grant goes before that, the slot lands on the dial, the transfer runs on
 //!   it, and no second link stays up. The verdict's rows time the close
@@ -94,9 +95,9 @@ const STOP_GRACE_SECS: u64 = 10;
 /// aMule's `FILEREASKTIME` (21:40, `protocol/ed2k/Constants.h:35`): how long
 /// after its ask W reasks over TCP, its UDP reask unanswered.
 const FILE_REASK_SECS: u64 = 1300;
-/// The rate X holds the slot at through W's reask period: the served file
-/// lasts it out, and `AMULE_MAX_DOWNLOAD` keeps it from ending sooner.
-const REASK_X_KIB: u32 = 16;
+/// What holds the slot through W's reask period, written into the run dir
+/// and mounted.
+const HOLD_SLOT: &str = include_str!("crossing/hold_slot.py");
 /// How long before W's reask X stops, so the dial's hello is out when W's
 /// own connect goes.
 const REASK_LEAD_SECS: u64 = 8;
@@ -177,6 +178,9 @@ pub struct PeerCrossingOptions<'a> {
     pub amule_image: &'a str,
     /// The tcpdump capture-sidecar image.
     pub capture_image: &'a str,
+    /// An image carrying `python3`, which runs what holds the slot on the
+    /// reask leg.
+    pub probe_image: &'a str,
     /// Build context for the eserver image.
     pub server_build_context: &'a Path,
     /// Build context for the aMule image.
@@ -493,14 +497,34 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 &rmule_ip.to_string(),
                 RMULE_SERVE_TCP_PORT,
             );
-            start_downloader(
-                &mut bench,
-                &options,
-                &holder,
-                &slot_at_rmule,
-                SLOT_FILE,
-                (Some(if reask { REASK_X_KIB } else { X_KIB }), false),
-            )?;
+            if reask {
+                let script = root.join("hold_slot.py");
+                fs::write(&script, HOLD_SLOT)
+                    .with_context(|| format!("write {}", script.display()))?;
+                let slot_hash: String = parse_ed2k_file_hash(&read_link(SLOT_LINK)?)?
+                    .iter()
+                    .map(|byte| format!("{byte:02X}"))
+                    .collect();
+                let probe = RunContainer::new(options.probe_image.to_owned())
+                    .detach()
+                    .name(holder.as_str())
+                    .network(bench.names.network_name.clone())
+                    .volume(&root, "/w")
+                    .entrypoint("python3")
+                    .arg("/w/hold_slot.py")
+                    .arg(format!("{rmule_ip}:{RMULE_SERVE_TCP_PORT}"))
+                    .arg(slot_hash);
+                bench.start_extra(&holder, probe, "run the slot holder")?;
+            } else {
+                start_downloader(
+                    &mut bench,
+                    &options,
+                    &holder,
+                    &slot_at_rmule,
+                    SLOT_FILE,
+                    (Some(X_KIB), false),
+                )?;
+            }
             wait_for_container_log(
                 &bench.docker,
                 &rmule_name,

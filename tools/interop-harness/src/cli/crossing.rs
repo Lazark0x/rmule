@@ -80,6 +80,9 @@ pub(crate) struct PeerCrossingArgs {
     /// Which race to stage.
     #[arg(long, value_enum)]
     pub(crate) leg: LegArg,
+    /// An image carrying `python3`, which holds the slot on the reask leg.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_NATPROBE_IMAGE)]
+    pub(crate) probe_image: String,
     /// Seconds W stays queued before X stops: past aMule's 40 s idle close.
     #[arg(long, default_value_t = 45)]
     pub(crate) idle: u64,
@@ -166,6 +169,7 @@ pub(crate) fn peer_crossing(args: PeerCrossingArgs) -> Result<()> {
         server_image: &args.eserver.server_image,
         amule_image: &args.amule.amule_image,
         capture_image: &args.capture.capture_image,
+        probe_image: &args.probe_image,
         server_build_context: &args.eserver.server_build_context,
         amule_build_context: &args.amule.amule_build_context,
         capture_build_context: &args.capture.capture_build_context,
