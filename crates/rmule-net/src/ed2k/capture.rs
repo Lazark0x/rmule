@@ -219,6 +219,7 @@ pub(crate) fn command_kind_label(kind: &Ed2kCommandKind) -> &'static str {
         Ed2kCommandKind::RequestSources => "RequestSources",
         Ed2kCommandKind::RequestCallback => "RequestCallback",
         Ed2kCommandKind::RequestHolepunch => "RequestHolepunch",
+        Ed2kCommandKind::UpdateIpv6 => "UpdateIpv6",
         Ed2kCommandKind::OfferFiles => "OfferFiles",
     }
 }
@@ -235,5 +236,8 @@ pub(crate) fn command_reject_reason_label(reason: &CommandRejectReason) -> &'sta
         CommandRejectReason::UnsupportedServerCapability {
             capability: ServerCapability::LowIdHolepunch,
         } => "UnsupportedServerCapability:LowIdHolepunch",
+        CommandRejectReason::UnsupportedServerCapability {
+            capability: ServerCapability::Ipv6Update,
+        } => "UnsupportedServerCapability:Ipv6Update",
     }
 }

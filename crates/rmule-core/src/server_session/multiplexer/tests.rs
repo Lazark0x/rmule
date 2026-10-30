@@ -631,3 +631,67 @@ async fn the_server_high_id_level_follows_reassignment_and_ends_with_the_session
     drop(evt_tx);
     settles(&mut generation, &reach, false).await;
 }
+
+/// The server's copy of our IPv6 follows the Advertised IPv6: told once per
+/// move, zeros when it goes, and nothing on a wake that moved nothing or on a
+/// server that took no update (ADR-0087).
+#[tokio::test]
+async fn an_advertised_ipv6_that_moves_is_told_only_to_a_server_that_takes_it() {
+    use std::net::Ipv6Addr;
+    use std::sync::{Arc, Mutex};
+
+    let (first, second): (Ipv6Addr, Ipv6Addr) = (
+        "2001:db8::1".parse().unwrap(),
+        "2001:db8::2".parse().unwrap(),
+    );
+    for takes_it in [true, false] {
+        let (_evt_tx, evt_rx) = mpsc::channel(8);
+        let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+        let (changed_tx, changed) = tokio::sync::watch::channel(0_u64);
+        let held = Arc::new(Mutex::new(Some(first)));
+        let read = {
+            let held = held.clone();
+            Arc::new(move || *held.lock().unwrap())
+        };
+        let _handle = ServerSession::spawn(
+            FakeLink {
+                events: evt_rx,
+                sent: cmd_tx,
+            },
+            client_id(),
+            SessionSinks {
+                grants: rmule_ed2k::ServerGrants {
+                    ipv6_update: takes_it,
+                    ..rmule_ed2k::ServerGrants::default()
+                },
+                ipv6_told: Some(crate::server_session::multiplexer::Ipv6Told {
+                    told: Some(first),
+                    follow: rmule_net::peer::Ipv6Follow { changed, read },
+                }),
+                ..test_sinks(SharedOwnIdentity::default())
+            },
+        );
+        let wake = |address| {
+            *held.lock().unwrap() = address;
+            changed_tx.send_modify(|generation| *generation += 1);
+        };
+        let quiet = Duration::from_millis(50);
+
+        wake(Some(first));
+        assert!(
+            tokio::time::timeout(quiet, cmd_rx.recv()).await.is_err(),
+            "the same address is not news"
+        );
+        for address in [Some(second), None] {
+            wake(address);
+            let told = tokio::time::timeout(quiet, cmd_rx.recv()).await;
+            if takes_it {
+                assert!(
+                    matches!(told, Ok(Some(Ed2kCommand::UpdateIpv6 { address: sent })) if sent == address)
+                );
+            } else {
+                assert!(told.is_err(), "the server took no update");
+            }
+        }
+    }
+}

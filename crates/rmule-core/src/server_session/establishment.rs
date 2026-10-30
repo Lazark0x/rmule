@@ -118,8 +118,7 @@ async fn establish_into(
     }
     facts.connecting(&server, leaving).await;
     // ADR-0087 §4.1: the login advertises our Known IPv6 only when the
-    // Advertised Endpoints chooser has settled one — and then both signals
-    // ride, because a server may gate on either.
+    // Advertised Endpoints chooser has settled one.
     let advertised_ipv6 = shared.ipv6_advert().get();
     // ADR-0091: the login's `0xF9` is a claim that we can be punched, so it
     // rides only when the socket a punch would land on is really there — an
@@ -201,6 +200,10 @@ async fn establish_into(
             reach: shared.reach(),
             dial_backs: shared.dial_backs().clone(),
             tcp_port: identity.tcp_port(),
+            ipv6_told: (!over_ipv6).then(|| super::multiplexer::Ipv6Told {
+                told: advertised_ipv6,
+                follow: shared.ipv6_advert().follow(),
+            }),
         },
     );
     *slot = Some(handle.clone());

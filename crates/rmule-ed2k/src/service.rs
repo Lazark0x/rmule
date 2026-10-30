@@ -67,6 +67,12 @@ pub enum Ed2kCommand {
         /// observed no keepalive from us.
         our_udp_port: u16,
     },
+    /// Tell the server our Known IPv6 moved or went (`OP_IPV6_UPDATE`,
+    /// ADR-0087). Refused locally unless the server set `IPV6_UPDATE`.
+    UpdateIpv6 {
+        /// The address to publish from now on, `None` to withdraw it.
+        address: Option<std::net::Ipv6Addr>,
+    },
     /// Publish our shared files to the server, so its searches can return them
     /// and its source lookups can name us.
     OfferFiles {
@@ -98,6 +104,8 @@ pub enum Ed2kCommandKind {
     RequestCallback,
     /// [`Ed2kCommand::RequestHolepunch`].
     RequestHolepunch,
+    /// [`Ed2kCommand::UpdateIpv6`].
+    UpdateIpv6,
     /// [`Ed2kCommand::OfferFiles`].
     OfferFiles,
 }
@@ -117,6 +125,8 @@ pub enum ServerCapability {
     /// `SRV_TCPFLG_LOWID_HOLEPUNCH`: without it a `0x60` may close the link
     /// (ADR-0091).
     LowIdHolepunch,
+    /// `SRV_TCPFLG_IPV6_UPDATE`: without it a `0x63` may close the link.
+    Ipv6Update,
 }
 
 /// Why the session refused a command instead of putting it on the wire.

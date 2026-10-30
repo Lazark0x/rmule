@@ -254,7 +254,10 @@ bit `0x1000` stays clear. emule-qt's spec at `73fff714` names it `SRVCAP_IPV6`, 
 Lugdunum's `SRVCAP_NATTRAVERSAL` and ed2k-server's CHANGELOG 0.9.84 records the name's withdrawal
 (`lugdunum_natt.rs:47`): a client that sets it gets an odd Low ID and a longer `OP_IDCHANGE`, and
 claims a callback rmule does not speak (ADR-0091). ed2k-server keys the extension on the tag
-alone (README *IPv6*).
+alone (README *IPv6*). An Advertised IPv6 that moves or goes after login reaches a server that set
+`OP_IDCHANGE` bit `0x8000` as `OP_IPV6_UPDATE 0x63` (sixteen bytes, zeros to withdraw), on a
+session that did not arrive over IPv6; any other server keeps what the login named until the next
+one.
 `OP_IDCHANGE` and UDP-ping flag bit `0x4000` are read, deliberately asymmetric.
 `OP_SERVERIDENT`'s `ST_IPV6_STATUS 0xAB` feeds Reachability's IPv6 probe verdict (`PROBED`
 without `REACHABLE` suppresses the tag; cleared on disconnect), and the server's own IPv6 is

@@ -79,6 +79,39 @@ fn a_server_that_never_set_the_punch_bit_is_never_sent_a_request() {
     assert!(session.poll_output().is_none(), "nothing was written");
 }
 
+/// An address that moves in session goes out as `0x63`, on a server that set
+/// `0x8000`, and is refused locally on any other: `0x8000` exists because
+/// v0.9.82 sets `0x4000` without knowing the opcode (CHANGELOG 0.9.83).
+#[test]
+fn an_ipv6_update_goes_only_to_a_server_that_takes_it() {
+    let update = Ed2kCommand::UpdateIpv6 { address: None };
+
+    let mut session = fixture::logged_in_session(7);
+    session.handle_command(update.clone());
+    assert!(matches!(
+        session.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::UpdateIpv6,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::Ipv6Update,
+            },
+        }))
+    ));
+
+    let mut session = fixture::started_session(7);
+    fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::IPV6_UPDATE)),
+    );
+    while session.poll_output().is_some() {}
+    session.handle_command(update);
+    let Some(Output::Write(bytes)) = session.poll_output() else {
+        panic!("the update is a write");
+    };
+    assert_eq!(&bytes[..6], [0xE3, 0x11, 0x00, 0x00, 0x00, 0x63]);
+    assert_eq!(&bytes[6..], [0; 16], "zeros withdraw the address");
+}
+
 /// An introduction arrives whether we asked or the peer did, and a refusal
 /// names its target — unlike `OP_CALLBACK_FAIL`, whose empty body cannot be
 /// matched to an attempt. A repeat of the same INFO is delivered again, not

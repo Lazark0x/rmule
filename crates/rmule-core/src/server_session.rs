@@ -92,6 +92,7 @@ pub(crate) mod tests {
             reach: None,
             dial_backs: Default::default(),
             tcp_port: 4662,
+            ipv6_told: None,
             // Granted, so a related search goes out unless a test withdraws it.
             grants: rmule_ed2k::ServerGrants {
                 related_search: true,

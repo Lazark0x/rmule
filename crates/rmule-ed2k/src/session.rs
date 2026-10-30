@@ -14,7 +14,8 @@ use rmule_primitives::{
 
 use crate::{
     CallbackRequest, CloseReason, CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kError,
-    Ed2kEvent, GetServerList, GetSourcesRequest, HolepunchRequest, LoginAdvert, LoginRequest,
+    Ed2kEvent, GetServerList, GetSourcesRequest, HolepunchRequest, Ipv6Update, LoginAdvert,
+    LoginRequest,
     OfferFiles, QueryMoreResults, RelatedSearchRequest, SearchRequest, ServerAssignedFacts,
     ServerCapability, ServerGrants, ServerPacket, UdpPortsAdvert,
     server_packet::DecodedServerFrame,
@@ -365,6 +366,26 @@ impl Ed2kSession {
                 }
                 .encode_packet()
                 .encode();
+                self.core.push_write(Arc::from(bytes));
+            }
+            Ed2kCommand::UpdateIpv6 { address } => {
+                if !matches!(self.state, State::LoggedIn) {
+                    self.reject_command(
+                        Ed2kCommandKind::UpdateIpv6,
+                        CommandRejectReason::NotLoggedIn,
+                    );
+                    return;
+                }
+                if !self.grants.ipv6_update {
+                    self.reject_command(
+                        Ed2kCommandKind::UpdateIpv6,
+                        CommandRejectReason::UnsupportedServerCapability {
+                            capability: ServerCapability::Ipv6Update,
+                        },
+                    );
+                    return;
+                }
+                let bytes = Ipv6Update { address }.encode_packet().encode();
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::OfferFiles {

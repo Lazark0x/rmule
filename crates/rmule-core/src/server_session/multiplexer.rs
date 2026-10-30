@@ -433,6 +433,39 @@ pub(crate) struct SessionSinks {
     /// The TCP port the login named, as configured: the self-connect guard
     /// reads the port we present from it at each callback.
     pub(crate) tcp_port: u16,
+    /// How the session keeps the server's copy of our IPv6 true. `None` on a
+    /// session that arrived over IPv6: the server keeps the address it
+    /// observed and ignores an update.
+    pub(crate) ipv6_told: Option<Ipv6Told>,
+}
+
+/// The IPv6 a server last heard from us, and what wakes the session when the
+/// Advertised IPv6 may have moved (ADR-0087).
+pub(crate) struct Ipv6Told {
+    /// What the login's `CT_MOD_IP_V6` named, then what the last update did.
+    pub(crate) told: Option<std::net::Ipv6Addr>,
+    /// The Advertised IPv6, followed.
+    pub(crate) follow: rmule_net::peer::Ipv6Follow,
+}
+
+impl Ipv6Told {
+    /// The address the server must hear next, once it differs from what the
+    /// server last heard. Pends forever when `this` is `None`.
+    async fn moved(this: &mut Option<Self>) -> Option<std::net::Ipv6Addr> {
+        let Some(told) = this else {
+            return std::future::pending().await;
+        };
+        loop {
+            if told.follow.changed.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+            let now = (told.follow.read)();
+            if now != told.told {
+                told.told = now;
+                return now;
+            }
+        }
+    }
 }
 
 /// Namespace for the session spawner. The session itself is the spawned task.
@@ -494,6 +527,7 @@ async fn run_session<L: ServerLink>(
         reach,
         dial_backs,
         tcp_port,
+        mut ipv6_told,
     } = sinks;
     // Every waiter on one file's ask, keyed by the hash `OP_FOUNDSOURCES`
     // carries back (ADR-0107): lookups for different files ride the link side
@@ -510,6 +544,16 @@ async fn run_session<L: ServerLink>(
     introductions.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            // `changed` is cancel-safe and the address is read after it, so a
+            // lost race costs nothing. A server that took no update keeps what
+            // the login named (ADR-0087).
+            address = Ipv6Told::moved(&mut ipv6_told) => {
+                if grants_tx.borrow().ipv6_update
+                    && link.send(Ed2kCommand::UpdateIpv6 { address }).await.is_err()
+                {
+                    break;
+                }
+            }
             // An interval never closes, so this arm cannot end the session;
             // `tick` is cancel-safe, so racing it drops nothing.
             () = answer_wait_expiry(searches.deadline()) => {

@@ -33,6 +33,7 @@ opcodes! {
         LowIdHolepunchRequest = 0x60,
         LowIdHolepunchInfo = 0x61,
         LowIdHolepunchFail = 0x62,
+        Ipv6Update = 0x63,
         GlobSearchReq3 = 0x90,
         GlobSearchReq2 = 0x92,
         GlobGetSources2 = 0x94,

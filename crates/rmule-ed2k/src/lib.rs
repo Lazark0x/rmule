@@ -19,6 +19,7 @@ mod found_sources;
 mod get_server_list;
 mod get_sources;
 mod holepunch;
+mod ipv6_update;
 mod id_change;
 mod login;
 mod obfuscation;
@@ -55,6 +56,7 @@ pub use holepunch::{
     natt_keepalive_datagram, natt_keepalive_port,
 };
 pub use id_change::IdChange;
+pub use ipv6_update::Ipv6Update;
 pub use login::{LoginAdvert, LoginRequest, UdpPortsAdvert, server_capability_flags};
 pub use obfuscation::{ServerObfuscation, ServerObfuscationStep};
 pub use offer_files::{
