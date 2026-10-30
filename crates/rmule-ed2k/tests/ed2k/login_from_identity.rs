@@ -195,11 +195,8 @@ fn from_identity_preserves_non_utf8_nickname_bytes() {
 /// ADR-0087 §4.1's fifth login tag and its coupled flag bit, from the spec's
 /// own worked bytes (`01 01 00 AE` then sixteen raw address bytes).
 ///
-/// Evidence: **deterministic tier only, awaiting a pinned IPv6 server.** The
-/// one server implementing the dialect has no pinnable artefact — its `master`
-/// carries no IPv6 at all and the last release predates the work — so these
-/// bytes are the spec's, not a capture's. The row upgrades to captured when a pinned
-/// ed2k-server build exists.
+/// Evidence: **deterministic tier only.** These bytes are the spec's, not a
+/// capture's; `ed2ksrv-server-surface` drives the tag against the pin.
 #[test]
 fn an_advertised_ipv6_rides_as_the_fifth_tag_and_leaves_the_flags_alone() {
     let address: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
