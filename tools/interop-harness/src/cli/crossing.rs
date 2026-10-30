@@ -33,6 +33,8 @@ pub(crate) enum LegArg {
     ServeCalledOff,
     /// rmule's dial-back has written its hello when the waiter's link lands.
     ServeCrossed,
+    /// The crossed race with the waiter's record of rmule alive, address known.
+    ServeCrossedKnown,
     /// A Low-ID waiter comes back while rmule's slot sits free.
     LowIdReturn,
     /// rmule's download dial held at its SYN while its seed's link lands.
@@ -46,6 +48,7 @@ impl From<LegArg> for CrossingLeg {
         match leg {
             LegArg::ServeCalledOff => Self::ServeCalledOff,
             LegArg::ServeCrossed => Self::ServeCrossed,
+            LegArg::ServeCrossedKnown => Self::ServeCrossedKnown,
             LegArg::LowIdReturn => Self::LowIdReturn,
             LegArg::DownloadYield => Self::DownloadYield,
             LegArg::DownloadCrossed => Self::DownloadCrossed,

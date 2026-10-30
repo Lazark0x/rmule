@@ -300,8 +300,10 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .any(|line| line.starts_with("serve.crossed_hello_held"));
     let unanswered = |link: Option<&Link>| link.is_some_and(|link| link.answer_from_rmule < 0.0);
     let claims = match at.shape.leg {
-        CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed => {
-            let on_dial = at.shape.leg == CrossingLeg::ServeCrossed;
+        CrossingLeg::ServeCalledOff
+        | CrossingLeg::ServeCrossed
+        | CrossingLeg::ServeCrossedKnown => {
+            let on_dial = at.shape.leg != CrossingLeg::ServeCalledOff;
             let mut claims = vec![
                 Claim::about(
                     if on_dial {
