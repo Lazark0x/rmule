@@ -458,7 +458,7 @@ fn request_sources_asks_a_non_sx2_peer_with_op_requestsources() {
 
 /// The requester consume path for `OP_ANSWERSOURCES2` (`0x84`): an SX2 answer
 /// to our own `0x83` ask fans in through the *same* sanity-filter / provenance
-/// / cap core as `0x82` (ADR-0055 "one semantic core"), surfacing
+/// / cap core as `0x82` (ADR-0054 "one semantic core"), surfacing
 /// `SourcesReceived`. v4 carries crypt+hash provenance, and a HighID rides
 /// hybrid on the wire, so the decoded id must swap back to ed2k order.
 #[test]

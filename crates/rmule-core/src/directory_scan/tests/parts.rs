@@ -1,5 +1,5 @@
-//! Part files against a scripted directory (ADR-0100, "Part files are known
-//! by their download rows"): the scan skips the paths the download rows
+//! Part files against a scripted directory (ADR-0102, "Part files are known by their download
+//! rows"): the scan skips the paths the download rows
 //! name, never a suffix.
 
 use std::io;

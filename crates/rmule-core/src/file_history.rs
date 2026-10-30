@@ -77,8 +77,7 @@ pub struct SharedFileFact {
     /// Where the shared bytes lie.
     pub path: PathBuf,
     /// Why nothing is offered for it now, and since when rmule noticed;
-    /// `None` while it is offered (ADR-0100, "The registry against the
-    /// disk").
+    /// `None` while it is offered (ADR-0106, "The registry against the disk").
     pub withheld: Option<Withheld>,
 }
 

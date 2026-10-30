@@ -272,8 +272,7 @@ fn a_search_completed_without_kad_says_so() {
 }
 
 /// A Kad-only search with no server to send to completes on Kad, and its
-/// entry says the server legs were not sent (ADR-0034, "A server leg's
-/// states").
+/// entry says the server legs were not sent (ADR-0034, "Legs").
 #[test]
 fn a_search_completed_with_no_server_says_its_server_legs_were_not_sent() {
     use rmule_core::{LegNotSent, SearchLegState as L, SearchLegs};

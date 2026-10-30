@@ -39,8 +39,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-# The filesystem type behind a File Identity (ADR-0100, "What the scan
-# remembers"), confined to `directory_scan/fs.rs`.
+# The filesystem type behind a File Identity (ADR-0100), confined to `directory_scan/fs.rs`.
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]

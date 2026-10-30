@@ -94,7 +94,7 @@ pub(crate) enum Decision {
     },
     /// End the live worker on `peer`: the brain released it. Every
     /// retirement — whatever its reason — ends its worker through this one
-    /// decision (ADR-0090 "Source ownership"); the runner sends it
+    /// decision (ADR-0090 "A download holds each source under one owner"); the runner sends it
     /// `PeerWorkerCommand::Shutdown { cancel }`. `cancel` is true for a
     /// source that holds nothing we need, so a slot it granted is given back
     /// with `OP_CANCELTRANSFER` (ADR-0056, ADR-0112).
@@ -114,7 +114,7 @@ pub(crate) enum Decision {
     /// Persist a newly-adopted provisional peer hash set (ADR-0027 authority).
     PersistProvisionalHashes(Vec<PartHash>),
     /// Persist that this download distrusts `user_hash`: it served this file
-    /// bad data (ADR-0090 "Source ownership").
+    /// bad data (ADR-0090 "A download holds each source under one owner").
     DistrustPeer { user_hash: UserHash },
     /// Persist that the peers' vote contested this download's Kad root, so a
     /// resumed run trusts neither (ADR-0038).

@@ -1,9 +1,9 @@
 //! The legs of a search, and the sources of a download, are independent
-//! (ADR-0034 "The legs are independent", ADR-0097): with Kad running
+//! (ADR-0034 "Legs", ADR-0097): with Kad running
 //! and no server session a search goes out over Kad at once and nothing
 //! dials a server. Its server leg waits while the operator's Server Intent
 //! stands and is sent on the session it brings; with no intent it is not
-//! sent, and the search completes on Kad (ADR-0034, "A server leg's states").
+//! sent, and the search completes on Kad (ADR-0034, "Legs").
 //! A download on Kad alone gains the server's sources when the operator
 //! connects. A session lost under a sent server leg fails nothing: the
 //! leg waits for the reconnect while the intent stands and is sent again, and

@@ -414,7 +414,7 @@ pub trait PeerTransferService: Send + 'static {
     }
 
     /// Adopt the builder's one set of `AdapterCells`
-    /// (ADR-0048 "Identity ownership"): `Core::builder`
+    /// (ADR-0048 "One identity per node, owned by the core"): `Core::builder`
     /// weaves its own adapter through this, and `CoreBuilder::peer_transfer`
     /// calls it on the adapter it installs, so an injected dial adapter's
     /// hellos state the node's adverts and SUI key, and its dials meet the

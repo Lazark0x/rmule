@@ -1,5 +1,5 @@
-//! Part files in the watch (ADR-0100, "Part files are known by their download
-//! rows"): a leftover is told once per scan, however often it is examined, and
+//! Part files in the watch (ADR-0102, "Part files are known by their download rows"): a leftover
+//! is told once per scan, however often it is examined, and
 //! a part file a new download starts writing is skipped from the round that
 //! learns its row.
 

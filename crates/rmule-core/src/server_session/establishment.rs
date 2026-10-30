@@ -1,6 +1,6 @@
 //! Session **establishment** and the server switch: the one dial + login path,
-//! the operator's `connect_to_server` (ADR-0093, "Connecting is the operator's
-//! act"). It ends the live session and reports the `Disconnected(old)` →
+//! the operator's `connect_to_server` (ADR-0095, "Connecting is the operator's act"). It ends the
+//! live session and reports the `Disconnected(old)` →
 //! `Connecting(new)` → `Connected`/`ConnectFailed` trail; no activity dials,
 //! each rides [`SharedServerSession::live_session`] or waits for one. The IP-filter gate refuses a filtered
 //! (or filtered-after-resolve) server before any dial; each dial's link,

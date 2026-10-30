@@ -11,7 +11,7 @@
 //! * source ingest, which admits an IPv6 source only when there is an address
 //!   to dial it from.
 //!
-//! It is a **view over the owner** rather than a cell (ADR-0084 "Own address ownership"):
+//! It is a **view over the owner** rather than a cell (ADR-0084 "One owner of the Own Address"):
 //! every read settles the one Advertised Endpoints
 //! chooser against Address Learning and the server's probe verdict, so a
 //! prefix renumber, an RFC 4941 rotation, a peer-vote quorum or a server

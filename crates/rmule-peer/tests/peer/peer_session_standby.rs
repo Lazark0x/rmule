@@ -160,7 +160,7 @@ fn standby_re_ask_skips_probe_and_hashset() {
 
 #[test]
 fn cancel_latch_prevents_double_emit_in_same_cycle() {
-    // ADR-0056: "at most one 0x56 per ask-cycle", latched and reset by
+    // ADR-0056, latched and reset by
     // the re-ask transition.
     let h = file_hash(0xAA);
     let mut session = identified_session();

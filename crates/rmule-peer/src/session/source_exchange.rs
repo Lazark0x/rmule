@@ -142,8 +142,8 @@ impl PeerSession {
         self.route_answer_sources(a.file_hash, a.sources);
     }
 
-    /// The one consume core both source answers share (ADR-0055 "one semantic
-    /// core"): the aMule-mirrored sanity filter, Low-ID routing rule, and
+    /// The one consume core both source answers share (ADR-0054 "one semantic core"): the
+    /// aMule-mirrored sanity filter, Low-ID routing rule, and
     /// per-file cap (`source_exchange::sanitize_and_route`). Sources are only
     /// accepted for a file we solicited — an unsolicited hash must not create
     /// per-file state. Emits `SourcesReceived` with only the

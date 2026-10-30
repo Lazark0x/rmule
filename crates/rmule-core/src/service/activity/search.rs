@@ -66,8 +66,8 @@ pub(in crate::service) struct ActiveSearch {
     pub(in crate::service) waiting: WaitingLegs,
 }
 
-/// A running keyword search's legs that wait (ADR-0034, "The legs are
-/// independent"): the server leg and its sweep for a session, the Kad
+/// A running keyword search's legs that wait (ADR-0034, "Legs"): the server leg and its sweep for
+/// a session, the Kad
 /// leg for Kad to run. The actor sends each on its arrival; the task drops
 /// its receiver once the leg can no longer run for it.
 #[derive(Default)]

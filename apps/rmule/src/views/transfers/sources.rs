@@ -366,7 +366,7 @@ mod tests {
 
     /// A seed refused under a `required` policy for its unknown crypt stance
     /// says so on its own row after its slot took its next peer (ADR-0110,
-    /// "The cause is the source's, not the slot's").
+    /// "the cause outlives the slot").
     #[test]
     fn a_dial_that_ended_before_the_hello_says_why_after_its_slot_moved_on() {
         let mut view = TransfersView::new();

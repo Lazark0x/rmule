@@ -1,4 +1,4 @@
-//! The re-race (ADR-0086, "the mapper keeps looking for Exact"): a winner
+//! The re-race (ADR-0086): a winner
 //! short of Exact is not terminal and not remembered, the other protocols are
 //! raced again while it keeps its leases, and only a strictly better standing
 //! replaces it.

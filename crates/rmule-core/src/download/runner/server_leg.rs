@@ -1,5 +1,5 @@
-//! A running download's server leg (ADR-0093, "A download's sources are
-//! independent"): each server session that comes up while the run is
+//! A running download's server leg (ADR-0097, "A download's sources are independent"): each server
+//! session that comes up while the run is
 //! running is asked for the file's sources, as aMule asks the server it has
 //! just connected to for every file in its queue. A run that started on Kad
 //! alone gains the server's sources when the operator connects, and a

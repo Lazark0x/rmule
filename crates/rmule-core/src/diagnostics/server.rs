@@ -51,7 +51,7 @@ pub struct ServerDiagnostics {
     /// row's key. `None` for a row listed by address, and for a name the
     /// Status Ping Sweep has not reached yet.
     pub resolved_address: Option<ResolvedAddress>,
-    /// When a dead row died (ADR-0052, "Dead since when"); `None` while it
+    /// When a dead row died (ADR-0080, "Dead since when"); `None` while it
     /// is not dead.
     pub dead_since: Option<DeadSince>,
 }
@@ -126,8 +126,7 @@ pub(crate) enum PingProbe {
     Silent(Instant),
 }
 
-/// What the connected session was told of the share set (ADR-0093, "What is
-/// announced to a server that answers related searches").
+/// What the connected session was told of the share set (ADR-0099).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SharesToServer {
     /// The share set was announced (`OP_OFFERFILES`).

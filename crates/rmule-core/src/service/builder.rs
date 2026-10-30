@@ -42,7 +42,7 @@ use crate::CoreSettings;
 /// constructor telescope. Start it with [`Core::builder`], override any slot
 /// with the matching setter, and [`build`](Self::build) spawns the actor.
 ///
-/// The builder is the one wiring point (ADR-0048 "Identity ownership"):
+/// The builder is the one wiring point (ADR-0048 "One identity per node, owned by the core"):
 /// every shared cell it owns lives in one `AdapterCells`, and
 /// its own default adapters and any adapter a caller injects adopt that one
 /// set through the same `adopt_cells` trait method — so a core with custom
@@ -81,7 +81,8 @@ struct NodeParts {
     kad_cells: KadCells,
     /// A Kad level stated in place of the verdicts a pump publishes.
     kad_reach: Option<crate::KadReachLevel>,
-    /// The node's **User Hash**, fixed here at build time (ADR-0048 "Identity ownership"):
+    /// The node's **User Hash**, fixed here at build time (ADR-0048 "One identity per node, owned
+    /// by the core"):
     /// [`Core::builder`] reads it from the store it
     /// is given — the same generate-once row a front-end's
     /// [`AppConfigStore::ensure_identity`] reads — and a tool that names its
@@ -218,7 +219,7 @@ where
         &self.node.kad_cells
     }
 
-    /// Fix the node's **User Hash** (ADR-0048 "Identity ownership")
+    /// Fix the node's **User Hash** (ADR-0048 "One identity per node, owned by the core")
     /// in place of the one [`Core::builder`] read from the store — for a
     /// tool or a test that names its hash. Build time is the only time a hash
     /// is chosen: no command carries one.
@@ -591,7 +592,7 @@ impl Core {
         // name for it.
         let app_config = Arc::new(DurableAppConfig::new(Arc::clone(&store)));
         // The node's Secure User Identification keypair (ADR-0041), loaded
-        // once, here, and never replaced (ADR-0048 "Identity ownership"):
+        // once, here, and never replaced (ADR-0048 "One identity per node, owned by the core"):
         // aMule's `CClientCreditsList` loads `cryptkey.dat` once
         // at construction and a failed load leaves crypto unavailable rather
         // than failing start (`ClientCreditsList.cpp:49-54`, `:282-323`).
@@ -649,7 +650,7 @@ impl Core {
         // (whose requester gate reads it before dialling a helper) — the
         // same create-once-clone-into-every-adapter pattern as `ban_store`.
         let peer_roster = crate::peer_roster::SharedPeerRoster::default();
-        // The node's User Hash (ADR-0048 "Identity ownership"):
+        // The node's User Hash (ADR-0048 "One identity per node, owned by the core"):
         // the store's generate-once identity row, the one a front-end reads
         // for its nickname and ports — so the hash and the SUI key loaded
         // above come from one place. A failed read mints a fresh hash for

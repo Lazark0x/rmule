@@ -55,7 +55,7 @@ pub(crate) use watch::{
 pub(crate) use whereabouts::Whereabouts;
 
 /// A file under the directory whose content is already shared from another
-/// path: the **Spare Copy** (ADR-0104, "Spare copies are recorded"). Trusted
+/// path: the **Spare Copy** (ADR-0104). Trusted
 /// unread while its stamp holds, it shares nothing and answers nothing on
 /// the wire; a row whose file goes moves to it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,8 +82,8 @@ pub(crate) struct SetAside {
     pub(crate) identity: Option<FileIdentity>,
 }
 
-/// The part files rmule's own downloads name (ADR-0100, "Part files are known
-/// by their download rows"): the scan skips these paths, and no others, as
+/// The part files rmule's own downloads name (ADR-0102, "Part files are known by their download
+/// rows"): the scan skips these paths, and no others, as
 /// rmule's own work. A file that merely ends `.part` is not among them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PartFiles {

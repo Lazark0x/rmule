@@ -357,7 +357,7 @@ pub(super) async fn part_file_changed<S, P>(
     }
 }
 
-/// The whole file did not hash (ADR-0094, "Finalize with lost parts"):
+/// The whole file did not hash (ADR-0094, "A whole-file hash failing at finalize"):
 /// re-check every recorded part, drop those that fail and fetch them again.
 /// When no part can be named — a file verified by its file hash alone —
 /// every recorded part is dropped. Only a part file that is gone or

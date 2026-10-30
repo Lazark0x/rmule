@@ -41,8 +41,9 @@
 //! carries exactly **three** tags — FILENAME, FILESIZE, SOURCES, no FILETYPE
 //! (`SharedFileList`'s `GetFileTypeString` returns empty, and aMule appends the
 //! tag only for a non-empty type). rmule mirrors aMule: [`KadSharedFile::file_type`]
-//! `= None` emits three tags, `= Some` emits four. The ADR-0062 "always four"
-//! claim is superseded here — flagged for the ADR text (this module does not edit
+//! `= None` emits three tags, `= Some` emits four. ADR-0062's
+//! claim of four tags always is superseded here — flagged for the ADR text (this module does not
+//! edit
 //! the ADR).
 //!
 //! The FILENAME/FILESIZE split is capture-independent (rmule's own storer types

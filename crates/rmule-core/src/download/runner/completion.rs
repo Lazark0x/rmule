@@ -455,7 +455,7 @@ async fn refused<S, P>(
     }
 }
 
-/// The whole file did not hash (ADR-0094, "Finalize with lost parts"):
+/// The whole file did not hash (ADR-0094, "A whole-file hash failing at finalize"):
 /// re-check every recorded part, drop those that fail and fetch them again;
 /// when no part can be named, every part goes. A completing row goes back to
 /// `Active`, and the Served Download's range shrinks to what still holds.

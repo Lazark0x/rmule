@@ -1,5 +1,5 @@
-//! A resume that finds its verified parts damaged on disk (ADR-0093, "Damaged
-//! parts"): the parts that no longer hold are dropped and fetched again
+//! A resume that finds its verified parts damaged on disk (ADR-0094, "Damaged parts"): the parts
+//! that no longer hold are dropped and fetched again
 //! and the download runs; it fails only when nothing recorded can be trusted,
 //! and then its failure names the check, the part, and what was expected and
 //! found. The operator's Restart of a failed download (ADR-0094, "Restart")

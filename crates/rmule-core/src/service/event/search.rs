@@ -30,8 +30,8 @@ pub enum SearchFailure {
     TaskPanicked,
 }
 
-/// Where one leg of a keyword search stands (ADR-0034, "The legs are
-/// independent", "A server leg's states"). A leg that waits holds no other
+/// Where one leg of a keyword search stands (ADR-0034, "Legs", "A server leg's states"). A leg
+/// that waits holds no other
 /// leg back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SearchLegState {

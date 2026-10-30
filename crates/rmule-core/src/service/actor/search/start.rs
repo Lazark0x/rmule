@@ -33,7 +33,7 @@ where
     /// no other leg back; with neither a session nor Kad the whole
     /// search waits and says so. With no session the server leg and its sweep
     /// wait while the operator's Server Intent stands, and are not sent
-    /// otherwise (ADR-0034, "A server leg's states"); a session that ended
+    /// otherwise (ADR-0034, "Legs"); a session that ended
     /// before the request reached it is no session. It never dials.
     pub(super) async fn start_keyword_search(
         &mut self,

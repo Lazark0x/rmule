@@ -307,7 +307,7 @@ pub struct DownloadDiagnostics {
     /// row's life (ADR-0057). Monotonic.
     pub reask_replies_ignored: u32,
     /// Each source whose last dial this run ended before its hello, by peer
-    /// (ADR-0110, "The cause is the source's, not the slot's"). An entry
+    /// (ADR-0110, "the cause outlives the slot"). An entry
     /// leaves when a slot dials its peer again; it outlives the slot's next
     /// peer and the run's end, is cleared when a run starts, and at most
     /// [`DIAL_ENDS_KEPT`] are kept, the oldest leaving first.

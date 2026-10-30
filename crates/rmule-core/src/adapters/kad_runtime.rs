@@ -447,7 +447,7 @@ impl KadNodeIdentity {
     /// verify keys `(seed, own public IP)` always, and datagram obfuscation
     /// while a policy is set.
     ///
-    /// One policy, not a Kad knob (ADR-0046 "Policy surface": a separate
+    /// One policy, not a Kad knob (ADR-0046: a separate
     /// datagram policy was rejected because aMule exposes one crypt setting):
     /// aMule obfuscates a Kad datagram only while
     /// `IsClientCryptLayerSupported()` (`MuleUDPSocket.cpp:282-284`), which is

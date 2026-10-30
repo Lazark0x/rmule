@@ -19,8 +19,8 @@ pub struct FileStamp {
     pub modified: SystemTime,
 }
 
-/// A file's path-independent identity (ADR-0100, "A rename carries its hash
-/// when the file's identity proves it"): its device, its inode number and its
+/// A file's path-independent identity (ADR-0104, "A rename carries its hash when the file's
+/// identity proves it"): its device, its inode number and its
 /// birth time. A rename within one filesystem keeps all three; a file created
 /// in its place after a delete has another birth time. Read only where the
 /// filesystem's identities are stable, and never trusted alone: size and

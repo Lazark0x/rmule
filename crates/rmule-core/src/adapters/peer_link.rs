@@ -105,7 +105,7 @@ impl LinkName {
 }
 
 /// The Peer Links, each under every name it proves. One cell shared by the
-/// accept road and every dial (ADR-0048 "Identity ownership"), with the
+/// accept road and every dial (ADR-0048 "One identity per node, owned by the core"), with the
 /// server list a Low ID's server is checked against before it becomes a name.
 #[derive(Clone, Default)]
 pub(crate) struct SharedPeerLinks {

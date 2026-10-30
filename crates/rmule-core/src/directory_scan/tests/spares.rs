@@ -1,5 +1,5 @@
-//! Spare copies against a scripted directory (ADR-0100, "Spare copies are
-//! recorded"): recorded once, trusted unread at every later start, the place
+//! Spare copies against a scripted directory (ADR-0100): recorded once, trusted unread at every
+//! later start, the place
 //! a row whose file goes or changes moves to without a read, and dropped —
 //! never Had — when they go or change themselves.
 

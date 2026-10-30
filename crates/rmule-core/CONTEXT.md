@@ -69,7 +69,7 @@ How a **Search Result** finds its **Search Activity** when the answer carrying i
 _Avoid_: routing, demux (by id — there is none), search queue, sweep turn
 
 **Owed Set**:
-A server session's requests whose answer wait ran out unanswered, each with the instant it was given up on (ADR-0034, "Owed answers lapse"). While it holds any entry an answer's place names no owner. An answer arriving with nothing outstanding pays back the oldest entry; an entry lapses 60 s after it was made, the server taken to have dropped the request.
+A server session's requests whose answer wait ran out unanswered, each with the instant it was given up on (ADR-0034). While it holds any entry an answer's place names no owner. An answer arriving with nothing outstanding pays back the oldest entry; an entry lapses 60 s after it was made, the server taken to have dropped the request.
 _Avoid_: debt counter, missing answers
 
 **Search Pager**:
@@ -166,11 +166,11 @@ A Kad node asked to prove somebody else's Kad UDP port reachable (ADR-0058). The
 _Avoid_: buddy (the relay role, unrelated), firewall checker (that is the `0x53` responder), STUN server
 
 **Peer Roster**:
-The core-owned set of IPs this session already has an eD2k relationship with (ADR-0059 "Roster relations"; aMule's `CClientList::FindClientByIP`) — the union of every live **Roster Relation**, kept per endpoint, so an IP is known while any relation on any endpoint holds it and a peer with no relation left leaves. Read by the **UDP Firewall Helper**'s requester gate and helper bias — always the one `SharedPeerRoster` the builder creates, never a copy. IPv4 only: a relation over IPv6 is not recorded, so a dual-stack peer we deal with only over IPv6 reads unknown to both rules. A chat session is not fed in (rmule has no chat).
+The core-owned set of IPs this session already has an eD2k relationship with (ADR-0059; aMule's `CClientList::FindClientByIP`) — the union of every live **Roster Relation**, kept per endpoint, so an IP is known while any relation on any endpoint holds it and a peer with no relation left leaves. Read by the **UDP Firewall Helper**'s requester gate and helper bias — always the one `SharedPeerRoster` the builder creates, never a copy. IPv4 only: a relation over IPv6 is not recorded, so a dual-stack peer we deal with only over IPv6 reads unknown to both rules. A chat session is not fed in (rmule has no chat).
 _Avoid_: client list (that's aMule's whole peer-tracking object; this is one membership question), ban store (a different enforcement, unrelated criteria)
 
 **Roster Relation**:
-One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059 "Roster relations"). Four exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Queued Relation** (one download's **Remote-Queued Pool** membership, held to its Source Book's RemoteQueued stage after each brain step, so every way out of the pool ends it — a TCP full ask, a `0x92`, a merge, an endpoint another record took), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion, and carried to the waiter's new link by `WaiterRelinked`), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
+One owner's hold on a peer endpoint in the **Peer Roster**, added by that owner's start event and removed only by its own terminal event — never by a purge that guesses (ADR-0059). Four exist: a **Download Relation** (one download's worker whose hello completed — `Connected` — ended by `EndWorker` or the fleet's whole-fleet shutdown on completion or failure, held per download so two downloads on one peer never retire each other's), a **Queued Relation** (one download's **Remote-Queued Pool** membership, held to its Source Book's RemoteQueued stage after each brain step, so every way out of the pool ends it — a TCP full ask, a `0x92`, a merge, an endpoint another record took), a **Waiter Relation** (`PeerQueued`, ended by `WaiterLeft` — purged or cancelled — or turned into an Upload Relation by a promotion, and carried to the waiter's new link by `WaiterRelinked`), and an **Upload Relation** (`UploadSlotGranted` ↔ `UploadSlotReleased`). Waiter and Upload share one membership, as aMule's one upload state does. The owning activity's end — a serve stop or listener death, a download's run ending on any road, a quit's abort — ends every relation it still holds.
 _Avoid_: known client (aMule keeps an object per client whether or not any state is live; a relation is a live state), mark/forget as nouns (those are the roster's write calls)
 
 **Crypt Stance** (of a peer):
@@ -206,7 +206,7 @@ The core-owned, sans-I/O store of where we are on the wire (ADR-0084): it turns 
 _Avoid_: public IP (one source among several), own identity (the user hash lives there, the address only projects there), STUN
 
 **Own Address**:
-The node's own external IP and each socket role's external port, per address family — owned by **Address Learning** alone (ADR-0084 "Own address ownership"). Every reader reads the store at use time or subscribes to the **Own Address Generation**; nothing else holds the value, and a withdrawal is a change like any other. The sans-I/O Kad node is the one subscriber that must cache (it cannot read a core store): its verify-key IPv4 and **Extern Kad Port** are restated on every generation and on the recruit tick, the edge for a freshness window lapsing with nobody writing.
+The node's own external IP and each socket role's external port, per address family — owned by **Address Learning** alone (ADR-0084 "One owner of the Own Address"). Every reader reads the store at use time or subscribes to the **Own Address Generation**; nothing else holds the value, and a withdrawal is a change like any other. The sans-I/O Kad node is the one subscriber that must cache (it cannot read a core store): its verify-key IPv4 and **Extern Kad Port** are restated on every generation and on the recruit tick, the edge for a freshness window lapsing with nobody writing.
 _Avoid_: public IP (one projection of it), own IP, our endpoint, advertised address (that is what **Advertised Endpoints** chooses from it)
 
 **Own Address Generation**:
@@ -445,7 +445,7 @@ a Kad source row, a peer that asked us about the file — hands the **Source Boo
 _Avoid_: exchanged source, Kad source (each was one channel's copy)
 
 **Distrusted Peer**:
-A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, it alone sent a part that failed its hash, or it sent a part hash set that is not the file's own. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "Source ownership"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
+A peer proven to have served a download's file bad data — the AICH recovery pinned corrupt blocks on it, it alone sent a part that failed its hash, or it sent a part hash set that is not the file's own. Keyed by **User Hash**, not address, and held for the download's life beside its durable record, so a resumed run starts from it: a source whose record names it is never pooled, and one reached without its hash is retired at its hello (ADR-0090 "A download holds each source under one owner"). A per-file avoidance, not the core-wide, IP-keyed, expiring ban.
 _Avoid_: banned peer (that is `BanStore`), blacklist, bad source
 
 **Reask Routes**:
@@ -637,7 +637,7 @@ A stored file hash is trusted, unread, while the file's path, size and modificat
 _Avoid_: hash cache, fingerprint, verification
 
 **Spare Copy**:
-A file under the download directory whose content is already shared from another path: hashed once, recorded durably by its path with its size, modification time and **File Identity**, and trusted unread after that (ADR-0104, "What the scan remembers"). It shares nothing and answers nothing on the wire. It exists only beside a **Shared File Registry** row of its content, and a row whose file vanishes or changes moves to it without a read.
+A file under the download directory whose content is already shared from another path: hashed once, recorded durably by its path with its size, modification time and **File Identity**, and trusted unread after that (ADR-0104). It shares nothing and answers nothing on the wire. It exists only beside a **Shared File Registry** row of its content, and a row whose file vanishes or changes moves to it without a read.
 _Avoid_: duplicate, alias, second share
 
 **Whereabouts**:
@@ -1274,8 +1274,7 @@ server status (the `0x34` packet itself)
 
 **Server Session Switch**:
 `CoreCommand::ConnectToServer` (ADR-0080 amendment) — aMule's "connect to the selected
-server", and the only road that opens a server session (ADR-0093, "Connecting is the operator's
-act"): no activity dials; each rides the live session or waits for one. Runs off the actor and answers with a `ServerConnectionEvent`
+server", and the only road that opens a server session (ADR-0095, "Connecting is the operator's act"): no activity dials; each rides the live session or waits for one. Runs off the actor and answers with a `ServerConnectionEvent`
 trail: `Disconnected(old)` → `Connecting(new)` → `Connected`/`ConnectFailed`. The switch holds the
 session slot and waits for the old session to report itself gone before dialing, which is what
 makes the **Connected Server** marker never name the wrong server and needs no generation counter.

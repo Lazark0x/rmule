@@ -60,8 +60,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
     // what it offers is one Restart, and core picks whether that continues
     // from what is on disk or starts over (ADR-0094, "Restart").
     // A completed download has no run to pause and nothing to cancel: what
-    // it offers is to leave the list (ADR-0093, "Clearing a completed
-    // download").
+    // it offers is to leave the list (ADR-0094, "Clearing a completed download").
     let (first, first_action) = match status {
         DownloadStatus::Paused => ("Resume", MenuAction::Resume),
         DownloadStatus::Failed => ("Restart", MenuAction::Restart),

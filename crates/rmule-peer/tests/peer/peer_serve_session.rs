@@ -226,7 +226,7 @@ fn inbound_cancel_transfer_after_grant_emits_transfer_cancelled_and_clears_serve
     );
 
     // served_slot is cleared: a stray late SendBlock for the cancelled file
-    // is rejected rather than framed (ADR-0056 "pending unsent blocks dropped").
+    // is rejected rather than framed (ADR-0056).
     s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
         file_hash: fh,
         start: 0,

@@ -51,7 +51,7 @@ struct SharedFile {
     /// [`SharedFileEntry::modified`].
     modified: Option<SystemTime>,
     /// The file's **File Identity**, when the scan read one: what lets a
-    /// rename carry the row unread (ADR-0104, "What the scan remembers").
+    /// rename carry the row unread (ADR-0104).
     identity: Option<FileIdentity>,
 }
 
@@ -98,7 +98,7 @@ static SHARED_FILES_V1: Indexed<FileKey, SharedFileV1> = Indexed::new("shared_fi
 
 /// Store version 1 → 2: every shared row gains an unknown modification time.
 /// `None` never satisfies the Hash Trust Rule, so the first scan re-hashes
-/// such a file once and stamps it (ADR-0102 "Building the scan").
+/// such a file once and stamps it (ADR-0102).
 pub(crate) const UPGRADE_FROM_V1: UpgradeStep = UpgradeStep {
     from: 1,
     run: stamp_unknown_modified_time,
@@ -126,7 +126,7 @@ fn stamp_unknown_modified_time(txn: &WriteTransaction) -> Result<(), StoreError>
     Ok(())
 }
 
-/// Store version 4 → 5 (ADR-0104, "What the scan remembers"): every shared
+/// Store version 4 → 5 (ADR-0104): every shared
 /// row gains an unknown identity, which carries nothing until the scan reads
 /// one, and the spare-copy table appears, empty. A version-4 build refuses the
 /// store: its shares would not delete a spare recorded at the shared path.
@@ -347,7 +347,7 @@ impl DurableSharedFileRegistry {
         })
     }
 
-    /// Every recorded **Spare Copy** (ADR-0104, "Spare copies are recorded").
+    /// Every recorded **Spare Copy** (ADR-0104).
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.
@@ -397,8 +397,8 @@ impl DurableSharedFileRegistry {
 
     /// Move the row of `file_hash` from `from` to the file `to` names, unread:
     /// its path, name, time and identity change, its part hash set and source
-    /// stay, and a spare recorded at `to` is gone (ADR-0100, "What the scan
-    /// remembers"). Only if the row still names `from`; true when it moved.
+    /// stay, and a spare recorded at `to` is gone (ADR-0100). Only if the row still names `from`;
+    /// true when it moved.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store write fails.

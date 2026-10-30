@@ -148,7 +148,7 @@ impl ServerPriority {
 /// own `CServer` has no generic tag slot to preserve into (unrecognized
 /// tags are simply dropped in `AddTagFromFile`), and server.met has no
 /// production re-encoder for a preserved tail to ever round-trip through
-/// (ADR-0066: "No production writers").
+/// (ADR-0066).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerMetEntry {
     endpoint: Ipv4Endpoint,

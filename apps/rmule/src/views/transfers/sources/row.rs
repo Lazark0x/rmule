@@ -1,6 +1,6 @@
 //! What the sources pane lists for a download: each worker slot, then each
 //! source whose dial ended before its hello and that no slot holds now
-//! (ADR-0110, "The cause is the source's, not the slot's"). A slot still
+//! (ADR-0110, "the cause outlives the slot"). A slot still
 //! holding such a peer says the cause in its own Phase cell.
 
 use rmule_core::DownloadId;

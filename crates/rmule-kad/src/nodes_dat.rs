@@ -34,8 +34,7 @@
 //! ## Documented divergences
 //!
 //! - **ipfilter.dat**: aMule additionally drops a contact whose IP is
-//!   ipfilter.dat-blocked. rmule has no ipfilter.dat equivalent (ADR-0066:
-//!   "out-of-scope") — not implemented.
+//!   ipfilter.dat-blocked. rmule has no ipfilter.dat equivalent (ADR-0066) — not implemented.
 //!
 //! The v2 UDP key (`CKadUDPKey`) round-trips onto [`KadContact::udp_key`] (the
 //! sink ADR-0066 left to the ADR-0046 keys): a restarted node keeps the
@@ -112,8 +111,7 @@ impl NodesDat {
     ///
     /// Truncation anywhere after the leading marker keeps every contact
     /// parsed so far and is never an error — matching aMule's own
-    /// exception-swallowed-at-`ReadFile` posture (ADR-0066: "truncation
-    /// keeps rows parsed so far"). aMule's loose `count × 25` whole-row
+    /// exception-swallowed-at-`ReadFile` posture (ADR-0066). aMule's loose `count × 25` whole-row
     /// pre-check is deliberately not replicated (it does not account for
     /// the v2 extension bytes); this streams row by row instead, for the
     /// same observable partial-load-on-truncation outcome.

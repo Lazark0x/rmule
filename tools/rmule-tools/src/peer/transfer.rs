@@ -80,7 +80,7 @@ pub(crate) struct PeerTransferCaptureArgs {
     #[arg(long)]
     request_sources: bool,
     /// Diagnostic/capture-only source-exchange nibble to advertise in the hello
-    /// (ADR-0055 "consume 0x82 v3" toggle). aMule answers a plain
+    /// (ADR-0055 toggle). aMule answers a plain
     /// `OP_REQUESTSOURCES` at the *requester's* nibble and cross-checks against
     /// its own advertised nibble (3), so `--sx-nibble 3` is what makes aMule's
     /// packed reply land at v3 geometry and reconcile on decode. Omit for

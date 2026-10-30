@@ -1,5 +1,4 @@
-//! A watch that fails while running (ADR-0100, "A watch that fails while
-//! running is re-established"): a failure about one path leaves the rest
+//! A watch that fails while running (ADR-0100): a failure about one path leaves the rest
 //! watched; a lost watch is re-established on the starter's clock, the whole
 //! directory is examined once it is back, and the outage is told once.
 

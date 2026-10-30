@@ -154,7 +154,7 @@ pub trait ServeRuntimeService: Send + 'static {
     }
 
     /// Adopt the builder's one set of `AdapterCells`
-    /// (ADR-0048 "Identity ownership"):
+    /// (ADR-0048 "One identity per node, owned by the core"):
     /// `Core::builder` weaves its own runtime through this, and
     /// `CoreBuilder::serve_runtime` calls it on the runtime it installs, so an
     /// injected runtime's accepts meet the node's session, ban store, IP

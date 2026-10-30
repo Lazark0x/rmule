@@ -99,7 +99,7 @@ impl Record for ProvisionalPartHashRow {
 }
 
 /// One peer this download distrusts, keyed by `(download id, ordinal)`: it
-/// served this file bad data (ADR-0090 "Source ownership"). Kept by
+/// served this file bad data (ADR-0090 "A download holds each source under one owner"). Kept by
 /// User Hash, not address, so the distrust follows the peer to a new one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DistrustedPeerRow {

@@ -1,5 +1,5 @@
-//! A rename in the watch (ADR-0100, "A rename carries its hash when the
-//! file's identity proves it"): carried in the round that examines the new
+//! A rename in the watch (ADR-0104, "A rename carries its hash when the file's identity proves
+//! it"): carried in the round that examines the new
 //! path, with nothing to settle and nothing read; read after settling when
 //! the identity refuses.
 

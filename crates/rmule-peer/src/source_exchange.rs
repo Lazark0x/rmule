@@ -141,7 +141,7 @@ impl ServedSourcesVersion {
 
     /// The per-entry codec version this answer encodes at — the hybrid-id and
     /// field-width choice both follow it (`SourceExchangeVersion::uses_hybrid_id`
-    /// etc.), the ADR-0055 "uniform id rule: hybrid iff `byUsedVersion >= 3`".
+    /// etc.), the ADR-0055.
     #[must_use]
     pub const fn entry_version(self) -> SourceExchangeVersion {
         match self {
@@ -471,7 +471,7 @@ pub enum AnswerSources2DecodeError {
 /// both wire forms (`PartFile.cpp` @4e8f2b3c), so a bad `0x82`
 /// ([`AnswerSourcesDecodeError`]) or `0x84` ([`AnswerSources2DecodeError`]) is
 /// a non-terminal diagnostic, never a protocol-violation close — one skip
-/// taxonomy across both opcodes, the ADR-0055 "one semantic core" applied to
+/// taxonomy across both opcodes, the ADR-0054 "one semantic core" applied to
 /// the consume-error path too.
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum AnswerSourcesSkip {

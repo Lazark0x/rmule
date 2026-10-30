@@ -2,8 +2,8 @@
 //!
 //! Every row is a **Shared File Registry** entry (see [`crate::state::SharedRow`]):
 //! **File** is the name it is shared under, **State** whether it is offered
-//! or withheld — why, in words, and since when rmule noticed (ADR-0100, "The
-//! registry against the disk") — and **Size** its exact size, all
+//! or withheld — why, in words, and since when rmule noticed (ADR-0106, "The registry against the
+//! disk") — and **Size** its exact size, all
 //! read off the registry, with the short hash and a dash standing in only for
 //! the moment between a share edge and core's next File History answer.
 //! **Uploading** counts the peers holding a slot for it now; **Requests**,

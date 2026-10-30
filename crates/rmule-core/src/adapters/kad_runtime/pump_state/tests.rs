@@ -224,7 +224,7 @@ fn a_level_on_its_way_to_the_node_is_not_asked_for_twice() {
 }
 
 /// The node's own-IPv4 cache follows its owner on the change event (ADR-0084
-/// "Own address ownership"), and a Low-ID withdrawal is a change too: the
+/// "One owner of the Own Address"), and a Low-ID withdrawal is a change too: the
 /// node is re-bound to `0.0.0.0`, the value it is armed with when no address
 /// is known, so a key learned under the withdrawn address retires.
 #[test]

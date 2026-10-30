@@ -12,7 +12,7 @@
 //! the policy or the session moves, under the level's one lock, so the swept
 //! list never reflects a row the published list does not.
 //!
-//! The level also dates each death (ADR-0052, "Dead since when"): the moment
+//! The level also dates each death (ADR-0080, "Dead since when"): the moment
 //! a row's health turned dead, held in memory beside the row.
 
 use std::collections::{HashMap, HashSet};

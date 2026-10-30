@@ -256,7 +256,7 @@ pub enum ServeEvent {
         peer: rmule_primitives::PeerEndpoint,
     },
     /// A wait-list entry left the queue without ever holding a slot — the
-    /// Waiter relation's terminal (ADR-0059 "Roster relations"). Distinct
+    /// Waiter relation's terminal (ADR-0059). Distinct
     /// from [`Self::UploadSlotReleased`], which only a slot holder earns, and
     /// from [`Self::UploadDialBackFailed`], a held grant's end. A promotion is
     /// not a leave — the waiter becomes a holder (`UploadSlotGranted`).
@@ -342,7 +342,7 @@ pub enum ServeStartFailure {
 }
 
 /// Why the **Announce Policy** kept the share set from the connected server
-/// (ADR-0099, "What is announced to a server that answers related searches").
+/// (ADR-0099).
 /// Both are the operator's preference meeting the server's related-search
 /// grant (`SRV_TCPFLG_RELATEDSEARCH`, `0x40`); they differ in what the
 /// server already holds.

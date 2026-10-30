@@ -16,8 +16,7 @@ use rmule_primitives::AddressFamily;
 
 use super::FamilyBinds;
 
-/// A role whose **Family Pair** rmule binds (ADR-0085, "two sockets per role
-/// and port").
+/// A role whose **Family Pair** rmule binds (ADR-0085).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PairRole {
     /// The one client-UDP socket (ADR-0057's socket unification): the

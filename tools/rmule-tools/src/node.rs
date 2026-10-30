@@ -1,4 +1,4 @@
-//! How a tool's Core gets its node identity (ADR-0048 "Identity ownership"):
+//! How a tool's Core gets its node identity (ADR-0048 "One identity per node, owned by the core"):
 //! the User Hash a tool names on its command line is fixed at
 //! build time, never carried by a command, and the Secure User Identification
 //! key that proves it comes from a store that outlives the run — the

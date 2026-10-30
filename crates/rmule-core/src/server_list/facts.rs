@@ -478,8 +478,8 @@ impl ServerFacts {
         self.granted(endpoint, client_id, tcp_flags, assigned);
     }
 
-    /// `endpoint`'s `OP_IDCHANGE` named what it grants (ADR-0080, "What a
-    /// server grants is durable"): the row keeps the word, dated now. A reply
+    /// `endpoint`'s `OP_IDCHANGE` named what it grants (ADR-0080): the row keeps the word, dated
+    /// now. A reply
     /// that carried no flags word grants nothing, and is kept as that.
     ///
     /// The answer's obfuscation TCP port is kept with it when it names one:

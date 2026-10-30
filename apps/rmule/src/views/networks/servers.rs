@@ -147,8 +147,8 @@ fn format_age(age: Duration) -> String {
 /// The fewest lines the detail pane takes: one per sentence.
 const DETAIL_PANE_MIN_H: u16 = 4;
 
-/// The selected server's detail as it sits at the bottom of `body` (ADR-0080,
-/// "The detail pane"): its lines and the height it takes. The table has no
+/// The selected server's detail as it sits at the bottom of `body` (ADR-0080): its lines and the
+/// height it takes. The table has no
 /// room for these as columns at 80 cells, so they are said whole, wrapped,
 /// for whichever row the cursor is on.
 ///

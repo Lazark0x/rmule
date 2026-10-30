@@ -2,8 +2,8 @@
 //! kept side by side as a strip of entries under the query input.
 //!
 //! Core echoes no query text, so an entry is opened here, with what the view
-//! sent and the id it chose for it (ADR-0034, "Every outcome names its
-//! search"), the moment the query is committed. Every outcome core reports
+//! sent and the id it chose for it (ADR-0034), the moment the query is committed. Every outcome
+//! core reports
 //! names that id, so nothing is matched by order: the results and status stay
 //! in [`UiState::searches`] under it, a refusal in [`UiState::refused_searches`].
 //! A search the view did not send (another front end on the same core) is held

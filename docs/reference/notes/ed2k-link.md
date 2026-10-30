@@ -36,7 +36,7 @@ Optional fields (the first parser's scope: `p=`, `h=`; everything else was rejec
 - `p=HASH1:HASH2:...` — the `ED2K Part Hash Set`; uppercase hex; colon-separated. Count rules per `ed2k-hash.md`.
 - `h=AICH_ROOT` — the AICH root hash; uppercase unpadded base32, 32 chars.
 
-Optional fields **rejected** by the first parser (per ADR-0008 "lenient links and strict packets" + `docs/protocol/fixtures.md`):
+Optional fields **rejected** by the first parser (per ADR-0008 "Lenient eD2k links, strict packets" + `docs/protocol/fixtures.md`):
 
 - `s=URL` — HTTP mirror URL. Semantics not modeled.
 - `sources,IP:Port,IP:Port,...` — source list suffix. Semantics not modeled.

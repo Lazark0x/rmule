@@ -145,7 +145,7 @@ pub struct DetailContext {
     pub policy: ServerPolicy,
 }
 
-/// The selected server's detail pane (ADR-0080, "The detail pane"): its
+/// The selected server's detail pane (ADR-0080): its
 /// grants, its UDP flags, its health and its shares, one sentence each, in
 /// that order.
 #[must_use]
@@ -173,7 +173,7 @@ fn tries(count: u32) -> String {
 
 /// The server's **Server Health** (ADR-0052) in words, and for a row listed
 /// by name what that name resolved to. A dead one is dated by the moment it
-/// died (ADR-0052, "Dead since when").
+/// died (ADR-0080, "Dead since when").
 fn health_sentence(
     row: &ServerDiagnostics,
     limit: u32,

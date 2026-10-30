@@ -457,7 +457,7 @@ mod server_callback_never_left {
     }
 }
 
-/// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations") follows the
+/// The Peer Roster's `Queued` leg (ADR-0059) follows the
 /// Source Book's RemoteQueued stage, however a record leaves it — here by a
 /// merge, where the wire proves a queued source the same peer as a live
 /// worker and its record gives way, which no reask event reports.

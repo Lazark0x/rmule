@@ -1,5 +1,5 @@
-//! A download directory that is itself a symlink (ADR-0100, "A linked
-//! directory"): the watch lists it through the link, and never takes the
+//! A download directory that is itself a symlink (ADR-0100): the watch lists it through the link,
+//! and never takes the
 //! link for an empty directory.
 
 use super::*;

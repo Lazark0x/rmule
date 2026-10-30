@@ -5,8 +5,7 @@
 //! the current share set announced (`OP_OFFERFILES`), as aMule re-sends its
 //! list to every server it connects to (`ServerConnect.cpp:325`,
 //! `SharedFileList.cpp:1588`) — unless the **Announce Policy** withholds it
-//! from a server that grants related search (ADR-0093, "What is announced to
-//! a server that answers related searches"). The follower sends no hellos:
+//! from a server that grants related search (ADR-0099). The follower sends no hellos:
 //! the listener's read the live session at each connection
 //! ([`HelloSource`](crate::server_session::HelloSource)), so a mid-session id
 //! change is named at once.

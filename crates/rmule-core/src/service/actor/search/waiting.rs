@@ -1,6 +1,6 @@
 //! A search's legs that wait: the whole search with nothing to carry it, the
 //! server leg and its sweep for a session, the Kad leg for Kad (ADR-0034,
-//! "The legs are independent", "A server leg's states"). Each is sent the
+//! "Legs", "A server leg's states"). Each is sent the
 //! moment what it waits for arrives, and let go once that can no longer
 //! happen.
 
@@ -71,7 +71,7 @@ where
     /// The operator's intent ended: no session is on its way, so every server
     /// leg waiting for one is let go — one lost after it went out ends
     /// unanswered, one that never went out ends not sent, its sweep
-    /// with it (ADR-0034, "A server leg's states").
+    /// with it (ADR-0034, "Legs").
     pub(in crate::service::actor) fn end_waiting_server_legs(&mut self) {
         for (_, active) in self.activities.searches.each_running_mut() {
             active.waiting.server = None;

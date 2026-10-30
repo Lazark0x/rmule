@@ -2,7 +2,7 @@
 //! leg whose session ended unanswered, and the moves of the search's leg
 //! picture that follow. The search's loop stays in the parent; this file
 //! holds what changes only when the server leg's states do (ADR-0034,
-//! "A server leg's states").
+//! "Legs").
 
 use tokio::sync::oneshot;
 
@@ -53,7 +53,7 @@ impl SearchTask {
 
     /// The server leg waited for a session no intent will bring: one that
     /// went out ends unanswered, one that never did ends not sent, and so
-    /// does a sweep that waited with it (ADR-0034, "A server leg's states").
+    /// does a sweep that waited with it (ADR-0034, "Legs").
     pub(super) async fn let_go_server_leg(&mut self) {
         let lost = std::mem::take(&mut self.late.server_lost);
         self.move_leg(|legs| {

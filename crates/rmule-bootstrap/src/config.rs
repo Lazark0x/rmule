@@ -2,7 +2,7 @@
 //!
 //! The URL is aMule's exact live value as an overridable default — honest
 //! parity with the ecosystem's mirror, not an invented endpoint (ADR-0065,
-//! "Defaults + first-run policy"). The size / redirect / timeout caps are the
+//! "Defaults and first run"). The size / redirect / timeout caps are the
 //! ADR's documented hardening: unobservable to a legitimate mirror, a floor
 //! against a hostile one.
 

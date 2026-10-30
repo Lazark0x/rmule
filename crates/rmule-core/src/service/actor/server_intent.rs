@@ -1,5 +1,5 @@
-//! The operator's intent to stay connected (ADR-0093, "A lost session is
-//! re-made"). A `ConnectToServer` says *stay connected to this server*;
+//! The operator's intent to stay connected (ADR-0096, "A lost session is re-made"). A
+//! `ConnectToServer` says *stay connected to this server*;
 //! the intent outlives one TCP link and ends when the operator disconnects,
 //! connects elsewhere, or quits. While it stands, a lost session is re-made
 //! through the one establishment — listener, mapping wait, login — after a

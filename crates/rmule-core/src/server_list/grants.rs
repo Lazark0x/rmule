@@ -1,6 +1,6 @@
 //! A server's **Grants Report**: what it last said it grants a client at
 //! login — the raw `SRV_TCPFLG_*` word of its `OP_IDCHANGE` — and when
-//! (ADR-0080, "What a server grants is durable"). Kept on the durable row so
+//! (ADR-0080). Kept on the durable row so
 //! the operator can judge a server before connecting to it.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

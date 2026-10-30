@@ -528,8 +528,8 @@ fn external_rechecks_are_one_at_a_time_and_at_most_one_per_five_minutes() {
     );
 }
 
-/// A trigger the spacing refuses is owed, not dropped (ADR-0093, "Kad after
-/// the listener or a mapping appears"): a mapping grant or a High ID landing
+/// A trigger the spacing refuses is owed, not dropped (ADR-0095, "Kad after the listener or a
+/// mapping appears"): a mapping grant or a High ID landing
 /// just after the last external recheck still changed what a check would find,
 /// so the node runs it once the spacing ends instead of waiting out the hour.
 #[test]

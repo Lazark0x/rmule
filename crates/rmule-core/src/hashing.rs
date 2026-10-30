@@ -45,7 +45,8 @@ pub(crate) fn resolve_hash_set_authority(
 /// (`src/KnownFile.cpp:521-543` at `4e8f2b3c`: the count at `:524`, the
 /// hash of the list at `:535-536` via `CreateHashFromHashlist`, `:787-799`).
 /// A set that fails it is proven wrong by the file hash alone — no peer's word
-/// needed — so its sender can be distrusted (ADR-0090 "Source ownership").
+/// needed — so its sender can be distrusted (ADR-0090 "A download holds each source under one
+/// owner").
 pub(crate) fn hash_set_proves_file(
     file_hash: FileHash,
     file_size: u64,

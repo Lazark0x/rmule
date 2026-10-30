@@ -22,8 +22,8 @@
 //! hands-on run asked for, hung on the *login* rather than on the keystroke —
 //! and again each time the operator presses `K` in Networks while Kad reads
 //! off. Kad has its own switch because the two networks are separate: in aMule
-//! each connects and disconnects on its own (ADR-0093, "Kad after a
-//! disconnect"), so leaving the server leaves Kad running, and an operator can
+//! each connects and disconnects on its own (ADR-0096, "Disconnect, and Kad's own switch"), so
+//! leaving the server leaves Kad running, and an operator can
 //! run Kad without ever connecting to a server.
 //!
 //! - **Nothing unattended reaches Kad.** The app is the single

@@ -164,7 +164,7 @@ impl Record for ServerRecordV3 {
 /// as [`SERVERS_V1`].
 pub(super) static SERVERS_V3: Indexed<u64, ServerRecordV3> = Indexed::new("app_config.server", &[]);
 
-/// Store version 9 → 10 (ADR-0080, "What a server grants is durable"):
+/// Store version 9 → 10 (ADR-0080):
 /// every row keeps what it had, gains no grants report and its figures no
 /// UDP flags — a server reads as never logged into until its next login.
 /// Written in version 10's shape, so the 11 → 12 rung finds what it reads.

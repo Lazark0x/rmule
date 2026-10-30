@@ -1,4 +1,5 @@
-//! The brain's half of source ownership (ADR-0090 "Source ownership"): what
+//! The brain's half of source ownership (ADR-0090 "A download holds each source under one owner"):
+//! what
 //! the **Source Book**'s outcomes become as decisions — a remote-queued
 //! source's TCP full ask dials it once, a proven sender of bad data is
 //! distrusted durably and not dialed again, and a distrusted peer reached

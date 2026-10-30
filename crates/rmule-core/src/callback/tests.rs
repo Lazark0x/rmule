@@ -550,8 +550,8 @@ fn no_buddy_or_kad_down_drops_an_otherwise_off_server_low_id_target() {
 
 #[test]
 fn the_low_id_grant_dial_back_routes_through_the_same_selector() {
-    // ADR-0057's parked grant dial-back (ADR-0061 "one selector, every
-    // caller"): promoting a *disconnected* upload waiter asks this chooser
+    // ADR-0057's parked grant dial-back (ADR-0061): promoting a *disconnected* upload waiter asks
+    // this chooser
     // how to reach it. A HighID waiter is dialed straight back — a
     // `DialBackGrant`.
     let high_waiter = CallbackTarget {

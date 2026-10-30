@@ -129,7 +129,7 @@ impl DurableDownloadRepository {
     }
 
     /// Distrust `peer` for the download's life: it served this file bad data
-    /// (ADR-0090 "Source ownership"). A peer already distrusted is left
+    /// (ADR-0090 "A download holds each source under one owner"). A peer already distrusted is left
     /// as it is.
     ///
     /// # Errors
@@ -288,8 +288,8 @@ impl DurableDownloadRepository {
 
     /// Drop every verified part of a running download and the provisional
     /// hash set a peer supplied, returning the parts dropped: its finished
-    /// file did not hash and no part could be named (ADR-0093, "Finalize with
-    /// lost parts"), so what it recorded is wrong and is fetched again.
+    /// file did not hash and no part could be named (ADR-0094, "A whole-file hash failing at
+    /// finalize"), so what it recorded is wrong and is fetched again.
     ///
     /// # Errors
     /// [`CoreError::UnknownDownload`] when the row is gone, or
@@ -339,8 +339,8 @@ impl DurableDownloadRepository {
         })
     }
 
-    /// Forget a completed download (ADR-0093, "Clearing a completed
-    /// download"): its row, its verified parts, its provisional hashes and its
+    /// Forget a completed download (ADR-0094, "Clearing a completed download"): its row, its
+    /// verified parts, its provisional hashes and its
     /// distrusted peers leave in one transaction. The file it finished is the
     /// **Shared File Registry**'s, not this row's, so nothing on disk or in
     /// the registry moves.
@@ -366,8 +366,8 @@ impl DurableDownloadRepository {
 
     /// Every download Transfers lists, as the last process left it, in
     /// ascending order: each that still holds its file's place, and each
-    /// completed one until the operator clears it (ADR-0093, "Clearing a
-    /// completed download"). A cancelled one is not listed.
+    /// completed one until the operator clears it (ADR-0094, "Clearing a completed download"). A
+    /// cancelled one is not listed.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.

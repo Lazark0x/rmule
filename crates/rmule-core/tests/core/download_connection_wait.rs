@@ -1,5 +1,5 @@
-//! A download with no connection waits for one (ADR-0093, "Waiting for a
-//! connection"): restored at attach, its server unreachable and Kad off, it
+//! A download with no connection waits for one (ADR-0097, "Waiting for a connection"): restored at
+//! attach, its server unreachable and Kad off, it
 //! does not fail — it says it is waiting, and it starts on its own once the
 //! operator connects to a server.
 

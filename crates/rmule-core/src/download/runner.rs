@@ -79,7 +79,7 @@ pub(crate) struct DownloadRequest {
     pub(crate) download_id: DownloadId,
     pub(crate) file: Ed2kFileLink,
     /// The node's wire identity: the Core Settings' credentials as the
-    /// build-time hash (ADR-0048 "Identity ownership").
+    /// build-time hash (ADR-0048 "One identity per node, owned by the core").
     pub(crate) identity: rmule_primitives::ClientIdentity,
     pub(crate) verified_part_indexes: Vec<u32>,
     /// How the download ranks its parts: Streaming Priority, read off its

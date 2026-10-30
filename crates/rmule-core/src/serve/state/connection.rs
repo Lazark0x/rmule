@@ -475,7 +475,7 @@ impl ServeState {
                 } else if was_waiting {
                     // A waiter's cancel drops its place too — the Waiter
                     // relation's own terminal, or its roster mark would
-                    // outlive the wait (ADR-0059 "Roster relations").
+                    // outlive the wait (ADR-0059).
                     decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
                         peer,
                         cause: WaiterLeaveCause::Cancelled,

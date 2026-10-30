@@ -414,8 +414,7 @@ pub trait ServerListStore: Send + Sync {
         edit: &mut dyn FnMut(&mut Option<ServerFigures>),
     ) -> Result<bool, CoreError>;
 
-    /// Record what `endpoint` granted at its login (ADR-0080, "What a server
-    /// grants is durable"), replacing the last report.
+    /// Record what `endpoint` granted at its login (ADR-0080), replacing the last report.
     fn set_server_grants(
         &self,
         endpoint: &ServerEndpoint,

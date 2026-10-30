@@ -421,8 +421,8 @@ async fn a_file_dropped_into_a_watched_directory_becomes_a_registry_row() {
     core.shutdown().await;
 }
 
-/// A rename between two starts, on a real filesystem (ADR-0100, "A rename
-/// carries its hash when the file's identity proves it"). macOS temporary
+/// A rename between two starts, on a real filesystem (ADR-0104, "A rename carries its hash when
+/// the file's identity proves it"). macOS temporary
 /// directories are APFS, whose identities rmule trusts, so the hash is
 /// carried there; elsewhere the temporary directory may be tmpfs, which it
 /// does not, and the file is read, as before.

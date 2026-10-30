@@ -136,7 +136,7 @@ pub struct KadBuddyContact {
     /// publisher leaves it `None`. A stored row whose IPv4 half was refused
     /// re-serves this port beside `bi6`, so an eMuleAI searcher still gets
     /// the endpoint its publisher wrote. No rmule road dials it, because the
-    /// buddy roads are IPv4 (ADR-0087: "`bi6` never decides a road").
+    /// buddy roads are IPv4 (ADR-0087).
     pub buddy_udp_ipv6: Option<Ipv6Endpoint>,
 }
 

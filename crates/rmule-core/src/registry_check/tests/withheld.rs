@@ -1,5 +1,5 @@
-//! A **Withheld Row** is offered again only once its file opens (ADR-0106,
-//! "Rechecked"), whichever look finds it back.
+//! A **Withheld Row** is offered again only once its file opens (ADR-0106), whichever look finds
+//! it back.
 
 use super::*;
 

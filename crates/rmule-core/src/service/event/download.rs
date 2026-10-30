@@ -66,8 +66,8 @@ pub enum DownloadEvent {
         verified_bytes: u64,
     },
     /// A resume found verified parts that no longer hold on disk and dropped
-    /// their records, so the run fetches them again (ADR-0093, "Damaged
-    /// parts"). Sent before the `DownloadProgressRestored` that counts what
+    /// their records, so the run fetches them again (ADR-0094, "Damaged parts"). Sent before the
+    /// `DownloadProgressRestored` that counts what
     /// did hold.
     DamagedPartsDropped {
         /// The download whose parts were dropped.
@@ -102,7 +102,7 @@ pub enum DownloadEvent {
         lost: PartsLost,
     },
     /// The finished file did not hash to the file's hash and no part could be
-    /// named (ADR-0094, "Finalize with lost parts"): every recorded part, and
+    /// named (ADR-0094, "A whole-file hash failing at finalize"): every recorded part, and
     /// the hash set a peer supplied, are dropped and fetched again. The run
     /// goes on; the download is not failed.
     FinishedFileRejected {
@@ -519,8 +519,8 @@ pub enum DownloadEvent {
     },
     /// The run's server login found no connection — the server unreachable,
     /// or the session gone before it answered — and Kad is not running, so
-    /// nothing can be asked for sources (ADR-0093, "Waiting for a
-    /// connection"). Not a failure: the run waits, and asks again once a
+    /// nothing can be asked for sources (ADR-0097, "Waiting for a connection"). Not a failure: the
+    /// run waits, and asks again once a
     /// server session or Kad exists. A later `SourcesFound` says it asked.
     WaitingForConnection {
         /// The download that waits.

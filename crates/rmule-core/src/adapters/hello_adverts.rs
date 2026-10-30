@@ -58,7 +58,7 @@ pub struct HelloAdverts {
     /// Our Secure User Identification keypair (ADR-0041): the `MiscOptions1`
     /// SUI nibble, and the key the `OP_SECIDENTSTATE` exchange signs with
     /// The Core's, loaded once by `Core::builder` from the store
-    /// it is given and never replaced (ADR-0048 "Identity ownership")
+    /// it is given and never replaced (ADR-0048 "One identity per node, owned by the core")
     /// — aMule's `CClientCreditsList::InitalizeCrypting` shape. `None`
     /// only when that load failed, or on an adapter-level test build.
     ///

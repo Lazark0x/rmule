@@ -9,8 +9,7 @@ use rmule_primitives::{Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, Source
 
 use super::SourceExchangeEntry;
 
-/// The consume-side per-file source cap (ADR-0055: "Per-file source cap
-/// honored (stop accepting past cap)"). No aMule source line pins an exact
+/// The consume-side per-file source cap (ADR-0055). No aMule source line pins an exact
 /// consume-side figure the way the ADR cites a 500-entry cap for *serving*;
 /// reusing that same ceiling here is the honest placeholder — **pending**
 /// until a capture or a located aMule consume-side constant confirms it.

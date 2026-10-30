@@ -7,7 +7,7 @@
 //! cadence and schedule are asserted deterministically (ADR-0045 deterministic
 //! tier). Dial cadence is own-emit timing — the deterministic tier owns it.
 //!
-//! The capture tier (ADR-0067, "Capture tier") is **not** run here: it is the
+//! The capture tier (ADR-0067) is **not** run here: it is the
 //! cold-join recipe — seed rmule with only a pinned aMule endpoint on a private
 //! mesh, then capture aMule's `BOOTSTRAP_RES` and its answers to rmule's forced
 //! self-lookup `FindNode` walk. Private-mesh, real-client bytes, never CI (the

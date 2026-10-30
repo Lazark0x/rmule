@@ -266,8 +266,8 @@ impl SharedServerSession {
             .unwrap_or_else(|| rmule_net::ed2k::ConnectOptions::default().login_timeout)
     }
 
-    /// The live session, or `None` — and never a dial (ADR-0093, "Connecting
-    /// is the operator's act"). An operator connect in flight is waited out
+    /// The live session, or `None` — and never a dial (ADR-0095, "Connecting is the operator's
+    /// act"). An operator connect in flight is waited out
     /// first: the handle in the slot may be the one that connect
     /// is about to end, and the session it makes is the one to ride.
     pub(crate) async fn live_session(&self) -> Option<ServerSessionHandle> {

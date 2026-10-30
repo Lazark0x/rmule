@@ -418,7 +418,7 @@ impl PeerTransferService for QueuedThenHangUpPeerTransfer {
     }
 }
 
-/// Per ADR-0059 "Roster relations", a source that queued us
+/// Per ADR-0059, a source that queued us
 /// and hung up stays known to the UDP self-check after its worker retires —
 /// the Remote-Queued Pool holds a `Queued` relation, aMule's `DS_ONQUEUE`
 /// client — and leaves the roster when the download ends. Before, the

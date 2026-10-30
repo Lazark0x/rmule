@@ -1,6 +1,6 @@
 //! End-to-end Secure User Identification through the whole Core stack
 //! (ADR-0041): the Core loads its keypair once at build from the
-//! store it is given (ADR-0048 "Identity ownership"), the real
+//! store it is given (ADR-0048 "One identity per node, owned by the core"), the real
 //! `RuntimePeerTransferService` dials with SUI, and by the
 //! time the download completes each side has proven itself to the other —
 //! rmule binds the peer as a **Secured Identity** in its credit store, and the

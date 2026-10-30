@@ -26,7 +26,7 @@ const VERDICT_QUEUE_LEN: usize = 8;
 pub struct RuntimeKadFactory;
 
 /// The wire identity this node's Kad dials present: the credentials as the
-/// node's hash, fixed at build (ADR-0048 "Identity ownership") — also the Kad
+/// node's hash, fixed at build (ADR-0048 "One identity per node, owned by the core") — also the Kad
 /// source ID and the buddy identity's hash. Its port is the one peers dial;
 /// aMule's `RequestTCP` self-connect guard compares a requester against it
 /// together with the live public IPv4 — Address Learning's projection,
@@ -140,7 +140,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         let reach = bind.reach.clone();
 
         // Contacts that already carry an earned Kad ID go straight into the
-        // routing table (ADR-0065 "v1/v2-merge"): this is the reload half
+        // routing table (ADR-0065): this is the reload half
         // of the nodes.dat persistence the driver writes, so a
         // restart resumes with its old neighbourhood instead of re-dialing for
         // one. Ordered before the dial-list seed because a merged table is what

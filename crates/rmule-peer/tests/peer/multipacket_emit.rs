@@ -391,7 +391,7 @@ fn misc2_ext_sx2() -> Tag {
 
 #[test]
 fn sx2_peer_gets_the_sources2_sub_per_the_source_ask_policy() {
-    // ADR-0054: "the SX request sub per the existing source-ask policy" — a
+    // ADR-0054 — a
     // peer that advertised SourceExchange2 (ADR-0055) is asked with the v4
     // `0x83` sub inside the bundle, the same variant the granular
     // `RequestSources` command selects for it.

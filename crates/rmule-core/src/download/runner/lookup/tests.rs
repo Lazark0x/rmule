@@ -293,8 +293,7 @@ fn connect_lands(session: &crate::server_session::SharedServerSession, after: Du
 /// Sixteen downloads started together while the login is in flight (run
 /// `1790869078`): fifteen asks go on the session the login makes, and the
 /// sixteenth one window later — the login does not start the count over
-/// under asks already waiting to ride it (ADR-0093, "The Source Ask
-/// Budget").
+/// under asks already waiting to ride it (ADR-0097, "The Source Ask Budget").
 #[tokio::test(start_paused = true)]
 async fn sixteen_downloads_started_at_login_ask_fifteen_then_one_a_window_later() {
     let server = Recording::default();

@@ -33,8 +33,7 @@ impl ServerMet {
     /// aMule writes twelve-plus tags per row (users/files/ping/… and each
     /// string tag twice, a BOM-unicode copy then a plain one), but the decoder
     /// models only name/description/priority and the figures — every other tag
-    /// is dropped on read (ADR-0066: "server.met has no production re-encoder
-    /// for a preserved tail"). So the writer emits exactly those, each string
+    /// is dropped on read (ADR-0066). So the writer emits exactly those, each string
     /// tag once;
     /// the file **field**-round-trips through [`decode`](Self::decode) and reads
     /// cleanly in aMule (`ST_SERVERNAME`/`ST_DESCRIPTION`/`ST_PREFERENCE` are

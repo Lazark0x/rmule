@@ -12,7 +12,7 @@
 //! cadence themselves belong to the dial loop and are re-used, not re-tested
 //! here.
 //!
-//! Capture tier (ADR-0067 "Handoff end-to-end") is **not** run here: ed2k-connect
+//! Capture tier (ADR-0067) is **not** run here: ed2k-connect
 //! a pinned aMule client, let its hello tags pin the `CT_EMULE_UDPPORTS`/kad-
 //! version bytes, and observe rmule's resulting `BOOTSTRAP_REQ` draw aMule's
 //! `BOOTSTRAP_RES`. Private-mesh, real-client bytes, never CI.

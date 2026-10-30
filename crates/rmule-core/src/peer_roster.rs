@@ -37,7 +37,7 @@
 //! A Download relation is held per download: two downloads
 //! fetching from one peer each keep it known until their own worker ends.
 //! Every relation is added and removed by its owner's paired start/terminal
-//! events — ADR-0059 "Roster relations" tables them.
+//! events — ADR-0059 tables them.
 
 use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
@@ -48,7 +48,7 @@ use rmule_primitives::Ipv4Endpoint;
 use crate::DownloadId;
 
 /// Which relationship a mark or forget belongs to, and whose it is
-/// (ADR-0059 "Roster relations"). Never read back — it only keys a write to
+/// (ADR-0059). Never read back — it only keys a write to
 /// its own holder, so every holder retires only what it marked: an upload and
 /// a download on the same [`Ipv4Endpoint`], or two downloads fetching from one
 /// peer, each keep that endpoint known until their own terminal event.

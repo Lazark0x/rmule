@@ -1,5 +1,5 @@
-//! A rename against a scripted directory (ADR-0100, "A rename carries its
-//! hash when the file's identity proves it"): carried unread when identity,
+//! A rename against a scripted directory (ADR-0104, "A rename carries its hash when the file's
+//! identity proves it"): carried unread when identity,
 //! size and time all match, and read, as before, in each case the model
 //! refuses.
 

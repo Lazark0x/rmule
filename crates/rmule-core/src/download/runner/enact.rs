@@ -581,7 +581,7 @@ fn refetch_disproved<S, P>(
     queue.extend(ctx.state.refetch(now(), &lost));
 }
 
-/// The Peer Roster's `Queued` leg (ADR-0059 "Roster relations"): this run
+/// The Peer Roster's `Queued` leg (ADR-0059): this run
 /// holds the relation on exactly the endpoints its Source Book records stand
 /// at in their RemoteQueued stage — aMule's `DS_ONQUEUE` clients, known after
 /// their sockets closed. Held to the stage after every drain, so however a
@@ -619,7 +619,7 @@ fn follow_event<S, P>(ctx: &LoopCtx<'_, S, P>, event: &DownloadEvent) {
 /// The fleet's whole-fleet terminal — a completion's `Finalize` or any
 /// `Fail` (cancel, pause, or an involuntary failure): tell every still-live
 /// worker to shut down and end each one's Peer Roster `Download` relation
-/// right here, read off the fleet's own live set (ADR-0059 "Roster relations").
+/// right here, read off the fleet's own live set (ADR-0059).
 /// Neither path passes `EndWorker`, and a worker's
 /// own later `Disconnected` is never read by the loop again — nor sent at all
 /// by an aborted task — so this is the one terminal these relations

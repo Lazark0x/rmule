@@ -1,5 +1,5 @@
-//! The **Spare Copy** records on the Durable Store (ADR-0100, "Spare copies
-//! are recorded"): one row per path under the download directory whose
+//! The **Spare Copy** records on the Durable Store (ADR-0100): one row per path under the download
+//! directory whose
 //! content is already shared from another path, with the stamp and identity
 //! the **Hash Trust Rule** compares, keyed to the content's hash.
 //!

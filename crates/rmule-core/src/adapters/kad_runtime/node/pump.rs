@@ -108,7 +108,7 @@ impl Pump {
             Shutdown,
         }
         // Every store write that moved our own address is one wake here,
-        // whichever task wrote it (ADR-0084 "Own address ownership").
+        // whichever task wrote it (ADR-0084 "One owner of the Own Address").
         let mut own_address_changed = enactor.own_address_changed();
         // A live policy change re-arms the node before its next exchange
         // (ADR-0046): the brain samples the policy and tells the node.

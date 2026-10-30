@@ -248,7 +248,7 @@ pub(crate) type SharedReaskReplySink = Arc<std::sync::Mutex<crate::download::Rea
 /// half of its eD2k identity — nickname, listen port, protocol version and
 /// any opaque extra tags. It carries **no User Hash and no Secure User
 /// Identification keypair**: both are the node's, fixed when the core is
-/// built (ADR-0048 "Identity ownership"), so no command can
+/// built (ADR-0048 "One identity per node, owned by the core"), so no command can
 /// name another hash — there is no field to name it in.
 ///
 /// ```compile_fail
@@ -381,7 +381,7 @@ pub enum PeerRetirementReason {
     /// not to reach, as aMule's contact precondition drops it.
     CryptIncompatible,
     /// The peer's hello named a User Hash this download distrusts: it served
-    /// this file bad data before (ADR-0090 "Source ownership").
+    /// this file bad data before (ADR-0090 "A download holds each source under one owner").
     Distrusted,
     /// A sighting proved this worker's peer the same source another worker
     /// already reaches, and this one, the newer, gave way (ADR-0090's merge

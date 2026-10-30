@@ -71,8 +71,8 @@ impl<C: KadSourceChannel> DiscoveryChannel for KadDiscoveryChannel<C> {
 /// discovery. It sweeps the offered rows once at start and again on every
 /// share-set notification — the serve-announce pattern — publishing each file
 /// newly offered and withdrawing each file no longer offered, so the node never
-/// republishes a file rmule cannot serve (ADR-0100, "The registry against the
-/// disk"). Kad has no unpublish: what storers already hold ages out.
+/// republishes a file rmule cannot serve (ADR-0106, "The registry against the disk"). Kad has no
+/// unpublish: what storers already hold ages out.
 pub(crate) struct KadPublisher<C> {
     channel: C,
     /// The Core-owned **Shared File Registry**, shared with the actor (every

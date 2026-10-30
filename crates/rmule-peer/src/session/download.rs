@@ -118,7 +118,7 @@ impl PeerSession {
     /// inflate, or that is refused, emits a non-terminal
     /// `CompressedPartSkipped`: the session stays open, and the requester
     /// gives its slot back, since a stock uploader never sends the block
-    /// again in this slot (ADR-0029 "A lost block ends the stream").
+    /// again in this slot (ADR-0029).
     pub(super) fn on_compressed_part(&mut self, cp: &CompressedPart) {
         // A compressed block never spans more than one ED2K part; bound the
         // inflated output for safety.

@@ -157,7 +157,7 @@ pub(super) struct CoreWiring<S, P, L, K> {
     pub(super) store: Arc<DurableDownloadRepository>,
     pub(super) registry: Arc<DurableSharedFileRegistry>,
     pub(super) credit: SharedCreditStore,
-    /// The node's User Hash, fixed at build (ADR-0048 "Identity ownership"):
+    /// The node's User Hash, fixed at build (ADR-0048 "One identity per node, owned by the core"):
     /// the one every login and hello this actor starts presents.
     pub(super) user_hash: rmule_primitives::UserHash,
     pub(super) source_lookup: Arc<Mutex<S>>,
@@ -385,7 +385,7 @@ where
     }
 
     /// The wire identity this node presents now: [`Self::credentials`] as
-    /// the build-time hash (ADR-0048 "Identity ownership").
+    /// the build-time hash (ADR-0048 "One identity per node, owned by the core").
     pub(super) fn identity(&self) -> rmule_primitives::ClientIdentity {
         self.credentials().identity(self.user_hash)
     }

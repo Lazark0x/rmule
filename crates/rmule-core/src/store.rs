@@ -31,7 +31,7 @@ pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 /// The store-wide version ladder (ADR-0083): the current version and the
 /// steps up to it. No release exists yet, but the operator's own store holds
 /// downloads a reset would lose, so a record change takes a rung
-/// (ADR-0102 "Building the scan"), and so does a new table whose absence an
+/// (ADR-0102), and so does a new table whose absence an
 /// older build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
     15,
@@ -66,7 +66,7 @@ pub(crate) const UPGRADE_FROM_V8: UpgradeStep = UpgradeStep {
     },
 };
 
-/// Store version 9 → 10 (ADR-0080, "What a server grants is durable"):
+/// Store version 9 → 10 (ADR-0080):
 /// every managed server row gains no grants report and its figures no UDP
 /// flags. A version-9 build refuses the store: it could not read the row.
 pub(crate) const UPGRADE_FROM_V9: UpgradeStep = UpgradeStep {

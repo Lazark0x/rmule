@@ -73,8 +73,8 @@ pub enum DownloadCommand {
         /// The download to abandon.
         download_id: DownloadId,
     },
-    /// Forget one completed download (ADR-0093, "Clearing a completed
-    /// download"): its record and its row leave; the file, its **Shared File
+    /// Forget one completed download (ADR-0094, "Clearing a completed download"): its record and
+    /// its row leave; the file, its **Shared File
     /// Registry** entry and its share totals stay. Refused with
     /// [`CoreCommandRejectReason::DownloadNotCompleted`] for any other.
     ClearDownload {
@@ -259,8 +259,8 @@ pub enum CoreCommand {
         /// The listed server to make the session's server.
         server: ServerEndpoint,
     },
-    /// End the operator's intent to stay connected (ADR-0093, "A lost
-    /// session is re-made"): the live session is hung up, a pending
+    /// End the operator's intent to stay connected (ADR-0096, "A lost session is re-made"): the
+    /// live session is hung up, a pending
     /// reconnect is dropped (`ReconnectEnded { OperatorDisconnected }`), and
     /// nothing is dialed until the operator connects again. A no-op with
     /// neither.

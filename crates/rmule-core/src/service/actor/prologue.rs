@@ -2,7 +2,7 @@
 //! command — the credit ring seeded, the server-UDP and client-UDP fronts
 //! bound, the port-mapping runtime started, the Durable Store's downloads
 //! attached — ending in the [`CoreActor`] that owns them for the session's
-//! life (ADR-0093: "the actor's prologue").
+//! life (ADR-0093).
 
 use std::collections::HashMap;
 use std::path::Path;
