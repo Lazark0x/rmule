@@ -115,7 +115,7 @@ dial rmule has in flight to one — and the downloads that ride it, one at a tim
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's, the dialing worker's or the serve side's dial-back's router, and before the socket the dialing worker or the dial-back — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello it answers, an adopted callback's among them; to the link's end or the dial's failure. A link filed later under a name takes that name, a User Hash only from a link at the same address or one not yet answered ("One client on two addresses") — a dial is filed at the dial, an accepted link at its hello — and a refiling, a dial's hello or a revised identity, never takes back a name a link filed later holds; a name a link gives up, at its end or at a revision, goes back to the newest live link that proves it; a Dial in Flight whose hello has not gone out is unfiled the moment an accepted link of its peer takes one of its names; and an accepted link is not filed while a dial's hello is out unanswered under one of its names (invariant 7) |
+| **Peer Links** | each **Ask Name** the link proves: its dial endpoint (the link's own address with the hello's listen port; for a link rmule dialed, also where it dialed), `(server, low_id)` when the hello names a Low ID and its server, and the hello's User Hash; a **Dial in Flight**, before its hello, under where it dials and the User Hash the dialing source's record knows | the link's driver — the accept road's, the dialing worker's or the serve side's dial-back's router, and before the socket the dialing worker or the dial-back — by filing | a link rmule dials: from the dial, as a Dial in Flight, refiled under its hello's names at the hello; an accepted link: from the hello it answers, an adopted callback's among them; to the link's end or the dial's failure. A link filed later under a name takes that name, a User Hash only from a link at the same address, and nothing from a dial it does not prove ("What a link proves to take a dial") — a dial is filed at the dial, an accepted link at its hello — and a refiling, a dial's hello or a revised identity, never takes back a name a link filed later holds; a name a link gives up, at its end or at a revision, goes back to the newest live link that proves it; a Dial in Flight whose hello has not gone out is unfiled the moment an accepted link from the address it dials takes one of its names; and an accepted link from that address is not filed while a dial's hello is out unanswered under one of its names (invariant 7) |
 | **Link Riders** | one Peer Link: one rider, then the waiters in arrival order | the link's driver | a rider from its turn to its worker's end; a waiter from its join to its turn, its run's stop, or the link's end |
 | **Awaited Grants** | each Ask Name of a source whose record waits in the RemoteQueued stage (ADR-0057): its dial endpoint and the User Hash its record knows — a record's statement, or the hello its standing kept past the worker (ADR-0049); several downloads under one name, the peer's standing holder first, then in the order they filed | the download's run, held to its Source Book's RemoteQueued stage and its standing's holder after every brain step | from the record entering the stage to its leaving it, or the run's end |
 
@@ -159,8 +159,9 @@ Invariants every transition keeps:
    | L's hello sent, D ends unread | stays on L | **dead source** | **dead source** | transfer | L answered at D's end: transfer | not drawn: a dead dial's fake only, `a_hello_held_on_a_dial_back_is_answered_when_the_dial_ends_and_the_grant_is_left_to_it` |
    | L's hello sent, W's client has no address (a first contact), reads D's hello | stays on L, `DS_CONNECTING`; a second client with no file answers D; a grant on D is answered `OP_CANCELTRANSFER` (`ClientTCPSocket.cpp:639-653`) | **0 parts**, dead source | **0 parts**, dead source (bench, closing L at D's answer) | transfer, two links | L answered at the close bound, D let go, the grant on L: transfer | 0 parts closing L at D's answer: `1793361644`, `1793362292`. PASS under the rule: `serve-crossed` `1793366649`, `1793384543`, unheld `1793385460`, `1793385614`; `download-crossed` `1793368590`, `1793384708` |
 
-   **The hello of a link the peer opened is answered only when no dial of rmule's to that peer has
-   its hello out unanswered.** Only that rule ends in a transfer in every order: it leaves W in
+   **The hello of a link the peer opened from the address rmule dials is answered only when no
+   dial of rmule's to that address has its hello out unanswered** ("What a link proves to take a
+   dial": a hello from any other address meets no dial). Only that rule ends in a transfer in every order: it leaves W in
    `DS_CONNECTING`, which asks on whichever link it keeps. Each row of the table below is the one
    rule at one stage of the dial; the decision and the filing are one step under the Peer Links'
    lock, taken as the session reads the hello, so no dial's hello can go out behind an answer. It
@@ -521,10 +522,41 @@ forged ping from the waiter's own address does today.
 holds it, as aMule's client stays on the socket it holds and the newcomer attaches to nothing
 (`ClientList.cpp:384-398`): a download looking a peer up by hash finds the link the hash was
 first filed for, whatever the serve side later rules on the newcomer, which this step cannot
-read. A dial not yet answered holds nothing yet, so a newcomer still takes the name from it and
-overtakes it. The newcomer keeps the name among those it proves: when the link holding it ends,
-the name passes as any name does. It rides nothing until then, unless a download finds it under
-its own address.
+read. A dial not yet settled holds its names as firmly. The newcomer keeps the name among those it
+proves: when the link holding it ends, the name passes as any name does. It rides nothing until
+then, unless a download finds it under its own address.
+
+**What a link proves to take a dial.** A hello is a claim: its User Hash, its listen port and its
+Low ID are the sender's words, and "the newcomer's own hello proves nothing" holds at a dial as at
+a link. To take a dial is to be held on it, to be filed under its names, or to have its rider, its
+waiters and its dial-back grant move over; all of it is a verdict on who the far end is, and the
+3 s close bound only tells a client that refused the attach from one that kept it, never whether
+the link it times is that client's. So **a link may take a dial only from the address rmule
+dialed: the same family and the same IP, any port**, the port being the ephemeral one of the
+peer's own connect. TCP makes that address unforgeable, a dial is filed with it, and the check
+runs in the one step under the lock that meets the hello.
+
+| Hello read while a dial is unsettled (before its hello, its hello out, or answered with a hello held on it) | From the address dialed | From any other address |
+|---|---|---|
+| The hello | met as invariant 7 says: overtakes, or is held | **meets no dial**: answered at once and heard by the serve side, whose rules above then apply |
+| The dial's names | taken before its hello, kept while held | kept; the link files only the names the dial does not hold, and proves the rest for when the dial ends |
+| Rider, waiters, dial-back grant | move at the overtaking or the refusal | never move |
+
+A stock client reaches rmule from the address rmule dials, and aMule itself reads a second IP under
+a hash as a second party (`ClientList.cpp:386-387`), so every order of invariant 7's table is
+unchanged and `serve-crossed` proves the same road. A sender elsewhere that holds its socket open takes
+nothing: it sits on its own link as a stranger.
+
+Secure User Identification cannot be the proof. The decision is taken as the hello is read, for
+the reason invariant 7 gives; a signature comes only once the hellos are done
+(`BaseClient.cpp:2288`), and a held hello is unanswered, so a client would have to be answered to
+prove what its answer waits on.
+
+The cost is a real client that comes back from an address other than the one dialed: a multi-homed
+host, a dual-stack client, or a source record gone stale. It is the row "Which link rmule keeps
+past the crossing" already draws, where the names do not meet: a dial that reaches the client
+leaves two links for the far end to choose from, and neither end holds, and a dial that reaches
+nobody ends at its own timeout, a connect's wait lost before the name passes to the client's link.
 
 **A ban is earned by proof, never by sight.** The first sight of a second address says nothing
 about who owns it. The rule reaches a ban in only two ways: both addresses are IPv4, or the
