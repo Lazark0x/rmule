@@ -45,7 +45,7 @@ mod riders;
 mod serve_hold;
 
 pub(crate) use awaited_grants::{AwaitedGrant, GrantSender, LinkOffer};
-pub(super) use crossing::{AcceptedLink, CrossedDial, DialSettled, Meeting, MetHello};
+pub(super) use crossing::{AcceptedLink, AnswerHeard, CrossedDial, DialSettled, Meeting, MetHello};
 pub use far_end::FarEnd;
 pub(super) use far_end::{LinkConnection, let_go_of};
 pub(super) use overtaking::Moving;
@@ -292,7 +292,7 @@ impl DialInFlight {
     }
 
     /// The far end answered the dial ([`Filing::heard_answer`]).
-    pub(super) async fn heard_answer(&mut self) -> Option<FoundLink> {
+    pub(super) async fn heard_answer(&mut self) -> AnswerHeard {
         self.filing.heard_answer().await
     }
 }
@@ -604,23 +604,32 @@ impl Filing {
 
     /// The far end answered the dial's hello on the link, which says nothing
     /// alone: with a hello of its own link held on the dial, wait for what
-    /// does ([`crossing`]). `None` when the dial stands; the peer's own link
-    /// when the far end stayed on that, and this dial gives way to it. Nothing
-    /// may reach the dial's rider or its grant before this returns.
-    pub(super) async fn heard_answer(&mut self) -> Option<FoundLink> {
+    /// does ([`crossing`]). Nothing may reach the dial's rider or its grant
+    /// before this returns.
+    pub(super) async fn heard_answer(&mut self) -> AnswerHeard {
         self.given_up = None;
-        let verdict = {
-            let mut book = self.links.book.lock().ok()?;
-            let dial = book.unanswered.remove(&self.filing)?;
+        let (crossed, verdict) = {
+            let Ok(mut book) = self.links.book.lock() else {
+                return AnswerHeard::Stands;
+            };
+            let Some(dial) = book.unanswered.remove(&self.filing) else {
+                return AnswerHeard::Stands;
+            };
             let verdict = dial.holds_a_hello().then(|| {
                 let (tell, told) = oneshot::channel();
                 book.yielding.insert(self.filing, tell);
                 told
             });
             dial.answered();
-            verdict
-        }?;
-        verdict.await.ok()
+            (dial.crossed(), verdict)
+        };
+        match verdict {
+            Some(verdict) => verdict
+                .await
+                .map_or(AnswerHeard::Kept, AnswerHeard::GaveWay),
+            None if crossed => AnswerHeard::Kept,
+            None => AnswerHeard::Stands,
+        }
     }
 
     /// `far_end` is what the link's driver reads of it from now on.

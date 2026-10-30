@@ -170,7 +170,7 @@ Invariants every transition keeps:
    |---|---|---|---|---|
    | before its hello: connect or crypt handshake running, or up with the hello not yet claimed under the lock | L; D is never heard | answered at once | a download's dial closes, retiring nobody; its download then its waiters ride or wait on L, each new rider asking afresh | a dial-back closes unheard and is unfiled; its pending grant moves onto L, `OP_ACCEPTUPLOADREQ` going there at once (`ClientTCPSocket.cpp:328`, `BaseClient.cpp:1707-1716`) |
    | hello out, unanswered | the far end's: see below | **held**, unanswered and unfiled; nothing of it reaches the serve side | the rider stays on D, and D keeps every name | the pending grant stays on D |
-   | answered, with a hello held on it | the far end's: L's close says | still held, for the close bound | the rider hears nothing of the answer until the verdict | no grant on D before the verdict |
+   | answered, with a hello held on it | the far end's: L's close says | still held, for the close bound; closed, answered on D | the rider hears nothing of the answer until the verdict | no grant on D before the verdict |
    | answered, alive | D, unless it turns out dead | answered at once and filed: W closed L already, or holds L because D is dead with its FIN on the way, and an unread answer harms neither | the rider stays on D; L holds the names until it closes, and they come back | stay on D; **rmule closes neither link**, the far end closes one, and the standing follows (last row) |
    | dead at the far end (below) | L | answered at once and filed | D closes now, whatever rides it: the rider and the waiters leave as at any link's end, and each rides or waits on L at its next turn | move onto L as from a link that ended; `serve.dead_dial_let_go` |
    | any live link, when a link of the same client carrying its slot ends | the one left | | | the slot moves there and is granted there; the blocks last asked on the ended link are read again for it |
@@ -180,7 +180,11 @@ Invariants every transition keeps:
      having heard of it (`serve.crossed_dial_kept`), and D goes on: its rider hears the answer and
      the grant goes on it. Stock aMule's FIN on L leaves before its answer on D: `Safe_Delete` runs
      at the attach, ahead of `SendHelloAnswer` (`ClientList.cpp:400-403`, `ClientTCPSocket.cpp:391`,
-     `:406`).
+     `:406`). **The hello held on L is answered on D**, once, ahead of anything else on it: the
+     client W attached still has the answer to the hello it sent on L pending, an `OP_HELLO` not
+     ending that wait (`BaseClient.cpp:466`, `:744`), and it drops a link that answers it before
+     the answer comes (`ClientTCPSocket.cpp:1205-1208`, bench: `OP_MULTIPACKETANSWER` drew a reset
+     4 ms later). A second `OP_HELLOANSWER` is nothing to a far end not waiting for one.
    - The **close bound**, 3 s after D's answer with L still open: the far end refused the attach
      and its real client waits on L. L is answered and filed (`serve.crossed_dial_refused`), and D
      yields to L as a dial yields before its hello: it closes retiring nobody, its rider and

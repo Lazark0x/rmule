@@ -23,7 +23,7 @@
 //! answered then.
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
-use rmule_peer::PeerIdentity;
+use rmule_peer::{ConnectionCommand, PeerCommand, PeerIdentity};
 use rmule_primitives::{PeerCrypt, PeerEndpoint};
 use tokio::sync::mpsc;
 
@@ -31,7 +31,7 @@ use super::ServeConnection;
 use crate::adapters::FarEnd;
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::kad_runtime::broker_peer_kad_handoff;
-use crate::adapters::peer_link::{LinkName, Reach};
+use crate::adapters::peer_link::{AnswerHeard, LinkName, Reach};
 use crate::adapters::peer_transfer::dial_end::{
     closed_before_hello, connect_failure, crypt_refusal,
 };
@@ -202,9 +202,16 @@ impl DialBackRoad {
         };
         // The far end answers a dial it refused too, with a client that holds
         // no file: it stayed on its own link, which takes the grant.
-        if in_flight.heard_answer().await.is_some() {
-            let _ = conn.shutdown().await;
-            return;
+        match in_flight.heard_answer().await {
+            AnswerHeard::Stands => {}
+            AnswerHeard::Kept => {
+                let answer = PeerCommand::Connection(ConnectionCommand::AnswerCrossedHello);
+                let _ = conn.send(answer).await;
+            }
+            AnswerHeard::GaveWay(_) => {
+                let _ = conn.shutdown().await;
+                return;
+            }
         }
         // What every identified link feeds, as a download's dialed link does.
         broker_peer_kad_handoff(&deps.kad_bootstrap, at, &identity).await;

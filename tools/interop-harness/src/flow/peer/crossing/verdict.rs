@@ -432,6 +432,12 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                     ),
                 ));
                 claims.push(Claim::about(
+                    "rmule-answered-its-hello-on-the-dial",
+                    dial.is_some_and(|link| link.answer_from_rmule > 0.0),
+                    Evidence::Captured,
+                    format!("rmule's dial: {}", describe(dial)),
+                ));
+                claims.push(Claim::about(
                     "no-grant-went-before-that-close",
                     spans.is_some_and(|(own, dial)| dial.first_grant > own.closed_at),
                     Evidence::Captured,

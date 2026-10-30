@@ -14,8 +14,8 @@ use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_link::{
-    AcceptedLink, DialInFlight, DownloadHalf, FarEnd, Filing, FoundLink, LinkConnection, LinkJoin,
-    LinkName, Moving, Riders, ServeHold, let_go_of, recv_join,
+    AcceptedLink, AnswerHeard, DialInFlight, DownloadHalf, FarEnd, Filing, FoundLink,
+    LinkConnection, LinkJoin, LinkName, Moving, Riders, ServeHold, let_go_of, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
@@ -286,16 +286,27 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
                 if matches!(
                     event,
                     PeerEvent::Connection(ConnectionEvent::Identified { .. })
-                ) && let Some(found) = link.heard_answer().await
-                {
-                    riders.dial_gave_way();
-                    let mut behind = link.joins.take();
-                    if let Some(behind) = &mut behind {
-                        behind.close();
+                ) {
+                    match link.heard_answer().await {
+                        AnswerHeard::Stands => {}
+                        AnswerHeard::Kept => {
+                            let answer =
+                                PeerCommand::Connection(ConnectionCommand::AnswerCrossedHello);
+                            if conn.send(answer).await.is_err() {
+                                break;
+                            }
+                        }
+                        AnswerHeard::GaveWay(found) => {
+                            riders.dial_gave_way();
+                            let mut behind = link.joins.take();
+                            if let Some(behind) = &mut behind {
+                                behind.close();
+                            }
+                            let _ = gave_way.send(GaveWay { link: found, behind });
+                            let _ = conn.shutdown().await;
+                            return;
+                        }
                     }
-                    let _ = gave_way.send(GaveWay { link: found, behind });
-                    let _ = conn.shutdown().await;
-                    return;
                 }
                 match halves.dispatch(remote, event, riders.rider(), serve.serving()).await {
                     Routed::Open => {}
@@ -369,8 +380,11 @@ struct DialedLink {
 impl DialedLink {
     /// The far end answered the dial: the peer's own link, when the dial gives
     /// way to it.
-    async fn heard_answer(&mut self) -> Option<FoundLink> {
-        self.filing.as_mut()?.heard_answer().await
+    async fn heard_answer(&mut self) -> AnswerHeard {
+        match &mut self.filing {
+            Some(filing) => filing.heard_answer().await,
+            None => AnswerHeard::Stands,
+        }
     }
 
     /// The peer answered the dial: its filing moves to the names it proves.

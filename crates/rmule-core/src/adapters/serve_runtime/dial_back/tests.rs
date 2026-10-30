@@ -12,7 +12,7 @@ use std::time::Duration;
 use rmule_net::peer::{
     ConnectOptions, Connection as PeerConnection, ObfuscationPolicy, PeerListener, PeerStreamRole,
 };
-use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, ServerEvent};
+use rmule_peer::{ConnectionEvent, NoticeEvent, PeerEvent, PeerHandshakeContext, ServerEvent};
 use rmule_primitives::{
     ClientId, ClientIdentity, CryptStance, Ed2kFileLink, Ed2kText, FileHash, Ipv4Endpoint,
     PeerCrypt, PeerEndpoint, UserHash,
@@ -304,7 +304,7 @@ async fn an_answer_on_a_dial_back_says_nothing_until_the_far_end_closes_its_own_
         "the names stay with the dial"
     );
 
-    let _answered = PeerConnection::over_stream(
+    let mut answered = PeerConnection::over_stream(
         stream,
         dialer,
         PeerStreamRole::Responder,
@@ -322,6 +322,25 @@ async fn an_answer_on_a_dial_back_says_nothing_until_the_far_end_closes_its_own_
     assert!(
         matches!(outcome, Some(DialBackOutcome::Linked { .. })),
         "the far end kept the dial: it comes up to grant on"
+    );
+    // Its client still waits on the answer to the hello it sent on the link
+    // it deleted, and aMule drops a link that answers it first.
+    let answer = timeout(SOON, async {
+        while let Some(event) = answered.next_event().await {
+            if matches!(
+                event,
+                PeerEvent::Notice(NoticeEvent::UnknownPacket { opcode: 0x4C, .. })
+            ) {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(
+        answer,
+        Ok(true),
+        "the hello it held is answered on the dial"
     );
 }
 

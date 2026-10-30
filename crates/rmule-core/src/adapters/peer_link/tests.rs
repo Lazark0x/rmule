@@ -355,37 +355,43 @@ async fn a_hello_meeting_a_dial_past_its_hello_is_held_until_the_far_end_shows_w
         panic!("the dial's hello is out: this hello waits");
     };
     assert_eq!(links.find(&names).map(|found| found.remote), Some(at));
-    let verdict = tokio::spawn(async move { refused.heard_answer().await.map(|link| link.remote) });
+    let verdict = tokio::spawn(async move { refused.heard_answer().await });
     assert_eq!(crossed.settled().await, DialSettled::Answered);
     let Meeting::Clear(_filed) = meet(&links, &names) else {
         panic!("an answered dial holds no hello up");
     };
     drop(crossed);
-    assert_eq!(
-        tokio::time::timeout(within, verdict)
-            .await
-            .unwrap()
-            .unwrap(),
-        Some(v4([203, 0, 113, 3], 50_288)),
-        "the dial gives way to the peer's own link"
-    );
+    let AnswerHeard::GaveWay(link) = tokio::time::timeout(within, verdict)
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("the dial gives way to the peer's own link");
+    };
+    assert_eq!(link.remote, v4([203, 0, 113, 3], 50_288));
 
-    // The far end closed its own link: the dial stands.
+    // The far end closed its own link: the dial stands, and owes the answer.
     let links = SharedPeerLinks::default();
     let (mut kept, _joins) = dial_past_its_hello(&links, at, &names);
     let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
         panic!("the dial's hello is out: this hello waits");
     };
-    let verdict = tokio::spawn(async move { kept.heard_answer().await.map(|link| link.remote) });
+    let verdict = tokio::spawn(async move { kept.heard_answer().await });
     assert_eq!(crossed.settled().await, DialSettled::Answered);
     drop(crossed);
-    assert_eq!(
+    assert!(matches!(
         tokio::time::timeout(within, verdict)
             .await
             .unwrap()
             .unwrap(),
-        None
-    );
+        AnswerHeard::Kept
+    ));
+
+    // It closed it ahead of its answer, as stock aMule does: the same.
+    let links = SharedPeerLinks::default();
+    let (mut kept, _joins) = dial_past_its_hello(&links, at, &names);
+    drop(meet(&links, &names));
+    assert!(matches!(kept.heard_answer().await, AnswerHeard::Kept));
 
     // The dial ended: the hello is met again.
     let links = SharedPeerLinks::default();
@@ -404,7 +410,7 @@ async fn a_dial_answered_with_no_hello_held_stands_at_once() {
     let at = v4([203, 0, 113, 3], 4662);
     let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
     let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
-    assert!(dial.heard_answer().await.is_none());
+    assert!(matches!(dial.heard_answer().await, AnswerHeard::Stands));
     assert!(
         matches!(meet(&links, &names), Meeting::Clear(_)),
         "an answered dial holds no hello up: the far end closes one of the two"
@@ -477,7 +483,7 @@ async fn the_peers_own_link_lets_a_dial_dead_at_the_far_end_go_and_spares_a_live
     for (far_end, dead) in [(FarEnd::silent_for(silent), true), (FarEnd::new(), false)] {
         let links = SharedPeerLinks::default();
         let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
-        assert!(dial.heard_answer().await.is_none());
+        assert!(matches!(dial.heard_answer().await, AnswerHeard::Stands));
         dial.read_through(Some(&far_end));
 
         let Meeting::Clear(mut accepted) = meet(&links, &names) else {

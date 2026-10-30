@@ -23,6 +23,12 @@ pub enum ConnectionCommand {
     /// [`HelloGate`](crate::HelloGate) held: the link opens now (ADR-0107
     /// invariant 7). Nothing is owed otherwise, and nothing is sent.
     AnswerHello,
+    /// Answer on this link, which rmule dialed, the hello of the link the peer
+    /// opened and then deleted for it, closed unanswered: the far end's client
+    /// took this link over with that answer still pending, and aMule drops a
+    /// link that answers it before it comes (`ClientTCPSocket.cpp:1205-1208`,
+    /// ADR-0107 invariant 7).
+    AnswerCrossedHello,
     /// Take the Client ID a [`ConnectionEvent::ClientIdOffered`](crate::ConnectionEvent::ClientIdOffered)
     /// offered, on `server` when core knows the server it named. A Low ID
     /// without a known server, or a High ID that is not the link's own
@@ -40,6 +46,7 @@ impl PeerSession {
         match command {
             ConnectionCommand::Disconnect => self.close(PeerCloseReason::Local),
             ConnectionCommand::AnswerHello => self.answer_owed_hello(),
+            ConnectionCommand::AnswerCrossedHello => self.answer_hello(),
             ConnectionCommand::TakeClientId { client_id, server } => {
                 self.take_client_id(client_id, server);
             }

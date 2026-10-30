@@ -30,7 +30,7 @@ use rmule_peer::{HelloGate, PeerIdentity};
 use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use super::{Book, Filing, LinkJoin, LinkName, Moving, SharedPeerLinks};
+use super::{Book, Filing, FoundLink, LinkJoin, LinkName, Moving, SharedPeerLinks};
 
 /// How long a hello is held when rmule's User Hash is the lower of the two.
 /// It stays well inside the peer's 40 s clock on the link it is waiting on
@@ -53,6 +53,8 @@ pub(super) const CLOSE_BOUND: Duration = Duration::from_secs(3);
 pub(super) struct UnansweredDial {
     answered: watch::Sender<bool>,
     give_up: oneshot::Sender<()>,
+    /// A hello has been held on the dial, whether or not it still is.
+    crossed: bool,
 }
 
 impl UnansweredDial {
@@ -61,7 +63,14 @@ impl UnansweredDial {
     pub(super) fn new() -> (Self, oneshot::Receiver<()>) {
         let (give_up, given_up) = oneshot::channel();
         let (answered, _) = watch::channel(false);
-        (Self { answered, give_up }, given_up)
+        (
+            Self {
+                answered,
+                give_up,
+                crossed: false,
+            },
+            given_up,
+        )
     }
 
     /// The far end answered: every hello held on the dial learns it, and
@@ -74,6 +83,25 @@ impl UnansweredDial {
     pub(super) fn holds_a_hello(&self) -> bool {
         self.answered.receiver_count() > 0
     }
+
+    /// Whether a peer's hello was ever held on the dial.
+    pub(super) const fn crossed(&self) -> bool {
+        self.crossed
+    }
+}
+
+/// What the far end's answer on a dial came to.
+pub(in crate::adapters) enum AnswerHeard {
+    /// Nothing crossed the dial: it goes on.
+    Stands,
+    /// The far end closed its own link, a hello held on the dial: the dial
+    /// goes on, and owes the client it took over the answer to that hello.
+    /// `OP_HELLO` on a socket does not end a client's wait for the answer to
+    /// its own (`BaseClient.cpp:466`, `:744`), and aMule drops a link whose
+    /// peer answers it before that comes (`ClientTCPSocket.cpp:1205-1208`).
+    Kept,
+    /// The far end stayed on its own link: the dial gives way to it.
+    GaveWay(FoundLink),
 }
 
 /// An accepted link, answered and filed under its names.
@@ -193,12 +221,14 @@ impl SharedPeerLinks {
 impl Book {
     /// The dial with its hello out unanswered that one of `names` is filed
     /// under, and where a hello held on it hears it settle.
-    fn crossing(&self, names: &[LinkName]) -> Option<(u64, watch::Receiver<bool>)> {
-        names.iter().find_map(|name| {
+    fn crossing(&mut self, names: &[LinkName]) -> Option<(u64, watch::Receiver<bool>)> {
+        let filing = names.iter().find_map(|name| {
             let filing = self.links.get(name)?.filing;
-            let dial = self.unanswered.get(&filing)?;
-            Some((filing, dial.answered.subscribe()))
-        })
+            self.unanswered.contains_key(&filing).then_some(filing)
+        })?;
+        let dial = self.unanswered.get_mut(&filing)?;
+        dial.crossed = true;
+        Some((filing, dial.answered.subscribe()))
     }
 }
 

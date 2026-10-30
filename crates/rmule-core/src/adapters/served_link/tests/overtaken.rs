@@ -9,6 +9,7 @@
 //! listener, and the asker's listen port where rmule's dial arrives.
 
 use rmule_net::peer::{ObfuscationPolicy, PeerStreamRole};
+use rmule_peer::NoticeEvent;
 use rmule_primitives::{CryptStance, PeerCrypt};
 use tokio::io::AsyncReadExt;
 
@@ -286,6 +287,19 @@ async fn a_hello_crossing_a_downloads_dial_closed_by_the_far_end_leaves_the_down
     );
 
     drop(asker);
+    // The hello it held goes first: the far side's client still waits on it,
+    // and drops a link that answers it before that (`ClientTCPSocket.cpp:1205`).
+    let answer = timeout(Duration::from_secs(5), async {
+        while let Some(event) = far.next_event().await {
+            if matches!(
+                event,
+                PeerEvent::Notice(NoticeEvent::UnknownPacket { opcode: 0x4C, .. })
+            ) {
+                return;
+            }
+        }
+    });
+    assert!(answer.await.is_ok(), "its hello is answered on the dial");
     assert!(
         asked_for(&mut far, file().file_hash, Duration::from_secs(5)).await,
         "the download keeps riding its dial"
