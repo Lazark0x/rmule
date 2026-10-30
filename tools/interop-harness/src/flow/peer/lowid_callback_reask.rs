@@ -216,6 +216,9 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
         };
         bench.start_extra(&server_tap, tap.container(), "run the server tap")?;
 
+        if options.sharer_asks {
+            sharer_asks::stage(&root, &options.layout.synthetic_dir())?;
+        }
         let link = fs::read_to_string(options.layout.synthetic_ed2k_file())
             .with_context(|| format!("read {}", options.layout.synthetic_ed2k_file().display()))?;
         let link = link.trim();

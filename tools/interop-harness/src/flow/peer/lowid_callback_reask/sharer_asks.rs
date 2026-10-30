@@ -24,18 +24,29 @@ use crate::flow::peer::udp_reask_emit::{SECOND_FILE, SECOND_LINK};
 use crate::rmule::RMULE_SERVE_TCP_PORT;
 
 const VERDICT: &str = "peer-lowid-sharer-asks-verdict.toml";
+/// Under the flow's dir: what only rmule shares.
+const SERVED_DIR: &str = "served";
 /// How long past its `Add` the sharer's slot ask has to be answered.
 const ANSWER_BOUND: Duration = Duration::from_secs(60);
 const OP_HELLO: u8 = 0x01;
 const OP_STARTUPLOADREQ: u8 = 0x54;
 const CREDIT_RECORD_LEN: usize = 119;
 
+/// Move the file the sharer will ask for out of the directory it shares,
+/// into one only rmule shares: a file it holds, its `Add` is a no-op (run
+/// `1793403551`).
+pub(super) fn stage(root: &Path, synthetic: &Path) -> Result<()> {
+    let dir = root.join(SERVED_DIR);
+    fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    fs::rename(synthetic.join(SECOND_FILE), dir.join(SECOND_FILE)).context("stage rmule's own file")
+}
+
 /// What rmule's download gets on this leg: the file the sharer asks for, and
 /// `clients.met` at its shutdown.
 pub(super) fn rmule_flags() -> Vec<String> {
     vec![
         "--share".to_owned(),
-        format!("/w/synthetic/{SECOND_FILE}"),
+        format!("/w/{ROOT_DIR}/{SERVED_DIR}/{SECOND_FILE}"),
         "--persist-credit".to_owned(),
     ]
 }
