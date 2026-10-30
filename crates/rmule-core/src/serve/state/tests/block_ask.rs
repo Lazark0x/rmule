@@ -9,13 +9,6 @@ use crate::BlockAskFault;
 const GIB: u64 = 1 << 30;
 const THREE_BLOCKS: u64 = 3 * EMBLOCKSIZE;
 
-fn parts(file_hash: FileHash, ranges: [(u64, u64); 3]) -> ServeInput {
-    ServeInput::Server(ServerEvent::PartsRequested {
-        file_hash,
-        ranges: PartRanges::new(ranges),
-    })
-}
-
 /// A one-slot state sharing `file_hash` (`file_size` bytes): the slot is the
 /// holder's, and a waiter queues behind it.
 fn held(file_hash: FileHash, file_size: u64) -> (ServeState, PeerEndpoint, PeerEndpoint, Instant) {

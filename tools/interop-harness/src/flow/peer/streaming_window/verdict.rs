@@ -8,6 +8,7 @@
 //! form needs a complete seed, the phantom form a file an exact multiple of the
 //! part size, the 43-minute wait a part no seed holds.
 
+use crate::flow::evidence::read_toml;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::Ipv4Addr;
@@ -125,12 +126,7 @@ struct Verdict<'a> {
 /// If an artifact cannot be read or the verdict cannot be written.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let topology_path = root.join(TOPOLOGY_FILE);
-    let topology: TopologyFile = toml::from_str(
-        &fs::read_to_string(&topology_path)
-            .with_context(|| format!("read {}", topology_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", topology_path.display()))?;
+    let topology: TopologyFile = read_toml(&root.join(TOPOLOGY_FILE))?;
     let file_hash = topology
         .file_hash
         .parse_hex16()

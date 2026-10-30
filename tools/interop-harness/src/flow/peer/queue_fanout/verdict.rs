@@ -12,6 +12,7 @@
 //! took unasked, and, tick by tick, how many sources asked, waited and
 //! transferred at once.
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -157,12 +158,7 @@ struct Observed {
 /// If the topology, the tap, the staged file or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let topology_path = root.join(TOPOLOGY);
-    let topology: Topology = toml::from_str(
-        &fs::read_to_string(&topology_path)
-            .with_context(|| format!("read {}", topology_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", topology_path.display()))?;
+    let topology: Topology = read_toml(&root.join(TOPOLOGY))?;
     let observed = observe(run_dir)?;
     let (claims, rows) = claims(&topology, &observed);
     let (verdict, detail) = label(&claims);

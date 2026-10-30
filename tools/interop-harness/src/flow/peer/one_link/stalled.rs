@@ -8,6 +8,7 @@
 //! off the tap in rmule's namespace; the source's standing is rmule's own word
 //! (`rmule-only`).
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::IpAddr;
 use std::path::Path;
@@ -82,10 +83,7 @@ struct Verdict<'a> {
 /// If the addresses, the tap or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let at: Addresses = toml::from_str(
-        &fs::read_to_string(root.join("addresses.toml")).context("read addresses.toml")?,
-    )
-    .context("parse addresses.toml")?;
+    let at: Addresses = read_toml(&root.join("addresses.toml"))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
     let log_path = run_dir.join("rmule").join("stdout.log");
     let log =

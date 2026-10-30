@@ -8,6 +8,7 @@
 //! the tap; the ledger holds what crossed the wire, and the Run Log says what
 //! rmule did meanwhile.
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -234,12 +235,7 @@ fn records_about(log: &str, peer: Ipv4Addr) -> Vec<String> {
 /// If the topology, the tap, the staged file or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let topology_path = root.join(TOPOLOGY);
-    let at: Topology = toml::from_str(
-        &fs::read_to_string(&topology_path)
-            .with_context(|| format!("read {}", topology_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", topology_path.display()))?;
+    let at: Topology = read_toml(&root.join(TOPOLOGY))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
     let log_path = run_dir.join("rmule").join("stdout.log");
     let log =

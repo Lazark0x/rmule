@@ -14,6 +14,7 @@
 //! that accepts and never answers does. The live sharer is the control: its
 //! obfuscated dial completes and carries both files.
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -142,10 +143,7 @@ fn first_link(capture: &TcpCapture, rmule: IpAddr, peer: SocketAddr) -> (usize, 
 /// If the addresses, the tap, the staged files or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let at: SilentAddresses = toml::from_str(
-        &fs::read_to_string(root.join(SILENT_ADDRESSES)).context("read silent.toml")?,
-    )
-    .context("parse silent.toml")?;
+    let at: SilentAddresses = read_toml(&root.join(SILENT_ADDRESSES))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
     let log_path = run_dir.join("rmule").join("stdout.log");
     let log =

@@ -35,13 +35,6 @@ fn partial(file: FileHash, verified: &[u32]) -> ServeState {
     state_of(Vec::new(), vec![(file, look)])
 }
 
-fn parts(ranges: [(u64, u64); 3], file_hash: FileHash) -> ServeInput {
-    ServeInput::Server(ServerEvent::PartsRequested {
-        file_hash,
-        ranges: PartRanges::new(ranges),
-    })
-}
-
 fn block(file_hash: FileHash, start: u64, end: u64) -> BlockRead {
     BlockRead {
         file_hash,
@@ -76,7 +69,7 @@ fn an_in_range_request_reads_its_part_file_and_a_re_request_checks_only_the_unse
         state.on_conn_event(
             t,
             p,
-            parts([(0, 100), (PART, PART + 100), (0, 0)], file),
+            parts(file, [(0, 100), (PART, PART + 100), (0, 0)]),
             &no_modifiers()
         ),
         [read(p, file, 0, 100)]
@@ -106,7 +99,7 @@ fn an_in_range_request_reads_its_part_file_and_a_re_request_checks_only_the_unse
         state.on_conn_event(
             t,
             p,
-            parts([(0, 100), (PART + 100, PART + 200), (0, 0)], file),
+            parts(file, [(0, 100), (PART + 100, PART + 200), (0, 0)]),
             &no_modifiers()
         ),
         [read(p, file, PART + 100, PART + 200)]
@@ -127,7 +120,7 @@ fn a_request_straddling_the_verified_range_ends_the_slot_and_reads_nothing() {
     let decisions = state.on_conn_event(
         t,
         holder,
-        parts([(0, 100), (PART - 50, PART + 50), (0, 0)], file),
+        parts(file, [(0, 100), (PART - 50, PART + 50), (0, 0)]),
         &no_modifiers(),
     );
     assert!(
@@ -154,7 +147,7 @@ fn a_request_straddling_the_verified_range_ends_the_slot_and_reads_nothing() {
         state.on_conn_event(
             t,
             holder,
-            parts([(0, 100), (0, 0), (0, 0)], file),
+            parts(file, [(0, 100), (0, 0), (0, 0)]),
             &no_modifiers()
         ),
         Vec::new(),
@@ -181,7 +174,7 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
         let _ = state.on_conn_event(
             t,
             holder,
-            parts([(0, 100), (0, 0), (0, 0)], file),
+            parts(file, [(0, 100), (0, 0), (0, 0)]),
             &no_modifiers(),
         );
 

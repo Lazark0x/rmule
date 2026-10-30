@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use super::{Addresses, BYTE_EQUAL, DIALED, NO_DIRECT_DIAL, Observed, RELAYED, claims};
 use crate::fixture::{at, frame, open};
 use crate::flow::nat::claims::{Claim, label};
-use crate::flow::pcap::{Ed2kFrame, TcpOpen};
+use crate::flow::pcap::Ed2kFrame;
 
 const RMULE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 70);
 const DOWNLOADER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 31);

@@ -17,6 +17,7 @@
 //! dials nothing. Its worker ends `link_ended`, it logs no `download.failed`,
 //! and the tap holds no SYN from rmule to the sharer after the close.
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::IpAddr;
 use std::path::Path;
@@ -150,10 +151,7 @@ pub(super) fn after_close(log: &str, closed: f64) -> (u32, bool, [i64; 4]) {
 /// If the addresses, the tap or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let at: Addresses = toml::from_str(
-        &fs::read_to_string(root.join("addresses.toml")).context("read addresses.toml")?,
-    )
-    .context("parse addresses.toml")?;
+    let at: Addresses = read_toml(&root.join("addresses.toml"))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
     let log_path = run_dir.join("rmule").join("stdout.log");
     let log =

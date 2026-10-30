@@ -9,6 +9,7 @@
 //! run log dates its rank and its TCP full ask, and the tap carries the part
 //! frames S sent on the connection that ask opened (ADR-0116).
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
@@ -164,12 +165,7 @@ struct Verdict<'a> {
 /// If the topology, a tap, the staged file or rmule's log cannot be read.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let topology_path = root.join(TOPOLOGY);
-    let at: Topology = toml::from_str(
-        &fs::read_to_string(&topology_path)
-            .with_context(|| format!("read {}", topology_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", topology_path.display()))?;
+    let at: Topology = read_toml(&root.join(TOPOLOGY))?;
     let rmule_tap = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
     let sharer_tap = match at.shape.leg {
         ReciprocityLeg::Credit => Some(tcp_capture(&records(&root.join(SHARER_PCAP))?)?),

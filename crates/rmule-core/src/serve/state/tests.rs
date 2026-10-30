@@ -104,6 +104,14 @@ fn hello_facts(
     }
 }
 
+/// A slot holder's `PartsRequested` for `ranges` of `file_hash`.
+fn parts(file_hash: FileHash, ranges: [(u64, u64); 3]) -> ServeInput {
+    ServeInput::Server(ServerEvent::PartsRequested {
+        file_hash,
+        ranges: PartRanges::new(ranges),
+    })
+}
+
 fn identify(state: &mut ServeState, p: PeerEndpoint, user_hash: UserHash, t: Instant) {
     // aMule 2.3.3's claim: its name asks carry a part status.
     let identified = hello_facts(user_hash, 0, 0, 2).identified();

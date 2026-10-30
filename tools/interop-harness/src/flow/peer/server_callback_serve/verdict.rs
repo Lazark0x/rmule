@@ -11,6 +11,7 @@
 //! downloader never made at rmule's listener is a documented absence
 //! (ADR-0045).
 
+use crate::flow::evidence::read_toml;
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::Path;
@@ -146,12 +147,7 @@ pub(crate) fn verdict_path(run_dir: &Path) -> std::path::PathBuf {
 /// unreadable — a broken run, never a zero.
 pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let root = run_dir.join(ROOT_DIR);
-    let addresses_path = root.join(ADDRESSES);
-    let addresses: Addresses = toml::from_str(
-        &fs::read_to_string(&addresses_path)
-            .with_context(|| format!("read {}", addresses_path.display()))?,
-    )
-    .with_context(|| format!("parse {}", addresses_path.display()))?;
+    let addresses: Addresses = read_toml(&root.join(ADDRESSES))?;
     let observed = observe(run_dir)?;
     let (claims, rows) = claims(&addresses, &observed);
     let (verdict, detail) = label(&claims);

@@ -13,6 +13,7 @@ mod links;
 mod offers;
 mod uploads;
 
+use crate::flow::evidence::read_toml;
 use std::fmt;
 use std::fs;
 use std::net::Ipv4Addr;
@@ -343,11 +344,6 @@ impl fmt::Display for Verdict {
             Self::NotRun => "NOT-RUN",
         })
     }
-}
-
-fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    toml::from_str(&fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?)
-        .with_context(|| format!("parse {}", path.display()))
 }
 
 /// A 32-digit hex hash.

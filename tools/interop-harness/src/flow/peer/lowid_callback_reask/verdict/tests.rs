@@ -7,7 +7,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use super::{ANSWERED, Addresses, NO_SECOND_CALLBACK, Observed, PINGED, SX_ANSWERED, claims};
 use crate::fixture::{at, frame, open};
 use crate::flow::nat::claims::{Claim, label};
-use crate::flow::pcap::{Ed2kFrame, TcpOpen, Udp4Datagram};
+use crate::flow::pcap::{Ed2kFrame, Udp4Datagram};
 
 const RMULE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 70);
 const SHARER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 31);
