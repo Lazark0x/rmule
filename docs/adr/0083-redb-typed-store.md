@@ -47,7 +47,7 @@ in filesystem files, not in the store.
   memory, the whole ring's totals, loaded at the first call. Every read of the ring is
   answered from there, so the serve loop and the download runner never wait on the store
   to rank a peer or count a block (ADR-0031): one read costs 0.8 µs (release build, Apple
-  M1 Pro, 10,000 rows), so ranking 5,000 identified peers took 4.2 ms for every input the
+  silicon, 10,000 rows), so ranking 5,000 identified peers took 4.2 ms for every input the
   loop saw, and an accrual queued behind any immediate commit's device flush. What moved
   reaches the store as one `Durability::None` transaction at the next
   `CreditStore::checkpoint`, immediately flushed: the actor calls it once a minute on the

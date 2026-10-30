@@ -59,7 +59,7 @@ fn decide(withhold: bool, related_search: bool, told: Option<Told>, fresh_set: b
 /// The share set and what the live session was told of it, under one lock.
 #[derive(Default)]
 struct Announcing {
-    /// The latest share set handed to [`announce`](SessionFollower::announce).
+    /// The latest share set handed to [`hand`](SessionFollower::hand).
     /// The latest wins: `OP_OFFERFILES` is a whole-set statement, so an older
     /// set would be a lie the moment a newer one exists.
     share: Option<Vec<OfferedFile>>,
