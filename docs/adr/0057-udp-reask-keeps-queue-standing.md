@@ -259,8 +259,9 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   rmule dials, `serve.upload_dial_back_failed` with its cause when the waiter's grant ends
   unsent, and `serve.upload_slot_granted` with its road — on the link the peer holds, on
   the link rmule dialed, on the link it came back on while its grant was held, or at its
-  next connection after a Low-ID mark — `serve.crossed_link_let_go` when the link the
-  client opened is let go for one rmule dialed whose hello went out first, and
+  next connection after a Low-ID mark — `serve.crossed_dial_kept` when the far end shows it
+  kept the link rmule dialed by closing the one it opened, `serve.crossed_dial_refused`
+  when it leaves that one open past the close bound and rmule's dial yields to it, and
   `serve.dead_dial_let_go` when a link rmule dialed is found dead at the far end as the
   client's own link comes in, and the client moves onto that link.
 

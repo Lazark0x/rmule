@@ -134,7 +134,13 @@ Invariants every transition keeps:
    (`ClientTCPSocket.cpp:391`), deleting the one the client held, connecting or connected
    (`ClientList.cpp:400-403`). The deleted socket is unlinked first, so `Disconnected` does not run
    and the client keeps its download state (`ClientTCPSocket.cpp:278-288`). The hello answer on a
-   socket it dialed only finishes that client's own socket. Three of its states decide a crossing:
+   socket it dialed only finishes that client's own socket. A client with a live socket and no
+   address, having read no hello yet (`m_dwUserIP` stays 0 until one is, `BaseClient.cpp:239`,
+   `:661`), is the exception: the found client's address differs from the sender's, so the attach
+   is refused (`ClientList.cpp:388-397`), the hello makes a second client with no file, that client
+   answers it, and the first waits on its own socket. So **an answer on rmule's dial says nothing
+   alone**; the close of the far end's own socket is what tells the two ends apart. Three of its
+   states decide a crossing:
    `DS_CONNECTING` asks at whichever link's hellos finish first (`BaseClient.cpp:1692-1698`);
    `DS_CONNECTED` has asked, so a link attached later is asked nothing and a grant on it is dropped
    (`ClientTCPSocket.cpp:640-645`); and a link closing under either is a dead source, the client
@@ -151,6 +157,7 @@ Invariants every transition keeps:
    | L's hello sent, reads rmule's answer on L, then D's hello | `DS_CONNECTED`, file ask on L; L deleted; asks nothing on D, grant dropped | **0 parts** (bench) | | **0 parts** | cannot happen |
    | L's hello sent, reads L's close, then D's hello | `DS_CONNECTING` closes: dead source; D's hello makes a client with no file | | **0 parts**, grant answered `OP_CANCELTRANSFER` | | cannot happen |
    | L's hello sent, D ends unread | stays on L | **dead source** | **dead source** | transfer | L answered at D's end: transfer |
+   | L's hello sent, W's client has no address (a first contact), reads D's hello | stays on L, `DS_CONNECTING`; a second client with no file answers D; a grant on D is answered `OP_CANCELTRANSFER` (`ClientTCPSocket.cpp:639-653`) | **0 parts**, dead source | **0 parts**, dead source (bench, closing L at D's answer) | transfer, two links | L answered at the close bound, D let go, the grant on L: transfer |
 
    **The hello of a link the peer opened is answered only when no dial of rmule's to that peer has
    its hello out unanswered.** Only that rule ends in a transfer in every order: it leaves W in
@@ -163,14 +170,25 @@ Invariants every transition keeps:
    |---|---|---|---|---|
    | before its hello: connect or crypt handshake running, or up with the hello not yet claimed under the lock | L; D is never heard | answered at once | a download's dial closes, retiring nobody; its download then its waiters ride or wait on L, each new rider asking afresh | a dial-back closes unheard and is unfiled; its pending grant moves onto L, `OP_ACCEPTUPLOADREQ` going there at once (`ClientTCPSocket.cpp:328`, `BaseClient.cpp:1707-1716`) |
    | hello out, unanswered | the far end's: see below | **held**, unanswered and unfiled; nothing of it reaches the serve side | the rider stays on D, and D keeps every name | the pending grant stays on D |
+   | answered, with a hello held on it | the far end's: L's close says | still held, for the close bound | the rider hears nothing of the answer until the verdict | no grant on D before the verdict |
    | answered, alive | D, unless it turns out dead | answered at once and filed: W closed L already, or holds L because D is dead with its FIN on the way, and an unread answer harms neither | the rider stays on D; L holds the names until it closes, and they come back | stay on D; **rmule closes neither link**, the far end closes one, and the standing follows (last row) |
    | dead at the far end (below) | L | answered at once and filed | D closes now, whatever rides it: the rider and the waiters leave as at any link's end, and each rides or waits on L at its next turn | move onto L as from a link that ended; `serve.dead_dial_let_go` |
    | any live link, when a link of the same client carrying its slot ends | the one left | | | the slot moves there and is granted there; the blocks last asked on the ended link are read again for it |
 
    A held hello settles at the first of:
-   - D's hello answer: the far end attached D and deleted L, so L closes unanswered, the serve side
-     never having heard of it (`serve.crossed_link_let_go`). The grant goes on D at that hello.
-   - L's close: the far end attached D. Nothing to do.
+   - L's close, D answered or not: the far end attached D. L ends unanswered, the serve side never
+     having heard of it (`serve.crossed_dial_kept`), and D goes on: its rider hears the answer and
+     the grant goes on it. Stock aMule's FIN on L leaves before its answer on D: `Safe_Delete` runs
+     at the attach, ahead of `SendHelloAnswer` (`ClientList.cpp:400-403`, `ClientTCPSocket.cpp:391`,
+     `:406`).
+   - The **close bound**, 3 s after D's answer with L still open: the far end refused the attach
+     and its real client waits on L. L is answered and filed (`serve.crossed_dial_refused`), and D
+     yields to L as a dial yields before its hello: it closes retiring nobody, its rider and
+     waiters move onto L, and the pending grant moves there. The bound is no aMule timer: it
+     only has to outlast a FIN retransmitted on a live path, the one thing that can part the close
+     from the answer, and a far end that kept D would lose it by a wrong reading, while a far end
+     that refused loses 3 s of a first contact. L's 40 s clock has room for it behind the longest
+     hold.
    - D's end: L is answered, filed, and takes the pending grant as above. A dial-back ending with a
      hello held on it does not end the grant.
    - The bound: D's hello went unread that long while L stood open, so the far end is on L. D closes
@@ -178,11 +196,17 @@ Invariants every transition keeps:
      (`ClientTCPSocket.cpp:201-229`, restarted as W's hello went out, `:1870-1886`) with room for
      the answer to arrive, and it is the only thing that settles two rmules crossing, since each
      holds the other's hello: it is **20 s when rmule's User Hash is the lower of the two, 10 s
-     otherwise**, so the higher hash gives its dial up first, and the lower's dial is answered well
-     inside its own.
+     otherwise**, so the higher hash gives its dial up first, the lower reads that close on its held
+     hello or within the close bound of its own dial's answer, and neither waits on the other.
 
    `serve.crossed_hello_held` records the hold. A download's dial given up at the bound ends as a
    dial closed before its hello.
+
+   **A dial's hello wait.** A dial waits for the peer's hello as long as aMule's socket lets one
+   (`CONNECTION_TIMEOUT`, 40 s, `Constants.h:34`, `EMSocket.cpp:61`), the connect of a callback
+   dial-back likewise: both were 15 s, which ended a dial with a hold of 20 s still running, and a
+   dial-back's grant and the waiter's place with it, where aMule still waits. The holds above end
+   a crossed dial sooner, so no crossing reaches it.
 
    **Which link rmule keeps past the crossing.** A name a link gives up — at its end, or at a
    revision that no longer proves it — goes back to the newest live link that proves it, so a
@@ -259,7 +283,7 @@ Invariants every transition keeps:
 | a download from a connected client asks over its socket | `TryToConnect` on a live socket only calls `ConnectionEstablished` (`BaseClient.cpp:1489-1496`), which sends the file request (`:1692-1698`) | the download rides the link: its requests go out on it and the link's requester events come back to it; nothing is dialed |
 | another file of a connected client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | the download waits on the link (a **Link Rider** waiting); nothing is dialed |
 | a client being connected to is the client every file of it asks | one `CUpDownClient`, found by address and port while `DS_CONNECTING` (`DownloadQueue.cpp:610-704`, `ClientList.cpp:253-347`) | the Dial in Flight is filed at the dial; another download of the peer waits on it and dials nothing |
-| a connecting socket gives way to the one the client opens | the `OP_HELLO` of the client's own socket deletes the one it was connecting (`ClientList.cpp:400-403`), and `ConnectionEstablished` sends the file request on the new one (`BaseClient.cpp:1692-1698`) | a dial whose hello has not gone out yields to the peer's accepted link: a download's closes, retiring nobody, and its downloads ride or wait on that link; a dial-back closes and hands its grant to that link. With the dial's hello out and unanswered the peer's hello is held unanswered until the far end shows which it keeps (invariant 7) |
+| a connecting socket gives way to the one the client opens | the `OP_HELLO` of the client's own socket deletes the one it was connecting (`ClientList.cpp:400-403`), and `ConnectionEstablished` sends the file request on the new one (`BaseClient.cpp:1692-1698`); a client with a live socket and no address refuses the attach, and a second client answers (`ClientList.cpp:388-397`) | a dial whose hello has not gone out yields to the peer's accepted link: a download's closes, retiring nobody, and its downloads ride or wait on that link; a dial-back closes and hands its grant to that link. With the dial's hello out the peer's hello is held unanswered until the far end shows which it keeps, by closing that link or, answering the dial, leaving it open past the close bound; the dial then yields the same way (invariant 7) |
 | a client whose connect fails is a dead source for every file | `DS_CONNECTING` on disconnect: `AddDeadSource` and delete (`BaseClient.cpp:1340-1346`), which removes it from every file and A4AF list (`:419`, `DownloadQueue.cpp:763-786`) | the dial's cause retires every download waiting on it, as it retires the one that dialed |
 | a downloading source is never swapped away | `SwapToAnotherFile` refuses `DS_DOWNLOADING` (`DownloadClient.cpp:1411-1421`) | the rider keeps the link until its worker ends |
 | the client swaps when its file is gone, needs nothing, or stops | `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:1423-1426`, `:2203-2206` | each of these ends the rider's worker, and the oldest waiter takes the link |
@@ -271,7 +295,7 @@ Invariants every transition keeps:
 | a second link from the same address and port replaces the first | the old socket is dropped (`ClientList.cpp:400-403`), and what it carried ends | not opened by a download; a newer accepted link takes the filing |
 | a second link under an identified, connected client's hash from elsewhere is a thief | the newcomer is banned, "Userhash invalid", at the `OP_HELLO` of a socket the peer opened (`ClientList.cpp:384-392`, `ClientTCPSocket.cpp:391`) | the serve side bans the newcomer's address and closes its link where both addresses are IPv4 and the peer opened the link; a client identified is one whose Secure User Identification the credit ledger bound (ADR-0041). Everywhere else, "One client on two addresses" below |
 | two queued clients under one hash | the unidentified one leaves the queue, and an unidentified asker gets no answer (`UploadQueue.cpp:432-458`) | at a slot ask, a waiter under the asker's hash on another link that is not identified leaves the wait list; an asker not identified is answered nothing and not queued |
-| a client promoted while unconnected is granted on whichever link its hellos finish first | `US_CONNECTING` answered at `ConnectionEstablished` (`BaseClient.cpp:1707-1716`; `ClientTCPSocket.cpp:328`, `:417`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on, and `OP_ACCEPTUPLOADREQ` goes on it at once; a hello that crosses the dial's is held until the dial settles, so the grant goes on the one link the far end kept (invariant 7) |
+| a client promoted while unconnected is granted on whichever link its hellos finish first | `US_CONNECTING` answered at `ConnectionEstablished` (`BaseClient.cpp:1707-1716`; `ClientTCPSocket.cpp:328`, `:417`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on, and `OP_ACCEPTUPLOADREQ` goes on it at once; a hello that crosses the dial's is held until the far end shows which link it kept, so the grant goes on that one, and never on the dial before that (invariant 7) |
 | a Low-ID client marked for its next connection takes its slot there | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | its slot ask on the link it came back on is granted, under the budget or one over it (ADR-0057) |
 | a Low ID in `OP_CHANGE_CLIENT_ID` is taken only from a known server | `ClientTCPSocket.cpp:773-787` | the session holds the claim; core takes it only for a server in its server list, with that server's port |
 | an uploader promotes a waiter by dialing it, or on the link it holds | `AddUpNextClient` (`UploadQueue.cpp:206-217`), `OP_ACCEPTUPLOADREQ` on connect (`BaseClient.cpp:1707-1716`) | a link nobody rides that reads an unasked grant hands it to the **Awaited Grant** of the peer's standing holder under its names, else the oldest; that download rides the link and takes the grant, asking nothing first; a peer back from a new address is found by its User Hash (`ClientList.cpp:253-347`) |
