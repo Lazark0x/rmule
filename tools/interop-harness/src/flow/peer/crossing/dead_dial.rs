@@ -1,10 +1,10 @@
 //! The dead-dial legs: the waiter holds its slot on rmule's dial-back, its
 //! end of that link goes with no close reaching rmule, and it comes back on
 //! its own link (ADR-0107 invariant 7). Holds inside the waiter's namespace
-//! do it, the way a NAT that dropped its mapping would: rmule's bytes stop
-//! arriving, and the waiter's next write resets the waiter's own socket and
-//! never leaves it. rmule's tap therefore reads everything rmule wrote,
-//! its close of the dial included.
+//! do it, the way a NAT that dropped its mapping would: nothing crosses the
+//! link either way, and its socket at the waiter ends with no close reaching
+//! rmule. rmule's tap reads everything rmule wrote, its close of the dial
+//! included.
 
 use std::net::Ipv4Addr;
 use std::time::Duration;
@@ -13,6 +13,7 @@ use anyhow::Result;
 
 use super::verdict::{self, Marks};
 use super::{AMULE_PEER_TCP_PORT, amulecmd, cancel_download, iptables_on};
+use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::gate::wait_for_container_log;
 
@@ -74,26 +75,12 @@ pub(super) fn drop_then_come_back(
 
     let rmule = rmule.to_string();
     let port = AMULE_PEER_TCP_PORT.to_string();
-    // Not on the loopback: the reset below comes back to the waiter there.
-    let incoming = [
-        "!", "-i", "lo", "-p", "tcp", "-s", &rmule, "--dport", &port, "-j", "DROP",
-    ]
-    .map(str::to_owned)
-    .to_vec();
-    let outgoing = [
-        "-p",
-        "tcp",
-        "-d",
-        &rmule,
-        "--sport",
-        &port,
-        "-j",
-        "REJECT",
-        "--reject-with",
-        "tcp-reset",
-    ]
-    .map(str::to_owned)
-    .to_vec();
+    let incoming = ["-p", "tcp", "-s", &rmule, "--dport", &port, "-j", "DROP"]
+        .map(str::to_owned)
+        .to_vec();
+    let outgoing = ["-p", "tcp", "-d", &rmule, "--sport", &port, "-j", "DROP"]
+        .map(str::to_owned)
+        .to_vec();
     for (chain, rule) in [("INPUT", &incoming), ("OUTPUT", &outgoing)] {
         run_checked(
             bench
@@ -107,9 +94,26 @@ pub(super) fn drop_then_come_back(
     println!("peer_crossing dial_dropped at={dropped_at:.3}");
     std::thread::sleep(Duration::from_secs(SILENCE_SECS));
 
-    // The cancel's own write ends what is left of the waiter's socket, so
-    // its `Add` opens a new link rather than reusing the dead one.
+    // The waiter forgets the client while it holds the socket, then the
+    // socket goes, so the client goes with it: reset any earlier, it stays as
+    // a source-less client its `Add` never reaches (run `1793402133`).
     cancel_download(bench, waiter, wait_link)?;
+    run_checked(
+        bench.docker.run_container(
+            RunContainer::new(image.to_owned())
+                .remove_after_exit()
+                .network(format!("container:{waiter}"))
+                .cap_add("NET_ADMIN")
+                .entrypoint("ss")
+                .arg("-K")
+                .arg("dst")
+                .arg(rmule.as_str())
+                .arg("sport")
+                .arg("=")
+                .arg(format!(":{port}")),
+        ),
+        "end the waiter's socket on the dial",
+    )?;
     marks.returned_at = Some(verdict::unix_now());
     amulecmd(bench, waiter, add_back, "the waiter adds it again")?;
     let let_go = wait_for_container_log(
