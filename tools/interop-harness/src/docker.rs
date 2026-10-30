@@ -445,7 +445,19 @@ impl Docker {
     /// the rename and grabs the pre-shutdown file (a 15-byte seed
     /// instead of aMule's ~237-byte 21-tag SaveServerMet output).
     pub fn wait(&self, container: impl Into<OsString>) -> DockerCommand {
-        self.command(vec![OsString::from("wait"), container.into()])
+        let container = container.into();
+        if crate::fastclock::scale() > 1 {
+            return DockerCommand::new(
+                "sh",
+                [
+                    "-c".into(),
+                    crate::fastclock::WAIT_PAST_THE_EXIT_HANG.into(),
+                    self.runtime.clone(),
+                    container,
+                ],
+            );
+        }
+        self.command(vec![OsString::from("wait"), container])
     }
 
     /// `docker cp <container>:<src> <dest>` — copy a file out of a container.

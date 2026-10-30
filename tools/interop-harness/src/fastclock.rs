@@ -21,6 +21,14 @@ const LIBRARY: &str = ".scratch/fastclock/libfaketimeMT.so.1";
 /// The rmule-tools flags that bound a run in seconds.
 const BOUNDS: [&str; 3] = ["--max-seconds", "--run-secs", "--hold-secs"];
 
+/// `docker wait`, for a fast-clock run: rmule's scan worker never stops under
+/// libfaketime, so a core that said so has ended and its process is killed.
+/// `$0` is the runtime, `$1` the container.
+pub(crate) const WAIT_PAST_THE_EXIT_HANG: &str = r#"
+( "$0" logs -f "$1" 2>&1 | grep -q -m1 "registry check did not end" && "$0" kill "$1" >/dev/null 2>&1 ) &
+"$0" wait "$1"
+"#;
+
 static SCALE: OnceLock<u64> = OnceLock::new();
 
 /// The run's clock scale; 1 is real speed.
