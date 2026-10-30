@@ -23,7 +23,7 @@
 //! answered then.
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
-use rmule_peer::{PeerCloseReason, PeerIdentity};
+use rmule_peer::PeerIdentity;
 use rmule_primitives::{PeerCrypt, PeerEndpoint};
 use tokio::sync::mpsc;
 
@@ -173,7 +173,12 @@ impl DialBackRoad {
         let mut conn = opened.hello(hello.now());
         let opening = tokio::select! {
             opening = await_hello(&mut conn, &deps.hello_refusals, |_| {}) => opening,
-            () = in_flight.given_up() => Opening::Closed(PeerCloseReason::Local),
+            // Given up for the link whose hello was held on it, which takes
+            // the grant as it is answered.
+            () = in_flight.given_up() => {
+                let _ = conn.shutdown().await;
+                return;
+            }
         };
         let identity = match opening {
             Opening::Identified(identity) => *identity,

@@ -423,6 +423,111 @@ async fn a_held_hello_whose_link_closes_leaves_the_dial_to_go_on() {
     assert!(matches!(outcome, Some(DialBackOutcome::Linked { .. })));
 }
 
+/// A started serve adapter of the node `own`, over Peer Links of its own.
+async fn node(own: UserHash) -> (SharedPeerLinks, RuntimeServeRuntimeService, PeerEndpoint) {
+    let links = SharedPeerLinks::default();
+    let mut serve = RuntimeServeRuntimeService::new().with_peer_links(links.clone());
+    let ours = serve
+        .start(
+            ClientIdentity::new(own, Ed2kText::from_utf8("node"), 4662, 60),
+            SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0),
+        )
+        .await
+        .expect("the listener binds");
+    let ours = PeerEndpoint::V4(Ipv4Endpoint::new(*ours.ip(), ours.port()));
+    (links, serve, ours)
+}
+
+/// Accept a dial with its hello on the wire: what the far end has not read.
+async fn hello_out(listener: &TcpListener) -> tokio::net::TcpStream {
+    let (stream, _) = timeout(SOON, listener.accept())
+        .await
+        .expect("the dial arrives")
+        .expect("accept the dial");
+    let mut first = [0u8; 1];
+    timeout(SOON, stream.peek(&mut first))
+        .await
+        .expect("the hello arrives")
+        .expect("peek the hello");
+    stream
+}
+
+/// Carry `dial` on to the listener at `to`.
+fn carry(mut dial: tokio::net::TcpStream, to: PeerEndpoint) {
+    tokio::spawn(async move {
+        let to = std::net::SocketAddr::new(to.ip(), to.port());
+        let mut far = tokio::net::TcpStream::connect(to)
+            .await
+            .expect("the far end");
+        let _ = tokio::io::copy_bidirectional(&mut dial, &mut far).await;
+    });
+}
+
+#[tokio::test]
+async fn two_rmules_crossing_settle_on_the_lower_hashs_dial() {
+    // Each holds the other's hello, its own dial's hello read by nobody. Only
+    // the bound moves: the higher hash gives its dial up at 10 s and answers,
+    // and the lower reads that close on the hello it holds.
+    let lower_hash = UserHash::from_bytes([0x11; UserHash::BYTE_LEN]);
+    let higher_hash = UserHash::from_bytes([0xE1; UserHash::BYTE_LEN]);
+    let (lower_links, mut lower, lower_at) = node(lower_hash).await;
+    let (higher_links, mut higher, higher_at) = node(higher_hash).await;
+    let (to_higher, relay_to_higher) = raw_waiter().await;
+    let (to_lower, relay_to_lower) = raw_waiter().await;
+    let (lower_tx, mut lower_outcomes) = mpsc::channel(1);
+    let (higher_tx, mut higher_outcomes) = mpsc::channel(1);
+    let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 51318));
+    lower.dial_back(
+        DialBack {
+            waiter,
+            at: relay_to_higher,
+            crypt: PeerCrypt::new(CryptStance::disabled(), Some(higher_hash)),
+        },
+        lower_tx,
+    );
+    higher.dial_back(
+        DialBack {
+            waiter,
+            at: relay_to_lower,
+            crypt: PeerCrypt::new(CryptStance::disabled(), Some(lower_hash)),
+        },
+        higher_tx,
+    );
+    let (from_lower, from_higher) = (hello_out(&to_higher).await, hello_out(&to_lower).await);
+    carry(from_lower, higher_at);
+    carry(from_higher, lower_at);
+    let _served = (
+        lower.accept().await.expect("the lower hears the higher"),
+        higher.accept().await.expect("the higher hears the lower"),
+    );
+
+    let settled = Duration::from_secs(15);
+    let outcome = timeout(settled, lower_outcomes.recv())
+        .await
+        .expect("the lower's dial settles");
+    assert!(
+        matches!(outcome, Some(DialBackOutcome::Linked { .. })),
+        "the lower's dial stands"
+    );
+    let said = timeout(SOON, higher_outcomes.recv())
+        .await
+        .expect("the higher's dial ends");
+    assert!(
+        said.is_none(),
+        "given up, it says nothing: {}",
+        said.is_some()
+    );
+    let filed = filed(&higher_links, LinkName::User(lower_hash), |found| {
+        found.is_some()
+    })
+    .await;
+    assert!(filed.is_some(), "the higher answered the lower's hello");
+    assert!(
+        lower_links.find(&[LinkName::User(higher_hash)]).is_some(),
+        "the lower's dial keeps its peer's name"
+    );
+}
+
 #[tokio::test]
 async fn the_waiters_own_link_stops_a_dial_back_before_its_hello_unheard_and_is_answered() {
     // The waiter never answers the crypt handshake, so no byte of the hello
