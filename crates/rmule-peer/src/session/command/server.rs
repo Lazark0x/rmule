@@ -185,6 +185,7 @@ impl PeerSession {
             }
             ServerCommand::RefuseAich { file_hash } => {
                 if self.require_identified() {
+                    let file_hash = Some(file_hash);
                     self.write_packet(crate::aich::AichRefused { file_hash }.encode_packet());
                 }
             }

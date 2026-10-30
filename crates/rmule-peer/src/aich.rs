@@ -163,27 +163,30 @@ impl AichAnswer {
 }
 
 /// `OP_AICHANSWER` carrying the file hash alone — the peer has no recovery data
-/// for the ask (aMule `DownloadClient.cpp:1691-1695`; ADR-0038). Nothing else
-/// about the ask is named: a link has one AICH ask out per file.
+/// for the ask (aMule `DownloadClient.cpp:1691-1695`; ADR-0038) — or less, which
+/// the asker reads as the same failed ask (`DownloadClient.cpp:1611-1614`).
+/// Nothing else about the ask is named: a link has one AICH ask out per file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AichRefused {
-    /// The file the ask was about.
-    pub file_hash: FileHash,
+    /// The file the ask was about; `None` for an answer too short to say.
+    pub file_hash: Option<FileHash>,
 }
 
 impl AichRefused {
     /// Whether `packet`'s payload is this form of `OP_AICHANSWER`.
     #[must_use]
     pub fn is_form_of(packet: &Packet) -> bool {
-        packet.payload().len() == FileHash::BYTE_LEN
+        packet.payload().len() <= FileHash::BYTE_LEN
     }
 
-    /// Read the refusal; its payload is the file hash and nothing else.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
-        let mut reader = WireReader::new(packet.payload());
-        Ok(Self {
-            file_hash: reader.read_file_hash("file hash")?,
-        })
+    /// Read the refusal; its payload names the file or nothing.
+    #[must_use]
+    pub fn decode_packet(packet: &Packet) -> Self {
+        Self {
+            file_hash: WireReader::new(packet.payload())
+                .read_file_hash("file hash")
+                .ok(),
+        }
     }
 
     #[must_use]
@@ -192,7 +195,8 @@ impl AichRefused {
         Packet::new(
             PeerOpcode::AichAnswer.protocol(),
             PeerOpcode::AichAnswer.as_u8(),
-            self.file_hash.as_bytes().to_vec(),
+            self.file_hash
+                .map_or_else(Vec::new, |file_hash| file_hash.as_bytes().to_vec()),
         )
     }
 }

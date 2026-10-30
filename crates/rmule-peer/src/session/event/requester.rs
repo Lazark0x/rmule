@@ -156,8 +156,9 @@ pub enum RequesterEvent {
     /// A peer refused our `OP_AICHREQUEST`: it has no recovery data for the
     /// ask, so the part goes to its refetch (ADR-0038).
     AichRefused {
-        /// The file the ask was about.
-        file_hash: FileHash,
+        /// The file the ask was about; `None` for an answer too short to say,
+        /// which refuses whatever ask is out on the link.
+        file_hash: Option<FileHash>,
     },
     /// A peer answered our `OP_AICHFILEHASHREQ` with its AICH master `root` for
     /// `file_hash` (ADR-0038). The runner of that file counts it as a

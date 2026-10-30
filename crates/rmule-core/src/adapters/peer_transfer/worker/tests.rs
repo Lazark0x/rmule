@@ -738,6 +738,20 @@ async fn an_aich_ask_handed_mid_stream_leaves_at_once_and_its_answer_comes_back(
 /// another file, late from an earlier ask on this link, counts for nothing here.
 #[tokio::test]
 async fn a_refused_aich_ask_ends_at_once_and_another_files_root_is_not_taken() {
+    a_refusal_ends_the_ask(Some).await;
+}
+
+/// An answer too short to name its file refuses the ask out on the link, as
+/// aMule's failure is the client's and not a file's
+/// (`DownloadClient.cpp:1611-1614`).
+#[tokio::test]
+async fn a_refusal_naming_no_file_ends_the_ask_out() {
+    a_refusal_ends_the_ask(|_| None).await;
+}
+
+async fn a_refusal_ends_the_ask(
+    named: impl Fn(rmule_primitives::FileHash) -> Option<rmule_primitives::FileHash>,
+) {
     let bytes = [0x5A; 512];
     let file = rmule_testkit::file_link("refused.bin", &bytes);
     let other = rmule_primitives::FileHash::from_bytes([0xE1; 16]);
@@ -755,9 +769,11 @@ async fn a_refused_aich_ask_ends_at_once_and_another_files_root_is_not_taken() {
             file_hash: other,
             root,
         },
-        RequesterEvent::AichRefused { file_hash: other },
         RequesterEvent::AichRefused {
-            file_hash: file.file_hash,
+            file_hash: Some(other),
+        },
+        RequesterEvent::AichRefused {
+            file_hash: named(file.file_hash),
         },
         RequesterEvent::PartReceived {
             file_hash: file.file_hash,

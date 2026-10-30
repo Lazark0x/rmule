@@ -163,7 +163,31 @@ fn a_refused_recovery_ask_keeps_the_link_and_says_which_file() {
     );
     assert!(
         events(&out).iter().any(|e| matches!(e,
-            PeerEvent::Requester(RequesterEvent::AichRefused { file_hash }) if *file_hash == h)),
+            PeerEvent::Requester(RequesterEvent::AichRefused { file_hash }) if *file_hash == Some(h))),
+        "the refusal reaches the asker: {out:?}"
+    );
+}
+
+/// aMule counts any `OP_AICHANSWER` of 16 bytes or fewer as a failed ask
+/// (`DownloadClient.cpp:1611-1614`), so one too short to name its file is no
+/// violation either: the link stays, and the refusal names no file.
+#[test]
+fn an_answer_too_short_to_name_its_file_is_a_refusal() {
+    let mut session = identified_session();
+    let frame = Packet::new(PacketProtocol::Emule, 0x9C, vec![0xA4; 15]);
+
+    session.handle_bytes(&frame.encode());
+
+    let out = drain(|| session.poll_output());
+    assert!(
+        !out.iter().any(|o| matches!(o, PeerOutput::Close(_))),
+        "a short answer is no violation: {out:?}"
+    );
+    assert!(
+        events(&out).iter().any(|e| matches!(
+            e,
+            PeerEvent::Requester(RequesterEvent::AichRefused { file_hash: None })
+        )),
         "the refusal reaches the asker: {out:?}"
     );
 }

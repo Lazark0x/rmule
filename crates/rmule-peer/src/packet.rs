@@ -444,9 +444,7 @@ impl PeerPacket {
                 .map(Self::AichRequest)
                 .map_err(|source| PeerPacketDecodeError::Aich { source }),
             PeerOpcode::AichAnswer if AichRefused::is_form_of(packet) => {
-                AichRefused::decode_packet(packet)
-                    .map(Self::AichRefused)
-                    .map_err(|source| PeerPacketDecodeError::Aich { source })
+                Ok(Self::AichRefused(AichRefused::decode_packet(packet)))
             }
             PeerOpcode::AichAnswer => AichAnswer::decode_packet(packet)
                 .map(Self::AichAnswer)

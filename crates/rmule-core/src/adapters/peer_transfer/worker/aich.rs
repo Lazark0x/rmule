@@ -71,7 +71,7 @@ impl WorkerLink<'_> {
                 })
             }
             Some(PeerEvent::Requester(RequesterEvent::AichRefused { file_hash: refused }))
-                if *refused == file_hash =>
+                if refused.is_none_or(|refused| refused == file_hash) =>
             {
                 self.aich = None;
                 self.ask_next_aich(file_hash).await;
