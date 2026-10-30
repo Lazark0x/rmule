@@ -30,7 +30,9 @@ use crate::download::SharedRuntime;
 use crate::service::activity::{Activities, unix_now};
 use crate::service::{CoreEvent, SharedReaskReplySink};
 
-use super::{CoreActor, CoreWiring, download, registry_check, send_event, share_flush};
+use super::{
+    CoreActor, CoreWiring, credit_flush, download, registry_check, send_event, share_flush,
+};
 
 /// Run the prologue over `wiring`, then the actor it builds, until the
 /// inbox closes and Quit has run.
@@ -168,6 +170,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     }
     let interface_refresh = spawn_interface_refresh(&wiring.shared_server_session);
     let share_flush = share_flush::ShareFlush::start(&wiring.registry, &diagnostics);
+    let credit_flush = credit_flush::CreditFlush::start(wiring.credit.clone());
     // The Address Learning rows a snapshot reports (ADR-0084) are read from
     // the store, never copied into the diagnostics state: one writer, one
     // truth, and a row that cannot drift from the verdict it describes.
@@ -551,6 +554,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         peer_reach,
         interface_refresh,
         share_flush,
+        credit_flush: Some(credit_flush),
         port_mapping,
         trail,
         intent: super::server_intent::IntentLedger::default(),

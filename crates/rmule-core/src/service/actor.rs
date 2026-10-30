@@ -21,6 +21,7 @@ mod server;
 mod server_intent;
 mod server_udp_front;
 mod settings;
+mod credit_flush;
 mod share_flush;
 mod shared_directory;
 
@@ -340,6 +341,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     interface_refresh: Option<mpsc::Sender<()>>,
     /// The **Share Totals** flush, finished at Quit.
     share_flush: Option<share_flush::ShareFlush>,
+    /// The minute's credit write, stopped at Quit before the last one.
+    credit_flush: Option<credit_flush::CreditFlush>,
     /// The **Port Mapping** runtime (ADR-0086), or `None` when port mapping is
     /// off or no backend is installed. Held for two reasons: to tell it when a
     /// socket binds — the Desired Mapping Set grows over a session's life — and
@@ -621,6 +624,9 @@ where
         self.retire_all().await;
         if let Some(share_flush) = self.share_flush.take() {
             share_flush.finish().await;
+        }
+        if let Some(credit_flush) = self.credit_flush.take() {
+            credit_flush.finish().await;
         }
         // Shutdown flush: make the ring durable, then snapshot it
         // back to `clients.met`. Runs on the command-channel-close path above;

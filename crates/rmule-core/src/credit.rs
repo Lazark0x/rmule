@@ -113,11 +113,10 @@ pub trait CreditStore: Send + Sync + 'static {
     /// Make everything accrued since the last checkpoint durable.
     ///
     /// `record_upload`/`record_download` are called once per transferred
-    /// block, so they do not pay a device flush each (ADR-0083); the ring is
-    /// flushed here instead, on the same cadence its `clients.met` copy is
-    /// written. A crash between two checkpoints loses at most that window of
-    /// accrual — which is what `clients.met` alone lost before the ring was
-    /// durable at all.
+    /// block by loops that must not wait on the store, so they land in memory
+    /// (ADR-0083, ADR-0031) and the ring is written here instead, once a
+    /// minute and at shutdown. A crash between two checkpoints loses at most
+    /// that window of accrual.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store will not commit.

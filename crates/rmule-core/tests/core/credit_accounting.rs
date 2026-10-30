@@ -127,7 +127,7 @@ async fn run_credited_download(store: Arc<DurableStore>, user_hash: UserHash) ->
     .unwrap();
 
     // Drain events until the download completes.
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    let events = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let mut events = Vec::new();
         while let Some(event) = core.next_event().await {
             let done = matches!(
@@ -142,17 +142,20 @@ async fn run_credited_download(store: Arc<DurableStore>, user_hash: UserHash) ->
         events
     })
     .await
-    .expect("download completed within 5s")
+    .expect("download completed within 5s");
+    core.shutdown().await;
+    events
 }
 
 #[tokio::test]
 async fn download_records_received_bytes_in_the_credit_store() {
     let user_hash = UserHash::from_bytes([0x33; UserHash::BYTE_LEN]);
     let store = rmule_testkit::memory_store();
-    let credit = DurableCreditStore::new(store.clone());
 
     run_credited_download(store.clone(), user_hash).await;
 
+    // Quit writes the ring; this is what the next run reads.
+    let credit = DurableCreditStore::new(store);
     assert_eq!(
         credit.totals(user_hash).unwrap().downloaded,
         FILE_BYTES as u64

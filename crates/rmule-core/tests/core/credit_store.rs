@@ -7,6 +7,7 @@ use rmule_core::{
     CreditStore, CreditTotals, DurableCreditStore, KeyBinding, PeerCredit, credit_modifier,
 };
 use rmule_primitives::UserHash;
+use std::time::Duration;
 
 /// Everything the ledger owes a caller in one pass: both directions accrue,
 /// an unknown peer is zeroed rather than an error, the first SUI key is
@@ -109,9 +110,57 @@ fn store_totals_and_the_secured_key_survive_a_reopen() {
     assert_eq!(ledger.public_key(peer).unwrap(), Some(key_a));
 }
 
-/// Accrual commits without a device flush (ADR-0083), so the ring reaches the
-/// disk at [`CreditStore::checkpoint`] — the call the core actor makes on
-/// shutdown. Bytes accrued and then checkpointed survive the reopen with
+/// Accrual is a memory step (ADR-0031, ADR-0083): a store whose one writer is
+/// busy, as it is through any commit's device flush, holds no block's count.
+#[test]
+fn an_accrual_waits_for_no_store_writer() {
+    let store = rmule_testkit::memory_store();
+    let ledger = DurableCreditStore::new(store.clone());
+    let peer = UserHash::from_bytes([0x12; UserHash::BYTE_LEN]);
+    let (held_tx, held_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    let writer = std::thread::spawn(move || {
+        store.write(|_| {
+            held_tx.send(()).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            Ok::<_, rmule_core::CoreError>(())
+        })
+    });
+    held_rx.recv().unwrap();
+
+    ledger.record_upload(peer, 184_320).unwrap();
+
+    done_tx.send(()).unwrap();
+    writer.join().unwrap().unwrap();
+    assert_eq!(ledger.totals(peer).unwrap().uploaded, 184_320);
+}
+
+/// The checkpoint is what the store hears, once, and what moved after it is
+/// not written over a key bound meanwhile.
+#[test]
+fn what_moved_reaches_the_store_at_the_checkpoint_and_keeps_a_bound_key() {
+    let store = rmule_testkit::memory_store();
+    let ledger = DurableCreditStore::new(store.clone());
+    let peer = UserHash::from_bytes([0x13; UserHash::BYTE_LEN]);
+    let key = vec![0x30, 0x59, 0x01];
+
+    ledger.record_upload(peer, 7).unwrap();
+    let stored = |store| DurableCreditStore::new(store).totals(peer).unwrap();
+    assert_eq!(stored(store.clone()).uploaded, 0);
+
+    ledger.checkpoint().unwrap();
+    assert_eq!(ledger.bind_public_key(peer, &key).unwrap(), KeyBinding::Adopted);
+    ledger.record_upload(peer, 3).unwrap();
+    ledger.checkpoint().unwrap();
+
+    assert_eq!(stored(store).uploaded, 10);
+    assert_eq!(ledger.public_key(peer).unwrap(), Some(key));
+}
+
+/// Accrual lands in memory (ADR-0083), so the ring reaches the disk at
+/// [`CreditStore::checkpoint`] — the call the core actor makes once a minute
+/// and on shutdown. Bytes accrued and then checkpointed survive the reopen with
 /// nothing else writing the store.
 #[test]
 fn accrued_bytes_are_durable_once_the_ring_is_checkpointed() {
