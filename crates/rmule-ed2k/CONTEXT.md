@@ -35,15 +35,11 @@ Tail** costs every record from the first sentinel on and nothing before it.
 _Avoid_: source parser, trailing sentinel block (the address is inline)
 
 **Login IPv6 Advert**:
-The coupled pair a login carries when rmule holds a Known IPv6 (ADR-0087 §4.1):
-`CT_SERVER_FLAGS` bit `0x1000` (`SRVCAP_IPV6`) **and** the `CT_MOD_IP_V6`
-(`0xAE`) tag, sent together or not at all. One input decides both, so the
-coupling is structural rather than a rule to remember. Which of the two a
-server gates on is server-dependent and is not the bit — at least one reads the
-tag's presence instead — so a client sending either must be sentinel-safe, and
-rmule is unconditionally. The bit deliberately sits outside the capability
-registry: it states *where rmule can be found*, not what it can speak.
-_Avoid_: IPv6 capability (the bit is not a capability), IPv6 flag alone
+The `CT_MOD_IP_V6` (`0xAE`) tag a login carries when rmule holds a Known IPv6
+(ADR-0087 §4.1). The tag alone is the advert: `CT_SERVER_FLAGS` bit `0x1000` is
+Lugdunum's NAT callback claim, and rmule leaves it clear. rmule reads a
+**Sentinel Source** whether or not it sent the tag.
+_Avoid_: IPv6 capability (the tag names an address, not an ability), IPv6 flag
 
 **Server IPv6 Verdict**:
 What the connected server's `ST_IPV6_STATUS` (`0xAB`) says about reaching us

@@ -126,7 +126,7 @@ For `OP_FOUNDSOURCES`, `OP_FOUNDSOURCES_OBFU` and `OP_GLOBFOUNDSOURCES`:
   no sentinel that runs short stays a rejected frame; one with an unexplained trailer keeps
   every record.
 - An inline sentinel does desync a stock 6-byte-stride reader, which is why a server sends
-  one only to a session that advertised `SRVCAP_IPV6`.
+  one only to a session that sent `CT_MOD_IP_V6` or arrived over IPv6.
 - `OP_REASKCALLBACKTCP`'s IPv6 form is not a source-list sentinel: both counterparties write
   `<FFFFFFFF><ipv6 16><port 2>`, address before port (ADR-0087).
 

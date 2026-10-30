@@ -16,7 +16,7 @@ at `a2f05dc8` and stock aMule 2.3.3, as each line says.
 
 Stock aMule 2.3.3 ignores every tag and opcode of the dialect: `HASH` is a known tag type,
 `0xAC` and `0x26` travel under `0xE3`, and a server sends a sentinel only to a session that
-advertised `SRVCAP_IPV6`.
+sent `CT_MOD_IP_V6` or arrived over IPv6.
 
 **Evidence, per surface.** aMule implements none of the dialect, so by ADR-0082's rule —
 parity is measured against aMule, and against the eMule-family counterparty for behaviour
@@ -249,7 +249,12 @@ capabilities and never enters the global-source rotation, as a DNS-named server.
 
 ### The server half
 
-The login carries `CT_SERVER_FLAGS` bit `0x1000` (`SRVCAP_IPV6`) and `CT_MOD_IP_V6`.
+The login carries `CT_MOD_IP_V6` and nothing else: the tag is the whole advert. `CT_SERVER_FLAGS`
+bit `0x1000` stays clear. emule-qt's spec at `73fff714` names it `SRVCAP_IPV6`, but that bit is
+Lugdunum's `SRVCAP_NATTRAVERSAL` and ed2k-server's CHANGELOG 0.9.84 records the name's withdrawal
+(`lugdunum_natt.rs:47`): a client that sets it gets an odd Low ID and a longer `OP_IDCHANGE`, and
+claims a callback rmule does not speak (ADR-0091). ed2k-server keys the extension on the tag
+alone (README *IPv6*).
 `OP_IDCHANGE` and UDP-ping flag bit `0x4000` are read, deliberately asymmetric.
 `OP_SERVERIDENT`'s `ST_IPV6_STATUS 0xAB` feeds Reachability's IPv6 probe verdict (`PROBED`
 without `REACHABLE` suppresses the tag; cleared on disconnect), and the server's own IPv6 is

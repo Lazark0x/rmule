@@ -361,8 +361,8 @@ packet's `[0xE3][0x9B]` header would begin — so aMule read `0x3f` (the first b
 The control run — the same two-packet datagram with no sentinel — had **both** bodies read.
 That run's TCP `OP_FOUNDSOURCES` leg (aMule read every record) was also taken on the trailing
 layout and says nothing about the inline one, which *does* shift a stock reader's records —
-the reason the spec lets a server send sentinels only to a session that advertised
-`SRVCAP_IPV6`. rmule has no `0x9B` **encoder** (`GlobFoundSources` decodes only), so this is
+the reason a server sends sentinels only to a session that sent `CT_MOD_IP_V6` or arrived
+over IPv6. rmule has no `0x9B` **encoder** (`GlobFoundSources` decodes only), so this is
 a constraint on any future emitter and on the harness's stimulus, not a bug in shipped code.
 
 ## Source IP == client_id

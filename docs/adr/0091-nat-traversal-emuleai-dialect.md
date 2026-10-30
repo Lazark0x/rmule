@@ -99,17 +99,33 @@ exception, Port prediction, gated on our own observed mapping.**
   and the server refuses to introduce a client that sent none. The login then carries five
   tags, not aMule 2.3.3's four, or six beside `CT_MOD_IP_V6` (`0xAE`, ADR-0087), where `0xF9`
   follows `0xAE`; Lugdunum accepts both with the same High ID and flags.
-  `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s** —
+  **A server that coordinates sets `0x20000` in `OP_IDCHANGE`'s TCP flags, and that bit is the
+  whole gate** (ed2k-server `opcodes.rs:220`, README *Is this server doing it?*): some servers
+  close the link on an opcode they do not know, so `0x60` goes only to a server that set it,
+  and a session without it is no coordinator: the chooser falls past it at once, with no
+  `0x60` and no keepalive. Servers before v0.9.84 coordinate without saying so and are treated
+  as servers that do not.
+  `OP_SERVER_NATT_KEEPALIVE 0x9F` (our hash) leaves the client-UDP socket every **60 s**;
   the server trusts an observed port for 600 s, so the cadence is a correctness invariant.
   `OP_LOWID_HOLEPUNCH_REQUEST 0x60 <target_id 4><our_udp 2>`, `OP_LOWID_HOLEPUNCH_INFO 0x61` to
   both sides, `0x62` failure with a reason. IPv4 sessions only. The server is
   transport-agnostic, so the punch and Tunnel are eMuleAI's. The target's NAT-T support is
-  not required (the server holds its `0xF9` and answers `TargetNoUdp`). Whether a server speaks
-  the punch is learned only by its silence: `INTRODUCTION_TIMEOUT` (15 s, polled by the
-  session's own loop), after which the attempt falls to the buddy. A session that ends reports
-  every request it still waited on. `0x61` names no target, so it settles a request only when
-  exactly one is outstanding; `0x62` names its target. Both sides fire at once; the role byte
-  says who asked.
+  not required (the server holds its `0xF9` and answers `TargetNoUdp`). Fields of `0x61` are
+  appended, never inserted: 25 bytes before v0.9.84, `peer_id 4` from 29, `peer_crypt 1` at
+  30, and a longer body is read as far as rmule knows it. `peer_id` names the peer described,
+  so a `0x61` settles exactly the request that named it, however many are outstanding; one
+  from a server too old to carry it settles a request only when exactly one is outstanding. A
+  lost frame still costs `INTRODUCTION_TIMEOUT` (15 s, polled by the session's own loop), after
+  which the attempt falls to the buddy. A session that ends reports every request it still
+  waited on. `0x62` names its target. Both sides fire at once; the role byte says who asked.
+- **Lugdunum's NAT callback is not spoken, and not claimed.** `0x1000` in `CT_SERVER_FLAGS`
+  (`SRVCAP_NATTRAVERSAL`) earns an odd Low ID and four more `OP_IDCHANGE` bytes, and tells
+  every requester the callback is worth asking for: `0xA6` from them, `0x37` or `0xA7` to us.
+  No pinned client speaks that scheme (aMule 2.3.3, 3.1.0, kno's fork and emule-qt at their
+  pins carry none of the three opcodes), so its peer half has no oracle (ADR-0082) and rmule
+  leaves the bit clear (ADR-0047). ed2k-server's hole-punch extension (`0x100000`) needs
+  `0x1000` beside it, so rmule's pairs take the plain punch, byte for byte. Standing
+  keepalives give that punch the fresh port the extension exists to fetch.
 - **Kad serving buddy, eMuleAI's form.** rmule emits `OP_RENDEZVOUS` embedded in
   `OP_REASKCALLBACKUDP` toward the target's buddy and accepts both the embedded and the
   standalone `0xC5 0xA0` form. The buddy strips sixteen bytes and forwards inside
@@ -392,8 +408,8 @@ it.
 - New dependencies: `librqbit-utp` (Apache-2.0), `librqbit-dualstack-sockets` (Apache-2.0),
   `quinn` and `quinn-proto` (MIT OR Apache-2.0), `rcgen` (MIT OR Apache-2.0), `rustls`
   (Apache-2.0 OR ISC OR MIT); all compatible with GPL-3.0-or-later (ADR-0004).
-- ed2k-server keys `observed_udp_ports` by IPv4 address alone (`4da4774`), so two NAT-T clients
-  behind one NAT overwrite each other's observed port; that is the server's to fix.
+- A Low-ID pair on a server older than v0.9.84 takes the buddy road or none, though that server
+  would have coordinated. Its `0x20000` is the only safe question, and the pin stays current.
 
 ## Considered options
 
