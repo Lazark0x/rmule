@@ -465,6 +465,24 @@ pending dial-back grant is handed to one, and a place waits for the next link th
 standing whose link has ended moves to any link. While the standing's link lives an unproved link
 inherits nothing, and a verified client's slot or dial-back grant never reaches one.
 
+**A reask from the other address.** aMule's waiter has one address, so a `0x90` is matched by it
+(`ClientUDPSocket.cpp:196-228`). A waiter on a link of one family may ping from the other, or from
+a second IPv6 address. The queue matches the datagram's own address first, as ever, and then a
+waiter whose standing link's hello names that address, on the client-UDP port the same hello
+advertised, and the two are not both IPv4. The second proof above carries over, and the port
+stands in for the listen port. A datagram is not a TCP link: its source can be forged, but a
+forged ping only refreshes the waiter it names and reads the rank the client holds, which a
+forged ping from the waiter's own address does today.
+
+**A download's look-up.** A link from another address takes no User Hash from a live link that
+holds it, as aMule's client stays on the socket it holds and the newcomer attaches to nothing
+(`ClientList.cpp:384-398`): a download looking a peer up by hash finds the link the hash was
+first filed for, whatever the serve side later rules on the newcomer, which this step cannot
+read. A dial not yet answered holds nothing yet, so a newcomer still takes the name from it and
+overtakes it. The newcomer keeps the name among those it proves: when the link holding it ends,
+the name passes as any name does. It rides nothing until then, unless a download finds it under
+its own address.
+
 **A ban is earned by proof, never by sight.** The first sight of a second address says nothing
 about who owns it. The rule reaches a ban in only two ways: both addresses are IPv4, or the
 newcomer's session proved a *different* key under the hash while the verified client is linked.

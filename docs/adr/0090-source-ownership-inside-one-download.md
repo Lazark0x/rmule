@@ -273,7 +273,8 @@ The worker lifecycle keeps the invariants:
   `Shutdown { cancel: false }`, as aMule drops a client it gives up on
   (`ClientTCPSocket.cpp:2037-2047`). `WorkerChannels` drops the channel there, and each worker's
   facts carry a minted `WorkerId`, so a released worker's late fact never retires a live
-  re-spawn at the same endpoint.
+  re-spawn at the same endpoint. A worker still connecting drops its connect at that word,
+  whether a retirement or the download's end sent it: nothing on the link would be read.
 - A called-back Low-ID source keeps its record, `CallbackKey` included, beside its adopted
   worker: when the worker ends without a queue standing, the record returns to its Low-ID
   lane; with one, it waits in the RemoteQueued stage, its key kept for the TCP full ask. A

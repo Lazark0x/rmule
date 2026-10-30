@@ -84,7 +84,11 @@ verdict and the Advertised Endpoints chooser).**
   every server-less peer it hands out is Low ID `0` beside its IPv6). Admission keeps the
   **IPv6 Half** on the source it admits, so a dual-stack record reaches core as one
   `SourceSighting` — never two candidates, which would dial one peer twice into two worker
-  slots. On emit, a source carries its IPv6 Half (its hello's `CT_MOD_IP_V6`, past
+  slots. Two channels may still sight the two families apart, and a sighting proves nothing
+  about who holds an address, so the book folds the two records at the hello that names the
+  other one: a worker's High ID, or its `CT_MOD_IP_V6`, at the record's endpoint on the
+  hello's listen port, unless that record names another User Hash. Its worker, if it had
+  one, ends as the same source, and a dial still connecting is dropped. On emit, a source carries its IPv6 Half (its hello's `CT_MOD_IP_V6`, past
   `IsUsableTagIdentity`) beside a High ID, and the ExtSX writer emits `CT_MOD_IP_V6` beside
   the IPv4 id, as emule-qt's writer does for any source with a public open IPv6
   (`KnownFile.cpp:937`, `:849`, `:854`). A Low-ID client with a usable IPv6 queued on a
