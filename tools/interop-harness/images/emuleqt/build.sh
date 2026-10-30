@@ -2,10 +2,15 @@
 # Build the emulecored counterparty image (ADR-0082 Stimulus Counterparty).
 #
 #   tools/interop-harness/images/emuleqt/build.sh
+#   tools/interop-harness/images/emuleqt/build.sh --runtime-only
 #
 # Verifies the reference cache is at the pinned commit, then runs the two
 # builds: the compile stage against the pinned source tree, and the runtime
 # image against this directory.
+#
+# `--runtime-only` keeps the compile stage already built: it needs no reference
+# cache, refuses a build image whose label is not the pin, and rebuilds the
+# runtime image alone.
 #
 # The pin is checked HERE and not inside the Dockerfile because the upstream
 # tree ships its own .dockerignore excluding `.git/`, so the build context is a
@@ -24,6 +29,29 @@ PINNED_COMMIT="$(sed -nE 's/^commit[[:space:]]*=[[:space:]]*"([0-9a-f]+)".*/\1/p
 if [[ -z "$PINNED_COMMIT" ]]; then
   echo "could not read the pinned commit from $META" >&2
   exit 1
+fi
+
+BUILD_TAG="${EMULEQT_BUILD_TAG:-rmule/interop-emuleqt-build:local}"
+RUNTIME_TAG="${EMULEQT_RUNTIME_TAG:-rmule/interop-emuleqt:local}"
+
+build_runtime() {
+  docker build \
+    --build-arg "EMULEQT_BUILD_IMAGE=$BUILD_TAG" \
+    --build-arg "EMULEQT_COMMIT=$1" \
+    -t "$RUNTIME_TAG" \
+    "$IMAGE_DIR"
+  echo "built $RUNTIME_TAG from $1"
+}
+
+if [[ "${1:-}" == "--runtime-only" ]]; then
+  BUILT_COMMIT="$(docker inspect "$BUILD_TAG" \
+    --format '{{index .Config.Labels "org.rmule.emuleqt.commit"}}')"
+  if [[ "$BUILT_COMMIT" != "$PINNED_COMMIT" ]]; then
+    echo "$BUILD_TAG is labelled $BUILT_COMMIT, expected $PINNED_COMMIT" >&2
+    exit 1
+  fi
+  build_runtime "$BUILT_COMMIT"
+  exit 0
 fi
 
 if [[ ! -d "$SOURCE_DIR/.git" ]]; then
@@ -46,18 +74,10 @@ if [[ -n "$(git -C "$SOURCE_DIR" status --porcelain)" ]]; then
 fi
 echo "emule-qt pin verified: $HEAD_COMMIT"
 
-BUILD_TAG="${EMULEQT_BUILD_TAG:-rmule/interop-emuleqt-build:local}"
-RUNTIME_TAG="${EMULEQT_RUNTIME_TAG:-rmule/interop-emuleqt:local}"
-
 docker build \
   --build-arg "EMULEQT_COMMIT=$HEAD_COMMIT" \
   -t "$BUILD_TAG" \
   -f "$IMAGE_DIR/Dockerfile.build" \
   "$SOURCE_DIR"
 
-docker build \
-  --build-arg "EMULEQT_BUILD_IMAGE=$BUILD_TAG" \
-  -t "$RUNTIME_TAG" \
-  "$IMAGE_DIR"
-
-echo "built $RUNTIME_TAG from $HEAD_COMMIT"
+build_runtime "$HEAD_COMMIT"

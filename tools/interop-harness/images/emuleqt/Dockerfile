@@ -26,6 +26,10 @@ FROM debian:trixie-slim
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1
+# The commit build.sh verified: a final stage inherits no label from the build
+# stage, and a flow refuses a runtime image that does not name its pin.
+ARG EMULEQT_COMMIT
+LABEL org.rmule.emuleqt.commit="${EMULEQT_COMMIT}"
 
 ENV DEBIAN_FRONTEND=noninteractive
 # Qt refuses a non-UTF-8 locale and prints a warning on every start otherwise.
