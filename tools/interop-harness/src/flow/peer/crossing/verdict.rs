@@ -365,6 +365,27 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         )
     };
     let claims = match at.shape.leg {
+        _ if at.shape.unheld() => {
+            let carrier = raced
+                .iter()
+                .max_by_key(|link| link.parts_from_rmule + link.parts_from_peer)
+                .copied();
+            let parts = carrier.map_or(0, |link| link.parts_from_rmule + link.parts_from_peer);
+            vec![
+                Claim::about(
+                    "the-transfer-ran-whichever-order-landed",
+                    parts > 0,
+                    Evidence::Captured,
+                    format!(
+                        "OP_SENDINGPART frames on {}: {parts}; held: {held}; dial: {}; own link: {}",
+                        describe(carrier),
+                        describe(dial),
+                        describe(own)
+                    ),
+                ),
+                one_left,
+            ]
+        }
         CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed | CrossingLeg::ServeReask => {
             let on_dial = at.shape.leg == CrossingLeg::ServeReask;
             let mut claims = vec![

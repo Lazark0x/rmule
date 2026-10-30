@@ -39,6 +39,10 @@
 //!   grant goes before that, the slot lands on the dial, the transfer runs on
 //!   it, and no second link stays up. The verdict's rows time the close
 //!   against the answer.
+//! - `serve-crossed` and `download-crossed` with `--hold 0` draw the race with
+//!   no hold at all: W's `Add` goes as X stops, and S's as rmule's dial goes.
+//!   Which order lands is the bench's. Claims: the slot or the download ends
+//!   on one link and the transfer runs; the verdict's rows name the order.
 //! - `low-id-return`: W is Low ID, so rmule cannot dial it back; X stops,
 //!   the slot sits free, W comes back. Claim: `OP_ACCEPTUPLOADREQ` on its
 //!   returning link within a second of its hello.
@@ -145,6 +149,17 @@ pub struct CrossingShape {
     pub hold_secs: u64,
     /// Seconds the flow watches after the last hold is lifted.
     pub watch_secs: u64,
+}
+
+impl CrossingShape {
+    /// Whether the leg draws its race with no hold.
+    pub(crate) fn unheld(&self) -> bool {
+        self.hold_secs == 0
+            && matches!(
+                self.leg,
+                CrossingLeg::ServeCrossed | CrossingLeg::DownloadCrossed
+            )
+    }
 }
 
 /// Options for [`run_peer_crossing`].
@@ -361,6 +376,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
         )?;
     }
     let timeout = Duration::from_secs(options.timeout_secs);
+    let unheld = shape.unheld();
     let root = options.layout.root().join(verdict::ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let mut holds = Holds {
@@ -513,7 +529,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                         hold(waiter_ip, AMULE_PEER_TCP_PORT, true),
                     )?;
                 }
-                CrossingLeg::ServeCrossed | CrossingLeg::ServeReask => {
+                CrossingLeg::ServeCrossed | CrossingLeg::ServeReask if !unheld => {
                     holds.add(
                         &bench,
                         &rmule_name,
@@ -555,6 +571,21 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 )?;
             }
             marks.holder_stopped_at = Some(verdict::unix_now());
+            let add_back = format!("Add {wait_at_rmule}");
+            // Unheld, W's connect and rmule's dial race with no help.
+            let racing = if unheld {
+                marks.returned_at = marks.holder_stopped_at;
+                let add = bench
+                    .docker
+                    .exec(waiter.clone(), amulecmd_command(&add_back))
+                    .to_command()
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .context("start the waiter's Add")?;
+                Some(add)
+            } else {
+                None
+            };
             run_checked(
                 bench.docker.stop_container(holder.clone(), STOP_GRACE_SECS),
                 "stop the body holding rmule's slot",
@@ -577,17 +608,15 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 // The slot sits free for a while before the waiter comes back.
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
-            marks.returned_at = Some(verdict::unix_now());
             if reask {
                 // W's own connect has gone by now, its SYN held.
+                marks.returned_at = Some(verdict::unix_now());
                 sleep_until(reask_at + REASK_LAND_SECS as f64);
+            } else if let Some(mut add) = racing {
+                add.wait().context("wait for the waiter's Add")?;
             } else {
-                amulecmd(
-                    &bench,
-                    &waiter,
-                    &format!("Add {wait_at_rmule}"),
-                    "the waiter adds it again",
-                )?;
+                marks.returned_at = Some(verdict::unix_now());
+                amulecmd(&bench, &waiter, &add_back, "the waiter adds it again")?;
             }
             for index in (0..holds.set.len()).rev() {
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
@@ -603,7 +632,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                     &rmule_name,
                     hold(seed_ip, AMULE_PEER_TCP_PORT, true),
                 )?;
-            } else {
+            } else if !unheld {
                 holds.add(
                     &bench,
                     &rmule_name,
@@ -620,7 +649,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             )?;
             // rmule's dial is out (held at its SYN, or connected with its
             // hello held) before S opens its own link.
-            std::thread::sleep(Duration::from_secs(2));
+            if !unheld {
+                std::thread::sleep(Duration::from_secs(2));
+            }
             marks.returned_at = Some(verdict::unix_now());
             amulecmd(
                 &bench,

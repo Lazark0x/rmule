@@ -78,7 +78,8 @@ pub(crate) struct PeerCrossingArgs {
     /// Seconds W stays queued before X stops: past aMule's 40 s idle close.
     #[arg(long, default_value_t = 45)]
     pub(crate) idle: u64,
-    /// Seconds each hold stands before it is lifted.
+    /// Seconds each hold stands before it is lifted; `0` on the two crossed
+    /// legs draws the race with no hold.
     #[arg(long, default_value_t = 4)]
     pub(crate) hold: u64,
     /// Seconds the flow watches after the last hold is lifted.
