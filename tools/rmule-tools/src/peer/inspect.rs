@@ -113,7 +113,10 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         }
         PeerPacket::AichRefused(a) => {
             println!("kind: aich_refused");
-            println!("file_hash: {}", a.file_hash.to_hex_upper());
+            match a.file_hash {
+                Some(file_hash) => println!("file_hash: {}", file_hash.to_hex_upper()),
+                None => println!("file_hash: none"),
+            }
         }
         PeerPacket::AichFileHashReq(r) => {
             println!("kind: aich_file_hash_req");
