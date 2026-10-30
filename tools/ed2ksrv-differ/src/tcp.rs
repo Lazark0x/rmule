@@ -30,8 +30,8 @@ use rmule_ed2k::{
     GetSourcesRequest, LoginRequest, OfferFiles, OfferedFile, SearchRequest, ServerGrants,
 };
 use rmule_primitives::{
-    Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, FileHash, Packet,
-    PacketProtocol, KeywordQuery, SourceLookupTarget, Tag, TagValue, UserHash,
+    Capabilities, ClientId, ClientIdentity, CryptStance, Ed2kText, FileHash, KeywordQuery, Packet,
+    PacketProtocol, SourceLookupTarget, Tag, TagValue, UserHash,
 };
 
 use crate::report::{Origin, Reading, Report, Row, guarded, hex, read};
@@ -241,7 +241,13 @@ fn offer_files(report: &mut Report) {
             Ed2kText::from_utf8("Linux Mint 22.iso"),
         ),
     ];
-    let offer = OfferFiles::announce(ServerGrants::default(), ClientId::from_u32(0), ClientId::from_u32(0), 4662, &files);
+    let offer = OfferFiles::announce(
+        ServerGrants::default(),
+        ClientId::from_u32(0),
+        ClientId::from_u32(0),
+        4662,
+        &files,
+    );
     let packet = offer.encode_packet();
     let payload = packet.payload().to_vec();
 
