@@ -25,7 +25,7 @@ const BOUNDS: [&str; 3] = ["--max-seconds", "--run-secs", "--hold-secs"];
 /// libfaketime, so a core that said so has ended and its process is killed.
 /// `$0` is the runtime, `$1` the container.
 pub(crate) const WAIT_PAST_THE_EXIT_HANG: &str = r#"
-( "$0" logs -f "$1" 2>&1 | grep -q -m1 "registry check did not end" && "$0" kill "$1" >/dev/null 2>&1 ) &
+( "$0" logs -f "$1" 2>&1 | grep -q -m1 -e "registry check did not end" -e "final diagnostics snapshot" && sleep 5 && "$0" kill "$1" >/dev/null 2>&1 ) &
 "$0" wait "$1"
 "#;
 
