@@ -363,9 +363,11 @@ Invariants every transition keeps:
 13. **A waiter asks nothing.** Every other download with a record at the peer waits on the
     standing, as aMule's A4AF file waits on its client: no ping, no TCP full ask and no first ask.
     A fill that takes a pooled record of a peer standing in another download's standing dials
-    nothing; the record waits in the RemoteQueued stage, holding no rank and no contact of its own,
-    and so does one that takes the standing from a place holding no part we need (ADR-0090,
-    "Sources shared between downloads"), whose ask falls due by invariant 14.
+    nothing; the record waits in the RemoteQueued stage, or the Held Road stage for a Low-ID record
+    with no address to stand at, holding no rank and no contact of its own, and so does one that
+    takes the standing from a place holding no part we need (ADR-0090, "Sources shared between
+    downloads"), whose ask falls due by invariant 14. A pooled record the standing has passed to
+    since the last ask rides a link if one stands, and dials nothing (ADR-0090).
 14. **The standing's clock is the peer's.** Each ping and TCP full ask a sweep sends stamps the
     peer, and so does each slot ask a record earns its standing by. A download the standing passes
     to pings nothing — the peer holds the other file — and its TCP full ask falls due a period after
@@ -422,9 +424,9 @@ its turn and asks — the swap table's third row. Where the uploader misses our 
 holds the link at its rank (ADR-0116 item 3), and the second waits on it to the grant or the
 link's end, asking nothing. The peer reads two asks seconds apart once, 3 points; the standing then asks
 once per cycle and each polite ask takes one off, so no ban follows. A called waiter whose holder
-ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once, and so
-does a Low-ID source a fill reaches by a callback road: its record has no address to wait at
-until the peer connects, and the connection that answers asks.
+ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once. A
+Low-ID source a fill reaches by a callback road waits on the standing too, in the Held Road stage
+(ADR-0090), so no callback asks the peer ahead of the clock.
 
 ### One client on two addresses
 

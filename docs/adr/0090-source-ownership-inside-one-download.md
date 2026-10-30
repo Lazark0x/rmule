@@ -215,7 +215,28 @@ of a stopped or finished target (`IsValidSwapTarget`, `DownloadClient.cpp:1546-1
    leaves `DS_NONE` and only `AskForDownload` serves it, at the last ask plus `FILEREASKTIME`
    (`DownloadClient.cpp:1498`, `PartFile.cpp:1472-1483`). The full ask stamps the record's own
    ask, as `AskForDownload` stamps the client's (`DownloadClient.cpp:156`), so the fill that
-   follows dials it rather than parking it again.
+   follows dials it rather than parking it again. A stamp a period old holds nothing back.
+
+   **A Low-ID record** a callback road would reach has no address to stand at, so it leaves its
+   lane for the **Held Road** stage, holding the same waiting standing: the sweep reads its role,
+   its clock is the peer's, and when its ask falls due it goes back to its lane and the fill opens
+   the road, stamped as a TCP full ask is. Nothing it says reaches the peer before that, as
+   `AskForDownload` serves a Low ID too (`PartFile.cpp:1472-1483`, `BaseClient.cpp:1395`). A record
+   here has no Awaited Grant, since a grant finds a record by the address it waits at: a grant on
+   the holder's link does not call it, and it asks when its clock says, riding that link if it
+   still stands.
+
+   **When the giver's place has ended.** A record in a lane whose peer last read another
+   download's ask, and whose place has gone, inherits the standing, and the clock still holds:
+   aMule's swap leaves `DS_NONE` however it came (`ClientTCPSocket.cpp:555-561`,
+   `PartFile.cpp:2206`, `:1472-1483`), and a sooner ask is scored
+   (`UploadClient.cpp:795-825`). But aMule's client holds the socket the transfer ended on, and
+   the next file asks over it at once (`UploadQueue.cpp:486-493`), so parking the record outright
+   would strand a download beside a live link. So the fill may ride and may not dial: the worker
+   looks the Peer Link up (ADR-0107 invariant 7) and, finding none, is handed back as a waiter
+   whose link ended is, to stand on the peer's clock. It costs the Connection Budget one admission
+   (ADR-0116) and opens no socket. A callback road does the same on the road the look-up serves,
+   our own server's; any other road cannot ride, and holds at once.
 4. **The giver keeps its record.** At the purge tick, spaced from the file's one purge clock as
    a no-needed-parts purge is and restarting it, whatever the file's source count, the book notes
    the record whose role reads as waiting: its rank is cleared and the handover reported, once
@@ -223,7 +244,10 @@ of a stopped or finished target (`IsValidSwapTarget`, `DownloadClient.cpp:1546-1
    aMule keeps (`DownloadClient.cpp:1483-1491`): no purge takes it, as aMule's purges walk `m_SrcList`
    and not the A4AF list, and neither the Source Limit, the purge threshold nor the source-ask
    counts read it (`GetSourceCount`, `PartFile.h:144`). Its Advertised Parts stay too, for a grant
-   that reaches it; aMule's `ResetFileStatusInfo` says nothing on the wire.
+   that reaches it; aMule's `ResetFileStatusInfo` says nothing on the wire. The Sources pane lists
+   it as handed over, as aMule's source list shows an `A4AF_SOURCE` row
+   (`DownloadClient.cpp:1493`): a level the run republishes at every settle, gone when the
+   standing comes back or the record leaves.
 5. **With nobody to take it**, a no-needed-parts source stays the holder, is asked at twice the
    period, and is let go at the threshold, as aMule's failed swap is (`PartFile.cpp:1426-1432`).
 6. **A handover ends when the taker's place does.** The giver's next sweep reads the standing back
@@ -261,6 +285,14 @@ Invariants every transition keeps:
 5. **A handover moves no record.** A peer shared by two downloads is one record in each book,
    each with its one owner; only the Queue Standing's holder passes between them, and a run reads
    and writes its own book alone.
+6. **A hello naming our User Hash ends its source.** The intake gate judges a sighting against
+   what we know of ourselves at that moment, so a source pooled before we knew our address, port
+   or Low ID stays pooled, and pooled it costs nothing. Its dial reaches our own listener, and the
+   hello it reads is the proof, unforgeable by a stale fact: the record is spent under every name
+   it holds and leaves the book, as a source that lacks the file does. No fact's change sweeps the
+   lanes: the hello reaches every such record, for one dial, and a sweep would still miss a Low ID
+   or an address we never learn. aMule has no such check (`DownloadQueue.cpp:612-619` reads the
+   sighting alone).
 
 aMule's counterparts: one `CUpDownClient` per peer and one pooling seam,
 `CDownloadQueue::CheckAndAddSource` (`src/DownloadQueue.cpp:687-745`); dead endpoints in
