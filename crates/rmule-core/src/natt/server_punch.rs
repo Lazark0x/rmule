@@ -148,10 +148,12 @@ impl ServerPunch {
     /// An `OP_LOWID_HOLEPUNCH_INFO` arrived — asked for or not; the server
     /// sends it to both sides and the target's copy is unsolicited by design.
     ///
-    /// INFO names no target ID, so it cannot be matched to a request by
-    /// anything it carries. It settles a pending request only when exactly
-    /// one is outstanding; with several, each is left to its own timeout
-    /// rather than guessed at.
+    /// `peer_id` names the peer described, which to a requester is the target
+    /// its `0x60` named, so it settles exactly that request; on the target's
+    /// copy it names nothing pending. A server before v0.9.84 sends no
+    /// `peer_id`: its INFO settles a pending request only when exactly one is
+    /// outstanding, and with several each is left to its own timeout rather
+    /// than guessed at.
     pub(crate) fn on_info(
         &mut self,
         info: &HolepunchInfo,
@@ -171,8 +173,12 @@ impl ServerPunch {
         {
             return IntroductionVerdict::Refuse(IntroductionRefusal::Repeat);
         }
-        if self.pending.len() == 1 {
-            self.pending.clear();
+        match info.peer_id {
+            Some(peer_id) => {
+                self.pending.remove(&peer_id);
+            }
+            None if self.pending.len() == 1 => self.pending.clear(),
+            None => {}
         }
         IntroductionVerdict::Punch {
             peer_hash: info.peer_hash,
@@ -505,6 +511,7 @@ mod tests {
             peer_tcp_port: 4662,
             peer_hash: UserHash::from_bytes([0x44; 16]),
             role: HolepunchRole::Responder,
+            peer_id: None,
         }
     }
 
@@ -535,6 +542,36 @@ mod tests {
             punch.on_info(&info, |_| false, t0 + ACTING_MIN_INTERVAL),
             IntroductionVerdict::Punch { .. }
         ));
+    }
+
+    /// With two requests out, a `0x61` that names its peer settles that one
+    /// and leaves the other on its clock; a copy naming a peer we never asked
+    /// about, the target's side of someone else's request, settles nothing.
+    #[test]
+    fn an_introduction_settles_only_the_request_that_names_its_peer() {
+        let mut punch = ServerPunch::default();
+        let t0 = Instant::now();
+        let (first, second) = (ClientId::from_u32(1337), ClientId::from_u32(1338));
+        punch.on_request(first, t0);
+        punch.on_request(second, t0);
+
+        let unasked = HolepunchInfo {
+            peer_id: Some(ClientId::from_u32(9)),
+            ..info_at([45, 55, 200, 8], 31999)
+        };
+        punch.on_info(&unasked, |_| false, t0);
+        let answer = HolepunchInfo {
+            peer_id: Some(first),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        assert!(matches!(
+            punch.on_info(&answer, |_| false, t0),
+            IntroductionVerdict::Punch { .. }
+        ));
+
+        let overdue = punch.overdue(t0 + INTRODUCTION_TIMEOUT);
+        assert_eq!(overdue.len(), 1, "only the unanswered request is overdue");
+        assert_eq!(overdue[0].0, second);
     }
 
     /// The server observed it, so there is no claim to judge — but "observed"

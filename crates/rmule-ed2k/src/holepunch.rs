@@ -11,20 +11,27 @@
 //! describes, which is eMule 0.72a-community's and has no Linux-buildable
 //! counterparty.
 //!
-//! Layouts are ed2k-server's at `4da4774` — `src/server/holepunch.rs` and the
-//! README's *Implementing a compatible client* — read for facts and
-//! cite-and-rewritten (ADR-0004). `0x60`–`0x62` sit above the server TCP
-//! opcode space (`0x01`–`0x44`) and `0x9F` was free in the server UDP one, so
-//! a server that does not speak this ignores all four.
+//! Layouts are ed2k-server's at v0.9.85 (`878fc830`) —
+//! `src/server/holepunch.rs` and the README's *Implementing a compatible
+//! client* — read for facts and cite-and-rewritten (ADR-0004). `0x60`–`0x62`
+//! sit above the server TCP opcode space (`0x01`–`0x44`) and `0x9F` was free
+//! in the server UDP one, but a server that does not speak this may close the
+//! link on an opcode it does not know: `0x60` goes only to a server that set
+//! `0x20000` in `OP_IDCHANGE`.
 
 use std::net::Ipv4Addr;
+use std::ops::RangeInclusive;
 
 use rmule_primitives::{ClientId, Ipv4Endpoint, Packet, PacketProtocol, UserHash};
 
 use crate::{Ed2kError, Opcode, Result};
 
 const REQUEST_LEN: usize = 4 + 2;
-const INFO_LEN: usize = 4 + 2 + 2 + UserHash::BYTE_LEN + 1;
+/// The body before v0.9.84. Fields are appended, never inserted, so this is a
+/// floor.
+const INFO_MIN_LEN: usize = 4 + 2 + 2 + UserHash::BYTE_LEN + 1;
+/// With `peer_id`, the body since v0.9.84 (`holepunch.rs:112`).
+const INFO_WITH_PEER_ID_LEN: usize = INFO_MIN_LEN + 4;
 const FAIL_LEN: usize = 4 + 1;
 
 /// `OP_LOWID_HOLEPUNCH_REQUEST` (`0x60`), client → server: introduce us to
@@ -59,7 +66,7 @@ impl HolepunchRequest {
     /// [`Ed2kError::InvalidPayload`] unless the body is exactly six bytes
     /// under this opcode.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchRequest, REQUEST_LEN)?;
+        let body = body_of(packet, Opcode::LowIdHolepunchRequest, REQUEST_LEN..=REQUEST_LEN)?;
         Ok(Self {
             target: ClientId::from_u32(u32::from_le_bytes([body[0], body[1], body[2], body[3]])),
             our_udp_port: u16::from_le_bytes([body[4], body[5]]),
@@ -101,8 +108,11 @@ impl HolepunchRole {
 }
 
 /// `OP_LOWID_HOLEPUNCH_INFO` (`0x61`), server → **both** clients: the other
-/// side's coordinates. Body `<ip 4><tcp 2 LE><udp 2 LE><userhash 16><role 1>`
-/// — the address in eD2k's dotted byte order.
+/// side's coordinates. Body
+/// `<ip 4><tcp 2 LE><udp 2 LE><userhash 16><role 1><peer_id 4 LE>` — the
+/// address in eD2k's dotted byte order. Earlier servers stop before `peer_id`,
+/// and a later one may append: ed2k-server's extension adds `peer_crypt 1`
+/// for a pair that both announced it, which rmule does not.
 ///
 /// This is the one rendezvous in the dialect where the address was **observed
 /// by a third party**: the server writes the UDP port it last saw that
@@ -123,6 +133,10 @@ pub struct HolepunchInfo {
     pub peer_hash: UserHash,
     /// Who the server asked to fire first.
     pub role: HolepunchRole,
+    /// The server ID of the peer described: to the requester, the target its
+    /// `0x60` named, which is what matches this answer to one of several
+    /// requests in flight. `None` from a server before v0.9.84.
+    pub peer_id: Option<ClientId>,
 }
 
 impl HolepunchInfo {
@@ -130,12 +144,15 @@ impl HolepunchInfo {
     /// and the KATs.
     #[must_use]
     pub fn encode_packet(&self) -> Packet {
-        let mut payload = Vec::with_capacity(INFO_LEN);
+        let mut payload = Vec::with_capacity(INFO_WITH_PEER_ID_LEN);
         payload.extend_from_slice(&self.peer_udp.ip.octets());
         payload.extend_from_slice(&self.peer_tcp_port.to_le_bytes());
         payload.extend_from_slice(&self.peer_udp.port.to_le_bytes());
         payload.extend_from_slice(self.peer_hash.as_bytes());
         payload.push(self.role.as_u8());
+        if let Some(peer_id) = self.peer_id {
+            payload.extend_from_slice(&peer_id.as_u32().to_le_bytes());
+        }
         Packet::new(
             PacketProtocol::Edonkey,
             Opcode::LowIdHolepunchInfo.as_u8(),
@@ -146,12 +163,13 @@ impl HolepunchInfo {
     /// Decode an introduction.
     ///
     /// # Errors
-    /// [`Ed2kError::InvalidPayload`] unless the body is exactly 25 bytes under
-    /// this opcode. A null address or port decodes: whether an endpoint is
-    /// somewhere a punch may be aimed is the precedence rule's question, and
-    /// it is asked where the punch is decided.
+    /// [`Ed2kError::InvalidPayload`] if the body is under 25 bytes or this is
+    /// not this opcode. A longer body is read as far as rmule knows it, as
+    /// the server's contract asks. A null address or port decodes: whether an
+    /// endpoint is somewhere a punch may be aimed is the precedence rule's
+    /// question, and it is asked where the punch is decided.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchInfo, INFO_LEN)?;
+        let body = body_of(packet, Opcode::LowIdHolepunchInfo, INFO_MIN_LEN..=usize::MAX)?;
         let ip = Ipv4Addr::new(body[0], body[1], body[2], body[3]);
         let peer_tcp_port = u16::from_le_bytes([body[4], body[5]]);
         let udp_port = u16::from_le_bytes([body[6], body[7]]);
@@ -161,6 +179,9 @@ impl HolepunchInfo {
             peer_tcp_port,
             peer_hash: UserHash::from_bytes(hash),
             role: HolepunchRole::from_u8(body[24]),
+            peer_id: body.get(25..INFO_WITH_PEER_ID_LEN).map(|id| {
+                ClientId::from_u32(u32::from_le_bytes(id.try_into().expect("fixed width")))
+            }),
         })
     }
 }
@@ -247,7 +268,7 @@ impl HolepunchFail {
     /// [`Ed2kError::InvalidPayload`] unless the body is exactly five bytes
     /// under this opcode.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchFail, FAIL_LEN)?;
+        let body = body_of(packet, Opcode::LowIdHolepunchFail, FAIL_LEN..=FAIL_LEN)?;
         Ok(Self {
             target: ClientId::from_u32(u32::from_le_bytes([body[0], body[1], body[2], body[3]])),
             reason: HolepunchFailReason::from_u8(body[4]),
@@ -281,7 +302,7 @@ pub const fn natt_keepalive_port(server_tcp_port: u16) -> Option<u16> {
     server_tcp_port.checked_add(4)
 }
 
-fn body_of(packet: &Packet, opcode: Opcode, len: usize) -> Result<&[u8]> {
+fn body_of(packet: &Packet, opcode: Opcode, len: RangeInclusive<usize>) -> Result<&[u8]> {
     let invalid = |reason| Ed2kError::InvalidPayload {
         opcode: opcode.as_u8(),
         reason,
@@ -292,7 +313,7 @@ fn body_of(packet: &Packet, opcode: Opcode, len: usize) -> Result<&[u8]> {
     if packet.opcode() != opcode.as_u8() {
         return Err(invalid("wrong opcode for a server-punch packet"));
     }
-    if packet.payload().len() != len {
+    if !len.contains(&packet.payload().len()) {
         return Err(invalid("server-punch payload has the wrong width"));
     }
     Ok(packet.payload())
@@ -340,7 +361,36 @@ mod tests {
         assert_eq!(info.peer_tcp_port, 4662);
         assert_eq!(info.peer_hash, UserHash::from_bytes([0x44; 16]));
         assert_eq!(info.role, HolepunchRole::Responder);
+        assert_eq!(info.peer_id, None, "a server before v0.9.84 stops here");
         assert_eq!(info.encode_packet(), packet);
+    }
+
+    /// `holepunch.rs:631-651`: `peer_id` follows the role, little-endian, read
+    /// from 29 bytes. Byte 30 is the extension's `peer_crypt`, which a pair
+    /// rmule is part of never draws: it decodes as if it were absent.
+    #[test]
+    fn the_info_names_the_peer_it_describes_and_tolerates_what_follows() {
+        let mut payload = vec![45, 55, 200, 7];
+        payload.extend_from_slice(&4662u16.to_le_bytes());
+        payload.extend_from_slice(&31999u16.to_le_bytes());
+        payload.extend_from_slice(&[0x44; 16]);
+        payload.push(0);
+        payload.extend_from_slice(&1337u32.to_le_bytes());
+        let current = Packet::new(PacketProtocol::Edonkey, 0x61, payload.clone());
+        let info = HolepunchInfo::decode_packet(&current).expect("29 bytes");
+        assert_eq!(info.peer_id, Some(ClientId::from_u32(1337)));
+        assert_eq!(info.encode_packet(), current);
+
+        payload.push(0x03);
+        let extended = Packet::new(PacketProtocol::Edonkey, 0x61, payload);
+        assert_eq!(HolepunchInfo::decode_packet(&extended), Ok(info));
+
+        let torn = Packet::new(PacketProtocol::Edonkey, 0x61, vec![1; 27]);
+        assert_eq!(
+            HolepunchInfo::decode_packet(&torn).map(|info| info.peer_id),
+            Ok(None),
+            "a body between the two widths has no peer id to read",
+        );
     }
 
     /// An unnamed role or reason is carried, not refused: neither changes
@@ -380,21 +430,23 @@ mod tests {
         }
     }
 
-    /// Fixed widths, no tolerance: these bodies have no length field and no
-    /// extension point, so a short or long one is another message.
+    /// The request and the refusal have no extension point, so a short or
+    /// long one is another message. The introduction has a floor and no
+    /// ceiling.
     #[test]
     fn a_body_of_the_wrong_width_is_not_a_server_punch_packet() {
-        for (opcode, len) in [(0x60, 6), (0x61, 25), (0x62, 5)] {
+        for (opcode, len) in [(0x60, 6), (0x62, 5)] {
             for wrong in [len - 1, len + 1] {
                 let packet = Packet::new(PacketProtocol::Edonkey, opcode, vec![1; wrong]);
                 let refused = match opcode {
                     0x60 => HolepunchRequest::decode_packet(&packet).is_err(),
-                    0x61 => HolepunchInfo::decode_packet(&packet).is_err(),
                     _ => HolepunchFail::decode_packet(&packet).is_err(),
                 };
                 assert!(refused, "{opcode:#x} at {wrong} bytes");
             }
         }
+        let short = Packet::new(PacketProtocol::Edonkey, 0x61, vec![1; 24]);
+        assert!(HolepunchInfo::decode_packet(&short).is_err());
     }
 
     /// `[0xE3][0x9F]` then the hash, no length prefix, to TCP port + 4.

@@ -8,7 +8,7 @@ use rmule_ed2k::{
     CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, HolepunchFail,
     HolepunchFailReason, HolepunchInfo, HolepunchRole, Output,
 };
-use rmule_primitives::{ClientId, Ipv4Endpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv4Endpoint, Packet, PacketProtocol, UserHash};
 
 use crate::fixture;
 
@@ -62,6 +62,7 @@ fn the_servers_answers_surface_as_attributable_events() {
         peer_tcp_port: 4662,
         peer_hash: UserHash::from_bytes([0x44; 16]),
         role: HolepunchRole::Initiator,
+        peer_id: Some(ClientId::from_u32(1337)),
     };
     let wire = info.encode_packet().encode();
     for _ in 0..2 {
@@ -84,4 +85,25 @@ fn the_servers_answers_surface_as_attributable_events() {
         panic!("a refusal is an event");
     };
     assert_eq!(got, fail);
+}
+
+/// ed2k-server appends fields to `0x61`: `peer_id` since v0.9.84
+/// (`holepunch.rs:112`, 29 bytes) and `peer_crypt` for a pair on its extension
+/// (30). A reader that held the old 25 closed the session on every
+/// introduction, on every current server.
+#[test]
+fn an_introduction_with_appended_fields_keeps_the_session_open() {
+    for extra in [4, 5, 9] {
+        let mut session = fixture::logged_in_session(7);
+        let mut body = vec![45, 55, 200, 7, 0x36, 0x12, 0xFF, 0x7C];
+        body.extend_from_slice(&[0x44; 16]);
+        body.push(1);
+        body.extend_from_slice(&vec![0; extra]);
+        session.handle_bytes(&Packet::new(PacketProtocol::Edonkey, 0x61, body).encode());
+        let Some(Output::Event(Ed2kEvent::HolepunchIntroduced { info })) = session.poll_output()
+        else {
+            panic!("{} bytes are an introduction", 25 + extra);
+        };
+        assert_eq!(info.peer_hash, UserHash::from_bytes([0x44; 16]));
+    }
 }
