@@ -337,18 +337,18 @@ const ACCEPT_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 const ACCEPT_FATAL_AFTER: usize = 5;
 
 /// Spawn the accept pump: a dedicated task that owns the bound listener and
-/// feeds ready connections through a small channel. Ownership is the point
-/// `PeerListener::accept` with obfuscation armed holds an
-/// accepted `TcpStream` across the byte-0 peek await, so it must never run
-/// inside a future a caller's `select!` can cancel — a cancelled mid-peek
-/// accept drops the socket and the peer sees a silent FIN before it ever sent
-/// its hello (a stock aMule then dead-lists the source). That holds for the
-/// serve runner's loop *and* for `start`'s own during-login select, which is
-/// why `start` spawns the pump before awaiting the login and `hello` is read
-/// live — client id 0 and no server until a login lands, then that session's
-/// server and its current id, which a mid-session `OP_IDCHANGE` moves. Inside the
-/// pump the only cancellation point is serve shutdown (`tx.closed()`), where
-/// dropping a mid-handshake stream is the intended teardown.
+/// feeds ready connections through a small channel. A stream the listener has
+/// taken stays with it, and a socket not heard from yet waits beside the
+/// accept, so one silent connect holds nothing up (`rmule_net::peer::
+/// UNIDENTIFIED_SOCKET_BOUND`). What must not be cancelled is this pump's own
+/// work on an admitted connection: `start`'s during-login select would drop it
+/// and the peer would see a silent FIN before its hello was answered (a stock
+/// aMule then dead-lists the source), so `start` spawns the pump before
+/// awaiting the login and `hello` is read live — client id 0 and no server
+/// until a login lands, then that session's server and its current id, which a
+/// mid-session `OP_IDCHANGE` moves. Inside the pump the only cancellation point
+/// is serve shutdown (`tx.closed()`), where dropping a mid-handshake stream is
+/// the intended teardown.
 ///
 /// `awaited` is the **Awaited Testers** level (ADR-0046 "Test Connections"):
 /// under `Required`, a plain dial from an address in it is admitted as a

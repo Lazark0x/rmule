@@ -19,6 +19,7 @@ mod capture;
 mod connection;
 mod driver;
 mod error;
+mod first_read;
 mod inbound;
 mod listener;
 mod obfuscation;
@@ -27,6 +28,7 @@ mod options;
 pub use capture::ELISION_MARKER;
 pub use connection::{Connection, DialedStream, OpenedDial, PeerStreamRole};
 pub use error::PeerNetError;
+pub use first_read::UNIDENTIFIED_SOCKET_BOUND;
 pub use inbound::{InboundSource, PushBack};
 pub use listener::{Admitted, PeerListener};
 pub use obfuscation::{

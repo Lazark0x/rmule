@@ -6,18 +6,20 @@
 //! awaited from is admitted as a Test Connection (ADR-0046).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::time::Duration;
 
 use crate::fixture::{RESPONDER_HASH, flow_r_dialback};
 use rmule_net::driver::CryptStream;
 use rmule_net::peer::{
     Admitted, AwaitedTesters, ConnectOptions, ObfuscationConfig, ObfuscationPolicy, PeerListener,
-    PeerNetError, PeerObfuscationTransport,
+    PeerNetError, PeerObfuscationTransport, UNIDENTIFIED_SOCKET_BOUND,
 };
 use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, PeerOpcode, SideEvent};
 use rmule_primitives::{ClientId, ClientIdentity, Ed2kText, Ipv4Endpoint, Packet, UserHash};
 use rmule_testkit::wire;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 fn responder_ctx() -> PeerHandshakeContext {
     PeerHandshakeContext {
@@ -351,4 +353,116 @@ async fn a_captured_required_dialback_keyed_on_a_word_swapped_hash_fails_the_han
         )),
         "the link ends Io(InvalidData), as it did live: {seen:?}"
     );
+}
+
+/// What an accept under an obfuscation policy must not wait on: a socket that
+/// connected and says nothing, for a hello timeout no test should sit through.
+fn accept_with_a_long_hello_wait() -> ConnectOptions {
+    ConnectOptions {
+        hello_timeout: Duration::from_secs(300),
+        ..options_under(ObfuscationPolicy::Supported)
+    }
+}
+
+async fn plain_dial_saying_hello(bound: SocketAddrV4) -> TcpStream {
+    let mut dialer = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
+    dialer
+        .write_all(&wire::hello_bytes(UserHash::from_bytes([0xAB; 16]), "next"))
+        .await
+        .unwrap();
+    dialer
+}
+
+#[tokio::test]
+async fn a_silent_socket_does_not_hold_up_the_next_accept() {
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
+
+    let _silent = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
+    let speaking = plain_dial_saying_hello(bound).await;
+
+    let accepted = timeout(
+        Duration::from_secs(5),
+        listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+    )
+    .await
+    .expect("the speaking socket is accepted past the silent one")
+    .expect("admitted");
+    assert_eq!(
+        accepted.peer_endpoint().port(),
+        speaking.local_addr().unwrap().port()
+    );
+}
+
+#[tokio::test]
+async fn a_cancelled_accept_keeps_the_socket_it_was_reading() {
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
+    let mut late = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
+
+    let waited = timeout(
+        Duration::from_millis(200),
+        listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+    )
+    .await;
+    assert!(waited.is_err(), "nothing has spoken yet");
+
+    late.write_all(&wire::hello_bytes(UserHash::from_bytes([0xAC; 16]), "late"))
+        .await
+        .unwrap();
+    let accepted = timeout(
+        Duration::from_secs(5),
+        listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+    )
+    .await
+    .expect("the read went on behind the cancelled accept")
+    .expect("admitted");
+    assert_eq!(
+        accepted.peer_endpoint().port(),
+        late.local_addr().unwrap().port()
+    );
+}
+
+#[tokio::test]
+async fn past_the_bound_the_longest_silent_socket_gives_way_and_accepts_go_on() {
+    let listener = PeerListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind");
+    let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
+
+    let mut first = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
+    // Taken in order: the accept picks each up before the next connects.
+    let wait = Duration::from_millis(1);
+    let _ = timeout(
+        Duration::from_millis(50),
+        listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+    )
+    .await;
+    let mut silent = Vec::with_capacity(UNIDENTIFIED_SOCKET_BOUND);
+    for _ in 0..UNIDENTIFIED_SOCKET_BOUND {
+        silent.push(TcpStream::connect(SocketAddr::V4(bound)).await.unwrap());
+        let _ = timeout(
+            wait,
+            listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+        )
+        .await;
+    }
+    let _speaking = plain_dial_saying_hello(bound).await;
+    timeout(
+        Duration::from_secs(5),
+        listener.accept(responder_ctx(), accept_with_a_long_hello_wait()),
+    )
+    .await
+    .expect("accepts go on at the bound")
+    .expect("admitted");
+
+    let mut byte = [0u8; 1];
+    let closed = timeout(Duration::from_secs(5), first.read(&mut byte))
+        .await
+        .expect("the longest silent socket was let go");
+    assert!(!matches!(closed, Ok(1)));
 }
