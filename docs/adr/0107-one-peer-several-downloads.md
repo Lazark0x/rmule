@@ -150,14 +150,14 @@ Invariants every transition keeps:
    Traced for a waiter W whose own link L meets rmule's dial D, its hello out (the same for a seed
    S and a download's dial):
 
-   | Order at W | W's client | Answer L, close L (refuted) | Close L unanswered | Answer L, keep both | Hold L's answer (the rule) |
-   |---|---|---|---|---|---|
-   | reads D's hello, no L hello sent | on D: asks from `DS_CONNECTING`, waits a grant from `DS_ONQUEUE` | transfer | transfer | transfer | transfer |
-   | L's hello sent, reads D's hello, then what rmule did on L | L deleted unread, on D, as above | transfer | transfer | transfer | transfer |
-   | L's hello sent, reads rmule's answer on L, then D's hello | `DS_CONNECTED`, file ask on L; L deleted; asks nothing on D, grant dropped | **0 parts** (bench) | | **0 parts** | cannot happen |
-   | L's hello sent, reads L's close, then D's hello | `DS_CONNECTING` closes: dead source; D's hello makes a client with no file | | **0 parts**, grant answered `OP_CANCELTRANSFER` | | cannot happen |
-   | L's hello sent, D ends unread | stays on L | **dead source** | **dead source** | transfer | L answered at D's end: transfer |
-   | L's hello sent, W's client has no address (a first contact), reads D's hello | stays on L, `DS_CONNECTING`; a second client with no file answers D; a grant on D is answered `OP_CANCELTRANSFER` (`ClientTCPSocket.cpp:639-653`) | **0 parts**, dead source | **0 parts**, dead source (bench, closing L at D's answer) | transfer, two links | L answered at the close bound, D let go, the grant on L: transfer |
+   | Order at W | W's client | Answer L, close L (refuted) | Close L unanswered | Answer L, keep both | Hold L's answer (the rule) | Bench, stock 2.3.3 |
+   |---|---|---|---|---|---|---|
+   | reads D's hello, no L hello sent | on D: asks from `DS_CONNECTING`, waits a grant from `DS_ONQUEUE` | transfer | transfer | transfer | transfer | not drawn: both unheld draws crossed, the last row |
+   | L's hello sent, reads D's hello, then what rmule did on L | L deleted unread, on D, as above, its hello answered there | transfer | transfer | transfer | transfer | PASS, W's own reask, 426 parts on D: `1793376023` |
+   | L's hello sent, reads rmule's answer on L, then D's hello | `DS_CONNECTED`, file ask on L; L deleted; asks nothing on D, grant dropped | **0 parts** (bench) | | **0 parts** | cannot happen | 0 parts under the first column: `1792411297`, `1792412419` |
+   | L's hello sent, reads L's close, then D's hello | `DS_CONNECTING` closes: dead source; D's hello makes a client with no file | | **0 parts**, grant answered `OP_CANCELTRANSFER` | | cannot happen | not drawn: read from source |
+   | L's hello sent, D ends unread | stays on L | **dead source** | **dead source** | transfer | L answered at D's end: transfer | not drawn: a dead dial's fake only, `a_hello_held_on_a_dial_back_is_answered_when_the_dial_ends_and_the_grant_is_left_to_it` |
+   | L's hello sent, W's client has no address (a first contact), reads D's hello | stays on L, `DS_CONNECTING`; a second client with no file answers D; a grant on D is answered `OP_CANCELTRANSFER` (`ClientTCPSocket.cpp:639-653`) | **0 parts**, dead source | **0 parts**, dead source (bench, closing L at D's answer) | transfer, two links | L answered at the close bound, D let go, the grant on L: transfer | 0 parts closing L at D's answer: `1793361644`, `1793362292`. PASS under the rule: `serve-crossed` `1793366649`, `1793384543`, unheld `1793385460`, `1793385614`; `download-crossed` `1793368590`, `1793384708` |
 
    **The hello of a link the peer opened is answered only when no dial of rmule's to that peer has
    its hello out unanswered.** Only that rule ends in a transfer in every order: it leaves W in
@@ -194,11 +194,17 @@ Invariants every transition keeps:
      only has to outlast a FIN retransmitted on a live path, the one thing that can part the close
      from the answer, and a far end that kept D would lose it by a wrong reading, while a far end
      that refused loses 3 s of a first contact. L's 40 s clock has room for it behind the longest
-     hold.
+     hold. Measured on the tap against stock 2.3.3, Linux containers on an aarch64 VM over a Docker
+     bridge: W's FIN on L came 0.153, 0.379 and 0.625 s ahead of its answer on D (runs
+     `1793372082`, `1793374025`, `1793376023`; the gap is aMule's send throttle, the FIN leaving at
+     the attach), never behind it, and 0.35 and 1.94 ms after the hello that caused it
+     (`two-hellos`, `1793365390`, `1793365415`).
    - D's end: L is answered, filed, and takes the pending grant as above. A dial-back ending with a
      hello held on it does not end the grant.
    - The bound: D's hello went unread that long while L stood open, so the far end is on L. D closes
-     and L is answered, as at D's end. The bound keeps inside W's 40 s clock on L
+     and L is answered, as at D's end. A far end that reads D's hello as the bound passes attaches
+     a dial rmule is closing and loses both links (`1793370677`, 0 parts, a retransmit landing
+     10 s late); no bound closes that order, and it takes a hello unread for 10 s. The bound keeps inside W's 40 s clock on L
      (`ClientTCPSocket.cpp:201-229`, restarted as W's hello went out, `:1870-1886`) with room for
      the answer to arrive, and it is the only thing that settles two rmules crossing, since each
      holds the other's hello: it is **20 s when rmule's User Hash is the lower of the two, 10 s
