@@ -745,6 +745,27 @@ impl UploadSlotQueue {
             })
     }
 
+    /// The waiter a ping from `udp_src`, which [`resolve_reask`](Self::resolve_reask)
+    /// did not know, comes from when the hello of its standing link names
+    /// that address, as `names` reads it: on the client-UDP port the waiter
+    /// advertised, and never between two IPv4 addresses (ADR-0107, "One client
+    /// on two addresses").
+    #[must_use]
+    pub fn resolve_named_reask(
+        &self,
+        udp_src: PeerEndpoint,
+        names: impl Fn(PeerEndpoint) -> bool,
+    ) -> ReaskResolution {
+        self.waiting
+            .iter()
+            .find(|q| {
+                q.udp_port == Some(udp_src.port())
+                    && !matches!((q.peer, udp_src), (PeerEndpoint::V4(_), PeerEndpoint::V4(_)))
+                    && names(q.peer)
+            })
+            .map_or(ReaskResolution::Unknown, Queued::as_known)
+    }
+
     /// Refresh `peer`'s reask heartbeat to `now` — a matched `OP_REASKFILEPING`
     /// keeps its standing alive against the purge clock (ADR-0057).
     pub fn refresh_reask(&mut self, peer: PeerEndpoint, now: Instant) {

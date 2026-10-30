@@ -11,6 +11,7 @@ use rmule_peer::peer_udp::responder::{
 use rmule_peer::{PartBitmap, PeerIdentity};
 use rmule_primitives::{PeerEndpoint, ed2k_status_part_count};
 
+use super::relink::names_address;
 use super::{ServeDecision, ServeState};
 use crate::service::ServeEvent;
 use crate::upload_queue::ReaskResolution;
@@ -32,7 +33,15 @@ impl ServeState {
         // front hands this call the family the datagram truly arrived in, so an
         // IPv6 waiter is matched on all 128 bits and answered on the socket its
         // ping came in on.
-        let (peer, pinger) = match self.queue.resolve_reask(udp_src) {
+        let resolved = match self.queue.resolve_reask(udp_src) {
+            ReaskResolution::Unknown => self.queue.resolve_named_reask(udp_src, |waiter| {
+                self.identities
+                    .get(&waiter)
+                    .is_some_and(|known| names_address(known, udp_src))
+            }),
+            resolved => resolved,
+        };
+        let (peer, pinger) = match resolved {
             ReaskResolution::Known {
                 peer,
                 file_hash,

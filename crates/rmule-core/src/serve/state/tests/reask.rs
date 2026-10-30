@@ -487,3 +487,39 @@ fn a_readopted_peers_udp_contact_is_not_stamped_on_a_later_waiter() {
         }],
     );
 }
+
+/// The client on an IPv6 link pings from the IPv4 its hello names, on the
+/// client-UDP port that hello advertised: one client, whichever family the
+/// ping left from (ADR-0107). The same address on another port, or an address
+/// the hello never named, is nobody the queue knows.
+#[test]
+fn a_ping_from_the_address_the_standing_hello_names_is_the_waiters() {
+    let file = hash(0x16);
+    let t = Instant::now();
+    let client_v4 = [45, 55, 200, 3];
+    let waiter = v6_peer(3, 58334);
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), file, t);
+    let hello = HelloFacts {
+        client_id: rmule_primitives::ClientId::from_u32(u32::from_le_bytes(client_v4)),
+        ..hello_facts(user(0x0A), 6000, 4, 2)
+    };
+    let _ = state.on_conn_event(t, waiter, hello.identified(), &no_modifiers());
+    let _ = slot_request(&mut state, waiter, file, t);
+
+    let ack = ReaskAck {
+        part_status: Some(PartBitmap::complete_source_sentinel()),
+        rank: 1,
+    }
+    .encode_udp();
+    let mut answered = |from| {
+        state
+            .on_reask_ping(t, from, &reask_ping(file))
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::SendClientUdp { to, datagram, .. }
+                if *to == from && *datagram == ack))
+    };
+    assert!(answered(udp(client_v4, 6000)));
+    assert!(!answered(udp(client_v4, 7000)));
+    assert!(!answered(udp([45, 55, 200, 4], 6000)));
+}

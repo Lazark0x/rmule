@@ -46,7 +46,7 @@ const fn addresses_part_clients(one: PeerEndpoint, other: PeerEndpoint) -> bool 
 
 /// Whether the hello `known` names `address` as the client's own: its High
 /// ID, or its `CT_MOD_IP_V6`.
-fn names_address(known: &PeerIdentity, address: PeerEndpoint) -> bool {
+pub(super) fn names_address(known: &PeerIdentity, address: PeerEndpoint) -> bool {
     match address.ip() {
         IpAddr::V4(ip) => {
             let id = known.client_id();
