@@ -136,6 +136,8 @@ impl DownloadRoad {
                 None => match deps.peer_links.reach(peer, &names) {
                     Reach::Found(link) => Onto { link, behind: None },
                     Reach::Dial(mut dial) => {
+                        let mut options = options.clone();
+                        options.hello_gate = Some(dial.gate());
                         // Connect + identify run inside the worker task, off
                         // the runner's critical path (ADR-0030). Until the
                         // hello goes out the peer's own link overtakes the
@@ -146,7 +148,7 @@ impl DownloadRoad {
                                 tracing::debug!(?peer, "the download let the worker go: its dial is called off");
                                 return;
                             }
-                            opened = PeerConnection::open(peer, options.clone()) => opened,
+                            opened = PeerConnection::open(peer, options) => opened,
                             link = dial.overtaken() => {
                                 tracing::debug!(
                                     ?peer,

@@ -47,6 +47,16 @@ pub trait HelloGate: Send + Sync + std::fmt::Debug {
     /// now. `false` leaves it owed until
     /// [`ConnectionCommand::AnswerHello`](crate::ConnectionCommand::AnswerHello).
     fn may_answer(&self, peer: rmule_primitives::PeerEndpoint, identity: &PeerIdentity) -> bool;
+
+    /// Whether a dialing session may open its link as the peer's answer comes.
+    /// `false` leaves the link's first words, Secure User Identification
+    /// among them, for
+    /// [`ConnectionCommand::AnswerCrossedHello`](crate::ConnectionCommand::AnswerCrossedHello):
+    /// a far end that took this link over has an answer of its own pending,
+    /// and drops a link that says them first (`ClientTCPSocket.cpp:1298-1302`).
+    fn may_open_dial(&self) -> bool {
+        true
+    }
 }
 
 /// The `CT_EMULE_VERSION` value rmule advertises:

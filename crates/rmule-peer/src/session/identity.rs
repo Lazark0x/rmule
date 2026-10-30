@@ -22,7 +22,24 @@ impl PeerSession {
     pub(super) fn identify_peer(&mut self, body: &PeerHelloBody) {
         let identity = self.read_identity(body);
         self.enter_identified(identity);
-        self.link_opened();
+        if self
+            .hello_gate
+            .as_ref()
+            .is_none_or(|gate| gate.may_open_dial())
+        {
+            self.link_opened();
+        } else {
+            self.opening_owed = true;
+        }
+    }
+
+    /// Answer on this dial the hello held on the link the far end deleted for
+    /// it, ahead of the link's first words.
+    pub(super) fn answer_crossed_hello(&mut self) {
+        self.answer_hello();
+        if std::mem::take(&mut self.opening_owed) {
+            self.link_opened();
+        }
     }
 
     /// What the peer's hello body says of it, kept with what the session

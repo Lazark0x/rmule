@@ -180,11 +180,13 @@ Invariants every transition keeps:
      having heard of it (`serve.crossed_dial_kept`), and D goes on: its rider hears the answer and
      the grant goes on it. Stock aMule's FIN on L leaves before its answer on D: `Safe_Delete` runs
      at the attach, ahead of `SendHelloAnswer` (`ClientList.cpp:400-403`, `ClientTCPSocket.cpp:391`,
-     `:406`). **The hello held on L is answered on D**, once, ahead of anything else on it: the
+     `:406`). **The hello held on L is answered on D**, once, ahead of the link's first words: the
      client W attached still has the answer to the hello it sent on L pending, an `OP_HELLO` not
-     ending that wait (`BaseClient.cpp:466`, `:744`), and it drops a link that answers it before
-     the answer comes (`ClientTCPSocket.cpp:1205-1208`, bench: `OP_MULTIPACKETANSWER` drew a reset
-     4 ms later). A second `OP_HELLOANSWER` is nothing to a far end not waiting for one.
+     ending that wait (`BaseClient.cpp:466`, `:744`), and it throws at `OP_SECIDENTSTATE` or
+     `OP_MULTIPACKETANSWER` read before the answer comes (`ClientTCPSocket.cpp:1205-1208`,
+     `:1298-1302`). So a dial's session holds its opening back while a hello is held on the dial
+     (`HelloGate::may_open_dial`), and the answer opens it. A second `OP_HELLOANSWER` is nothing to
+     a far end not waiting for one.
    - The **close bound**, 3 s after D's answer with L still open: the far end refused the attach
      and its real client waits on L. L is answered and filed (`serve.crossed_dial_refused`), and D
      yields to L as a dial yields before its hello: it closes retiring nobody, its rider and

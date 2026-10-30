@@ -194,6 +194,8 @@ pub struct PeerSession {
     /// The gate held the peer's hello: its answer, and everything that
     /// follows the answer, wait for `AnswerHello` (ADR-0107 invariant 7).
     answer_owed: bool,
+    /// A dial whose gate held its link's opening back at the peer's answer.
+    opening_owed: bool,
     /// Diagnostic/capture-only override for the hello's advertised
     /// source-exchange nibble (ADR-0055 evidence), set via
     /// [`with_source_exchange_capture_override`](Self::with_source_exchange_capture_override).
@@ -239,6 +241,7 @@ impl PeerSession {
             direct_udp_callback_advert: false,
             hello_gate: None,
             answer_owed: false,
+            opening_owed: false,
             source_exchange_capture_override: None,
             extended_requests_capture_override: None,
         }

@@ -624,6 +624,61 @@ impl HelloGate for HoldEvery {
     }
 }
 
+#[derive(Debug)]
+struct OpensNoDial;
+
+impl HelloGate for OpensNoDial {
+    fn may_answer(&self, _: PeerEndpoint, _: &PeerIdentity) -> bool {
+        true
+    }
+
+    fn may_open_dial(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_dial_that_owes_an_answer_says_it_before_the_links_first_words() {
+    // The far end took this dial over with the answer to its own hello still
+    // pending, and throws at `OP_SECIDENTSTATE` before it comes
+    // (`ClientTCPSocket.cpp:1298-1302`, ADR-0107 invariant 7).
+    let our_key = Arc::new(SecureIdentKey::generate().expect("a key"));
+    let mut session = PeerSession::new_outbound(peer(), plain_ctx())
+        .with_secure_ident(config(&our_key, OUR_CHALLENGE))
+        .with_hello_gate(Arc::new(OpensNoDial));
+    session.start();
+    drain(&mut session);
+    feed(
+        &mut session,
+        HelloAnswer::new(sui_answer_body(UserHash::from_bytes(
+            [0x55; UserHash::BYTE_LEN],
+        )))
+        .encode_packet(),
+    );
+    let (packets, events) = drain(&mut session);
+    assert!(packets.is_empty(), "nothing is said yet: {packets:?}");
+    assert!(events.iter().any(|event| matches!(
+        event,
+        PeerEvent::Connection(ConnectionEvent::Identified { .. })
+    )));
+
+    session.handle_command(PeerCommand::Connection(
+        ConnectionCommand::AnswerCrossedHello,
+    ));
+    let (packets, _) = drain(&mut session);
+    assert!(
+        matches!(packets[0], PeerPacket::HelloAnswer(_)),
+        "{packets:?}"
+    );
+    assert!(
+        packets
+            .iter()
+            .skip(1)
+            .any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
+        "the challenge follows the answer: {packets:?}"
+    );
+}
+
 #[test]
 fn a_held_hello_says_nothing_until_it_is_answered_and_then_answers_before_the_challenge() {
     // A dial of ours crosses this hello (ADR-0107 invariant 7): the far end

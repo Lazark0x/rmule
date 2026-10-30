@@ -224,6 +224,9 @@ impl Connection {
         options: &ConnectOptions,
     ) -> PeerSession {
         let mut session = PeerSession::new_outbound(peer, ctx);
+        if let Some(gate) = &options.hello_gate {
+            session = session.with_hello_gate(gate.clone());
+        }
         if let Some(config) = &options.secure_ident {
             session = session.with_secure_ident(config.clone());
         }

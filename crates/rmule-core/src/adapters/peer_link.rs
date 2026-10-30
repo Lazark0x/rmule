@@ -29,7 +29,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use rmule_peer::{ConnectionCommand, PeerCommand, PeerEvent, PeerIdentity};
+use rmule_peer::{ConnectionCommand, HelloGate, PeerCommand, PeerEvent, PeerIdentity};
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::{mpsc, oneshot};
 
@@ -289,6 +289,11 @@ impl DialInFlight {
     /// link ([`CrossedDial::give_up`]); never otherwise.
     pub(super) async fn given_up(&mut self) {
         self.filing.given_up().await;
+    }
+
+    /// The gate of the dial's session.
+    pub(super) fn gate(&self) -> Arc<dyn HelloGate> {
+        crossing::DialGate::gate(self.filing.links.clone(), self.filing.filing)
     }
 
     /// The far end answered the dial ([`Filing::heard_answer`]).

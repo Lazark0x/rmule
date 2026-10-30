@@ -143,7 +143,8 @@ impl DialBackRoad {
                 return;
             }
         };
-        let options = adverts.dial_options(crypt);
+        let mut options = adverts.dial_options(crypt);
+        options.hello_gate = Some(in_flight.gate());
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
         let opened = tokio::select! {
             biased;

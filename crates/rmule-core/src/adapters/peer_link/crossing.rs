@@ -90,6 +90,40 @@ impl UnansweredDial {
     }
 }
 
+/// The gate of a dial's session: its link's first words wait while a hello is
+/// held on the dial, for the far end that took it over owes them an answer's
+/// wait ([`AnswerHeard::Kept`]).
+pub(in crate::adapters) struct DialGate {
+    links: SharedPeerLinks,
+    filing: u64,
+}
+
+impl std::fmt::Debug for DialGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DialGate").finish_non_exhaustive()
+    }
+}
+
+impl DialGate {
+    pub(super) fn gate(links: SharedPeerLinks, filing: u64) -> Arc<dyn HelloGate> {
+        Arc::new(Self { links, filing })
+    }
+}
+
+impl HelloGate for DialGate {
+    fn may_answer(&self, _: PeerEndpoint, _: &PeerIdentity) -> bool {
+        true
+    }
+
+    fn may_open_dial(&self) -> bool {
+        self.links.book.lock().map_or(true, |book| {
+            book.unanswered
+                .get(&self.filing)
+                .is_none_or(|dial| !dial.crossed)
+        })
+    }
+}
+
 /// What the far end's answer on a dial came to.
 pub(in crate::adapters) enum AnswerHeard {
     /// Nothing crossed the dial: it goes on.
@@ -97,8 +131,8 @@ pub(in crate::adapters) enum AnswerHeard {
     /// The far end closed its own link, a hello held on the dial: the dial
     /// goes on, and owes the client it took over the answer to that hello.
     /// `OP_HELLO` on a socket does not end a client's wait for the answer to
-    /// its own (`BaseClient.cpp:466`, `:744`), and aMule drops a link whose
-    /// peer answers it before that comes (`ClientTCPSocket.cpp:1205-1208`).
+    /// its own (`BaseClient.cpp:466`, `:744`), and aMule drops a link that
+    /// speaks before that comes (`ClientTCPSocket.cpp:1298-1302`).
     Kept,
     /// The far end stayed on its own link: the dial gives way to it.
     GaveWay(FoundLink),
