@@ -101,8 +101,10 @@ const HOLD_SLOT: &str = include_str!("crossing/hold_slot.py");
 /// How long before W's reask X stops, so the dial's hello is out when W's
 /// own connect goes.
 const REASK_LEAD_SECS: u64 = 8;
-/// How long past W's reask its held SYN is let through.
-const REASK_LAND_SECS: u64 = 4;
+/// How long past W's reask the flow waits for its held SYN.
+const REASK_SYN_BOUND_SECS: u64 = 30;
+/// How long the flow waits for W's own link to land once its SYN goes.
+const REASK_LAND_BOUND: Duration = Duration::from_secs(15);
 /// IP packets longer than a bare ACK (20-byte IP and 32-byte TCP headers
 /// with timestamps): with the SYN excluded (a SYN with its options is 60
 /// bytes), a data hold drops what carries eD2k bytes and lets the handshake
@@ -243,6 +245,41 @@ fn no_udp_to(to: Ipv4Addr) -> Vec<String> {
     ["-p", "udp", "-d", &to.to_string(), "-j", "DROP"]
         .map(str::to_owned)
         .to_vec()
+}
+
+/// When rmule logged W's ask, unix seconds: aMule's clock on its reask starts
+/// at that ask (`DownloadClient.cpp:156`).
+fn queued_at(bench: &Bench, rmule: &str) -> Result<f64> {
+    let logs = run_checked(bench.docker.logs(rmule), "read rmule's log")?;
+    let ms = logs
+        .lines()
+        .find(|line| line.starts_with("serve.peer_queued"))
+        .and_then(|line| line.rsplit("at_unix_ms=").next())
+        .and_then(|ms| ms.trim().parse::<f64>().ok())
+        .context("no stamped serve.peer_queued in rmule's log")?;
+    Ok(ms / 1000.0)
+}
+
+/// Whether a SYN hold in `target`'s namespace has dropped a segment yet.
+fn syn_held(bench: &Bench, image: &str, target: &str) -> Result<bool> {
+    let list = RunContainer::new(image.to_owned())
+        .remove_after_exit()
+        .network(format!("container:{target}"))
+        .cap_add("NET_ADMIN")
+        .entrypoint("iptables")
+        .arg("-L")
+        .arg("OUTPUT")
+        .arg("-v")
+        .arg("-n")
+        .arg("-x");
+    let rules = run_checked(bench.docker.run_container(list), "read the holds")?;
+    Ok(rules.lines().any(|rule| {
+        rule.contains("flags:")
+            && rule
+                .split_whitespace()
+                .next()
+                .is_some_and(|dropped| dropped != "0")
+    }))
 }
 
 /// Sleep until the wall clock reads `at`, unix seconds.
@@ -541,7 +578,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 (None, low_id),
             )?;
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
-            let asked_at = verdict::unix_now();
+            let asked_at = queued_at(&bench, &rmule_name)?;
             let waiter_ip = container_ip(&bench, &waiter)?;
             // Set now: no hold touches W's queued link (rmule's end is its
             // listener), and X must stop well inside the 100 s an aMule
@@ -634,18 +671,40 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
             }
             if reask {
-                // W's own connect has gone by now, its SYN held.
+                // W's own connect has a 40 s clock, so its SYN goes through
+                // as soon as it is seen, and the dial's hello once W's own
+                // hello is held.
+                let seen_by = reask_at + REASK_SYN_BOUND_SECS as f64;
+                while !syn_held(&bench, options.amule_image, &waiter)? {
+                    anyhow::ensure!(
+                        verdict::unix_now() < seen_by,
+                        "the waiter's reask drew no SYN"
+                    );
+                    std::thread::sleep(Duration::from_millis(500));
+                }
                 marks.returned_at = Some(verdict::unix_now());
-                sleep_until(reask_at + REASK_LAND_SECS as f64);
-            } else if let Some(mut add) = racing {
-                add.wait().context("wait for the waiter's Add")?;
-            } else {
-                marks.returned_at = Some(verdict::unix_now());
-                amulecmd(&bench, &waiter, &add_back, "the waiter adds it again")?;
-            }
-            for index in (0..holds.set.len()).rev() {
+                marks.lifted_at.push(holds.lift(&bench, 1)?);
+                let landed = wait_for_container_log(
+                    &bench.docker,
+                    &rmule_name,
+                    "serve.crossed_hello_held",
+                    REASK_LAND_BOUND,
+                )
+                .is_ok();
+                println!("peer_crossing own_link_held={landed}");
                 std::thread::sleep(Duration::from_secs(shape.hold_secs));
-                marks.lifted_at.push(holds.lift(&bench, index)?);
+                marks.lifted_at.push(holds.lift(&bench, 0)?);
+            } else {
+                if let Some(mut add) = racing {
+                    add.wait().context("wait for the waiter's Add")?;
+                } else {
+                    marks.returned_at = Some(verdict::unix_now());
+                    amulecmd(&bench, &waiter, &add_back, "the waiter adds it again")?;
+                }
+                for index in (0..holds.set.len()).rev() {
+                    std::thread::sleep(Duration::from_secs(shape.hold_secs));
+                    marks.lifted_at.push(holds.lift(&bench, index)?);
+                }
             }
             std::thread::sleep(Duration::from_secs(shape.watch_secs));
             marks.watch_ended_at = Some(verdict::unix_now());
