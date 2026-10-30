@@ -1,6 +1,6 @@
 //! The dead-dial legs' claims: rmule's dial-back carried the slot, went dead
 //! at the far end, and the waiter's own link took its standing; and, on the
-//! identifying leg, a key the dial never proved was bound once, off that link.
+//! identifying leg, a dial let go mid-verification left the ledger as it was.
 
 use std::fs;
 use std::path::Path;
@@ -104,50 +104,63 @@ pub(super) fn dead_dial_claims(rows: &Rows, dial: Option<&Link>, own: Option<&Li
     ]
 }
 
-/// The identifying leg's further claims.
+/// The identifying leg's claims: rmule let the dial go with the waiter's
+/// proof unread, and what its first link proved stands. A client with no
+/// bytes either way writes no `clients.met` record, as aMule's does not, so
+/// the key is read from the ledger's own file and the record is a detail.
 pub(super) fn identity_claims(
     capture: &TcpCapture,
     log: &str,
     data_dir: &Path,
     dial: Option<&Link>,
-    own: Option<&Link>,
+    first: Option<&Link>,
 ) -> Vec<Claim> {
-    let keys = bound_keys(data_dir);
-    let proved = own.and_then(|link| key_sent_on(capture, link));
-    let held = proved
+    let key = first.and_then(|link| key_sent_on(capture, link));
+    let ledger = fs::read(data_dir.join("rmule.redb")).unwrap_or_default();
+    let in_ledger = key.as_ref().is_some_and(|key| {
+        ledger
+            .windows(key.len())
+            .any(|window| window == key.as_slice())
+    });
+    let in_clients_met = key
         .as_ref()
-        .is_some_and(|key| keys.iter().any(|bound| bound == key));
+        .is_some_and(|key| bound_keys(data_dir).iter().any(|bound| bound == key));
     let mismatches = log
         .lines()
         .filter(|line| line.starts_with("identity.secured_mismatch"))
         .count();
     vec![
         Claim::about(
-            "the-dial-went-with-its-verification-unfinished",
-            dial.is_some_and(|link| link.proofs_from_peer == 0),
+            "the-dial-carried-the-slot-first",
+            dial.is_some_and(|link| link.first_grant > 0.0),
             Evidence::Captured,
             format!(
-                "on the dial: rmule's OP_SECIDENTSTATE {}, the waiter's OP_SIGNATURE {}",
+                "OP_ACCEPTUPLOADREQ on the dial: {}",
+                dial.map_or(0, |link| link.grants_from_rmule)
+            ),
+        ),
+        Claim::about(
+            "rmule-let-the-dial-go-with-its-verification-unfinished",
+            dial.is_some_and(|link| {
+                link.sui_asks_from_rmule > 0
+                    && link.proofs_from_peer == 0
+                    && link.closed_by == "rmule"
+            }),
+            Evidence::Captured,
+            format!(
+                "on the dial: rmule's OP_SECIDENTSTATE {}, the waiter's OP_SIGNATURE {}, closed by {}",
                 dial.map_or(0, |link| link.sui_asks_from_rmule),
-                dial.map_or(0, |link| link.proofs_from_peer)
+                dial.map_or(0, |link| link.proofs_from_peer),
+                dial.map_or("nobody", |link| link.closed_by.as_str())
             ),
         ),
         Claim::about(
-            "the-waiter-proved-its-key-on-its-own-link",
-            own.is_some_and(|link| link.proofs_from_peer > 0),
+            "the-ledger-holds-the-key-its-first-link-proved",
+            first.is_some_and(|link| link.proofs_from_peer > 0) && in_ledger,
             Evidence::Captured,
             format!(
-                "the waiter's OP_SIGNATURE on its own link: {}",
-                own.map_or(0, |link| link.proofs_from_peer)
-            ),
-        ),
-        Claim::about(
-            "clients-met-holds-the-waiters-key",
-            held,
-            Evidence::Captured,
-            format!(
-                "keys in clients.met: {}; the key the waiter sent on its own link among them: {held}",
-                keys.len()
+                "the waiter's OP_SIGNATURE on its first link: {}; its key in the ledger's file: {in_ledger}; in clients.met: {in_clients_met}",
+                first.map_or(0, |link| link.proofs_from_peer)
             ),
         ),
         Claim::about(

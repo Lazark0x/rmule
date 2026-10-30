@@ -378,17 +378,13 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             returned,
             own,
         ),
-        CrossingLeg::ServeIdentifying => {
-            let mut claims = dead_dial::dead_dial_claims(&rows, dial, own);
-            claims.extend(dead_dial::identity_claims(
-                &capture,
-                &log,
-                &run_dir.join("rmule"),
-                dial,
-                own,
-            ));
-            claims
-        }
+        CrossingLeg::ServeIdentifying => dead_dial::identity_claims(
+            &capture,
+            &log,
+            &run_dir.join("rmule"),
+            dial,
+            links.iter().find(|link| !link.rmule_opened),
+        ),
         _ if at.shape.unheld() => {
             let carrier = raced
                 .iter()
