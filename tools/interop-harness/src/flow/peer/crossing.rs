@@ -99,8 +99,10 @@ const FILE_REASK_SECS: u64 = 1300;
 /// and mounted.
 const HOLD_SLOT: &str = include_str!("crossing/hold_slot.py");
 /// How long before W's reask X stops, so the dial's hello is out when W's
-/// own connect goes.
-const REASK_LEAD_SECS: u64 = 8;
+/// own connect goes. Short: the hold on the hello ends in TCP's retransmit,
+/// whose backoff has to fall inside rmule's 10 s on W's held hello (run
+/// `1793370677` drew that bound with the retransmit 4 s past it).
+const REASK_LEAD_SECS: u64 = 3;
 /// How long past W's reask the flow waits for its held SYN.
 const REASK_SYN_BOUND_SECS: u64 = 30;
 /// How long the flow waits for W's own link to land once its SYN goes.
