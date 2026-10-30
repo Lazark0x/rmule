@@ -377,3 +377,58 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
         .unwrap();
     assert_eq!(stats.cancel_transfer_count, 1);
 }
+
+/// A dial the run lets go while it connects stops there, as a download ending
+/// calls off what it had in flight: the socket closes at once, not at the
+/// connect's own timeout. The crypt handshake holds the dial open, the source
+/// accepting and never answering.
+#[tokio::test]
+async fn a_dial_the_run_lets_go_is_called_off_while_it_connects() {
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
+
+    let source = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        source.local_addr().unwrap().port(),
+    ));
+    let file = rmule_testkit::file_link("called-off.bin", &[0x5A; 4096]);
+    let adverts = HelloAdverts {
+        obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy::new(Some(
+            ObfuscationPolicy::Supported,
+        )),
+        ..HelloAdverts::default()
+    };
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
+        .with_hello_adverts(adverts);
+    let brief = WorkerBrief {
+        peer_crypt: PeerCrypt::new(
+            CryptStance::new(true, true, true),
+            Some(UserHash::from_bytes([0x5A; UserHash::BYTE_LEN])),
+        ),
+        ..WorkerBrief::fresh(&file)
+    };
+    let worker = transfer
+        .start_download_worker(peer, dialed_serve_ctx(), file, brief)
+        .await
+        .unwrap();
+    let (mut stream, _) = timeout(Duration::from_secs(5), source.accept())
+        .await
+        .expect("the dial reaches the source")
+        .unwrap();
+
+    worker
+        .send(PeerWorkerCommand::Shutdown { cancel: false })
+        .await
+        .unwrap();
+
+    let closed = async {
+        let mut bytes = [0; 256];
+        while stream.read(&mut bytes).await.is_ok_and(|read| read > 0) {}
+    };
+    timeout(Duration::from_secs(3), closed)
+        .await
+        .expect("the dial closed its socket when the run let it go");
+}

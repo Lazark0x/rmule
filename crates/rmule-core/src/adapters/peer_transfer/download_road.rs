@@ -43,6 +43,18 @@ pub(super) struct DownloadRoad {
     pub(super) deps: InboundPeerDeps,
 }
 
+/// Resolves when the run lets a worker go that has not connected: a
+/// `Shutdown`, or the run dropping the worker. Nothing else is asked of it; the
+/// brain waits for its `Connected`.
+async fn let_go(commands: &mut mpsc::Receiver<PeerWorkerCommand>) {
+    loop {
+        match commands.recv().await {
+            None | Some(PeerWorkerCommand::Shutdown { .. }) => return,
+            Some(_) => {}
+        }
+    }
+}
+
 /// Where the look-up left the download: a link to take its turn on, with
 /// the waiters of a dial that yielded to it behind.
 struct Onto {
@@ -120,6 +132,10 @@ impl DownloadRoad {
                         // dial.
                         let opened = tokio::select! {
                             biased;
+                            () = let_go(&mut command_rx) => {
+                                tracing::debug!(?peer, "the download let the worker go: its dial is called off");
+                                return;
+                            }
                             opened = PeerConnection::open(peer, options.clone()) => opened,
                             link = dial.overtaken() => {
                                 tracing::debug!(
