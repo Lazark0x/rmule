@@ -376,8 +376,8 @@ impl PortMappingPreferences for Remembering {
     }
 }
 
-/// The operator's reprobe used to share the eight-slot inbox the punched-path
-/// pins ride, and a full inbox dropped it.
+/// The operator's reprobe has an inbox of its own, apart from the eight-slot
+/// one the punched-path pins ride, so a full pin inbox cannot drop it.
 #[tokio::test]
 async fn a_reprobe_behind_a_full_pin_inbox_still_re_races() {
     let addresses = SharedAddressLearning::new();

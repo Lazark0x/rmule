@@ -61,8 +61,8 @@ fn pcp_then_upnp(t0: Instant) -> PortMapper {
 
 #[test]
 fn a_trial_whose_gateway_never_answers_closes_at_its_deadline() {
-    // A hung `AddPortMapping` used to wedge the mapper for the session: a
-    // trial is judged only when every row answered, and Trialling had no wake.
+    // A trial is judged only when every row answered, so Trialling carries its
+    // own wake: a hung `AddPortMapping` must not wedge the mapper.
     let t0 = Instant::now();
     let mut mapper = pcp_then_upnp(t0);
     let silent = drain(&mut mapper);
