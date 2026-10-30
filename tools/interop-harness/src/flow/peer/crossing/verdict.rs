@@ -27,6 +27,7 @@ const TOPOLOGY: &str = "topology.toml";
 const VERDICT: &str = "peer-crossing-verdict.toml";
 
 const OP_HELLO: u8 = 0x01;
+const OP_HELLOANSWER: u8 = 0x4C;
 const OP_SENDINGPART: u8 = 0x46;
 const OP_ACCEPTUPLOADREQ: u8 = 0x55;
 /// How soon after a returning waiter's hello its grant must follow.
@@ -96,6 +97,8 @@ struct Link {
     /// frames each side wrote.
     hello_from_rmule: f64,
     hello_from_peer: f64,
+    /// When rmule first answered a hello on it (`-1` without one).
+    answer_from_rmule: f64,
     first_grant: f64,
     parts_from_rmule: usize,
     parts_from_peer: usize,
@@ -163,6 +166,7 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
             }),
             hello_from_rmule: first(&out, OP_HELLO),
             hello_from_peer: first(&back, OP_HELLO),
+            answer_from_rmule: first(&out, OP_HELLOANSWER),
             first_grant: first(&out, OP_ACCEPTUPLOADREQ),
             parts_from_rmule: parts(&out),
             parts_from_peer: parts(&back),
@@ -201,7 +205,9 @@ fn records_about(log: &str, peer: Ipv4Addr) -> Vec<String> {
     log.lines()
         .filter(|line| {
             (line.starts_with("serve.") || line.starts_with("download.dial_ended"))
-                && (line.contains(&peer) || line.starts_with("serve.crossed_link_let_go"))
+                && (line.contains(&peer)
+                    || line.starts_with("serve.crossed_hello_held")
+                    || line.starts_with("serve.crossed_link_let_go"))
         })
         .map(str::to_owned)
         .collect()
@@ -288,10 +294,11 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             )
         })
     };
-    let let_go = rows
+    let held = rows
         .records
         .iter()
-        .any(|line| line.starts_with("serve.crossed_link_let_go"));
+        .any(|line| line.starts_with("serve.crossed_hello_held"));
+    let unanswered = |link: Option<&Link>| link.is_some_and(|link| link.answer_from_rmule < 0.0);
     let claims = match at.shape.leg {
         CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed => {
             let on_dial = at.shape.leg == CrossingLeg::ServeCrossed;
@@ -322,11 +329,11 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             ];
             if on_dial {
                 claims.push(Claim::about(
-                    "serve-crossed-link-let-go-was-logged",
-                    let_go,
-                    Evidence::RmuleOnly,
+                    "the-waiters-hello-was-held-and-never-answered",
+                    held && unanswered(own),
+                    Evidence::Captured,
                     format!(
-                        "serve.crossed_link_let_go in the Run Log: {let_go}; the waiter's own link: {}",
+                        "serve.crossed_hello_held in the Run Log: {held}; the waiter's own link: {}",
                         describe(own)
                     ),
                 ));
@@ -376,7 +383,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 .filter(|link| link.parts_from_peer > 0)
                 .max_by_key(|link| link.parts_from_peer)
                 .copied();
-            vec![
+            let mut claims = vec![
                 Claim::about(
                     if on_dial {
                         "the-download-carried-on-over-the-dial"
@@ -399,7 +406,20 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                     format!("output.bin equal to the staged file: {copy_equal}"),
                 ),
                 one_left,
-            ]
+            ];
+            if on_dial {
+                claims.push(Claim::about(
+                    "the-seeds-own-ask-ran-on-the-dial",
+                    unanswered(own) && dial.is_some_and(|link| link.parts_from_rmule > 0),
+                    Evidence::Captured,
+                    format!(
+                        "S's own link: {}; rmule's dial: {}",
+                        describe(own),
+                        describe(dial)
+                    ),
+                ));
+            }
+            claims
         }
     };
     let (verdict, detail) = label(&claims);

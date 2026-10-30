@@ -90,10 +90,9 @@ waiter was up (ADR-0057), aMule's client in `US_CONNECTING`. The serve side dial
 its hello says a dial reaches it — a High ID at its link's address, or an IPv6 — under the outbound
 crypt rule, filed as a **Dial in Flight**, outside the **Connection Budget**; the grant goes on the
 first link whose hello names the waiter, the dialed one or one it came back on. A link it came
-back on calls the dial off and takes the grant while the dial's hello has not gone out; once it
-has, the dial keeps the grant, as the peer keeps the socket it read rmule's hello on and closes
-its own, and the link the peer opened is let go — unless the dial is a **Dead Dial** by then, when
-the grant moves onto the peer's link. A dial that fails,
+back on overtakes the dial and takes the grant while the dial's hello has not gone out; once it
+has, that link's hello is a **Held Hello**, and the grant goes on the one link the far end keeps.
+A dial that fails with no hello held on it,
 or reaches another client, ends the grant and the waiter's place, and the slot promotes the next
 waiter. The Run Log tells it from an ordinary grant by its road.
 _Avoid_: callback dial-back (that answers a Low ID's callback request), Awaited Grant (the download side's)
@@ -966,18 +965,28 @@ every file (ADR-0107 invariant 11). A download's dial whose hello has not gone o
 not yet claimed under the Peer Links' lock — yields to the peer's own link filed under one of its
 names: it closes unheard, retiring nobody, and the dialing download and its waiters ride or wait on
 that link, as aMule deletes the socket it was connecting when the client's own arrives; once its
-hello is out the far side keeps it, and so does rmule (ADR-0107 invariant 7). A **Dial-Back
-Grant**'s dial meets the same rule through its call-off. A dial the IP filter, a ban or the crypt rule refuses opens no
+hello is out the peer's own hello is a **Held Hello** (ADR-0107 invariant 7). A **Dial-Back
+Grant**'s dial meets the same rule. A dial the IP filter, a ban or the crypt rule refuses opens no
 socket and is never one.
 _Avoid_: pending connection, half-open link
+
+**Held Hello**:
+The hello of a link the peer opened, read while a dial of rmule's to that peer has its hello out
+unanswered, and left unanswered and unfiled until the far end shows which link it kept. aMule's
+client asks on the link it keeps only from `DS_CONNECTING`, so an answer on the link it is about
+to replace, or a close of that link, costs the transfer. The far end's answer on the dial or the
+close of its own link settles it for the dial; the dial's end, or a bound well inside aMule's
+40 s clock, settles it for the peer's link, which is answered then (ADR-0107 invariant 7).
+_Avoid_: pending hello, delayed answer
 
 **Dead Dial**:
 A link rmule dialed that the far end has dropped: rmule read a reset or a FIN on it, or nothing
 crossed it either way for longer than aMule's 40 s socket timeout, after which aMule closes a
 socket. The far end keeps one socket per client, so a client whose own link arrives while rmule's
-dial is a Dead Dial holds only that link: the serve side moves the client's standing onto it
-instead of letting it go, and the Run Log records `serve.dead_dial_let_go` (ADR-0107 invariant 7).
-A dialed link that is not one keeps the client against the peer's own link.
+dial is a Dead Dial holds only that link: the serve side moves the client's standing onto it, the
+dial closes with whatever rides it, and the Run Log records `serve.dead_dial_let_go` (ADR-0107
+invariant 7). A dialed link that is not one keeps the client until the far end closes one of the
+two.
 _Avoid_: stale link, half-open link
 
 **Link Rider**:

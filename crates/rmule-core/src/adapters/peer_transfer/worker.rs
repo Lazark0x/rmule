@@ -74,9 +74,8 @@ pub(crate) async fn drive_peer_worker(
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
     let adopted = matches!(origin, LinkOrigin::Adopted { .. });
-    // A link rmule dialed: what crosses it is noted on its far end, which the
-    // serve side reads before letting the peer's own link go for it
-    // (ADR-0107 invariant 7).
+    // A link rmule dialed: what crosses it is noted on its far end, read when
+    // the peer's own link comes (ADR-0107 invariant 7).
     let far_end = (!adopted).then(FarEnd::new);
     if let LinkOrigin::Adopted { identity, .. } = &origin
         && event_tx

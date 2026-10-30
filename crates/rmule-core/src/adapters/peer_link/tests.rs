@@ -423,3 +423,26 @@ fn a_hello_meeting_a_dial_before_its_hello_overtakes_it() {
         "no byte of the dial's hello may follow the answer"
     );
 }
+
+#[tokio::test]
+async fn the_peers_own_link_lets_a_dial_dead_at_the_far_end_go_and_spares_a_live_one() {
+    // A rider's dial the far end dropped would carry it to the dial's end,
+    // with the peer's own link up beside it (`ClientList.cpp:400-403`).
+    let within = std::time::Duration::from_millis(200);
+    let silent = std::time::Duration::from_secs(41);
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    for (far_end, dead) in [(FarEnd::silent_for(silent), true), (FarEnd::new(), false)] {
+        let links = SharedPeerLinks::default();
+        let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
+        dial.answered(Some(&far_end));
+
+        let Meeting::Clear(mut accepted) = meet(&links, &names) else {
+            panic!("an answered dial holds no hello up");
+        };
+        accepted.moving.let_dead_dials_go();
+
+        let let_go = tokio::time::timeout(within, let_go_of(Some(&far_end))).await;
+        assert_eq!(let_go.is_ok(), dead);
+    }
+}

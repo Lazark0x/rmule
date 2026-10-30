@@ -24,8 +24,8 @@
 //!   and no second link stays up.
 //! - `serve-crossed`: the same, but rmule's dial-back connects and its hello
 //!   is held, and W's own connect is held until the dial's hello is out.
-//!   Claims: `serve.crossed_link_let_go`, the slot lands on the dial, the
-//!   transfer runs on it, and no second link stays up.
+//!   Claims: W's hello is held and never answered, the slot lands on the
+//!   dial, the transfer runs on it, and no second link stays up.
 //! - `low-id-return`: W is Low ID, so rmule cannot dial it back; X stops,
 //!   the slot sits free, W comes back. Claim: `OP_ACCEPTUPLOADREQ` on its
 //!   returning link within a second of its hello.
@@ -34,7 +34,8 @@
 //!   completes, and no second link stays up.
 //! - `download-crossed`: rmule's dial connects with its hello held, S's own
 //!   connect is held until then. Claims: the download carries on over the
-//!   dial and completes, and no second link stays up.
+//!   dial and completes, S's own ask runs on the dial with its hello never
+//!   answered on its own link, and no second link stays up.
 
 use std::fs;
 use std::net::Ipv4Addr;

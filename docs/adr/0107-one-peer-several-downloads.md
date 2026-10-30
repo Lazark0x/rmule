@@ -164,7 +164,7 @@ Invariants every transition keeps:
    | before its hello: connect or crypt handshake running, or up with the hello not yet claimed under the lock | L; D is never heard | answered at once | a download's dial closes, retiring nobody; its download then its waiters ride or wait on L, each new rider asking afresh | a dial-back closes unheard and is unfiled; its pending grant moves onto L, `OP_ACCEPTUPLOADREQ` going there at once (`ClientTCPSocket.cpp:328`, `BaseClient.cpp:1707-1716`) |
    | hello out, unanswered | the far end's: see below | **held**, unanswered and unfiled; nothing of it reaches the serve side | the rider stays on D, and D keeps every name | the pending grant stays on D |
    | answered, alive | D, unless it turns out dead | answered at once and filed: W closed L already, or holds L because D is dead with its FIN on the way, and an unread answer harms neither | the rider stays on D; L holds the names until it closes, and they come back | stay on D; **rmule closes neither link**, the far end closes one, and the standing follows (last row) |
-   | dead at the far end (below) | L | answered at once and filed | D closes now, whatever rides it: rider and waiters leave as at any link's end, and a grant read on L before they have left D is held for them, then goes as any unasked grant | move onto L as from a link that ended; `serve.dead_dial_let_go` |
+   | dead at the far end (below) | L | answered at once and filed | D closes now, whatever rides it: the rider and the waiters leave as at any link's end, and each rides or waits on L at its next turn | move onto L as from a link that ended; `serve.dead_dial_let_go` |
    | any live link, when a link of the same client carrying its slot ends | the one left | | | the slot moves there and is granted there; the blocks last asked on the ended link are read again for it |
 
    A held hello settles at the first of:
@@ -215,9 +215,10 @@ Invariants every transition keeps:
    aMule's socket timeout: the far side's timer restarts at every packet it sends or receives
    (`ClientTCPSocket.cpp:1886-1895`, `:2059-2080`) and closes the socket 40 s after the last
    (`CONNECTION_TIMEOUT`, `:201-229`, `EMSocket.cpp:61`). aMule adds 15 minutes to that for a buddy
-   (`:206-218`), and `FarEnd` never needs it: the far end is read only on links rmule's dial
-   opened, and the buddy slot holds only the link the firewalled buddy opened to rmule, since aMule
-   never dials its buddy (ADR-0061); no held buddy link carries a `FarEnd`.
+   (`:206-218`), and `FarEnd` never needs it: the far end is read only on a download's dial and a
+   dial-back, and neither is ever a buddy link. The slot holds the link the firewalled peer opened
+   to rmule, and a firewalled rmule's own dial to its buddy belongs to its firewalled front and is
+   no Peer Link (ADR-0061).
 8. **One download rides a link at a time**, as aMule's client has one `m_reqfile`. Another download
    of the peer waits on the link, not on a second socket, and the oldest waiter still running takes
    the link the moment the rider's worker ends.

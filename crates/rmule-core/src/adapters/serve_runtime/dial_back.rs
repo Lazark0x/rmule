@@ -68,8 +68,8 @@ pub enum DialBackOutcome {
         conn: ServeConnection,
         /// The peer as its hello named it.
         identity: Box<PeerIdentity>,
-        /// What the link's driver sees of its far end, read before the
-        /// client's own link is let go for this one (ADR-0107 invariant 7).
+        /// What the link's driver sees of its far end, read when the
+        /// client's own link comes (ADR-0107 invariant 7).
         far_end: FarEnd,
     },
     /// The dial ended before a hello, for `cause`.

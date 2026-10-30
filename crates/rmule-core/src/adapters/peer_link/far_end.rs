@@ -59,6 +59,18 @@ impl FarEnd {
         }))
     }
 
+    /// The far end of a link nothing has crossed for `silent`.
+    #[cfg(test)]
+    pub(in crate::adapters) fn silent_for(silent: Duration) -> Self {
+        let far_end = Self::new();
+        Self(Arc::new(Reading {
+            since: far_end.0.since - silent,
+            crossed_ms: AtomicU64::new(0),
+            ended: AtomicBool::new(false),
+            let_go: Notify::new(),
+        }))
+    }
+
     /// Something crossed the link: rmule read a packet off it, or framed one
     /// onto it.
     pub fn crossed(&self) {

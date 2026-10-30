@@ -595,7 +595,6 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // about files this node no longer serves.
         self.follower = None;
         self.hello = None;
-        // No serve task waits on a dial-back any more: none is called off.
         // Dropping the receiver is the pump's stop signal (`accept_tx.closed()`);
         // joining it is what makes the listener — and its port — gone rather
         // than merely told to go.
