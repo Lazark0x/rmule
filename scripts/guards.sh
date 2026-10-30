@@ -17,7 +17,8 @@
 #              holds undocumented public items at zero
 #   glossary   workspace member directory without a CONTEXT.md
 #   adr        ADR with a Status: line or without a row in the ADR index
-#   adrcite    an ADR citation or docs/adr/ link that names no file
+#   adrcite    an ADR citation or docs/adr/ link that names no file, or a quoted
+#              section after an ADR number that ADR does not hold
 #   doctree    docs/ top-level entry outside the live-only tree (adr,
 #              architecture, protocol, reference)
 #   uidebug    a Debug format (`{:?}`, `{:#?}`, `{name:?}`) in text an operator
@@ -676,6 +677,71 @@ EOF
 if [ -n "$adrcite_last" ]; then
     report adrcite "$adrcite_last" "cites no existing ADR:$adrcite_names"
 fi
+
+# 13b. adrcite, quoted sections — a phrase quoted right after an ADR number
+# (ADR-0095, "Connecting is the operator's act") must be text that ADR holds.
+# The quote may wrap over up to three following comment lines; comment prefixes
+# (// //! /// # * -) are stripped before joining, and the comparison ignores
+# case, markdown emphasis (* _ `), curly quotes and whitespace runs. Same reach
+# as above, except that docs/adr/ is left out: an ADR's own prose quotes other
+# ADRs loosely. A phrase the ADR no longer holds is flagged on purpose: cite the
+# ADR whose text holds it, or drop the quote and keep the number.
+adrquote_hits() {
+    git grep -I --untracked -l -E 'ADR-[0-9]{4}' -- . ':(exclude)docs/adr' $adrcite_excludes 2>/dev/null \
+        | sort -u | tr '\n' '\0' \
+        | xargs -0 awk '
+            function norm(s) {
+                gsub(/“|”/, "\"", s); gsub(/‘|’/, "\047", s)
+                gsub(/[*_`]/, "", s); gsub(/[ \t\r\n]+/, " ", s)
+                return tolower(s)
+            }
+            function strip(s) { sub(/^[ \t]*(\/\/[\/!]?|#|\*|-)?[ \t]*/, "", s); return s }
+            function check(ln, joined, limit,    rest, off, n, q, pos, end, nq) {
+                gsub(/“|”/, "\"", joined)
+                off = 0; rest = joined
+                while (match(rest, /ADR-[0-9][0-9][0-9][0-9][a-z]?([,:] *| +)"/)) {
+                    pos = off + RSTART
+                    if (pos > limit) break
+                    n = substr(rest, RSTART + 4, 4)
+                    q = substr(rest, RSTART + RLENGTH)
+                    off += RSTART + RLENGTH - 1
+                    rest = substr(rest, RSTART + RLENGTH)
+                    end = index(q, "\"")
+                    if (end == 0 || !(n in text)) continue
+                    q = substr(q, 1, end - 1)
+                    nq = norm(q)
+                    if (nq != "" && index(text[n], nq) == 0) print path "\t" ln "\tADR-" n "\t" q
+                }
+            }
+            function flush(    i, j, l1) {
+                for (i = 1; i <= cnt; i++) {
+                    if (L[i] !~ /ADR-[0-9][0-9][0-9][0-9]/) continue
+                    l1 = strip(L[i])
+                    j = l1 " " strip(L[i + 1]) " " strip(L[i + 2]) " " strip(L[i + 3])
+                    check(i, j, length(l1))
+                }
+                cnt = 0; split("", L)
+            }
+            BEGIN {
+                cmd = "ls docs/adr/[0-9][0-9][0-9][0-9]-*.md 2>/dev/null"
+                while ((cmd | getline f) > 0) {
+                    body = ""
+                    while ((getline line < f) > 0) body = body " " line
+                    close(f); text[substr(f, 10, 4)] = norm(body)
+                }
+                close(cmd)
+            }
+            FNR == 1 && NR > 1 { flush() }
+            { path = FILENAME; L[++cnt] = $0 }
+            END { flush() }
+        '
+}
+while IFS="$(printf '\t')" read -r path at adr phrase; do
+    [ -n "$path" ] || continue
+    report adrcite "$path" "$at: \`$adr\` holds no \"$phrase\" — cite the ADR whose text holds it, or drop the quote"
+done <<EOF
+$(adrquote_hits)
+EOF
 
 # 14. sentence — a Sentence is made only in a words module. Its constructors
 # are public because the TUI's own words, which word the TUI's own types, live
