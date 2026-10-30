@@ -76,8 +76,9 @@ The move is the run's last step (ADR-0093), on the blocking pool, after the sche
 last decision; Download State holds no clock and takes no part.
 
 1. **Check.** The run hashes the part file, as today; a mismatch repairs (ADR-0094).
-2. **Name.** The destination is the Download Name beside the row's final path or, when a file
-   stands there, the first free `stem (n).ext` of it, numbered from the Download Name every time as
+2. **Name.** The destination is the Download Name beside the row's final path or, when anything
+   stands there, a dangling link included, the first free `stem (n).ext` of it, numbered from the
+   Download Name every time as
    aMule's move is (`ThreadTasks.cpp:455-460`). A download placed as `film (1).mkv` because
    `film.mkv` stood then lands as `film.mkv` when that name is free at completion, and as
    `film (2).mkv` when both are taken: numbers never stack (`film (1) (1).mkv`), whether the
@@ -85,7 +86,8 @@ last decision; Download State holds no clock and takes no part.
    can give it back: a placement may already have numbered both, and a move stores only its
    destination. A row stored before the name was kept reads it as the part file's name less
    `.part`, the name it was placed under (store rung 14 → 15).
-   The run stores `Completing` and the destination in one write before anything moves. A file at
+   The run stores `Completing` and the destination in one write before anything moves, and every
+   destination it stores it writes to its Served Download's final path in the same step. A file at
    the row's final path of the file's size that hashes to the file hash (one read, before the
    check) is the download's own — a past move landed it and a Pause or a stop came before its row
    was written — so the run takes step 6 there, numbering nothing past it; a file of another size

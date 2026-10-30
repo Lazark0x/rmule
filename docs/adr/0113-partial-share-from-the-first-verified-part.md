@@ -164,6 +164,13 @@ the file's one registry row, from the record, without reading the file.**
   them (a rename keeps the key, a copy has a new one). ADR-0115 deletes the part file only after the
   final file is in place, so at every instant one of the two holds the verified bytes and a copy in
   progress keeps serving from the part file. A read that finds its path gone tries the other once.
+- **When a read is aimed.** A block asked waits in its flow knowing only its range. It takes its
+  path and its identity from the entry when it takes its disk turn, so a read queued across a swap
+  or a Pause is read and checked as the entry stands then: at the bytes' new place, against the
+  length and time a Pause recorded. A read that comes to nothing against an entry that has moved
+  since it was aimed found the move and not a change: it is aimed again and nothing is withdrawn.
+  When the entry has ended, the read waits in its flow for the share trigger already owed, which
+  gives it the registry row or tells its holder the file left.
 - **A failed read** of both paths stops serving the Partial Share at once: its waiters and slot
   holders are told `OP_FILEREQANSNOFIL` and released, and its Verified Range is emptied as for a
   changed file, so no later trigger offers it again until a holder reads the file. It has no registry
