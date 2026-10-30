@@ -210,7 +210,9 @@ Invariants every transition keeps:
      the answer to arrive, and it is the only thing that settles two rmules crossing, since each
      holds the other's hello: it is **20 s when rmule's User Hash is the lower of the two, 10 s
      otherwise**, so the higher hash gives its dial up first, the lower reads that close on its held
-     hello or within the close bound of its own dial's answer, and neither waits on the other.
+     hello or within the close bound of its own dial's answer, and neither waits on the other. A
+     hello has one bound: W's clock runs from its hello, so a second dial met after the first ended
+     holds it only until the first would have, and two holds never add up to that clock.
 
    `serve.crossed_hello_held` records the hold. A download's dial given up at the bound ends as a
    dial closed before its hello, and a dial-back so given up leaves the grant to L.

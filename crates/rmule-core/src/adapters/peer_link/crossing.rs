@@ -33,6 +33,7 @@ use std::time::Duration;
 use rmule_peer::{HelloGate, PeerIdentity};
 use rmule_primitives::{PeerEndpoint, UserHash};
 use tokio::sync::{mpsc, oneshot, watch};
+use tokio::time::Instant;
 
 use super::{Book, Filing, FoundLink, LinkJoin, LinkName, Moving, SharedPeerLinks};
 
@@ -173,13 +174,15 @@ pub(in crate::adapters) struct CrossedDial {
     links: SharedPeerLinks,
     filing: u64,
     answered: watch::Receiver<bool>,
-    hold: Duration,
+    ends: Instant,
 }
 
 impl CrossedDial {
-    /// How long the hello may be held.
-    pub(in crate::adapters) const fn hold(&self) -> Duration {
-        self.hold
+    /// When the hello must stop being held, for this dial and any it meets
+    /// after: the peer's clock on the link runs from its hello, however many
+    /// dials stand in the way.
+    pub(in crate::adapters) const fn ends(&self) -> Instant {
+        self.ends
     }
 
     /// How long past the dial's answer it may stay held.
@@ -227,17 +230,32 @@ impl SharedPeerLinks {
         names: Vec<LinkName>,
         own: Option<UserHash>,
     ) -> Meeting {
+        let peer = names.iter().find_map(|name| match name {
+            LinkName::User(hash) => Some(*hash),
+            _ => None,
+        });
+        self.meet_until(remote, names, Instant::now() + held_for(own, peer))
+    }
+
+    /// The hello held on `earlier`, which let it go, meets rmule's dials
+    /// again: a dial it meets now holds it only until `earlier` would have.
+    pub(in crate::adapters) fn meet_again(
+        &self,
+        remote: PeerEndpoint,
+        names: Vec<LinkName>,
+        earlier: &CrossedDial,
+    ) -> Meeting {
+        self.meet_until(remote, names, earlier.ends)
+    }
+
+    fn meet_until(&self, remote: PeerEndpoint, names: Vec<LinkName>, ends: Instant) -> Meeting {
         let mut book = self.book.lock().expect("peer links lock");
         if let Some((filing, answered)) = book.crossing(remote, &names) {
-            let peer = names.iter().find_map(|name| match name {
-                LinkName::User(hash) => Some(*hash),
-                _ => None,
-            });
             return Meeting::Crossed(CrossedDial {
                 links: self.clone(),
                 filing,
                 answered,
-                hold: held_for(own, peer),
+                ends,
             });
         }
         let (filing, joins, moving) = self.file_in(&mut book, remote, names);

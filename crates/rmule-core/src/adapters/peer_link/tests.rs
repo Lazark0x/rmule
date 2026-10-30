@@ -504,6 +504,30 @@ async fn a_dial_given_up_at_the_bound_hears_it_and_the_hello_is_filed() {
     assert!(matches!(meet(&links, &names), Meeting::Clear(_)));
 }
 
+/// The peer's 40 s clock on its link runs from its hello, so a second dial met
+/// after the first let go holds it only for what the first bound left. Two
+/// holds in full would reach that clock (`ClientTCPSocket.cpp:201-229`).
+#[tokio::test(start_paused = true)]
+async fn a_hello_held_on_a_second_dial_is_held_no_longer_than_on_the_first() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    let (first_dial, _joins) = dial_past_its_hello(&links, at, &names);
+    let Meeting::Crossed(first) = meet(&links, &names) else {
+        panic!("the dial's hello is out: this hello waits");
+    };
+    drop(first_dial);
+    tokio::time::advance(std::time::Duration::from_secs(9)).await;
+
+    let (_second_dial, _joins) = dial_past_its_hello(&links, at, &names);
+    let came_back = v4([203, 0, 113, 3], 50_288);
+    let Meeting::Crossed(second) = links.meet_again(came_back, names.to_vec(), &first) else {
+        panic!("the second dial's hello is out: this hello waits");
+    };
+
+    assert_eq!(second.ends(), first.ends());
+}
+
 #[test]
 fn of_two_rmules_crossing_the_higher_hash_gives_its_dial_up_first() {
     // Each holds the other's hello, and only the bound settles that.
@@ -517,7 +541,7 @@ fn of_two_rmules_crossing_the_higher_hash_gives_its_dial_up_first() {
         else {
             panic!("the dial's hello is out: this hello waits");
         };
-        crossed.hold()
+        crossed.ends() - tokio::time::Instant::now()
     };
     assert!(hold(0x90, 0x10) < hold(0x10, 0x90));
     assert!(

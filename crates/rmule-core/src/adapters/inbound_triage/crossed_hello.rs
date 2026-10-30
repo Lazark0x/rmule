@@ -58,12 +58,14 @@ pub(super) async fn settle_hello(
             let _ = event_tx.send(ServeInput::CrossedHelloHeld).await;
         }
         match hold(conn, &mut crossed).await {
-            Held::DialEnded => {}
+            Held::DialEnded => {
+                met = Some(deps.peer_links.meet_again(remote, names.clone(), &crossed));
+            }
             Held::Refused => {
                 let _ = event_tx.send(ServeInput::CrossedDialRefused).await;
                 // Filed before `crossed` lets the dial go, so it yields to
                 // this link rather than go on.
-                met = Some(deps.peer_links.meet(remote, names.clone(), None));
+                met = Some(deps.peer_links.meet_again(remote, names.clone(), &crossed));
             }
             Held::LinkClosed(closed_by) => {
                 let _ = event_tx.send(ServeInput::CrossedDialKept).await;
@@ -102,7 +104,7 @@ enum Held {
 /// nothing more before its answer, so nothing read here is anyone's but the
 /// close.
 async fn hold(conn: &mut PeerConnection, crossed: &mut CrossedDial) -> Held {
-    let bound = tokio::time::sleep(crossed.hold());
+    let bound = tokio::time::sleep_until(crossed.ends());
     tokio::pin!(bound);
     let mut answered = false;
     loop {
