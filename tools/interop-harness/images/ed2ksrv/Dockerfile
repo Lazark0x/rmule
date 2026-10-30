@@ -1,6 +1,7 @@
 # Third-party eD2k index server `andrey23127/ed2k-server` (Rust, MIT) for the
-# interop bench. Audited at pin `eacf7f1`;
-# this image is the audit's "bench-fit" recipe.
+# interop bench, rmule's first server counterparty. The pin of record is
+# `pin.env`, audited at v0.9.85 (`878fc830`); this image is that audit's
+# "bench-fit" recipe.
 #
 # Build context is the SERVER SOURCE TREE, not this directory (the source is not
 # vendored into rmule). Build through `build.sh`, which verifies the clone sits
@@ -12,9 +13,10 @@
 # `org.rmule.ed2ksrv.commit` label and the harness refuses to start it unless
 # the run sets RMULE_BENCH_ED2KSRV_OFF_PIN=1, which names the pin unverified.
 #
-# The image bakes the server's own upstream config so it is runnable standalone;
-# the bench overrides it by bind-mounting `config.toml` from this directory over
-# `/etc/ed2k-server/config.toml` (see README.md).
+# The image bakes the server's own upstream template, which the server refuses to
+# start on while `server.name` and `server.this_ip` read CHANGE_ME: the image only
+# runs with a config mounted. The bench bind-mounts `config.toml` from this
+# directory over `/etc/ed2k-server/config.toml` (see README.md).
 #
 # Native-arch build: unlike the amule/eserver images this is not amd64-only,
 # so no `--platform` and no qemu emulation.

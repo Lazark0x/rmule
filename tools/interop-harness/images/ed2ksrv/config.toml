@@ -1,12 +1,13 @@
 # Bench config for the third-party `ed2k-server` image — the audit's
-# "bench-fit" table, key for key.
+# "bench-fit" table, key for key. Every key upstream added since, down to
+# v0.9.85, keeps its default; the ones a bench run leans on are named below.
 #
 # Bind-mounted over the image's baked upstream config:
 #   -v .../images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro
 
 [server]
 name = "rmule interop bench"
-desc = "ed2k-server @ eacf7f1 on the fake-public /24"
+desc = "ed2k-server on the fake-public /24"
 # `validate()` refuses to start with `public = true` and an empty
 # `hash_blocklists`; false + empty list starts clean.
 public = false
@@ -27,11 +28,17 @@ max_frame_size = 1_000_000
 # deadline. 4000 > the 2000 default: cheap insurance on a bridged docker net.
 login_timeout_ms = 4000
 support_crypt = true
+# Left to their defaults, on: `lugdunum_natt` and `holepunch_extension` set
+# 0x1000 and 0x100000 in OP_IDCHANGE. rmule claims neither at login, so every
+# rmule pair takes the plain 0x60 punch. `ipv6_enabled` and
+# `ipv6_publish_sources` stay off here: `config-ipv6.toml` is the IPv6 bench.
 
 [limits]
 max_clients = 1000
 soft_limit_files = 1000
 hard_limit_files = 4000
+# Enforced since v0.9.77, at accept. Each bench client has its own address, so
+# only a run that stacks more than ten clients behind one NAT Gateway meets it.
 max_clients_per_ip = 10
 max_string_size = 250
 ping_delay_seconds = 300
@@ -61,3 +68,10 @@ country_db_path = ""
 [admin]
 enabled = true
 port = 8080
+
+[bots]
+# The defaults, and deliberately no bench exemption: the rules key on one
+# address (a /64 for IPv6), never on a subnet, so a bench with many clients in
+# one /24 trips nothing, and a run that does get a source banned has found what
+# a live server would do to rmule. The sanction lives in the container and dies
+# with it. `storage.ipfilter_path` is empty, so nothing outlasts the run.
