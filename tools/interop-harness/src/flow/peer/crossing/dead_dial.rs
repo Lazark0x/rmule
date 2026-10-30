@@ -20,8 +20,10 @@ use crate::flow::gate::wait_for_container_log;
 /// blocks when its far end goes, a 32 MiB file at this rate taking 17 min.
 pub(super) const WAITER_KIB: u32 = 32;
 /// Past rmule's reading of a dial as silent: aMule's 40 s socket timeout
-/// (`ClientTCPSocket.cpp:201-229`), its last write some seconds behind the hold.
-const SILENCE_SECS: u64 = 46;
+/// (`ClientTCPSocket.cpp:201-229`), rmule's last write a second behind the
+/// hold. The same 40 s then ends a drained slot at rmule's next sweep (run
+/// `1793401559`: 50.4 s past that write), so the waiter comes back at once.
+const SILENCE_SECS: u64 = 41;
 /// Grace for the blocks to start on the dial before its far end goes.
 const FLOWING_SECS: u64 = 3;
 /// How long past the waiter's `Add` the flow waits for rmule's let-go.
@@ -72,9 +74,12 @@ pub(super) fn drop_then_come_back(
 
     let rmule = rmule.to_string();
     let port = AMULE_PEER_TCP_PORT.to_string();
-    let incoming = ["-p", "tcp", "-s", &rmule, "--dport", &port, "-j", "DROP"]
-        .map(str::to_owned)
-        .to_vec();
+    // Not on the loopback: the reset below comes back to the waiter there.
+    let incoming = [
+        "!", "-i", "lo", "-p", "tcp", "-s", &rmule, "--dport", &port, "-j", "DROP",
+    ]
+    .map(str::to_owned)
+    .to_vec();
     let outgoing = [
         "-p",
         "tcp",
