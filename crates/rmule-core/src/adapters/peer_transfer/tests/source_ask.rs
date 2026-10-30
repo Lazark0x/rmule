@@ -123,9 +123,10 @@ async fn a_legacy_mules_block_reaches_the_source_ask_clock() {
     );
 }
 
-/// A worker let go before it reported anything still sends its connect-time
-/// file request, and the router forwards the session's report of it before
-/// closing the socket (ADR-0108): the ask that went out is stamped.
+/// A worker let go at its hello, before it reported anything else, still
+/// sends its connect-time file request, and the router forwards the session's
+/// report of it before closing the socket (ADR-0108): the ask that went out is
+/// stamped. One let go before that dials nothing and asks nothing.
 #[tokio::test]
 async fn a_worker_let_go_at_once_still_reports_its_source_ask() {
     use rmule_testkit::{FakePeer, PeerScript};
@@ -143,11 +144,14 @@ async fn a_worker_let_go_at_once_still_reports_its_source_ask() {
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
         .unwrap();
+    let first = timeout(Duration::from_secs(5), worker.next_event())
+        .await
+        .expect("the peer's hello arrives within 5s");
     worker
         .send(PeerWorkerCommand::Shutdown { cancel: false })
         .await
         .unwrap();
-    let mut events = Vec::new();
+    let mut events: Vec<_> = first.into_iter().collect();
     while let Some(event) = timeout(Duration::from_secs(5), worker.next_event())
         .await
         .expect("the worker winds down within 5s")

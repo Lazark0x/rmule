@@ -345,6 +345,7 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
         .start_peer_worker(peer, dialed_serve_ctx(), file.clone())
         .await
         .unwrap();
+    assert!(worker.next_event().await.is_some(), "the peer's hello");
     worker
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![crate::BlockPlan {
