@@ -27,6 +27,15 @@ const MAX_WAITING_RANGES: usize = 32;
 /// bound of the peer that stopped reading with its bytes all in the kernel.
 const SLOT_SILENCE_BOUND: Duration = Duration::from_secs(40);
 
+/// The pace a block's bytes are lent at once they have left for the kernel,
+/// where rmule cannot see them read: about half the 16 kbit/s the partial-share
+/// bench holds a slot over.
+const KERNEL_PACE_BYTES_PER_SEC: u64 = 1024;
+
+/// The most a holder is lent: aMule's three asked blocks (540 KiB) at 16 kbit/s,
+/// and what a dead holder costs its slot.
+const KERNEL_LOAN_BOUND: Duration = Duration::from_secs(300);
+
 /// One slot holder's flow.
 #[derive(Debug)]
 pub(super) struct ServeFlow {
@@ -37,13 +46,21 @@ pub(super) struct ServeFlow {
     read_out: bool,
     /// Blocks read and not yet left for the socket.
     ahead: usize,
-    moved_at: Instant,
+    /// The link moved until here: the last word from the holder, or the end of
+    /// the time the bytes that left for the kernel are lent, whichever is later.
+    moved_until: Instant,
 }
 
 impl ServeFlow {
     /// Nothing of the flow is on rmule's side, so a silence is the peer's.
     fn is_drained(&self) -> bool {
         self.waiting.is_empty() && !self.read_out && self.ahead == 0
+    }
+
+    /// `bytes` left for the kernel at `now`, on top of those it may still hold.
+    fn lend(&mut self, now: Instant, bytes: u64) {
+        let lent = Duration::from_millis(bytes.saturating_mul(1000) / KERNEL_PACE_BYTES_PER_SEC);
+        self.moved_until = (self.moved_until.max(now) + lent).min(now + KERNEL_LOAN_BOUND);
     }
 }
 
@@ -58,7 +75,7 @@ impl ServeState {
                 waiting: VecDeque::new(),
                 read_out: false,
                 ahead: 0,
-                moved_at: now,
+                moved_until: now,
             }
         })
     }
@@ -168,12 +185,14 @@ impl ServeState {
     /// all the same, so it is counted all the same.
     pub(super) fn on_block_left(
         &mut self,
+        now: Instant,
         peer: PeerEndpoint,
         file_hash: FileHash,
         bytes: u64,
     ) -> Vec<ServeDecision> {
         if let Some(flow) = self.flows.get_mut(&peer) {
             flow.ahead = flow.ahead.saturating_sub(1);
+            flow.lend(now, bytes);
         }
         let mut decisions = Vec::new();
         if let Some(identity) = self.identities.get(&peer) {
@@ -191,10 +210,11 @@ impl ServeState {
         decisions
     }
 
-    /// `peer` said something, or a block of its left: its link moved.
+    /// `peer` said something, or a block of its left: its link moved, and what
+    /// the block lends runs on from here.
     pub(super) fn link_moved(&mut self, now: Instant, peer: PeerEndpoint) {
         if let Some(flow) = self.flows.get_mut(&peer) {
-            flow.moved_at = now;
+            flow.moved_until = flow.moved_until.max(now);
         }
     }
 
@@ -218,7 +238,8 @@ impl ServeState {
     }
 
     /// A slot holder silent past [`SLOT_SILENCE_BOUND`] with nothing left to
-    /// send loses its slot and its link (ADR-0031). The slot goes here and not
+    /// send, the time its bytes in the kernel are lent spent, loses its slot
+    /// and its link (ADR-0031). The slot goes here and not
     /// with the link, because a download riding the link holds it up. A slot
     /// nothing has moved on yet starts its clock here.
     pub(in crate::serve) fn on_slot_sweep(
@@ -230,7 +251,7 @@ impl ServeState {
         let mut decisions = Vec::new();
         for peer in holders {
             let flow = self.flow_of(peer, now);
-            let silent = now.saturating_duration_since(flow.moved_at) > SLOT_SILENCE_BOUND;
+            let silent = now.saturating_duration_since(flow.moved_until) > SLOT_SILENCE_BOUND;
             if silent && flow.is_drained() {
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);

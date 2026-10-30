@@ -197,6 +197,75 @@ fn a_slot_silent_past_the_bound_with_nothing_to_send_loses_its_slot_and_link() {
     assert!(!state.queue.is_granted(p));
 }
 
+/// `bytes` of `file` leave `p`'s flow for the kernel at `at`, its flow drained.
+fn all_left(state: &mut ServeState, p: PeerEndpoint, file: FileHash, bytes: u64, at: Instant) {
+    let left = ServeInput::Server(ServerEvent::BlockLeft {
+        file_hash: file,
+        start: 0,
+        end: bytes,
+    });
+    let _ = state.on_conn_event(at, p, left, &no_modifiers());
+}
+
+#[test]
+fn a_slow_holder_reading_what_the_kernel_holds_keeps_its_slot() {
+    let t = Instant::now();
+    let (mut state, p, file) = holder(t);
+    let _ = state.on_slot_sweep(t, &no_modifiers());
+
+    // The tail of a 16 kbit/s transfer: 120 KB in the kernel takes the holder
+    // 60 s, and it says nothing until they are read.
+    all_left(&mut state, p, file, 120_000, t);
+    let next_ask = t + Duration::from_secs(60);
+    assert_eq!(state.on_slot_sweep(next_ask, &no_modifiers()), Vec::new());
+    assert!(state.queue.is_granted(p));
+}
+
+#[test]
+fn a_holder_that_stopped_reading_goes_once_the_kernels_bytes_are_spent() {
+    let t = Instant::now();
+    let (mut state, p, file) = holder(t);
+    let _ = state.on_slot_sweep(t, &no_modifiers());
+
+    all_left(&mut state, p, file, 10_240, t);
+    let lent = Duration::from_secs(10);
+    let bound = Duration::from_secs(40);
+    assert_eq!(
+        state.on_slot_sweep(t + lent + bound, &no_modifiers()),
+        Vec::new()
+    );
+    let past = t + lent + bound + Duration::from_secs(1);
+    assert!(
+        state
+            .on_slot_sweep(past, &no_modifiers())
+            .contains(&ServeDecision::Disconnect { peer: p })
+    );
+}
+
+#[test]
+fn what_left_lends_a_dead_fast_holder_only_the_kernels_bound() {
+    let t = Instant::now();
+    let (mut state, p, file) = holder(t);
+    let _ = state.on_slot_sweep(t, &no_modifiers());
+
+    // A gigabyte went through it; no kernel still holds that.
+    for block in 0..100 {
+        all_left(
+            &mut state,
+            p,
+            file,
+            10_000_000,
+            t + Duration::from_millis(block),
+        );
+    }
+    let past = t + Duration::from_secs(5 * 60 + 41);
+    assert!(
+        state
+            .on_slot_sweep(past, &no_modifiers())
+            .contains(&ServeDecision::Disconnect { peer: p })
+    );
+}
+
 #[test]
 fn a_read_or_a_block_on_rmules_side_is_not_the_peers_silence() {
     let t = Instant::now();

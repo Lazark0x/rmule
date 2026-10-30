@@ -466,7 +466,7 @@ impl ServeState {
                 file_hash,
                 start,
                 end,
-            } => self.on_block_left(peer, file_hash, end - start),
+            } => self.on_block_left(now, peer, file_hash, end - start),
         }
     }
 

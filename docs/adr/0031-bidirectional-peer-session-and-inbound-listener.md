@@ -278,11 +278,11 @@ scheduling is (ADR-0026).
     those bytes for as long as its link takes. aMule's clock stops there too
     (`ClientTCPSocket.cpp:1886-1895`, `:2059-2080`: a read, a write that moved a byte, a
     writable socket), and only its throttler keeps bytes on its own side. So each block
-    leaving lends the holder the time its bytes take at 1 KiB/s, half the 16 kbit/s the
-    partial-share bench holds a slot over, and the 40 s runs from when the lent time is
-    spent. The loan stands at 5 minutes at most, which covers aMule's three asked blocks
-    at 16 kbit/s; it is what a dead holder costs, and nothing the kernel knows shortens
-    it, because the serve loop sees no socket.
+    leaving lends the holder the time its bytes take at 1 KiB/s, about half the 16 kbit/s
+    the partial-share bench holds a slot over, and the 40 s runs from when the lent time
+    is spent. The loan stands at 5 minutes at most, which covers aMule's three asked
+    blocks at 16 kbit/s; it is what a dead holder costs, and nothing the kernel knows
+    shortens it, because the serve loop sees no socket.
 
 **The listener is in `rmule-net`; core holds one connection registry.**
 
