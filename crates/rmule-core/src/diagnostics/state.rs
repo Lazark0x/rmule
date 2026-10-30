@@ -10,7 +10,7 @@
 //! [`DiagnosticsSnapshot`] and are done with the
 //! lock.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -226,6 +226,7 @@ impl DiagnosticsState {
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
+                handed_over: BTreeSet::new(),
                 allocated_bytes: None,
                 hole_verdict: None,
                 completion: None,
@@ -350,6 +351,20 @@ impl DiagnosticsState {
             dd.retired_peers = retired;
             dd.known_sources = known_sources;
             dd.source_activity = source_activity;
+        }
+    }
+
+    /// Republish the sources `download_id` handed over to another download and
+    /// still holds (ADR-0090): a level, read at the same settle as the part
+    /// map.
+    pub fn set_handed_over(
+        &self,
+        download_id: DownloadId,
+        handed_over: BTreeSet<PeerEndpoint>,
+    ) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        if let Some(dd) = inner.downloads.get_mut(&download_id) {
+            dd.handed_over = handed_over;
         }
     }
 

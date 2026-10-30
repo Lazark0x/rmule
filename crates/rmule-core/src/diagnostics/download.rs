@@ -1,6 +1,6 @@
 //! Per-download and per-upload diagnostics rows: worker slots and phases, the positional part map with its derived tallies, and the upload rows the serve task keeps.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use super::{
@@ -312,6 +312,10 @@ pub struct DownloadDiagnostics {
     /// peer and the run's end, is cleared when a run starts, and at most
     /// [`DIAL_ENDS_KEPT`] are kept, the oldest leaving first.
     pub dial_ends: BTreeMap<PeerEndpoint, SourceDialEnd>,
+    /// The sources handed over to another download of their peer, by peer: a
+    /// **Source Handover** the run reported and the standing has not come back
+    /// from (ADR-0090). A level, republished at every settle; empty at rest.
+    pub handed_over: BTreeSet<PeerEndpoint>,
     /// **Allocated Bytes**: what the filesystem reserved for the `.part`,
     /// read on the run's held handle when it holds the file and after each
     /// part written (ADR-0111). A storage reading, not a counter: it falls

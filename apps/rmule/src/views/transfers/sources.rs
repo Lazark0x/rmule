@@ -324,6 +324,49 @@ mod tests {
         });
     }
 
+    /// A source handed over to another download has no slot and keeps a row,
+    /// sorted by its rank behind every slot and ahead of an ended dial
+    /// (ADR-0090).
+    #[test]
+    fn a_handed_over_source_has_a_row_saying_so() {
+        let mut view = TransfersView::new();
+        let mut state = three_downloads();
+        let handed = rmule_primitives::PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
+            std::net::Ipv4Addr::new(198, 51, 100, 40),
+            4662,
+        ));
+        let row = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the first row");
+        row.handed_over.insert(handed);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        let shown: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            shown
+                .lines()
+                .any(|line| line.contains(&crate::words::units::address(handed))
+                    && line.contains(crate::words::download::HANDED_OVER)),
+            "{shown}"
+        );
+    }
+
     /// A source another download of its peer holds the link to waits on that
     /// link, and its row says so (ADR-0107).
     #[test]

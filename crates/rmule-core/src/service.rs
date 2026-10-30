@@ -387,6 +387,10 @@ pub enum PeerRetirementReason {
     /// already reaches, and this one, the newer, gave way (ADR-0090's merge
     /// rule). The peer is alive, so its endpoint is not spent.
     SameSource,
+    /// The peer's hello named our own User Hash: the source was this node, a
+    /// sighting pooled before we knew its address was ours (ADR-0090
+    /// invariant 6). Spent under every name its record held.
+    OurOwnNode,
     /// The peer's Advertised Parts hold no part the file still lacks (aMule
     /// `DS_NONEEDEDPARTS`, ADR-0112): it waits as a queued source, asked again
     /// over TCP at twice the reask period. Alive and honest, so neither spent

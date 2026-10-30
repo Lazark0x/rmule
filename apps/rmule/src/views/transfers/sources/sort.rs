@@ -201,7 +201,7 @@ mod tests {
             .into_iter()
             .filter_map(|key| match key {
                 SourceKey::Slot(_, slot) => Some(slot.as_usize()),
-                SourceKey::Ended(_) => None,
+                SourceKey::HandedOver(_) | SourceKey::Ended(_) => None,
             })
             .collect()
     }

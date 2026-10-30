@@ -41,6 +41,19 @@ impl DownloadState {
         out
     }
     /// Drive one worker event at `now` to its scheduling decisions.
+    /// The hello of the worker at `peer` named our own User Hash, which the
+    /// runner read (ADR-0090 invariant 6): its dial reached this node, and the
+    /// source leaves the book, spent.
+    pub(crate) fn on_own_hello(&mut self, now: Instant, peer: PeerEndpoint) -> Vec<Decision> {
+        let mut out = vec![Decision::Emit(DownloadEvent::PeerRetired {
+            download_id: self.download_id,
+            peer,
+            reason: PeerRetirementReason::OurOwnNode,
+        })];
+        self.release(now, peer, PeerRetirementReason::OurOwnNode, &mut out);
+        out
+    }
+
     pub(crate) fn on_worker_event(
         &mut self,
         now: Instant,

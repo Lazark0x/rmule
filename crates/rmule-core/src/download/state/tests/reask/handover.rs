@@ -206,3 +206,123 @@ fn the_giver_takes_the_source_back_when_the_taker_ends() {
     assert_eq!(asked_by_tcp(&due), [peer(1)]);
     assert_eq!(giver.sources.counts().known, 1);
 }
+
+/// A Low-ID source sighted by both downloads under one key. The taker's fill
+/// opens no road inside the peer's clock: the record has no address to stand
+/// at, so it holds the road back, and the ask falls due a period after the
+/// peer's last ask (`PartFile.cpp:1472-1483`).
+#[test]
+fn a_taker_a_callback_road_reaches_holds_the_road_on_the_peers_clock() {
+    let standings = QueueStandings::shared();
+    let sighting = SourceSighting::new(
+        rmule_primitives::PeerSource::new(low(7), 4662),
+        Some(SOURCE),
+        None,
+        Informant::Own,
+    );
+    let mut giver = seated(&standings, 1, &[]);
+    take(&mut giver, Channel::Server, vec![sighting]);
+    let started = giver.start(t0());
+    assert!(asks_for_callback(&started), "{started:?}");
+    let key = connected_key(low(7));
+    let at = peer(1);
+    let landing = giver.on_callback_connected(t0(), key, at);
+    assert!(landing.worker_slot.is_some());
+    holds_nothing(&mut giver, at, t0());
+
+    let mut taker = seated(&standings, 2, &[]);
+    take(&mut taker, Channel::Server, vec![sighting]);
+    taker.hold_standings();
+    let started = taker.start(t0() + Duration::from_secs(60));
+    assert!(!asks_for_callback(&started), "{started:?}");
+    assert_eq!(taker.next_wake(), Some(t0() + FILE_REASK_TIME));
+    assert_eq!(taker.sources.counts().known, 1, "it took the source");
+
+    let before = taker.on_tick(t0() + FILE_REASK_TIME - Duration::from_secs(1));
+    assert!(!asks_for_callback(&before), "{before:?}");
+    let due = taker.on_tick(t0() + FILE_REASK_TIME);
+    assert!(asks_for_callback(&due), "its full ask opens the road: {due:?}");
+}
+
+fn asks_for_callback(decisions: &[Decision]) -> bool {
+    decisions
+        .iter()
+        .any(|decision| matches!(decision, Decision::RequestCallback { on_a_link: false, .. }))
+}
+
+/// The giver's place ended inside the peer's clock: a fill may ride a link
+/// that stands, as aMule's next file asks over the socket a transfer ended on
+/// (`UploadQueue.cpp:486-493`), and may not dial. The worker finds no link and
+/// is handed back, and the record asks a period after the peer's last ask.
+#[test]
+fn a_lane_record_after_the_givers_place_ended_rides_a_link_or_waits_its_clock() {
+    let standings = QueueStandings::shared();
+    let mut giver = seated(&standings, 1, &[peer(1)]);
+    let _ = giver.start(t0());
+    queue_and_hang_up_at(&mut giver, peer(1), false, 3, t0());
+    giver.hold_standings();
+    let mut taker = seated(&standings, 2, &[peer(1)]);
+    drop(giver);
+
+    let started = taker.start(t0() + Duration::from_secs(60));
+    assert!(
+        started.iter().any(|decision| matches!(
+            decision,
+            Decision::Spawn { peer: p, opening: WorkerOpening::ProbeOnLink, .. } if *p == peer(1)
+        )),
+        "{started:?}"
+    );
+    let handed_back = taker.on_worker_event(
+        t0() + Duration::from_secs(60),
+        peer(1),
+        PeerWorkerEvent::HandedBack,
+    );
+    assert!(spawned(&handed_back).is_empty(), "{handed_back:?}");
+    taker.hold_standings();
+
+    assert_eq!(taker.next_wake(), Some(t0() + FILE_REASK_TIME));
+    let due = taker.on_tick(t0() + FILE_REASK_TIME);
+    assert_eq!(asked_by_tcp(&due), [peer(1)]);
+    assert!(
+        due.iter().any(|decision| matches!(
+            decision,
+            Decision::Spawn { peer: p, opening: WorkerOpening::Probe, .. } if *p == peer(1)
+        )),
+        "its full ask may dial: {due:?}"
+    );
+}
+
+/// A stamp a period old holds nothing back: the record dials at once.
+#[test]
+fn a_lane_record_past_the_peers_clock_dials_at_once() {
+    let standings = QueueStandings::shared();
+    let mut giver = seated(&standings, 1, &[peer(1)]);
+    let _ = giver.start(t0());
+    queue_and_hang_up_at(&mut giver, peer(1), false, 3, t0());
+    giver.hold_standings();
+    let mut taker = seated(&standings, 2, &[peer(1)]);
+    drop(giver);
+
+    let started = taker.start(t0() + FILE_REASK_TIME);
+    assert!(
+        started.iter().any(|decision| matches!(
+            decision,
+            Decision::Spawn { peer: p, opening: WorkerOpening::Probe, .. } if *p == peer(1)
+        )),
+        "{started:?}"
+    );
+}
+
+/// The run says which sources it handed over, for the Sources pane, and stops
+/// when the standing comes back.
+#[test]
+fn a_handed_over_source_is_listed_until_the_standing_comes_back() {
+    let standings = QueueStandings::shared();
+    let (mut giver, taker) = giver_and_taker(&standings);
+    let _ = giver.on_tick(t0() + NO_NEEDED_PARTS_PURGE_SPACING);
+    assert_eq!(giver.handed_over().into_iter().collect::<Vec<_>>(), [peer(1)]);
+
+    drop(taker);
+    let _ = giver.on_tick(t0() + NO_NEEDED_PARTS_PURGE_SPACING * 2);
+    assert!(giver.handed_over().is_empty());
+}

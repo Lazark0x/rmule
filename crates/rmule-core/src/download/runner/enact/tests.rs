@@ -217,6 +217,7 @@ mod buddy_hash_spelling {
             server: None,
             low_id: ClientId::from_u32(4242),
             want_sources: true,
+            on_a_link: false,
         });
         enact_drain(&mut queue, &mut ctx)
             .await

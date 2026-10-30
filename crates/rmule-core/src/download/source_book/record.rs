@@ -94,6 +94,10 @@ pub(super) enum Stage {
     /// Holding its queue standing at this endpoint, no worker: the
     /// **Remote-Queued Pool**.
     RemoteQueued(PeerEndpoint),
+    /// A Low-ID record holding its road back on the peer's **Queue Standing**:
+    /// no address to stand at, no worker and no road open (ADR-0090). The
+    /// **Held Road**.
+    RoadHeld,
 }
 
 impl Stage {
@@ -104,7 +108,7 @@ impl Stage {
             Self::Worker(..) => 4,
             Self::Dialing(_) => 3,
             Self::CallbackPending(_) => 2,
-            Self::RemoteQueued(_) => 1,
+            Self::RemoteQueued(_) | Self::RoadHeld => 1,
             Self::Pooled(_) => 0,
         }
     }
@@ -113,7 +117,10 @@ impl Stage {
     pub(super) const fn live(&self) -> Option<Live> {
         match self {
             Self::Dialing(live) | Self::Worker(live, _) => Some(*live),
-            Self::Pooled(_) | Self::CallbackPending(_) | Self::RemoteQueued(_) => None,
+            Self::Pooled(_)
+            | Self::CallbackPending(_)
+            | Self::RemoteQueued(_)
+            | Self::RoadHeld => None,
         }
     }
 
@@ -187,7 +194,7 @@ impl Record {
     /// entry, which is not among the file's sources (`PartFile.h:144`,
     /// ADR-0090).
     pub(super) fn waits_elsewhere(&self) -> bool {
-        matches!(self.stage, Stage::RemoteQueued(_))
+        matches!(self.stage, Stage::RemoteQueued(_) | Stage::RoadHeld)
             && self.standing.is_some_and(|standing| !standing.role.asks())
     }
 

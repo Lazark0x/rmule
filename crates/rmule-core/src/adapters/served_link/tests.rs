@@ -270,6 +270,26 @@ async fn a_download_of_a_peer_linked_to_us_rides_its_link_and_dials_nothing() {
 
 /// A link the peer pulls on stays when its download lets go, and the next
 /// download of the peer rides it.
+/// A worker that may not dial rides the link that stands, exactly as any
+/// download does (ADR-0090).
+#[tokio::test]
+async fn a_worker_held_to_a_link_rides_the_link_that_stands() {
+    let mut linked = Linked::up().await;
+    let file = file();
+    let at = linked.at();
+    let brief = WorkerBrief {
+        opening: crate::adapters::WorkerOpening::ProbeOnLink,
+        ..WorkerBrief::fresh(&file)
+    };
+    let _worker = linked
+        .dialer
+        .start_download_worker(at, dialed_serve_ctx(), file.clone(), brief)
+        .await
+        .expect("a worker starts");
+
+    linked.rode_the_link(file.file_hash).await;
+}
+
 #[tokio::test]
 async fn a_link_the_peer_pulls_on_stays_when_its_download_lets_go_and_takes_the_next() {
     let mut linked = Linked::up().await;

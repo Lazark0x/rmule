@@ -80,6 +80,7 @@ pub(super) fn refresh_parts(
         state.known_sources(),
         state.source_activity(),
     );
+    diagnostics.set_handed_over(download_id, state.handed_over());
 }
 
 /// Everything one download run starts from, bundled so the fleet entry point
@@ -625,6 +626,10 @@ where
             )
             .decisions
             .into()
+        } else if matches!(&event, PeerWorkerEvent::Identity(identity)
+            if Some(identity.user_hash()) == ctx.runner.own_position().user_hash)
+        {
+            ctx.state.on_own_hello(now(), peer).into()
         } else {
             ctx.state.on_worker_event(now(), peer, event).into()
         };

@@ -238,7 +238,7 @@ async fn work_the_link(
     // A link carrying a grant the worker takes off parts its record heard is
     // asked no file: aMule's downloader sends none on an uploader's dial-back
     // (`BaseClient.cpp:1692-1706`, ADR-0107).
-    if opening == WorkerOpening::Probe {
+    if opening != WorkerOpening::Granted {
         let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: file.file_hash,
             file_size: file.size,
@@ -277,7 +277,9 @@ async fn work_the_link(
     // on `PartsAdvertised` and hands the part at the grant, so a partial
     // source is never handed a part it lacks.
     let probed = match opening {
-        WorkerOpening::Probe => await_probe(&mut link, file.file_hash, slot_wait_timeout).await,
+        WorkerOpening::Probe | WorkerOpening::ProbeOnLink => {
+            await_probe(&mut link, file.file_hash, slot_wait_timeout).await
+        }
         WorkerOpening::Granted => Streamed::Next,
     };
     match probed {

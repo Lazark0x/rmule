@@ -96,7 +96,7 @@ impl SourceBook {
             && !self
                 .records
                 .values()
-                .any(|record| matches!(record.stage, Stage::RemoteQueued(_)))
+                .any(|record| matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld))
     }
 
     /// Which route, if any, `id`'s candidate is reached by — the admission

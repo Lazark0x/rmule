@@ -54,7 +54,7 @@ pub(crate) use self::road::Deadline;
 #[cfg(test)]
 pub(crate) use self::run_tier::CLIENT_LIST_CLEANUP;
 use self::run_tier::RunTier;
-pub(crate) use self::standing::{Answer, Reask, ReaskGates, UDP_REASK_LEAD};
+pub(crate) use self::standing::{Answer, Reask, ReaskGates, UDP_REASK_LEAD, reask_period};
 #[cfg(test)]
 pub(crate) use self::standing::{
     FILE_REASK_TIME, LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK,
@@ -367,7 +367,7 @@ impl SourceBook {
         let mut activity = crate::diagnostics::SourceActivity::default();
         for record in self.records.values() {
             let tally = match &record.stage {
-                Stage::RemoteQueued(_) => &mut activity.queued,
+                Stage::RemoteQueued(_) | Stage::RoadHeld => &mut activity.queued,
                 Stage::Worker(live, _) if granted(live.endpoint) => &mut activity.transferring,
                 Stage::Worker(..) if record.standing.is_some_and(|standing| standing.ranked()) => {
                     &mut activity.queued

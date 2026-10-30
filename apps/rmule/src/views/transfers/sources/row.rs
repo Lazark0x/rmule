@@ -1,4 +1,5 @@
 //! What the sources pane lists for a download: each worker slot, then each
+//! source handed over to another download of its peer (ADR-0090), then each
 //! source whose dial ended before its hello and that no slot holds now
 //! (ADR-0110, "the cause outlives the slot"). A slot still
 //! holding such a peer says the cause in its own Phase cell.
@@ -10,7 +11,9 @@ use rmule_core::diagnostics::{
 use rmule_primitives::PeerEndpoint;
 
 use crate::state::UiState;
-use crate::words::download::{REMEMBERED, dial_end_words, link_turn_words, phase_words};
+use crate::words::download::{
+    HANDED_OVER, REMEMBERED, dial_end_words, link_turn_words, phase_words,
+};
 
 /// What a source row is across frames: a slot by its peer (and its slot, for
 /// a slot that holds no peer yet), or a source whose dial ended by its peer.
@@ -18,6 +21,8 @@ use crate::words::download::{REMEMBERED, dial_end_words, link_turn_words, phase_
 pub(in crate::views::transfers) enum SourceKey {
     /// A worker slot.
     Slot(Option<PeerEndpoint>, WorkerSlot),
+    /// A source no slot holds, handed over to another download.
+    HandedOver(PeerEndpoint),
     /// A source no slot holds, whose last dial ended before its hello.
     Ended(PeerEndpoint),
 }
@@ -27,12 +32,14 @@ pub(in crate::views::transfers) enum SourceKey {
 pub(in crate::views::transfers) enum SourceRow<'a> {
     /// A worker slot, with its peer's **Dial End** while it holds that peer.
     Slot(&'a WorkerEntry, Option<&'a SourceDialEnd>),
+    /// A source no slot holds, handed over to another download of its peer.
+    HandedOver(PeerEndpoint),
     /// A source no slot holds, and why its dial ended.
     Ended(PeerEndpoint, &'a SourceDialEnd),
 }
 
-/// The download's source rows, slots first in slot order, then the ended
-/// dials by peer.
+/// The download's source rows, slots first in slot order, then the sources
+/// handed over and the ended dials, each by peer.
 pub(in crate::views::transfers) fn source_rows(diag: &DownloadDiagnostics) -> Vec<SourceRow<'_>> {
     let slots = diag.workers.values().map(|worker| {
         let ended = worker
@@ -40,17 +47,23 @@ pub(in crate::views::transfers) fn source_rows(diag: &DownloadDiagnostics) -> Ve
             .and_then(|peer| diag.dial_ends.get(&peer));
         SourceRow::Slot(worker, ended)
     });
+    let in_a_slot = |peer: PeerEndpoint| {
+        diag.workers
+            .values()
+            .any(|worker| worker.peer_endpoint() == Some(peer))
+    };
+    let handed_over = diag
+        .handed_over
+        .iter()
+        .copied()
+        .filter(|&peer| !in_a_slot(peer))
+        .map(SourceRow::HandedOver);
     let ended = diag
         .dial_ends
         .iter()
-        .filter(|(peer, _)| {
-            !diag
-                .workers
-                .values()
-                .any(|worker| worker.peer_endpoint() == Some(**peer))
-        })
+        .filter(|(peer, _)| !in_a_slot(**peer) && !diag.handed_over.contains(*peer))
         .map(|(peer, end)| SourceRow::Ended(*peer, end));
-    slots.chain(ended).collect()
+    slots.chain(handed_over).chain(ended).collect()
 }
 
 impl SourceRow<'_> {
@@ -58,6 +71,7 @@ impl SourceRow<'_> {
     pub(in crate::views::transfers) fn key(&self) -> SourceKey {
         match self {
             Self::Slot(worker, _) => SourceKey::Slot(worker.peer_endpoint(), worker.slot()),
+            Self::HandedOver(peer) => SourceKey::HandedOver(*peer),
             Self::Ended(peer, _) => SourceKey::Ended(*peer),
         }
     }
@@ -66,7 +80,7 @@ impl SourceRow<'_> {
     pub(in crate::views::transfers) fn peer(&self) -> Option<PeerEndpoint> {
         match self {
             Self::Slot(worker, _) => worker.peer_endpoint(),
-            Self::Ended(peer, _) => Some(*peer),
+            Self::HandedOver(peer) | Self::Ended(peer, _) => Some(*peer),
         }
     }
 
@@ -80,6 +94,7 @@ impl SourceRow<'_> {
             .map_or_else(|| "—".to_string(), crate::words::units::address);
         let remembered = match self {
             Self::Slot(worker, _) => worker.remembered(),
+            Self::HandedOver(_) => false,
             Self::Ended(_, end) => end.remembered,
         };
         let mut label = if remembered {
@@ -100,7 +115,7 @@ impl SourceRow<'_> {
     pub(in crate::views::transfers) fn software(&self) -> Option<&ClientSoftware> {
         match self {
             Self::Slot(worker, _) => worker.software(),
-            Self::Ended(..) => None,
+            Self::HandedOver(_) | Self::Ended(..) => None,
         }
     }
 
@@ -109,13 +124,14 @@ impl SourceRow<'_> {
     pub(in crate::views::transfers) fn phase_cell(&self) -> String {
         match self {
             Self::Slot(_, Some(end)) | Self::Ended(_, end) => dial_end_words(end.cause).to_string(),
+            Self::HandedOver(_) => HANDED_OVER.to_string(),
             Self::Slot(worker, None) => phase_words(worker.phase()),
         }
     }
 
     /// How far the source has got, bytes arriving first: the Phase column's
-    /// rank, counted from the one the operator reaches for. A source whose
-    /// dial ended comes last.
+    /// rank, counted from the one the operator reaches for. A source handed
+    /// over waits behind every slot, and a source whose dial ended comes last.
     pub(in crate::views::transfers) const fn phase_rank(&self) -> u64 {
         match self {
             Self::Slot(worker, _) => match worker.phase() {
@@ -129,7 +145,8 @@ impl SourceRow<'_> {
                 WorkerPhase::Retired { .. } => 7,
                 WorkerPhase::ShutDown => 8,
             },
-            Self::Ended(..) => 9,
+            Self::HandedOver(_) => 9,
+            Self::Ended(..) => 10,
         }
     }
 
@@ -143,7 +160,7 @@ impl SourceRow<'_> {
                 .get(&(id, worker.slot()))
                 .copied()
                 .unwrap_or(0.0),
-            Self::Ended(..) => 0.0,
+            Self::HandedOver(_) | Self::Ended(..) => 0.0,
         }
     }
 }

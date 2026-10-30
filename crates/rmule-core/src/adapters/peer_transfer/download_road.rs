@@ -21,7 +21,7 @@ use rmule_primitives::{Ed2kFileLink, PeerEndpoint};
 use tokio::sync::mpsc;
 
 use super::worker::{drive_joined_worker, drive_peer_worker};
-use super::{PeerWorkerCommand, PeerWorkerEvent, WorkerBrief, dial_end, end_dial};
+use super::{PeerWorkerCommand, PeerWorkerEvent, WorkerBrief, WorkerOpening, dial_end, end_dial};
 use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::LinkOrigin;
 use crate::adapters::peer_link::{FoundLink, LinkJoin, LinkName, Reach, Turn};
@@ -119,10 +119,18 @@ impl DownloadRoad {
         let mut names = vec![LinkName::Endpoint(peer)];
         names.extend(peer_crypt.user_hash().map(LinkName::User));
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
+        let on_a_link = opening == WorkerOpening::ProbeOnLink;
         let mut yielded: Option<Onto> = None;
         loop {
             let onto = match yielded.take() {
                 Some(onto) => onto,
+                None if on_a_link => {
+                    let Some(link) = deps.peer_links.find(&names) else {
+                        let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
+                        return;
+                    };
+                    Onto { link, behind: None }
+                }
                 None => match deps.peer_links.reach(peer, &names) {
                     Reach::Found(link) => Onto { link, behind: None },
                     Reach::Dial(mut dial) => {

@@ -89,6 +89,7 @@ pub(crate) fn diag(
         source_activity: rmule_core::diagnostics::SourceActivity::default(),
         dials_ended: 0,
         dial_ends: Default::default(),
+        handed_over: Default::default(),
         allocated_bytes: None,
         hole_verdict: None,
         completion: None,

@@ -94,6 +94,16 @@ pub(crate) struct UdpContact {
     pub(crate) version: u8,
 }
 
+/// The ordinary reask period while we are `reachable` or not: the base
+/// [`FILE_REASK_TIME`], the **Low-ID Reask** while firewalled (ADR-0116).
+pub(crate) const fn reask_period(reachable: bool) -> Duration {
+    if reachable {
+        FILE_REASK_TIME
+    } else {
+        LOW_ID_REASK_TIME
+    }
+}
+
 /// What a worker's identity says a queue standing it earns carries past it
 /// (ADR-0057): where the source is UDP-reasked, and the crypt target the
 /// `0x90` is obfuscated toward when its stance accepts that.
@@ -276,17 +286,14 @@ impl Standing {
         self.crypt = Some(facts.crypt);
     }
 
-    /// The reask period while we are `reachable` or not: the base
-    /// [`FILE_REASK_TIME`], the **Low-ID Reask** while firewalled, and twice
-    /// the base for a no-needed-parts source, which asks for parts, not a
-    /// slot (ADR-0116).
+    /// The reask period while we are `reachable` or not: [`reask_period`], and
+    /// twice the base for a no-needed-parts source, which asks for parts, not
+    /// a slot (ADR-0116).
     fn period(&self, reachable: bool) -> Duration {
         if self.no_needed_parts {
             FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
-        } else if reachable {
-            FILE_REASK_TIME
         } else {
-            LOW_ID_REASK_TIME
+            reask_period(reachable)
         }
     }
 
@@ -369,6 +376,9 @@ pub(crate) enum Reask {
         /// The endpoint it stood at.
         peer: PeerEndpoint,
     },
+    /// The TCP full ask of a **Held Road**: the record went back to its lane,
+    /// for the fill to open the road.
+    RoadDue,
 }
 
 /// A firewalled source's serving buddy, as its record names it: the Kad ID
@@ -522,7 +532,7 @@ impl SourceBook {
         let mut queued: Vec<RecordId> = self
             .records
             .iter()
-            .filter(|(_, record)| matches!(record.stage, Stage::RemoteQueued(_)))
+            .filter(|(_, record)| matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld))
             .map(|(&id, _)| id)
             .collect();
         queued.sort_unstable();
@@ -540,9 +550,12 @@ impl SourceBook {
             let Some(record) = self.records.get_mut(&id) else {
                 continue;
             };
-            let (&Stage::RemoteQueued(peer), Some(standing)) =
-                (&record.stage, record.standing.as_mut())
-            else {
+            let at = match record.stage {
+                Stage::RemoteQueued(at) => Some(at),
+                Stage::RoadHeld => None,
+                _ => continue,
+            };
+            let Some(standing) = record.standing.as_mut() else {
                 continue;
             };
             let period = standing.period(gates.reachable);
@@ -551,12 +564,15 @@ impl SourceBook {
             }
             let elapsed = now.saturating_duration_since(standing.last_reask);
             if elapsed >= period {
-                self.full_ask(id, peer, now);
+                self.full_ask(id, at, now);
                 standings.stamp(&names, now);
-                due.push(Reask::FullAsk { peer });
+                due.push(at.map_or(Reask::RoadDue, |peer| Reask::FullAsk { peer }));
                 continue;
             }
-            let Some(contact) = standing.contact.filter(|_| standing.pingable(gates.socket)) else {
+            let (Some(peer), Some(contact)) = (
+                at,
+                standing.contact.filter(|_| standing.pingable(gates.socket)),
+            ) else {
                 continue;
             };
             if elapsed < period.saturating_sub(UDP_REASK_LEAD) {
@@ -635,6 +651,17 @@ impl SourceBook {
         })
     }
 
+    /// The endpoint of each record whose **Source Handover** was reported and
+    /// that the standing has not come back to (ADR-0090).
+    pub(crate) fn handed_over(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
+        self.records
+            .values()
+            .filter_map(|record| match (&record.stage, record.standing) {
+                (&Stage::RemoteQueued(at), Some(standing)) if standing.handed_over => Some(at),
+                _ => None,
+            })
+    }
+
     /// The endpoint each record in the RemoteQueued stage stands at.
     pub(crate) fn remote_queued(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
         self.records
@@ -650,7 +677,7 @@ impl SourceBook {
     pub(crate) fn next_reask(&self, gates: ReaskGates) -> Option<Instant> {
         self.records
             .values()
-            .filter(|record| matches!(record.stage, Stage::RemoteQueued(_)))
+            .filter(|record| matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld))
             .filter_map(|record| record.standing)
             .map(|standing| standing.wake(gates.socket, gates.reachable))
             .min()
@@ -710,7 +737,8 @@ impl SourceBook {
         }
     }
 
-    /// The TCP full ask for `id`, standing at `peer`: aMule's `AskForDownload`
+    /// The TCP full ask for `id`, standing at `peer` or holding its road back:
+    /// aMule's `AskForDownload`
     /// re-asks the source as it first reached it, so a High ID goes back to
     /// the High-ID lane at its endpoint, and a called-back source — which kept
     /// its candidate and `CallbackKey` — to its Low-ID lane, where the next
@@ -720,7 +748,7 @@ impl SourceBook {
     /// standing again. Its ask is stamped at `now`, as `AskForDownload` stamps
     /// the client's (`DownloadClient.cpp:156`), so the fill that takes it dials
     /// it rather than parking it on the peer's clock again.
-    fn full_ask(&mut self, id: RecordId, peer: PeerEndpoint, now: Instant) {
+    fn full_ask(&mut self, id: RecordId, peer: Option<PeerEndpoint>, now: Instant) {
         let candidate = self.records.get(&id).and_then(|record| record.candidate);
         let lane = match candidate {
             Some(candidate) => {
@@ -735,13 +763,13 @@ impl SourceBook {
         let stated = record.standing.and_then(|standing| standing.stated_crypt());
         record.standing = None;
         record.last_ask = Some(now);
-        if let Some(stated) = stated {
+        if let (Some(peer), Some(stated)) = (peer, stated) {
             self.run.note_crypt(peer, stated);
         }
         let Some(record) = self.records.get_mut(&id) else {
             return;
         };
-        if lane == Lane::HighId {
+        if let (Lane::HighId, Some(peer)) = (lane, peer) {
             record.endpoints.retain(|&held| held != peer);
             record.endpoints.insert(0, peer);
         }

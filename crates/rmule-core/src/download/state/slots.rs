@@ -6,13 +6,16 @@
 use std::time::Instant;
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
 use crate::DownloadFailure;
 use crate::callback::CallbackSilence;
 use crate::diagnostics::{WorkerPhase, WorkerSlot};
-use crate::download::queue_standings::Role;
-use crate::download::source_book::{Deadline, DialEnd, NextDial, Release, WorkerEnd};
+use crate::adapters::CallbackKey;
+use crate::download::queue_standings::{FillGate, Role};
+use crate::download::source_book::{
+    Deadline, DialEnd, NextDial, Release, WorkerEnd, reask_period,
+};
 use crate::service::{DownloadEvent, PartReleaseReason, PeerRetirementReason};
 
 use super::{Decision, DownloadState, LowIdCandidate, LowIdRoad, WorkerOpening};
@@ -41,27 +44,66 @@ impl DownloadState {
                 self.budget.give_back(now);
                 break;
             };
-            if let NextDial::Worker(peer) = dial
-                && self.waits_on_standing(now, peer, out)
+            let gate = self.fill_gate(now, &dial);
+            if let FillGate::Parks(role) = gate
+                && self.parks(now, &dial, role, out)
             {
                 self.budget.give_back(now);
                 continue;
             }
+            let on_a_link = matches!(gate, FillGate::OnALink(_));
             let slot = self.claim_slot();
             match dial {
                 // A High-ID candidate, or a Low-ID candidate's IPv6 half
-                // (rung 0): dial it now.
+                // (rung 0): dial it now, or ride a link and dial nothing.
                 NextDial::Worker(peer) => {
-                    self.spawn_worker(now, peer, slot, WorkerOpening::Probe, out);
+                    let opening = if on_a_link {
+                        WorkerOpening::ProbeOnLink
+                    } else {
+                        WorkerOpening::Probe
+                    };
+                    self.spawn_worker(now, peer, slot, opening, out);
                 }
                 // A Low-ID candidate's callback road or punch (ADR-0091): hold
                 // its slot until adoption or the slot-release deadline.
                 NextDial::Callback { candidate, road } => {
-                    self.open_low_id_road(now, candidate, road, slot, out);
+                    self.open_low_id_road(now, candidate, road, slot, on_a_link, out);
                 }
             }
         }
         self.budget_wake = None;
+    }
+
+    /// What the peer's **Queue Standing** lets the fill do with `dial`. Only
+    /// our own server's road can ride a link: on any other a record that may
+    /// not dial parks (ADR-0090).
+    fn fill_gate(&self, now: Instant, dial: &NextDial) -> FillGate {
+        let place = match dial {
+            NextDial::Worker(peer) => self.sources.dial_place(*peer),
+            NextDial::Callback { candidate, .. } => self.sources.road_place(candidate.key()),
+        };
+        let Some(place) = place else {
+            return FillGate::Open;
+        };
+        let period = reask_period(self.callback_capability.reachable());
+        match (self.standings.role(&place).fill_gate(now, period), dial) {
+            (FillGate::OnALink(role), NextDial::Callback { candidate, road })
+                if *road != LowIdRoad::Callback
+                    || self.relayed_elsewhere(candidate).is_some() =>
+            {
+                FillGate::Parks(role)
+            }
+            (gate, _) => gate,
+        }
+    }
+
+    /// The server that relays `candidate`'s callback, when that is not ours:
+    /// a global answer's, or our former server's (ADR-0051).
+    fn relayed_elsewhere(&self, candidate: &LowIdCandidate) -> Option<Ipv4Endpoint> {
+        let ours = self.callback_capability.server();
+        candidate
+            .source_server
+            .filter(|_| !candidate.on_server(ours))
     }
 
     /// A diagnostics slot number for a new worker or road: the lowest one a
@@ -93,31 +135,51 @@ impl DownloadState {
         self.standings.publish(self.sources.places());
     }
 
-    /// The fill took the record at `peer` to dial it, but another download
-    /// holds that peer's **Queue Standing**: the record waits on it, asking
-    /// nothing and opening nothing, as aMule's A4AF file waits on its client
+    /// The fill took `dial`'s record, but another download holds that peer's
+    /// **Queue Standing**: the record waits on it, asking nothing and opening
+    /// nothing, as aMule's A4AF file waits on its client
     /// (`AddRequestForAnotherFile`, stock 2.3.3 `DownloadClient.cpp:496-507`;
     /// ADR-0107 invariant 13). So does a record taking the peer from a
     /// download that needs nothing of it, whose TCP full ask falls due on the
     /// peer's clock (ADR-0090). Whether it waits.
-    fn waits_on_standing(
+    fn parks(
         &mut self,
         now: Instant,
-        peer: PeerEndpoint,
+        dial: &NextDial,
+        role: Role,
         out: &mut Vec<Decision>,
     ) -> bool {
-        let Some(place) = self.sources.dial_place(peer) else {
-            return false;
-        };
-        let role = self.standings.role(&place);
-        if !role.parks() || !self.sources.wait_on_standing(peer, role, now) {
-            return false;
+        match dial {
+            NextDial::Worker(peer) => {
+                if !self.sources.wait_on_standing(*peer, role, now) {
+                    return false;
+                }
+                out.push(Decision::Emit(DownloadEvent::SourceWaitsOnStanding {
+                    download_id: self.download_id,
+                    peer: *peer,
+                }));
+                true
+            }
+            NextDial::Callback { candidate, .. } => {
+                self.sources.hold_road(candidate.key(), role, now)
+            }
         }
-        out.push(Decision::Emit(DownloadEvent::SourceWaitsOnStanding {
-            download_id: self.download_id,
-            peer,
-        }));
-        true
+    }
+
+    /// The road of `key` could only ride a link, and none stands (ADR-0090):
+    /// the road ends, its slot is free, and the record holds it back on the
+    /// peer's clock.
+    pub(crate) fn on_no_link(&mut self, now: Instant, key: CallbackKey) -> Vec<Decision> {
+        let mut out = vec![Decision::EndCallback { key }];
+        if let Some(slot) = self.callback_slots.remove(&key) {
+            self.free_slots.insert(slot.as_usize());
+        }
+        if let Some(place) = self.sources.road_place(key) {
+            let role = self.standings.role(&place);
+            self.sources.hold_road(key, role, now);
+        }
+        self.fill(now, &mut out);
+        out
     }
 
     /// The link `peer`'s worker waited on, behind another download of the
@@ -192,6 +254,7 @@ impl DownloadState {
         candidate: LowIdCandidate,
         road: LowIdRoad,
         slot: WorkerSlot,
+        on_a_link: bool,
         out: &mut Vec<Decision>,
     ) {
         let key = candidate.key();
@@ -215,16 +278,14 @@ impl DownloadState {
         }
         let ours = self.callback_capability.server();
         if road == LowIdRoad::Callback {
-            let elsewhere = candidate
-                .source_server
-                .filter(|_| !candidate.on_server(ours));
-            match elsewhere {
+            match self.relayed_elsewhere(&candidate) {
                 // The id is ours, or was minted with no server known: our
                 // session relays it, aMule's `IsLocalServer` branch.
                 None => out.push(Decision::RequestCallback {
                     low_id: candidate.low_id,
                     server: candidate.source_server,
                     want_sources,
+                    on_a_link,
                 }),
                 // Another server assigned it — a global answer, or our former
                 // server: that server relays it (ADR-0051).
@@ -318,9 +379,13 @@ impl DownloadState {
                             | PeerRetirementReason::Distrusted
                             | PeerRetirementReason::LinkEnded
                     );
-                // A source that said it lacks the file is spent under every
-                // name its record holds, whichever road reached it (ADR-0090).
-                let end = if reason == PeerRetirementReason::FileNotFound {
+                // A source that said it lacks the file, or proved to be this
+                // node, is spent under every name its record holds, whichever
+                // road reached it (ADR-0090).
+                let end = if matches!(
+                    reason,
+                    PeerRetirementReason::FileNotFound | PeerRetirementReason::OurOwnNode
+                ) {
                     self.sources.lacked_file(peer)
                 } else {
                     self.sources.end_worker(peer, failed, self.dial)

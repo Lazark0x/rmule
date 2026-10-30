@@ -82,10 +82,30 @@ impl Role {
         !matches!(self, Self::Waits { .. })
     }
 
-    /// Whether a fill reaching a pooled record parks it rather than dialing.
-    pub(crate) const fn parks(self) -> bool {
-        matches!(self, Self::Waits { .. } | Self::Takes { .. })
+    /// What a fill reaching a pooled record may do at `now`, the peer's clock
+    /// running `period` (ADR-0090): a stamp a period old holds nothing back.
+    pub(crate) fn fill_gate(self, now: Instant, period: Duration) -> FillGate {
+        let inside = |asked_at: Instant| now.saturating_duration_since(asked_at) < period;
+        match self {
+            Self::Waits { .. } => FillGate::Parks(self),
+            Self::Takes { asked_at } if inside(asked_at) => FillGate::Parks(self),
+            Self::Inherits { asked_at } if inside(asked_at) => FillGate::OnALink(self),
+            Self::Holds | Self::Takes { .. } | Self::Inherits { .. } => FillGate::Open,
+        }
     }
+}
+
+/// What a fill may do with a pooled record of a peer the **Queue Standings**
+/// know.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FillGate {
+    /// Ask the peer.
+    Open,
+    /// Ride a link that stands, and dial nothing: the peer's last ask named a
+    /// download whose place has ended, and its clock still runs.
+    OnALink(Role),
+    /// Ask nothing: the record stands on the peer's standing.
+    Parks(Role),
 }
 
 /// The peer's last ask under one name, and whose slot ask it last read.

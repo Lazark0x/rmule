@@ -200,6 +200,7 @@ pub(super) const fn retirement(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::CryptIncompatible => "crypt_incompatible",
         PeerRetirementReason::Distrusted => "distrusted",
         PeerRetirementReason::SameSource => "same_source",
+        PeerRetirementReason::OurOwnNode => "our_own_node",
         PeerRetirementReason::NoNeededParts => "no_needed_parts",
         PeerRetirementReason::NoFreePart => "no_free_part",
         PeerRetirementReason::Queued => "queued",

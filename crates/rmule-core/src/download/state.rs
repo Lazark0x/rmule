@@ -146,6 +146,10 @@ pub(crate) enum Decision {
         /// Whether the connection carries a source ask (ADR-0108): the
         /// peer's ask facts, read at the decision.
         want_sources: bool,
+        /// Whether the road may only ride a link that stands (ADR-0090):
+        /// finding none, it asks no server and [`DownloadState::on_no_link`]
+        /// holds it back.
+        on_a_link: bool,
     },
     /// Ask a Low-ID **global** source's own `source_server` — over UDP, with no
     /// TCP session — to relay a callback (ADR-0051, ADR-0039 generalized

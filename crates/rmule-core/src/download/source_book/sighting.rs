@@ -102,7 +102,7 @@ impl SourceBook {
                     live.road == super::record::DialRoad::HighId
                 }
                 Stage::RemoteQueued(_) => true,
-                Stage::CallbackPending(_) => false,
+                Stage::CallbackPending(_) | Stage::RoadHeld => false,
             })
     }
 
@@ -233,7 +233,7 @@ impl SourceBook {
                 .candidate
                 .as_ref()
                 .map(|candidate| MergeEnd::Callback(candidate.key())),
-            Stage::Pooled(_) | Stage::RemoteQueued(_) => None,
+            Stage::Pooled(_) | Stage::RemoteQueued(_) | Stage::RoadHeld => None,
         };
         for &endpoint in &folded.endpoints {
             self.add_endpoint(keep, endpoint);

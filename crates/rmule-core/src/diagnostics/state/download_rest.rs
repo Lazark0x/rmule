@@ -3,7 +3,7 @@
 //! of the download, so a paused, failed, waiting or restored download keeps a
 //! row whose part map shows held and missing parts and nothing in flight.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rmule_primitives::{FileHash, part_count};
@@ -52,6 +52,7 @@ impl DiagnosticsState {
                 dials_ended: 0,
                 reask_replies_ignored: 0,
                 dial_ends: BTreeMap::new(),
+                handed_over: BTreeSet::new(),
                 allocated_bytes: None,
                 hole_verdict: None,
                 completion: None,
@@ -61,6 +62,7 @@ impl DiagnosticsState {
         row.known_sources = 0;
         row.source_activity = SourceActivity::default();
         row.dial_ends.clear();
+        row.handed_over.clear();
         row.allocated_bytes = None;
         row.hole_verdict = None;
     }

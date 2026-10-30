@@ -432,3 +432,39 @@ async fn a_dial_the_run_lets_go_is_called_off_while_it_connects() {
         .await
         .expect("the dial closed its socket when the run let it go");
 }
+
+/// With no link to ride, a worker that may not dial opens no socket and is
+/// handed back: its source stands on the peer's clock (ADR-0090).
+#[tokio::test]
+async fn a_worker_held_to_a_link_with_none_standing_dials_nothing() {
+    let source = tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::LOCALHOST,
+        source.local_addr().unwrap().port(),
+    ));
+    let file = rmule_testkit::file_link("no-link.bin", &[0x5A; 4096]);
+    let brief = WorkerBrief {
+        opening: WorkerOpening::ProbeOnLink,
+        ..WorkerBrief::fresh(&file)
+    };
+    let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
+    let mut worker = transfer
+        .start_download_worker(peer, dialed_serve_ctx(), file, brief)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), worker.next_event())
+            .await
+            .expect("the worker says so at once"),
+        Some(PeerWorkerEvent::HandedBack)
+    );
+    assert!(
+        timeout(Duration::from_millis(200), source.accept())
+            .await
+            .is_err(),
+        "no socket reaches the source"
+    );
+}

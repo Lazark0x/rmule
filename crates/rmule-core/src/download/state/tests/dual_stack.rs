@@ -375,3 +375,39 @@ fn a_record_naming_another_hash_is_not_folded_by_a_hello_naming_its_address() {
 
     assert_eq!(state.known_sources(), 2);
 }
+
+/// A dial that reached our own listener reads our own User Hash: the source
+/// is spent under every name, so its other half is not tried either, whatever
+/// the gate knew when it was first pooled (ADR-0090 invariant 6).
+#[test]
+fn a_hello_naming_our_own_hash_spends_its_source_whole() {
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            dial: known_ipv6(),
+            ..QUIET_POSTURE
+        },
+        1,
+        no_facts(),
+        vec![(Channel::Server, vec![source])],
+        Vec::new(),
+    );
+    let dialed = spawned(&state.start(t0()));
+    assert_eq!(dialed.len(), 1);
+
+    let decisions = state.on_own_hello(t0(), dialed[0]);
+
+    assert_eq!(spawned(&decisions), []);
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        Decision::Emit(DownloadEvent::PeerRetired {
+            reason: PeerRetirementReason::OurOwnNode,
+            ..
+        })
+    )));
+    assert!(state.sources.is_spent(PeerEndpoint::V4(v4())));
+    assert!(state.sources.is_spent(PeerEndpoint::V6(v6())));
+    assert_eq!(state.known_sources(), 0);
+}

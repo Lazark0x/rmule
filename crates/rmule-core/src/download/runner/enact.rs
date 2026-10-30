@@ -280,6 +280,7 @@ where
                 low_id,
                 server,
                 want_sources,
+                on_a_link,
             } => {
                 // File the server-relayed road so the accept-router can adopt the
                 // called-back peer, then ask the server to relay the callback
@@ -303,6 +304,10 @@ where
                 // would open nothing, its `TryToConnect` finding the socket
                 // it holds.
                 if ride_callback_link(ctx, key, want_sources).await {
+                    continue;
+                }
+                if on_a_link {
+                    queue.extend(ctx.state.on_no_link(now(), key));
                     continue;
                 }
                 let session = {

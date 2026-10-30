@@ -80,6 +80,7 @@ impl DownloadState {
                         peer,
                     }));
                 }
+                Reask::RoadDue => asked_by_tcp = true,
             }
         }
         if asked_by_tcp {
@@ -255,6 +256,12 @@ impl DownloadState {
     /// its **Source Activity**, republished beside the part map (ADR-0116).
     pub(crate) fn source_activity(&self) -> crate::diagnostics::SourceActivity {
         self.sources.activity(|peer| self.slot_asks.granted(peer))
+    }
+
+    /// The sources this run handed over and still holds, republished beside
+    /// the part map for the Sources pane (ADR-0090).
+    pub(crate) fn handed_over(&self) -> std::collections::BTreeSet<PeerEndpoint> {
+        self.sources.handed_over().collect()
     }
 
     /// Sources this run knows now, republished beside the part map: every

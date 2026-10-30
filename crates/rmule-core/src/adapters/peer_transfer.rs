@@ -466,6 +466,9 @@ pub enum WorkerOpening {
     /// record already heard, as aMule's downloader sends no file request on
     /// an uploader's dial-back (`BaseClient.cpp:1692-1706`).
     Granted,
+    /// The probe, over a link that stands and never a dial: the peer's clock
+    /// still runs, so finding no link the worker is handed back (ADR-0090).
+    ProbeOnLink,
 }
 
 impl WorkerBrief {

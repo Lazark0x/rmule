@@ -65,6 +65,7 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::CryptIncompatible => "its encryption and yours cannot meet",
         PeerRetirementReason::Distrusted => "it sent this file bad data before",
         PeerRetirementReason::SameSource => "another connection already reaches this peer",
+        PeerRetirementReason::OurOwnNode => "that address turned out to be this node",
         PeerRetirementReason::NoNeededParts => "it holds no part we still need",
         PeerRetirementReason::NoFreePart => {
             "every part it has that we need is coming from another source"
@@ -199,6 +200,10 @@ pub fn phase_words(phase: &WorkerPhase) -> String {
 /// the Sources pane (ADR-0109): a peer the last run knew, dialed before
 /// anyone was asked.
 pub const REMEMBERED: &str = "remembered";
+
+/// The Phase of a source another download of its peer now asks for (ADR-0090):
+/// the source stays, and asks nothing while that download holds the peer.
+pub const HANDED_OVER: &str = "handed to another download";
 
 /// The mark a source reached over its peer's link, rather than a dial of its
 /// own, carries in the Sources pane (ADR-0107).
