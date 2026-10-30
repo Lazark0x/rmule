@@ -40,23 +40,6 @@ const SRVCAP_LARGEFILES: u32 = 0x0100;
 const SRVCAP_SUPPORTCRYPT: u32 = 0x0200;
 const SRVCAP_REQUESTCRYPT: u32 = 0x0400;
 const SRVCAP_REQUIRECRYPT: u32 = 0x0800;
-/// `SRVCAP_IPV6` (ADR-0087 §4.1) — deliberately **not** derived from the
-/// capability registry beside the bits above, and the one flag here that is
-/// not a statement about what rmule can speak.
-///
-/// It is strictly coupled to the `CT_MOD_IP_V6` tag ("send both or neither"),
-/// so it says *where rmule can be found*, which is a fact about an address and
-/// not a capability. ADR-0047's Honest Capability Advertisement is untouched:
-/// the registry still owns every bit that claims an ability, and this one is
-/// written by the same `if let` that writes the tag, so the two cannot
-/// disagree.
-///
-/// Which of the pair a server actually gates on is server-dependent and is
-/// **not** the bit: at least one ignores `CT_SERVER_FLAGS` except for the
-/// crypt bits and decides sentinel-safety from the tag's presence, or from the
-/// session having arrived over IPv6.
-const SRVCAP_IPV6: u32 = 0x1000;
-
 /// Pack the `CT_SERVER_FLAGS` value from the capability registry
 /// (ADR-0047): every bit is registry-derived, never aspirational —
 /// aMule's inline `CAPABLE_*` assembly (`ServerConnect.cpp#L241`) with
@@ -133,7 +116,7 @@ impl UdpPortsAdvert {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoginAdvert {
     /// ADR-0087: the address the Advertised Endpoints chooser settled. Rides
-    /// as `CT_MOD_IP_V6` together with `SRVCAP_IPV6`, or not at all.
+    /// as `CT_MOD_IP_V6`, or not at all.
     pub ipv6: Option<Ipv6Addr>,
     /// ADR-0091: the `0xF9` tag, when a client-UDP socket is bound.
     pub udp_ports: Option<UdpPortsAdvert>,
@@ -186,11 +169,12 @@ impl LoginRequest {
     }
 
     /// [`from_identity`](Self::from_identity) plus ADR-0087's IPv6 advert: the
-    /// `CT_MOD_IP_V6` (`0xAE`) tag and the `SRVCAP_IPV6` (`0x1000`) flag bit,
-    /// written **together or not at all**.
+    /// `CT_MOD_IP_V6` (`0xAE`) tag. It changes nothing in `CT_SERVER_FLAGS`:
+    /// `0x1000` there is Lugdunum's NAT callback, which rmule does not claim,
+    /// and a server keys the extension on the tag.
     ///
     /// `advertised_ipv6` is what the Advertised Endpoints chooser settled
-    /// (ADR-0084: Known *and* not probed-unreachable), so the pair only rides
+    /// (ADR-0084: Known *and* not probed-unreachable), so the tag only rides
     /// for an address a server could actually reach — the tag is the fact, and
     /// a tag naming an address rmule cannot be reached at would open a capable
     /// server's sentinel gate and then publish a dead source.
@@ -222,13 +206,9 @@ impl LoginRequest {
             TagName::length_prefixed_id(CLIENT_TAG_VERSION),
             TagValue::U32(identity.protocol_version()),
         ));
-        let mut flags = server_capability_flags(capabilities);
-        if advertised_ipv6.is_some() {
-            flags |= SRVCAP_IPV6;
-        }
         tags.push(Tag::new(
             TagName::length_prefixed_id(CLIENT_TAG_SERVER_FLAGS),
-            TagValue::U32(flags),
+            TagValue::U32(server_capability_flags(capabilities)),
         ));
         tags.push(Tag::new(
             TagName::length_prefixed_id(CLIENT_TAG_EMULE_VERSION),

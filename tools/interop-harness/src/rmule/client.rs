@@ -74,7 +74,7 @@ pub struct DownloadCrypt<'a> {
 pub struct ProbeAsks {
     /// `CT_EMULE_UDPPORTS` (`0xF9`), naming this client-UDP port.
     pub udp_ports_advert: Option<u16>,
-    /// `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit, naming this address.
+    /// `CT_MOD_IP_V6` (`0xAE`), naming this address.
     pub advertise_ipv6: Option<std::net::Ipv6Addr>,
     /// A punch asked toward this Low ID once logged in (`0x60`).
     pub holepunch_target: Option<u32>,

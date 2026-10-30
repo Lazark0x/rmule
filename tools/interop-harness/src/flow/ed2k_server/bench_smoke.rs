@@ -45,8 +45,7 @@ pub struct BenchSmokeOptions<'a> {
     /// Ride `CT_EMULE_UDPPORTS` (`0xF9`, ADR-0091) on the probe's login, naming
     /// this client-UDP port — the tag a running core sends on every login.
     pub udp_ports_advert: Option<u16>,
-    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit, naming this
-    /// address; beside `udp_ports_advert` the login carries six tags.
+    /// Ride `CT_MOD_IP_V6` (`0xAE`), naming this address; beside `udp_ports_advert` the login carries six tags.
     pub advertise_ipv6: Option<std::net::Ipv6Addr>,
 }
 

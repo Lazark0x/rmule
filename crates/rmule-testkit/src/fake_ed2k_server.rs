@@ -36,9 +36,10 @@ use tokio::task::JoinHandle;
 /// only bounds the pathological case (the real Lugdunum allows ~10 s).
 const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// `SRVCAP_IPV6`, the `CT_SERVER_FLAGS` bit that rides with `CT_MOD_IP_V6`
-/// (ADR-0087 §4.1).
-const SRVCAP_IPV6: u32 = 0x1000;
+/// `SRVCAP_NATTRAVERSAL`, the `CT_SERVER_FLAGS` bit that claims Lugdunum's NAT
+/// callback. rmule speaks no such thing (ADR-0091), so a login setting it is a
+/// client lying about itself.
+const SRVCAP_NATTRAVERSAL: u32 = 0x1000;
 
 /// A stand-in routable id handed to reachable (High-ID) clients. Any value
 /// `>= ClientId::LOW_ID_THRESHOLD` works; rmule never dials it for a callback.
@@ -525,11 +526,11 @@ where
     // later ADRs settled may ride, each at most once and in this order:
     // `CT_MOD_IP_V6` (`0xAE`, ADR-0087) and `CT_EMULE_UDPPORTS` (`0xF9`,
     // ADR-0091 — present whenever a client-UDP socket is bound, which is
-    // every running core). `CT_MOD_IP_V6` rides exactly when
-    // `CT_SERVER_FLAGS` sets `SRVCAP_IPV6` (`0x1000`): the dialect's "send
-    // both or neither" (ADR-0087 §4.1). Anything else is a violating client
-    // and is dropped before IdChange, so any test driving a session through
-    // this server fails loudly on its login wait.
+    // every running core). `CT_SERVER_FLAGS` never sets
+    // `SRVCAP_NATTRAVERSAL` (`0x1000`), with or without the IPv6 tag
+    // (ADR-0087). Anything else is a violating client and is dropped before
+    // IdChange, so any test driving a session through this server fails loudly
+    // on its login wait.
     let tag_ids: Vec<Option<u8>> = login.tags().iter().map(|t| t.name().id()).collect();
     let canonical = [Some(0x01), Some(0x11), Some(0x20), Some(0xFB)];
     let adverts: &[Option<u8>] = tag_ids.get(canonical.len()..).unwrap_or(&[]);
@@ -537,12 +538,11 @@ where
         adverts,
         [] | [Some(0xAE)] | [Some(0xF9)] | [Some(0xAE), Some(0xF9)]
     );
-    let flags_ipv6 = login.tags().iter().any(|tag| {
+    let claims_nat_callback = login.tags().iter().any(|tag| {
         tag.name().id() == Some(0x20)
-            && matches!(tag.value(), TagValue::U32(flags) if flags & SRVCAP_IPV6 != 0)
+            && matches!(tag.value(), TagValue::U32(flags) if flags & SRVCAP_NATTRAVERSAL != 0)
     });
-    let ipv6_paired = flags_ipv6 == adverts.contains(&Some(0xAE));
-    if !tag_ids.starts_with(&canonical) || !adverts_ok || !ipv6_paired {
+    if !tag_ids.starts_with(&canonical) || !adverts_ok || claims_nat_callback {
         writer.abort();
         return;
     }

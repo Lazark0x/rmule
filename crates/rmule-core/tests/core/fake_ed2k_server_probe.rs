@@ -102,20 +102,19 @@ async fn a_started_serve_answers_the_port_check_of_a_login_in_flight() {
     );
 }
 
-/// The fake holds a login to the dialect's "send both or neither": the
-/// `CT_MOD_IP_V6` tag rides exactly when `CT_SERVER_FLAGS` sets
-/// `SRVCAP_IPV6`. The pair is served; either half alone is dropped before an
-/// id is granted, so a client that splits them fails its login wait.
+/// The fake holds a login to rmule's claim: the IPv6 tag is served alone, and
+/// `CT_SERVER_FLAGS` `0x1000`, Lugdunum's NAT callback, is dropped before an id
+/// is granted with or without it (ADR-0087).
 #[tokio::test]
-async fn a_login_must_pair_the_ipv6_tag_with_its_flag_bit() {
+async fn a_login_claiming_the_nat_callback_is_dropped() {
     use rmule_ed2k::{LoginAdvert, LoginRequest};
     use rmule_primitives::{Capabilities, CryptStance, Tag, TagValue};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const SRVCAP_IPV6: u32 = 0x1000;
+    const SRVCAP_NATTRAVERSAL: u32 = 0x1000;
     let server = FakeEd2kServer::start().await;
     let identity = identity_with_port(dead_port().await);
-    let paired = LoginRequest::from_identity_advertising(
+    let advertising = LoginRequest::from_identity_advertising(
         &identity,
         &Capabilities::shipped(CryptStance::disabled()),
         LoginAdvert {
@@ -123,32 +122,22 @@ async fn a_login_must_pair_the_ipv6_tag_with_its_flag_bit() {
             udp_ports: None,
         },
     );
-    let flags_flipped = |tags: &[Tag]| -> Vec<Tag> {
-        tags.iter()
+    let claiming = LoginRequest::new(
+        advertising.user_hash(),
+        advertising.client_id(),
+        advertising.tcp_port(),
+        advertising
+            .tags()
+            .iter()
             .map(|tag| match tag.value() {
-                TagValue::U32(flags) if tag.name().id() == Some(0x20) => {
-                    Tag::new(tag.name().clone(), TagValue::U32(flags ^ SRVCAP_IPV6))
-                }
+                TagValue::U32(flags) if tag.name().id() == Some(0x20) => Tag::new(
+                    tag.name().clone(),
+                    TagValue::U32(flags | SRVCAP_NATTRAVERSAL),
+                ),
                 _ => tag.clone(),
             })
-            .collect()
-    };
-    let rebuilt = |tags: Vec<Tag>| {
-        LoginRequest::new(
-            paired.user_hash(),
-            paired.client_id(),
-            paired.tcp_port(),
-            tags,
-        )
-    };
-    let tag_alone = rebuilt(flags_flipped(paired.tags()));
-    let without_tag: Vec<Tag> = paired
-        .tags()
-        .iter()
-        .filter(|tag| tag.name().id() != Some(0xAE))
-        .cloned()
-        .collect();
-    let flag_alone = rebuilt(without_tag);
+            .collect(),
+    );
 
     let answered = |login: LoginRequest| {
         let addr = server.local_addr();
@@ -164,13 +153,6 @@ async fn a_login_must_pair_the_ipv6_tag_with_its_flag_bit() {
             )
         }
     };
-    assert!(answered(paired.clone()).await, "the pair is served");
-    assert!(
-        !answered(tag_alone).await,
-        "the tag without the bit is dropped"
-    );
-    assert!(
-        !answered(flag_alone).await,
-        "the bit without the tag is dropped"
-    );
+    assert!(answered(advertising.clone()).await, "the tag alone is served");
+    assert!(!answered(claiming).await, "the claim is dropped");
 }

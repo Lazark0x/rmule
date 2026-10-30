@@ -185,8 +185,8 @@ impl SharedServerSession {
         &self.server_punch
     }
 
-    /// The **Advertised IPv6** (ADR-0087) the login's `CT_MOD_IP_V6` tag and
-    /// its coupled `SRVCAP_IPV6` bit ride, and the builder clones into every
+    /// The **Advertised IPv6** (ADR-0087) the login's `CT_MOD_IP_V6` tag
+    /// names, and the builder clones into every
     /// hello, the Kad publisher and both dial roads — a view over this cell's
     /// own Address Learning store and probe verdict, so the login and a hello
     /// can never name different addresses and none of them caches one.

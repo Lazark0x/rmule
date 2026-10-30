@@ -201,7 +201,7 @@ fn from_identity_preserves_non_utf8_nickname_bytes() {
 /// bytes are the spec's, not a capture's. The row upgrades to captured when a pinned
 /// ed2k-server build exists.
 #[test]
-fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
+fn an_advertised_ipv6_rides_as_the_fifth_tag_and_leaves_the_flags_alone() {
     let address: std::net::Ipv6Addr = "2a01:4f8::1".parse().unwrap();
     let request = LoginRequest::from_identity_advertising(
         &sample_identity(),
@@ -219,12 +219,13 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
         "the advert appends a fifth tag and reorders nothing"
     );
 
-    // SRVCAP_IPV6 (0x1000) rides with it, and with nothing else changed.
+    // The tag is the whole advert: `CT_SERVER_FLAGS` is what it would have been
+    // without it. `0x1000` there is Lugdunum's NAT callback claim (ADR-0087).
     match tags[2].value() {
-        TagValue::U32(flags) => assert_eq!(
-            *flags,
-            server_capability_flags(&shipped_no_crypt()) | 0x1000
-        ),
+        TagValue::U32(flags) => {
+            assert_eq!(*flags, server_capability_flags(&shipped_no_crypt()));
+            assert_eq!(*flags & 0x1000, 0, "no NAT callback claim");
+        }
         other => panic!("server-flags tag must be u32, got {other:?}"),
     }
 
@@ -236,10 +237,9 @@ fn an_advertised_ipv6_rides_as_the_fifth_tag_with_its_flag_bit() {
     assert_eq!(tags[4].encode(), expected);
 }
 
-/// The coupling is "send both or neither", and one input decides both — so
-/// there is no representable state where the bit rides without the tag.
+/// No advert, no tag, and the flag word is untouched either way.
 #[test]
-fn without_an_advertised_ipv6_neither_the_tag_nor_the_bit_rides() {
+fn without_an_advertised_ipv6_no_tag_rides() {
     let request = LoginRequest::from_identity_advertising(
         &sample_identity(),
         &shipped_no_crypt(),

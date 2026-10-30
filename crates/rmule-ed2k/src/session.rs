@@ -41,10 +41,9 @@ pub struct Ed2kSession {
     /// The IDCHANGE-extension projection (ADR-0047): public IP, standard
     /// port, obfuscation port. Re-projected whole on every IDCHANGE.
     facts: ServerAssignedFacts,
-    /// Our Known IPv6 for the login's `CT_MOD_IP_V6` tag and its coupled
-    /// `SRVCAP_IPV6` flag bit (ADR-0087 §4.1), set via
-    /// [`with_ipv6_advertisement`](Self::with_ipv6_advertisement). `None`
-    /// sends neither.
+    /// Our Known IPv6 for the login's `CT_MOD_IP_V6` tag (ADR-0087 §4.1), set
+    /// via [`with_ipv6_advertisement`](Self::with_ipv6_advertisement). `None`
+    /// sends none.
     ipv6_advert: Option<std::net::Ipv6Addr>,
     /// The login's `0xF9` tag (ADR-0091), set by
     /// [`with_udp_ports_advertisement`](Self::with_udp_ports_advertisement).
@@ -117,8 +116,8 @@ impl Ed2kSession {
         }
     }
 
-    /// Advertise our Known IPv6 at login — the `CT_MOD_IP_V6` tag and the
-    /// `SRVCAP_IPV6` flag together (ADR-0087 §4.1).
+    /// Advertise our Known IPv6 at login, as the `CT_MOD_IP_V6` tag (ADR-0087
+    /// §4.1).
     ///
     /// The runtime layer passes what the Advertised Endpoints chooser settled
     /// (ADR-0084: Known *and* not probed-unreachable), the same value the peer

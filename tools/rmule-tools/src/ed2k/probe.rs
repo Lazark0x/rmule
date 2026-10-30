@@ -59,7 +59,7 @@ pub(crate) struct ServerProbeArgs {
     /// one — no socket is bound, the port is only a value.
     #[arg(long)]
     udp_ports_advert: Option<u16>,
-    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit on the login,
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) on the login,
     /// naming this address (ADR-0087). Beside `--udp-ports-advert` the login
     /// carries six tags, `0xF9` after `0xAE`, as a dual-stack core's does. No
     /// address is held; it is only a value.

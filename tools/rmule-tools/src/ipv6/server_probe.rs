@@ -34,9 +34,8 @@ pub(crate) struct Ipv6ServerProbeArgs {
     /// The server, `host:port`.
     #[arg(long)]
     server: String,
-    /// Our Known IPv6 — advertised at login as `CT_MOD_IP_V6` with its coupled
-    /// `SRVCAP_IPV6` capability bit. Omitted, neither is sent, which is the
-    /// control leg.
+    /// Our Known IPv6 — advertised at login as `CT_MOD_IP_V6`. Omitted, no tag
+    /// is sent, which is the control leg.
     #[arg(long)]
     advertise_ipv6: Option<Ipv6Addr>,
     /// Ask for this file's sources once logged in; a sentinel-bearing answer is

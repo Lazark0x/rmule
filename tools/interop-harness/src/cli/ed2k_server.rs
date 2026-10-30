@@ -55,7 +55,7 @@ pub(crate) struct BenchSmokeArgs {
     /// login a running core sends.
     #[arg(long)]
     pub(crate) udp_ports_advert: Option<u16>,
-    /// Ride `CT_MOD_IP_V6` (`0xAE`) with its `SRVCAP_IPV6` bit on the
+    /// Ride `CT_MOD_IP_V6` (`0xAE`) on the
     /// probe's login, naming this address. Beside `--udp-ports-advert` the
     /// login carries six tags, the shape a dual-stack core sends.
     #[arg(long)]
