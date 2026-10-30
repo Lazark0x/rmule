@@ -18,8 +18,8 @@
 //! - the **user hash** is fixed at build time: `CoreBuilder::build` writes
 //!   the store's (or a tool's named) hash here once, before the actor spawns,
 //!   and no command carries one — [`ClientCredentials`](crate::ClientCredentials)
-//! holds only the nickname, port and version (ADR-0048 "One identity per node, owned by the
-//! core");
+//!   holds only the nickname, port and version (ADR-0048 "One identity per
+//!   node, owned by the core");
 //! - the **address** arrives with the connected server's `OP_IDCHANGE`
 //!   (`ServerAssignedFacts::public_ip`, ADR-0047) — or, once the other feeders
 //!   land, from any tier of the ladder.
