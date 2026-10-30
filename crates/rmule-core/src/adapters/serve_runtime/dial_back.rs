@@ -210,10 +210,7 @@ impl DialBackRoad {
             let _ = conn.shutdown().await;
             return;
         }
-        let dialed = ServedOrigin::Dialed(DialedLink {
-            in_flight,
-            far_end,
-        });
+        let dialed = ServedOrigin::Dialed(DialedLink { in_flight, far_end });
         let _ = drive_served_link(conn, identity, command_rx, event_tx, deps, dialed).await;
     }
 }

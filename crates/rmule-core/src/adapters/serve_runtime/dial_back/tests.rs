@@ -43,20 +43,6 @@ fn waiter_ctx() -> PeerHandshakeContext {
     }
 }
 
-/// The waiter's hello as a Low ID on a server, listening on `listen_port`:
-/// it proves a name — its callback — its dial-back was not filed under, so
-/// the dial's hello refiles.
-fn low_id_waiter_ctx(listen_port: u16) -> PeerHandshakeContext {
-    let server = Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 7), 4661);
-    PeerHandshakeContext {
-        identity: ClientIdentity::new(WAITER, Ed2kText::from_utf8("waiter"), listen_port, 60),
-        client_id: ClientId::from_u32(5),
-        ed2k_client_id: ClientId::from_u32(5),
-        public_ip: None,
-        connected_server: Some(server),
-    }
-}
-
 /// Where the Peer Links file `name`, once `settled` holds of it.
 async fn filed(
     links: &SharedPeerLinks,
@@ -311,7 +297,9 @@ async fn a_hello_crossing_a_dial_back_is_held_and_closes_unanswered_once_the_far
 
     assert_eq!(own_link_within(&mut own, SILENCE).await, OwnLink::Silent);
     assert_eq!(
-        links.find(&[LinkName::User(WAITER)]).map(|found| found.remote),
+        links
+            .find(&[LinkName::User(WAITER)])
+            .map(|found| found.remote),
         Some(at),
         "the names stay with the dial"
     );
@@ -433,7 +421,9 @@ async fn the_waiters_own_link_stops_a_dial_back_before_its_hello_unheard_and_is_
     let _served = serve.accept().await.expect("the link reaches triage");
     assert_eq!(own_link_within(&mut own, SOON).await, OwnLink::Answered);
 
-    let said = timeout(SOON, outcomes.recv()).await.expect("the dial stops");
+    let said = timeout(SOON, outcomes.recv())
+        .await
+        .expect("the dial stops");
     assert!(said.is_none(), "a dial that yielded says nothing");
     let closed = timeout(SOON, async {
         while stream.read(&mut opening).await.is_ok_and(|read| read > 0) {}

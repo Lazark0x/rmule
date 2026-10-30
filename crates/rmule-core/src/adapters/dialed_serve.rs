@@ -81,7 +81,7 @@ pub(crate) enum LinkOrigin {
     /// off the hello, and its filing there.
     Adopted {
         /// The peer as its hello named it.
-        identity: PeerIdentity,
+        identity: Box<PeerIdentity>,
         /// The link as its hello was answered and filed.
         accepted: AcceptedLink,
     },
@@ -148,10 +148,8 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
         // as any inbound link's does (`ClientTCPSocket.cpp:391`): ahead of
         // anything the peer asks over it, so its asks are scored, and its
         // bans read, under that hello (ADR-0107).
-        LinkOrigin::Adopted {
-            identity,
-            accepted,
-        } => {
+        LinkOrigin::Adopted { identity, accepted } => {
+            let identity = *identity;
             let hello = ConnectionEvent::Identified {
                 identity: identity.clone(),
             };

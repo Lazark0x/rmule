@@ -643,18 +643,25 @@ fn a_held_hello_says_nothing_until_it_is_answered_and_then_answers_before_the_ch
     let (packets, events) = drain(&mut session);
     assert!(packets.is_empty(), "nothing is said: {packets:?}");
     assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Connection(ConnectionEvent::Identified { .. }))),
+        events.iter().any(|event| matches!(
+            event,
+            PeerEvent::Connection(ConnectionEvent::Identified { .. })
+        )),
         "the node reads who it is all the same"
     );
 
     let answer = PeerCommand::Connection(ConnectionCommand::AnswerHello);
     session.handle_command(answer.clone());
     let (packets, _) = drain(&mut session);
-    assert!(matches!(packets[0], PeerPacket::HelloAnswer(_)), "{packets:?}");
     assert!(
-        packets.iter().skip(1).any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
+        matches!(packets[0], PeerPacket::HelloAnswer(_)),
+        "{packets:?}"
+    );
+    assert!(
+        packets
+            .iter()
+            .skip(1)
+            .any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
         "the challenge follows the answer: {packets:?}"
     );
 

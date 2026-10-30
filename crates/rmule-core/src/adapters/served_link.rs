@@ -64,10 +64,7 @@ pub(super) async fn drive_served_link(
     let names = LinkName::proven(remote, &identity, dialed_at);
     let mut conn = LinkConnection::new(conn, far_end.clone());
     let (mut filing, joins, mut moving, mut serve) = match origin {
-        ServedOrigin::Dialed(DialedLink {
-            in_flight,
-            far_end,
-        }) => {
+        ServedOrigin::Dialed(DialedLink { in_flight, far_end }) => {
             let (mut filing, joins) = in_flight.into_parts();
             filing.refile(names);
             filing.answered(Some(&far_end));

@@ -208,10 +208,9 @@ async fn a_hello_crossing_a_downloads_dial_is_held_and_closes_unanswered_once_th
         .expect("the dial's hello arrives")
         .expect("readable");
 
-    let mut asker =
-        PeerConnection::connect(ours, asker_ctx(at.port()), ConnectOptions::default())
-            .await
-            .expect("rmule accepts the asker");
+    let mut asker = PeerConnection::connect(ours, asker_ctx(at.port()), ConnectOptions::default())
+        .await
+        .expect("rmule accepts the asker");
     let mut served = timeout(Duration::from_secs(5), serve.accept())
         .await
         .expect("the link is accepted")
@@ -221,7 +220,9 @@ async fn a_hello_crossing_a_downloads_dial_is_held_and_closes_unanswered_once_th
         Ok(Some(ServeInput::CrossedHelloHeld))
     ));
     assert_eq!(
-        links.find(&[LinkName::Endpoint(at)]).map(|found| found.remote),
+        links
+            .find(&[LinkName::Endpoint(at)])
+            .map(|found| found.remote),
         Some(at),
         "the dial keeps its names"
     );

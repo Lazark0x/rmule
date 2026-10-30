@@ -79,7 +79,7 @@ pub(crate) async fn drive_peer_worker(
     let far_end = (!adopted).then(FarEnd::new);
     if let LinkOrigin::Adopted { identity, .. } = &origin
         && event_tx
-            .send(PeerWorkerEvent::Identity(identity.clone()))
+            .send(PeerWorkerEvent::Identity((**identity).clone()))
             .await
             .is_err()
     {

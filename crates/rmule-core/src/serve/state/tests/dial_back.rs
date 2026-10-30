@@ -168,9 +168,10 @@ fn a_returning_waiters_ask_after_its_grant_is_answered_and_is_no_second_grant() 
     let answered = slot_request(&mut state, back, file, t);
     assert!(answered.contains(&send(back, ServerCommand::GrantSlot { file_hash: file })));
     assert!(
-        !answered
-            .iter()
-            .any(|decision| matches!(decision, ServeDecision::Emit(ServeEvent::UploadSlotGranted { .. }))),
+        !answered.iter().any(|decision| matches!(
+            decision,
+            ServeDecision::Emit(ServeEvent::UploadSlotGranted { .. })
+        )),
         "{answered:?}"
     );
 }
@@ -228,7 +229,10 @@ fn a_slot_whose_link_ends_moves_to_the_link_the_client_kept_with_its_asked_block
 
     let moved = state.on_conn_event(t, link, disconnected(), &no_modifiers());
 
-    assert!(state.queue.is_granted(back), "the slot stands on the link left");
+    assert!(
+        state.queue.is_granted(back),
+        "the slot stands on the link left"
+    );
     assert!(moved.contains(&send(back, ServerCommand::GrantSlot { file_hash: file })));
     assert!(
         moved.iter().any(|decision| matches!(
@@ -239,9 +243,10 @@ fn a_slot_whose_link_ends_moves_to_the_link_the_client_kept_with_its_asked_block
         "the blocks last asked are read again for it: {moved:?}"
     );
     assert!(
-        !moved
-            .iter()
-            .any(|decision| matches!(decision, ServeDecision::Emit(ServeEvent::UploadSlotReleased { .. }))),
+        !moved.iter().any(|decision| matches!(
+            decision,
+            ServeDecision::Emit(ServeEvent::UploadSlotReleased { .. })
+        )),
         "the slot was not released"
     );
 }

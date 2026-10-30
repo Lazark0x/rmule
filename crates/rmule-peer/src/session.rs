@@ -264,7 +264,10 @@ impl PeerSession {
     /// Ask `gate` before answering the peer's hello (ADR-0107 invariant 7).
     /// Chainable on `new_inbound`; a dialed session answers no hello.
     #[must_use]
-    pub fn with_hello_gate(mut self, gate: std::sync::Arc<dyn crate::handshake::HelloGate>) -> Self {
+    pub fn with_hello_gate(
+        mut self,
+        gate: std::sync::Arc<dyn crate::handshake::HelloGate>,
+    ) -> Self {
         self.hello_gate = Some(gate);
         self
     }

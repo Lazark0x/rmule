@@ -36,7 +36,9 @@ async fn first_hello(options: rmule_net::peer::ConnectOptions) -> PeerHelloBody 
 /// The accept options of a node with no dials to meet.
 fn accept_options(adverts: &HelloAdverts) -> rmule_net::peer::ConnectOptions {
     let links = crate::adapters::SharedPeerLinks::default();
-    let own = crate::adapters::tests::dialed_serve_ctx().identity.user_hash();
+    let own = crate::adapters::tests::dialed_serve_ctx()
+        .identity
+        .user_hash();
     build_accept_options(adverts, &links, own)
 }
 

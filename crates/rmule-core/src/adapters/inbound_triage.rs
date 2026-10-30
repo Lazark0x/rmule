@@ -299,7 +299,10 @@ fn adopt_inbound_worker(
             file,
             own_status,
             want_sources,
-            LinkOrigin::Adopted { identity, accepted },
+            LinkOrigin::Adopted {
+                identity: Box::new(identity),
+                accepted,
+            },
             command_rx,
             event_tx,
             // The adopted peer already identified during accept, where the
