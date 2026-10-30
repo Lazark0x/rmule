@@ -657,7 +657,7 @@ impl DownloadState {
 
     /// ADR-0026's terminal condition (ADR-0030): nothing holds a slot,
     /// nothing can reach one, and the file is not complete.
-    fn out_of_sources(&self) -> bool {
+    pub(crate) fn out_of_sources(&self) -> bool {
         self.sources.slots_in_use() == 0
             && self.no_usable_candidate()
             && !self.scheduler.is_complete()

@@ -483,3 +483,67 @@ async fn a_remote_queued_peer_stays_known_after_its_worker_retires() {
         "the download's end ends its Queued relations"
     );
 }
+
+/// A download whose sole source queues another of ours waits on that standing
+/// as aMule's file waits on its client (`PartFile.cpp:1472-1483`): the source
+/// is parked, not spent, so the run has not run out of sources.
+#[tokio::test]
+async fn a_sole_source_parked_on_its_standing_keeps_the_download_waiting() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let store = crate::open_durable_store_in_memory().expect("in-memory store opens");
+    let mut core = Core::builder(CoreConfig::default(), store)
+        .settings(crate::CoreSettings {
+            download_dir: Some(out_dir.path().to_path_buf()),
+            ..crate::CoreSettings::default()
+        })
+        .source_lookup(FixedSourceLookup)
+        .peer_transfer(QueuedThenHangUpPeerTransfer)
+        .build();
+    let start = |file: Ed2kFileLink, name: &str| {
+        CoreCommand::Download(DownloadCommand::StartDownload {
+            source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
+            name: rmule_primitives::SafeFileName::clean(name, &file.file_hash),
+            file,
+            if_taken: crate::NameTaken::Refuse,
+            kad_aich_root: None,
+        })
+    };
+
+    core.send(start(example_file(), "first.bin")).await.unwrap();
+    loop {
+        if let CoreEvent::Download(DownloadEvent::SourceRemoteQueued { .. }) =
+            next_core_event(&mut core).await
+        {
+            break;
+        }
+    }
+    // The standing is published on the fleet turn that pooled the source.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let second = Ed2kFileLink {
+        file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+        ..example_file()
+    };
+    core.send(start(second, "second.bin")).await.unwrap();
+    let parked = loop {
+        if let CoreEvent::Download(DownloadEvent::SourceWaitsOnStanding { download_id, .. }) =
+            next_core_event(&mut core).await
+        {
+            break download_id;
+        }
+    };
+    let settled = timeout(Duration::from_millis(300), async {
+        loop {
+            if let CoreEvent::Download(DownloadEvent::DownloadFailed {
+                download_id,
+                reason,
+            }) = next_core_event(&mut core).await
+                && download_id == parked
+            {
+                return reason;
+            }
+        }
+    })
+    .await;
+    assert!(settled.is_err(), "the parked download failed: {settled:?}");
+}

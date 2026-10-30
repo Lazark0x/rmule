@@ -342,25 +342,33 @@ where
         && !ctx.state.has_pending_callbacks()
         && !ctx.state.is_complete()
     {
-        // No candidate could even start a worker and none is callback-pending:
-        // the pool is exhausted. A requested callback (ADR-0039) keeps the
-        // download alive with no live worker yet, so it is not a failure here.
+        // No candidate could even start a worker and none is callback-pending.
+        // A requested callback (ADR-0039) keeps the download alive with no live
+        // worker yet, so it is not a failure here.
         // A discovery channel is armed (server-UDP sweep, ADR-0051, or Kad,
         // ADR-0043): wait for it to backfill rather than failing. The select!
         // loop below already waits on `global_sources_rx` and `kad_sources_rx`
         // (and `fact_rx`, kept alive by `worker_pool`).
-        let Some(reason) = source_wait(&discovery, lookup_owed) else {
-            return Err(DownloadFailure::NoUsableSources);
-        };
-        send_download_event(
-            evt_tx,
-            DownloadEvent::WaitingForSources {
-                download_id,
-                reason,
-            },
-        )
-        .await;
-        told_wait = Some(reason);
+        // A source parked on its standing is no wait for sources: the
+        // standing's own clock wakes the run, and the download fails only on
+        // the brain's terminal condition.
+        match source_wait(&discovery, lookup_owed) {
+            Some(reason) => {
+                send_download_event(
+                    evt_tx,
+                    DownloadEvent::WaitingForSources {
+                        download_id,
+                        reason,
+                    },
+                )
+                .await;
+                told_wait = Some(reason);
+            }
+            None if ctx.state.out_of_sources() => {
+                return Err(DownloadFailure::NoUsableSources);
+            }
+            None => {}
+        }
     }
 
     // ADR-0057 live wiring: a source that queues us and then hangs up keeps
