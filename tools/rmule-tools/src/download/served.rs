@@ -301,4 +301,23 @@ mod tests {
         std::fs::write(&stop, b"").unwrap();
         assert_eq!(gates.look(), Gate::Stop);
     }
+
+    /// The add gate starts its download once however long its file stays.
+    #[tokio::test]
+    async fn the_add_gate_fires_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let add = dir.path().join("add");
+        let mut gates = Gates::new(&GateArgs {
+            pause_gate: None,
+            add_gate: Some(add.clone()),
+            add_file: Some("link".to_owned()),
+            add_out: Some(dir.path().join("out")),
+            share_after_pause: Vec::new(),
+            stop_gate: None,
+        });
+        assert_eq!(gates.look(), Gate::Shut);
+        std::fs::write(&add, b"").unwrap();
+        assert_eq!(gates.look(), Gate::Add);
+        assert_eq!(gates.look(), Gate::Shut);
+    }
 }
