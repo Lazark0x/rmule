@@ -18,6 +18,7 @@ connection received are the evidence. One JSON object per line on stdout.
 """
 
 import json
+import select
 import socket
 import struct
 import sys
@@ -71,13 +72,36 @@ def drain(sock, seconds):
     return opcodes, state
 
 
+def first_close_after(one, two, sent_at, seconds):
+    """Ms from the second hello's send to the first byte back on the second
+    socket and to the first socket's close, the two read together; a close
+    that never came is `None`. Bytes on the first socket are peeked, its close
+    left for `drain` to read."""
+    deadline = time.time() + seconds
+    answered = closed = None
+    while time.time() < deadline and closed is None:
+        ready, _, _ = select.select([one, two] if answered is None else [one], [], [], 0.05)
+        now = time.time()
+        if two in ready:
+            answered = now
+        if one in ready:
+            if one.recv(1, socket.MSG_PEEK):
+                time.sleep(0.01)
+            else:
+                closed = now
+    ms = lambda at: None if at is None else round((at - sent_at) * 1000, 2)
+    return {"answer_ms": ms(answered), "first_close_ms": ms(closed)}
+
+
 def pair(target, label, first, second):
     one = socket.create_connection(target, timeout=10)
     one.sendall(hello(*first))
     got, state = drain(one, 3)
     emit(leg=label, conn=1, event="hello", port=first[1], received=got, state=state)
     two = socket.create_connection(target, timeout=10)
+    sent_at = time.time()
     two.sendall(hello(*second))
+    attach = first_close_after(one, two, sent_at, 3)
     got2, state2 = drain(two, 3)
     emit(leg=label, conn=2, event="hello", port=second[1], received=got2, state=state2)
     after, after_state = drain(one, 6)
@@ -86,6 +110,7 @@ def pair(target, label, first, second):
         leg=label,
         event="verdict",
         first_socket_closed=after_state in ("eof", "reset"),
+        attach=attach,
         second_answered=any(op.endswith(f"/0x{OP_HELLOANSWER:02x}") for op in got2),
     )
     one.close()
