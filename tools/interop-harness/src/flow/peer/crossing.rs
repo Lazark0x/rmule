@@ -130,7 +130,8 @@ pub enum CrossingLeg {
 impl CrossingLeg {
     /// Whether the leg races rmule's serve side (X, W) rather than its
     /// download from S.
-    pub(crate) fn serves(self) -> bool {
+    #[must_use]
+    pub fn serves(self) -> bool {
         matches!(
             self,
             Self::ServeCalledOff | Self::ServeCrossed | Self::ServeReask | Self::LowIdReturn
