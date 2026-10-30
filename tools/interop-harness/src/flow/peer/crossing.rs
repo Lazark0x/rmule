@@ -220,6 +220,17 @@ fn iptables(image: &str, target: &str, action: &str, rule: &[String]) -> RunCont
     )
 }
 
+/// W's reask period in wall seconds: a debug run under a fast clock
+/// (`AMULE_CLOCK_SCALE` in `amule_env`) waits that much less. Such a run never
+/// fills a row.
+fn file_reask_secs(amule_env: &[String]) -> u64 {
+    let scale = amule_env
+        .iter()
+        .find_map(|assignment| assignment.strip_prefix("AMULE_CLOCK_SCALE=")?.parse().ok())
+        .unwrap_or(1);
+    FILE_REASK_SECS / scale
+}
+
 /// A hold on the TCP segments `target`'s namespace sends to `to:port`: the
 /// SYN alone, or every segment carrying data.
 fn hold(to: Ipv4Addr, port: u16, syn: bool) -> Vec<String> {
@@ -480,8 +491,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let reask = shape.leg == CrossingLeg::ServeReask;
+        let reask_secs = file_reask_secs(options.amule_env);
         let waits = if reask {
-            FILE_REASK_SECS
+            reask_secs
         } else {
             shape.idle_secs
         };
@@ -603,7 +615,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 }
                 _ => {}
             }
-            let reask_at = asked_at + FILE_REASK_SECS as f64;
+            let reask_at = asked_at + reask_secs as f64;
             if reask {
                 // Never lifted: W's reask has to come over TCP.
                 run_checked(

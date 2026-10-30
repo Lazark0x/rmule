@@ -1,0 +1,6 @@
+#!/bin/bash
+# Stock amuled on a sped-up clock. The binary is untouched; AMULE_CLOCK_SCALE=1 runs it as is.
+scale=${AMULE_CLOCK_SCALE:-1}
+[ "$scale" = 1 ] && exec -a amuled /usr/bin/amuled.stock "$@"
+export LD_PRELOAD=$(ls /usr/lib/*/faketime/libfaketimeMT.so.1) FAKETIME="+0 x$scale" FAKETIME_NO_CACHE=1
+exec -a amuled /usr/bin/amuled.stock "$@"
