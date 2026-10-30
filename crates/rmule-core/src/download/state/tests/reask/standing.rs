@@ -32,15 +32,6 @@ fn seated(
     state
 }
 
-/// Our reask position with no client-UDP socket: every reask is a TCP full
-/// ask.
-fn tcp_only_posture() -> SourcingPosture {
-    SourcingPosture {
-        client_udp: false,
-        ..live_posture()
-    }
-}
-
 /// Which road one re-ask took.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Road {
@@ -276,8 +267,7 @@ fn a_grant_to_a_record_that_heard_no_parts_is_taken_at_its_probe_and_no_slot_ask
 
 /// A download waiting on a link that fails under another download's rider
 /// keeps its source: handed back, it stands on the peer's standing — the
-/// cut rider's — and neither dials nor asks, where it used to dial once,
-/// meet a refused connection and fail the download (ADR-0107 invariant 9).
+/// cut rider's — and neither dials nor asks (ADR-0107 invariant 9).
 #[test]
 fn a_waiter_handed_back_by_a_failed_link_stands_on_the_riders_standing() {
     let standings = QueueStandings::shared();

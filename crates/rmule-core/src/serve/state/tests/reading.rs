@@ -210,7 +210,7 @@ fn a_read_out(file: FileHash, t: Instant) -> (ServeState, PeerEndpoint, ReadTarg
     let mut state = partial(file, &[0]);
     let holder = peer(4000);
     let _ = slot_request(&mut state, holder, file, t);
-    let ask = parts([(0, 100), (0, 0), (0, 0)], file);
+    let ask = parts(file, [(0, 100), (0, 0), (0, 0)]);
     let _ = state.on_conn_event(t, holder, ask, &no_modifiers());
     let aimed = state.served[&file].served.read_target();
     (state, holder, aimed)

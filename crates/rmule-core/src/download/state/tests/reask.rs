@@ -26,6 +26,15 @@ mod purge;
 mod redial;
 mod standing;
 
+/// Our reask position with no client-UDP socket: every reask is a TCP full
+/// ask.
+fn tcp_only_posture() -> SourcingPosture {
+    SourcingPosture {
+        client_udp: false,
+        ..live_posture()
+    }
+}
+
 /// The port every test source advertises for client UDP.
 const UDP_PORT: u16 = 5000;
 

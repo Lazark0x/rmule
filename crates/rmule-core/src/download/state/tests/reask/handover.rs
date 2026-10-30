@@ -21,7 +21,7 @@ fn seated(standings: &SharedQueueStandings, id: u64, pool: &[PeerEndpoint]) -> D
         download,
         file_hash_only_content(THREE_PARTS),
         no_facts(),
-        tcp_only(),
+        tcp_only_posture(),
         CALLBACK_TIMEOUT,
         crate::download::connection_budget::BudgetSeat::ceiling(1),
     )
@@ -29,13 +29,6 @@ fn seated(standings: &SharedQueueStandings, id: u64, pool: &[PeerEndpoint]) -> D
     take(&mut state, Channel::Server, plain_sightings(pool));
     state.hold_standings();
     state
-}
-
-fn tcp_only() -> SourcingPosture {
-    SourcingPosture {
-        client_udp: false,
-        ..live_posture()
-    }
 }
 
 /// The worker at `peer` advertises no part we lack at `at`: its record stands
