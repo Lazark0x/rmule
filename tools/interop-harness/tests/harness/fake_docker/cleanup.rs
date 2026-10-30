@@ -183,6 +183,7 @@ fn failed_network_id_write_cleans_up_created_network() {
         rmule_serve: false,
         rmule_peer_crypt: None,
         rmule_peer_crypt_flip: &[],
+        rmule_serve_file_name: None,
         rmule_client_action: RmuleClientAction::Download,
     });
 
