@@ -245,11 +245,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     // On the download side rmule's dial is out before S is told to open its
     // link, and every link with S belongs to the race.
     let race_began = if at.shape.leg.serves() {
-        // Unheld, W is told to ask before X stops.
-        at.marks
-            .holder_stopped_at
-            .unwrap_or(0.0)
-            .min(at.marks.returned_at.unwrap_or(f64::MAX))
+        at.marks.holder_stopped_at.unwrap_or(0.0)
     } else {
         0.0
     };
@@ -328,21 +324,16 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         )
     };
     let claims = match at.shape.leg {
-        CrossingLeg::ServeCalledOff
-        | CrossingLeg::ServeCrossed
-        | CrossingLeg::ServeCrossedKnown => {
-            let on_dial = at.shape.leg != CrossingLeg::ServeCalledOff;
-            let unheld = at.shape.unheld;
+        CrossingLeg::ServeCalledOff | CrossingLeg::ServeCrossed => {
+            let on_dial = at.shape.leg == CrossingLeg::ServeCrossed;
             let mut claims = vec![
                 Claim::about(
-                    if unheld {
-                        "the-slot-landed-on-one-link"
-                    } else if on_dial {
+                    if on_dial {
                         "the-slot-landed-on-the-dial-back"
                     } else {
                         "the-slot-landed-on-the-waiters-own-link"
                     },
-                    granted_on.is_some_and(|link| unheld || link.rmule_opened == on_dial),
+                    granted_on.is_some_and(|link| link.rmule_opened == on_dial),
                     Evidence::Captured,
                     format!(
                         "rmule's first OP_ACCEPTUPLOADREQ after X stopped went on {}",
@@ -363,7 +354,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             if !on_dial {
                 claims.push(one_slot(granted_on));
             }
-            if on_dial && !unheld {
+            if on_dial {
                 claims.push(Claim::about(
                     "the-waiters-hello-was-held-and-never-answered",
                     held && unanswered(own),

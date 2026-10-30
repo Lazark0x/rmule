@@ -33,8 +33,6 @@ pub(crate) enum LegArg {
     ServeCalledOff,
     /// rmule's dial-back has written its hello when the waiter's link lands.
     ServeCrossed,
-    /// The crossed race with the waiter's record of rmule alive, address known.
-    ServeCrossedKnown,
     /// A Low-ID waiter comes back while rmule's slot sits free.
     LowIdReturn,
     /// rmule's download dial held at its SYN while its seed's link lands.
@@ -48,7 +46,6 @@ impl From<LegArg> for CrossingLeg {
         match leg {
             LegArg::ServeCalledOff => Self::ServeCalledOff,
             LegArg::ServeCrossed => Self::ServeCrossed,
-            LegArg::ServeCrossedKnown => Self::ServeCrossedKnown,
             LegArg::LowIdReturn => Self::LowIdReturn,
             LegArg::DownloadYield => Self::DownloadYield,
             LegArg::DownloadCrossed => Self::DownloadCrossed,
@@ -83,9 +80,6 @@ pub(crate) struct PeerCrossingArgs {
     /// Seconds the flow watches after the last hold is lifted.
     #[arg(long, default_value_t = 30)]
     pub(crate) watch: u64,
-    /// `serve-crossed-known` with no hold: the race falls as it will.
-    #[arg(long)]
-    pub(crate) unheld: bool,
     /// Per-step readiness budget in seconds.
     #[arg(long, default_value_t = 300)]
     pub(crate) timeout: u64,
@@ -115,7 +109,6 @@ pub(crate) fn peer_crossing(args: PeerCrossingArgs) -> Result<()> {
         idle_secs: args.idle,
         hold_secs: args.hold,
         watch_secs: args.watch,
-        unheld: args.unheld,
     };
     args.bench.prepare(&[
         args.eserver.build_context(),
