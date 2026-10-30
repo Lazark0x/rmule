@@ -683,8 +683,9 @@ fn direct_dial(
     Ok((claims, String::new()))
 }
 
-/// `ipv6-server-sentinel`: a capable server emits a **Sentinel Source** to a
-/// capable session — and the pinned `ed2ksrv` is not one.
+/// `ipv6-server-sentinel`: what `ed2ksrv` on the bench's default config draws
+/// of the IPv6 dialect, which is nothing. The pin speaks the dialect on
+/// `config-ipv6.toml`, and `ed2ksrv-server-surface` holds that row.
 fn server_sentinel(
     bench: &mut Bench,
     options: &Ipv6DialectOptions<'_>,
@@ -696,18 +697,14 @@ fn server_sentinel(
                 "an-ipv6-capable-ed2k-server-to-talk-to",
                 format!(
                     "the ed2ksrv counterparty image is not built on this bench, so nothing \
-                     was measured here. The pin itself is the standing blocker: {} has zero \
-                     IPv6, read off ed2k-server's source and confirmed against the image's \
-                     own config schema, and no upstream build with IPv6 exists yet to pin.",
+                     was measured here. {} speaks IPv6 only on `config-ipv6.toml`; that row \
+                     is `ed2ksrv-server-surface`.",
                     crate::flow::ed2ksrv::pin_text(),
                 ),
             )],
-            "Documented Absence, naming the missing pin: no upstream build with IPv6 exists yet, so no \
-             ed2k-server build exists that could emit a Sentinel Source to a capable \
-             session. This run additionally had no ed2ksrv image built, so the silence was \
-             not re-measured on the wire; the flow takes that measurement automatically as \
-             soon as the image is present, and asserts the real row as soon as the image is \
-             IPv6-capable."
+            "Superseded by `ed2ksrv-server-surface`: this flow runs the default config, which \
+             carries no IPv6. This run had no ed2ksrv image built, so the silence was not \
+             re-measured on the wire."
                 .to_owned(),
         ));
     }
@@ -800,15 +797,14 @@ fn server_sentinel(
             -1
         };
         claims.push(Claim::absence(
-            "no-ipv6-capable-ed2ksrv-pin-exists",
+            "the-default-config-draws-no-ipv6",
             ipv6_surfaces,
             format!(
                 "measured: the ed2k-server image ({}) answered the login with \
                  SRV_TCPFLG = 0x{:08X} — SRV_TCPFLG_IPV6 (0x4000) clear — sent no \
                  ST_IPV6_STATUS ({}), named no CT_MOD_SVR_IP_V6 ({:?}), returned {} sentinel \
-                 records and a server list with {} IPv6 entries. No upstream build with IPv6 \
-                 exists yet to pin; until one does, this row \
-                 has no counterparty and the harness fabricates none.",
+                 records and a server list with {} IPv6 entries, on the default config. The \
+                 dialect's row runs on `config-ipv6.toml`, in `ed2ksrv-server-surface`.",
                 crate::flow::ed2ksrv::ED2KSRV.body_pin(&bench.docker, options.ed2ksrv_image),
                 row.int("tcp_flags_bits"),
                 row.flag("ipv6_status_present"),
@@ -819,14 +815,14 @@ fn server_sentinel(
         ));
         claims.push(Claim::blocked(
             "a-sentinel-source-dialled-from-a-capable-session",
-            "blocked: no pinnable ed2k-server build speaks the dialect, so no \
-             server can emit the row this flow would dial. The flow lifts itself the moment \
-             `server_claims_ipv6` reads true against a re-pinned image — no code change.",
+            "blocked here: the default config emits no sentinel to dial. \
+             `ed2ksrv-server-surface` draws the sentinel on `config-ipv6.toml`.",
         ));
         claims.push(Claim::blocked(
             "op-callbackrequested-ipv6-0x26-consumed-from-a-server",
-            "source-derived and undriven: no pinned server emits 0x26 or the OP_SERVERLIST \
-             v6 block, so ADR-0087 rests them on the emule-qt IPv6 spec alone.",
+            "source-derived and undriven: the pin emits neither 0x26 nor the OP_SERVERLIST \
+             v6 block on any config (`ed2ksrv-server-surface` measures that), so ADR-0087 \
+             rests them on the emule-qt IPv6 spec alone.",
         ));
     }
 
@@ -834,11 +830,10 @@ fn server_sentinel(
         String::new()
     } else {
         format!(
-            "Documented Absence. The IPv6-dialect server row needs an `ed2ksrv` pin with IPv6, \
-             and none exists yet: the pinned build is {}, which carries no IPv6 at all. The absence \
-             above is measured from the server's own login and OP_SERVERIDENT bytes rather \
-             than read off a release note, and the flow asserts the real row automatically \
-             once a capable pin appears.",
+            "Documented Absence on the default config of {}. The dialect's server row runs on \
+             `config-ipv6.toml` and is `ed2ksrv-server-surface`'s; this flow no longer settles \
+             it. The absence above is measured from the server's own login and OP_SERVERIDENT \
+             bytes.",
             crate::flow::ed2ksrv::pin_text(),
         )
     };

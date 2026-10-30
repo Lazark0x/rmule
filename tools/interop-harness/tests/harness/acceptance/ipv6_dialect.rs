@@ -349,11 +349,9 @@ fn ipv6_download_rung0() {
     }
 }
 
-/// **`ipv6-server-sentinel`.** A **Documented Absence** naming the
-/// missing pin, in the verdict's own `note`. No pinnable `ed2ksrv` build
-/// speaks the dialect yet, so no server can emit a **Sentinel
-/// Source** to a capable session. The flow lifts itself with no code change the
-/// moment `server_claims_ipv6` reads true.
+/// **`ipv6-server-sentinel`.** A **Documented Absence** on the bench's default
+/// config, which carries no IPv6. The pin speaks the dialect on
+/// `config-ipv6.toml`, and `ed2ksrv-server-surface` holds that row.
 #[test]
 #[ignore = "bench flow: requires Docker + RMULE_BENCH=1"]
 fn ipv6_server_sentinel() {
@@ -364,9 +362,9 @@ fn ipv6_server_sentinel() {
     let verdict = read_string(&run_dir, "ipv6-server-sentinel-verdict.toml");
     assert!(
         verdict.contains("verdict = \"OBSERVED\""),
-        "ipv6-server-sentinel: the row must stay a documented absence until a pinnable ed2k-server build carries IPv6:\n{verdict}",
+        "ipv6-server-sentinel: the default config must stay a documented absence:\n{verdict}",
     );
-    for expected in ["no pinnable ed2k-server build", "note = "] {
+    for expected in ["ed2ksrv-server-surface", "note = "] {
         assert!(
             verdict.contains(expected),
             "ipv6-server-sentinel: {expected} missing from the verdict:\n{verdict}",
