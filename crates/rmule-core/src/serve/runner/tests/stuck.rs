@@ -18,6 +18,7 @@ fn hello(byte: u8) -> ServeInput {
     HelloFacts::of(UserHash::from_bytes([byte; UserHash::BYTE_LEN])).identified()
 }
 
+#[cfg(unix)]
 fn first_block_ask(file_hash: FileHash, len: u64) -> ServeInput {
     ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
