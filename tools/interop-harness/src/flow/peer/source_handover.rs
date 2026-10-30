@@ -118,6 +118,16 @@ fn stage(layout: &RunLayout) -> Result<Staged> {
     })
 }
 
+/// An address on the sharer's subnet nobody answers at, named beside it in the
+/// second link. rmule fails a download at its start when its sole source waits
+/// on a standing and no discovery channel is armed (run `1793397391`,
+/// `download/runner/fleet.rs`), so the bench holds one dial open past that
+/// check. It ends on its own and the sharer never sees it.
+fn unanswering_neighbour(sharer: Ipv4Addr) -> Ipv4Addr {
+    let [a, b, c, _] = sharer.octets();
+    Ipv4Addr::new(a, b, c, 250)
+}
+
 /// Run the flow and score it.
 ///
 /// # Errors
@@ -190,7 +200,10 @@ pub fn run_source_handover(options: SourceHandoverOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let first_link = with_sources(&staged.first.link, &[sharer_ip]);
-        let second_link = with_sources(&staged.second.link, &[sharer_ip]);
+        let second_link = with_sources(
+            &staged.second.link,
+            &[sharer_ip, unanswering_neighbour(sharer_ip)],
+        );
         let download = options
             .rmule_client_container
             .download_start_detached_with_args(
