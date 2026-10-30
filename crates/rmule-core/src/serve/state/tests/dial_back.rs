@@ -220,7 +220,7 @@ fn a_slot_whose_link_ends_moves_to_the_link_the_client_kept_with_its_asked_block
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
     let _ = state.on_conn_event(t, back, hello, &no_modifiers());
-    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]).expect("one range");
+    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]);
     let ask = ServeInput::Server(ServerEvent::PartsRequested {
         file_hash: file,
         ranges,
