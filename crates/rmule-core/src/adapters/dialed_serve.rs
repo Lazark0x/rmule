@@ -20,6 +20,7 @@ use super::peer_link::{
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
 use super::serve_runtime::{ServeConnection, ServeInput, ServeOutput};
+use crate::secured_identity::KeyProof;
 use crate::service::DialEnd;
 
 /// The slot through which dialed connections reach the serve activity.
@@ -508,14 +509,18 @@ impl Halves<'_> {
                 user_hash,
                 public_key,
             } => {
-                let bound = self
+                let proof = self
                     .deps
                     .secured_identities
                     .bind(user_hash, &public_key)
                     .await;
-                if bound && serving {
-                    let identified = ServeInput::IdentityBound { user_hash };
-                    let _ = self.server_tx.send(identified).await;
+                let input = match proof {
+                    KeyProof::Bound => Some(ServeInput::IdentityBound { user_hash }),
+                    KeyProof::Mismatch => Some(ServeInput::KeyMismatch { user_hash }),
+                    KeyProof::Unsettled => None,
+                };
+                if let Some(input) = input.filter(|_| serving) {
+                    let _ = self.server_tx.send(input).await;
                 }
             }
             // A revision, whole, to both halves that keep the identity: the

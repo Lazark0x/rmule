@@ -515,6 +515,18 @@ impl UploadSlotQueue {
         Some((index + 1) as u16)
     }
 
+    /// The rank a client holding `peer`'s standing is answered with on
+    /// another of its links (ADR-0107): its place, or 1 while it holds a slot,
+    /// with nobody ahead of it.
+    #[must_use]
+    pub fn standing_rank(&self, peer: PeerEndpoint) -> Option<u16> {
+        if self.granted.iter().any(|g| g.peer == peer) {
+            return Some(1);
+        }
+        let index = self.waiting.iter().position(|q| q.peer == peer)?;
+        Some((index + 1) as u16)
+    }
+
     /// The file `peer` waits for, when it is on the wait list.
     #[must_use]
     pub fn waiting_file(&self, peer: PeerEndpoint) -> Option<FileHash> {

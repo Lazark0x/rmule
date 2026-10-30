@@ -23,6 +23,7 @@ use super::peer_link::{
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
+use crate::secured_identity::KeyProof;
 use crate::service::PortTestClosedBy;
 
 /// Drive one accepted, identified link that took the serve road, filed as a
@@ -302,10 +303,11 @@ async fn route(
             user_hash,
             public_key,
         }) => {
-            if !deps.secured_identities.bind(user_hash, &public_key).await {
-                return Routed::Open;
+            match deps.secured_identities.bind(user_hash, &public_key).await {
+                KeyProof::Bound => ServeInput::IdentityBound { user_hash },
+                KeyProof::Mismatch => ServeInput::KeyMismatch { user_hash },
+                KeyProof::Unsettled => return Routed::Open,
             }
-            ServeInput::IdentityBound { user_hash }
         }
         PeerEvent::Connection(fact) => {
             if let ConnectionEvent::IdentityRevised {

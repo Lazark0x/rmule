@@ -128,6 +128,30 @@ async fn a_dialed_links_verification_is_bound_and_its_serve_half_reads_the_clien
     );
 }
 
+/// A key under the peer's hash that differs from the bound one reaches the
+/// serve half, which bans on it while the holder of the bound key is linked
+/// (ADR-0107).
+#[tokio::test]
+async fn a_dialed_links_proof_of_another_key_reaches_its_serve_half() {
+    let credit = ledger();
+    credit
+        .bind_public_key(PEER_HASH, b"an earlier key")
+        .unwrap();
+    let link = dialed_sui_link(Arc::new(SecureIdentKey::generate().unwrap()), credit).await;
+    let mut serve_conn = link.serve.conn;
+
+    let mismatch = timeout(Duration::from_secs(5), async {
+        while let Some(input) = serve_conn.next_event().await {
+            if let ServeInput::KeyMismatch { user_hash } = input {
+                return Some(user_hash);
+            }
+        }
+        None
+    })
+    .await;
+    assert_eq!(mismatch, Ok(Some(PEER_HASH)));
+}
+
 /// The serve half lets the link go the moment it reaches the serve side,
 /// racing the verification the peer is proving: the verification is still
 /// bound, once — a key under the peer's hash that differs is raised as a

@@ -19,6 +19,17 @@ use tokio::sync::mpsc;
 use crate::credit::{KeyBinding, SharedCreditStore};
 use crate::service::CoreEvent;
 
+/// What a link's proof of a key came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyProof {
+    /// The client is identified: its key was adopted, or was bound already.
+    Bound,
+    /// The ledger binds another key to the hash (eMule's `IS_IDFAILED`).
+    Mismatch,
+    /// Nothing was settled: no ledger is installed, or it failed to answer.
+    Unsettled,
+}
+
 /// Where a link binds its verified identity (see the module docs).
 #[derive(Clone, Default)]
 pub(crate) struct SharedSecuredIdentities {
@@ -45,30 +56,29 @@ impl SharedSecuredIdentities {
     /// as that client's Secured Identity through the ledger's compare-and-set
     /// (ADR-0041). A key that differs from the one bound is eMule's
     /// `IS_IDFAILED`: the stored key stays, and the theft is raised as
-    /// [`CoreEvent::SecuredIdentityMismatch`]. Whether the client is
-    /// identified now — its key adopted, or bound already.
-    pub(crate) async fn bind(&self, user_hash: UserHash, public_key: &[u8]) -> bool {
+    /// [`CoreEvent::SecuredIdentityMismatch`].
+    pub(crate) async fn bind(&self, user_hash: UserHash, public_key: &[u8]) -> KeyProof {
         let installed = self
             .installed
             .lock()
             .expect("secured identity cell poisoned")
             .clone();
         let Some(installed) = installed else {
-            return false;
+            return KeyProof::Unsettled;
         };
         match installed.credit.bind_public_key(user_hash, public_key) {
-            Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound) => true,
+            Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound) => KeyProof::Bound,
             Ok(KeyBinding::Mismatch) => {
                 if let Some(events) = installed.events.upgrade() {
                     let _ = events
                         .send(CoreEvent::SecuredIdentityMismatch { user_hash })
                         .await;
                 }
-                false
+                KeyProof::Mismatch
             }
             Err(error) => {
                 tracing::warn!(%error, "a verified identity could not be bound");
-                false
+                KeyProof::Unsettled
             }
         }
     }
@@ -81,7 +91,7 @@ mod tests {
     use rmule_primitives::UserHash;
     use tokio::sync::mpsc;
 
-    use super::SharedSecuredIdentities;
+    use super::{KeyProof, SharedSecuredIdentities};
     use crate::credit::SharedCreditStore;
     use crate::service::CoreEvent;
     use crate::store::credit::DurableCreditStore;
@@ -102,10 +112,19 @@ mod tests {
         let secured = SharedSecuredIdentities::default();
         secured.install(Arc::clone(&credit), events_tx.downgrade());
 
-        assert!(secured.bind(PEER, b"first-key").await, "first proof binds");
-        assert!(secured.bind(PEER, b"first-key").await, "the same key again");
-        assert!(
-            !secured.bind(PEER, b"thief-key").await,
+        assert_eq!(
+            secured.bind(PEER, b"first-key").await,
+            KeyProof::Bound,
+            "first proof binds"
+        );
+        assert_eq!(
+            secured.bind(PEER, b"first-key").await,
+            KeyProof::Bound,
+            "the same key again"
+        );
+        assert_eq!(
+            secured.bind(PEER, b"thief-key").await,
+            KeyProof::Mismatch,
             "another key under the hash is refused"
         );
         assert_eq!(

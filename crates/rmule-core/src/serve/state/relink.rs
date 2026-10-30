@@ -15,8 +15,15 @@
 //! aMule settles them: an identified one still linked turns the newcomer away
 //! (`ClientList.cpp:384-392`), and at a slot ask the ones not identified leave
 //! the wait list (`UploadQueue.cpp:432-458`).
+//!
+//! That rule holds where a client has one address, which is IPv4 alone
+//! (ADR-0107, "One client on two addresses"). Elsewhere two links under one
+//! hash are one client when both proved the key or the held link's hello
+//! names the other's address; anything else is unproved, and a ban waits for
+//! a proof of another key.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::time::Instant;
 
 use rmule_peer::PeerIdentity;
@@ -29,6 +36,25 @@ use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::Relinked;
 
 use super::{ServeDecision, ServeState};
+
+/// Whether two addresses are two parties when one hash names both: only
+/// between two IPv4 addresses. A dual-stack client holds one in each family
+/// and an IPv6 host several (ADR-0107).
+const fn addresses_part_clients(one: PeerEndpoint, other: PeerEndpoint) -> bool {
+    matches!((one, other), (PeerEndpoint::V4(_), PeerEndpoint::V4(_)))
+}
+
+/// Whether the hello `known` names `address` as the client's own: its High
+/// ID, or its `CT_MOD_IP_V6`.
+fn names_address(known: &PeerIdentity, address: PeerEndpoint) -> bool {
+    match address.ip() {
+        IpAddr::V4(ip) => {
+            let id = known.client_id();
+            id.is_high_id() && id.as_u32() == u32::from_le_bytes(ip.octets())
+        }
+        IpAddr::V6(ip) => known.peer_ipv6() == Some(ip),
+    }
+}
 
 impl ServeState {
     /// Move the standing of the client `identity` names onto `peer`, the
@@ -103,7 +129,10 @@ impl ServeState {
             .identities
             .iter()
             .filter(|(held, known)| {
-                **held != peer && known.user_hash() == user_hash && !self.queue.contains(**held)
+                **held != peer
+                    && known.user_hash() == user_hash
+                    && !self.queue.contains(**held)
+                    && self.may_carry_standing(peer, **held)
             })
             .map(|(held, _)| *held)
             .min()?;
@@ -113,6 +142,33 @@ impl ServeState {
             decisions.extend(self.on_parts_requested(now, left, file_hash, &ranges, modifiers));
         }
         Some(decisions)
+    }
+
+    /// Whether the links `held` and `link` are proved one client (ADR-0107,
+    /// "One client on two addresses"): under one User Hash, both proved the
+    /// key, or — the two not both IPv4 — `held`'s own hello names `link`'s
+    /// address on the same listen port. What `link`'s hello says of `held`
+    /// proves nothing: a thief copies a claim as easily as a hash.
+    fn proved_one_client(&self, held: PeerEndpoint, link: PeerEndpoint) -> bool {
+        let (Some(known), Some(other)) = (self.identities.get(&held), self.identities.get(&link))
+        else {
+            return false;
+        };
+        let both_proved = self.identified.contains(&held) && self.identified.contains(&link);
+        let named = !addresses_part_clients(held, link)
+            && known.tcp_port() == other.tcp_port()
+            && names_address(known, link);
+        known.user_hash() == other.user_hash() && (both_proved || named)
+    }
+
+    /// Whether a standing of the link `held` may ride on on `link`, another
+    /// of its User Hash: a verified client's goes to a link of that client,
+    /// never to one that only says so (ADR-0107).
+    pub(super) fn may_carry_standing(&self, held: PeerEndpoint, link: PeerEndpoint) -> bool {
+        let same_place = held.ip() == link.ip()
+            && self.identities.get(&held).map(PeerIdentity::tcp_port)
+                == self.identities.get(&link).map(PeerIdentity::tcp_port);
+        !self.identified.contains(&held) || same_place || self.proved_one_client(held, link)
     }
 
     /// Move the standing held at `from` onto `peer`, closing `from` when it is
@@ -170,24 +226,103 @@ impl ServeState {
     }
 
     /// Whether the new link `peer`, whose hello is `identity`, names the User
-    /// Hash of an identified client still linked from another address or
+    /// Hash of an identified client still linked from another IPv4 address or
     /// listen port — aMule bans that newcomer, "Userhash invalid"
-    /// (`ClientList.cpp:384-392`).
+    /// (`ClientList.cpp:384-392`), at the `OP_HELLO` of a socket the peer
+    /// opened (`ClientTCPSocket.cpp:391`), so never on a link rmule dialed.
+    /// Off IPv4 a second address is no proof of a second party (ADR-0107):
+    /// [`on_key_mismatch`](Self::on_key_mismatch) bans there, on proof.
     pub(super) fn refuses_hash_thief(&self, peer: PeerEndpoint, identity: &PeerIdentity) -> bool {
-        self.identities.iter().any(|(held, known)| {
-            *held != peer
-                && known.user_hash() == identity.user_hash()
-                && self.identified.contains(held)
-                && !self.queue.is_unlinked(*held)
-                && (held.ip() != peer.ip() || known.tcp_port() != identity.tcp_port())
-        })
+        !self.dialed.contains_key(&peer)
+            && self.identities.iter().any(|(held, known)| {
+                *held != peer
+                    && addresses_part_clients(*held, peer)
+                    && known.user_hash() == identity.user_hash()
+                    && self.identified.contains(held)
+                    && !self.queue.is_unlinked(*held)
+                    && (held.ip() != peer.ip() || known.tcp_port() != identity.tcp_port())
+            })
     }
 
-    /// Settle a slot ask from `peer` against the waiters holding its User
-    /// Hash on other links (`UploadQueue.cpp:432-458`): each one not
-    /// identified leaves the wait list, and when one clashed and `peer`
-    /// itself is not identified its ask is answered nothing — the second
-    /// value. A waiter whose link already ended is forgotten with its place.
+    /// `peer`'s session proved a key that is not the one the ledger binds to
+    /// `user_hash`, the hash its hello names. With the client that holds the
+    /// bound key still linked that is two parties for certain, and `peer` is
+    /// the thief: its address is banned (ADR-0107). A client on two addresses
+    /// holds one key, so it never lands here.
+    pub(in crate::serve) fn on_key_mismatch(
+        &self,
+        peer: PeerEndpoint,
+        user_hash: UserHash,
+    ) -> Vec<ServeDecision> {
+        let names_it = self
+            .identities
+            .get(&peer)
+            .is_some_and(|identity| identity.user_hash() == user_hash);
+        let holder_linked = self.identities.iter().any(|(held, known)| {
+            *held != peer
+                && known.user_hash() == user_hash
+                && self.identified.contains(held)
+                && !self.queue.is_unlinked(*held)
+        });
+        if names_it && holder_linked {
+            vec![
+                ServeDecision::Ban { peer },
+                ServeDecision::Disconnect { peer },
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Settle a slot ask from `peer`, which holds no standing, against a
+    /// standing of its User Hash that an address cannot part from it
+    /// (ADR-0107, "One client on two addresses"). A standing whose link ended
+    /// moves to `peer`, and the ask goes on. A live one stays where it is:
+    /// a proved second link is answered the client's rank, and an unproved
+    /// one nothing. `None` with no such standing; otherwise the
+    /// [`settle_hash_clash`](Self::settle_hash_clash) pair.
+    fn settle_second_address(
+        &mut self,
+        peer: PeerEndpoint,
+        user_hash: UserHash,
+    ) -> Option<(Vec<ServeDecision>, bool)> {
+        if self.queue.contains(peer) {
+            return None;
+        }
+        let (held, linked, proved) = self.queue.standings().find_map(|(held, linked)| {
+            let same_hash = held != peer
+                && self
+                    .identities
+                    .get(&held)
+                    .is_some_and(|known| known.user_hash() == user_hash);
+            let proved = same_hash && self.proved_one_client(held, peer);
+            (proved || same_hash && !addresses_part_clients(held, peer))
+                .then_some((held, linked, proved))
+        })?;
+        if !linked {
+            let moved = self.move_standing(held, peer, false);
+            let granted = self.queue.is_granted(peer);
+            return Some((moved, granted));
+        }
+        if !proved {
+            return Some((Vec::new(), true));
+        }
+        let rank = self.queue.standing_rank(held)?;
+        let answer = ServeDecision::Send {
+            peer,
+            command: ServerCommand::SetQueueRank { rank },
+        };
+        Some((vec![answer], true))
+    }
+
+    /// Settle a slot ask from `peer` against the standings holding its User
+    /// Hash on other links. Where an address cannot part two clients,
+    /// [`settle_second_address`](Self::settle_second_address) decides;
+    /// between two IPv4 addresses each waiter not identified leaves the wait
+    /// list (`UploadQueue.cpp:432-458`), and when one clashed and `peer`
+    /// itself is not identified its ask is answered nothing. The second value
+    /// says the ask stops here. A waiter whose link already ended is
+    /// forgotten with its place.
     pub(super) fn settle_hash_clash(
         &mut self,
         now: Instant,
@@ -197,12 +332,16 @@ impl ServeState {
         let Some(user_hash) = self.identities.get(&peer).map(PeerIdentity::user_hash) else {
             return (Vec::new(), false);
         };
+        if let Some(settled) = self.settle_second_address(peer, user_hash) {
+            return settled;
+        }
         let clashing: Vec<PeerEndpoint> = self
             .queue
             .waiters()
             .map(|(held, _)| held)
             .filter(|held| {
                 *held != peer
+                    && addresses_part_clients(*held, peer)
                     && self
                         .identities
                         .get(held)

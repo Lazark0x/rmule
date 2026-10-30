@@ -49,6 +49,7 @@ impl ServeState {
                 **held != waiter
                     && known.user_hash() == user_hash
                     && !self.queue.is_unlinked(**held)
+                    && self.may_carry_standing(waiter, **held)
             })
             .map(|(held, _)| *held)
             .min();

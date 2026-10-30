@@ -66,8 +66,9 @@ pub(super) enum ServeDecision {
     /// ledger lock.
     RecordCredit { user_hash: UserHash, bytes: u64 },
     /// Ban `peer`'s address: its hello named the User Hash of an identified
-    /// client still linked from elsewhere (ADR-0107; aMule bans it,
-    /// "Userhash invalid", `ClientList.cpp:384-392`).
+    /// client still linked from another IPv4 address (aMule bans it,
+    /// "Userhash invalid", `ClientList.cpp:384-392`), or its session proved
+    /// another key under that hash (ADR-0107).
     Ban { peer: PeerEndpoint },
     /// Send `block`'s `bytes` to `peer` as its link's task finds them: deflated
     /// there, off the async runtime and off this loop, when that is smaller

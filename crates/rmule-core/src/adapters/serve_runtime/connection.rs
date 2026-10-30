@@ -39,6 +39,12 @@ pub enum ServeInput {
         /// The User Hash the verification proved.
         user_hash: UserHash,
     },
+    /// The link's session proved a key that is not the one the ledger binds
+    /// to `user_hash` (ADR-0041, ADR-0107).
+    KeyMismatch {
+        /// The User Hash the proof was made under.
+        user_hash: UserHash,
+    },
     /// The peer's hello on this link was held: a dial of ours to it has its
     /// hello out unanswered (ADR-0107 invariant 7).
     CrossedHelloHeld,

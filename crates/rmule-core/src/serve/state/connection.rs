@@ -235,6 +235,7 @@ impl ServeState {
                 self.on_identity_bound(peer, user_hash);
                 Vec::new()
             }
+            ServeInput::KeyMismatch { user_hash } => self.on_key_mismatch(peer, user_hash),
             ServeInput::CrossedHelloHeld => {
                 vec![ServeDecision::Emit(ServeEvent::CrossedHelloHeld { peer })]
             }
