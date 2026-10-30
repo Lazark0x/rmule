@@ -53,6 +53,9 @@ pub(crate) enum LegArg {
     DownloadYield,
     /// rmule's download dial has written its hello when its seed's link lands.
     DownloadCrossed,
+    /// kno, knowing rmule from a hello and holding no link to it, dials first
+    /// (run with `--amule-image rmule/interop-amule-kno:local`).
+    KnoDialsFirst,
 }
 
 impl From<LegArg> for CrossingLeg {
@@ -66,6 +69,7 @@ impl From<LegArg> for CrossingLeg {
             LegArg::ServeIdentifying => Self::ServeIdentifying,
             LegArg::DownloadYield => Self::DownloadYield,
             LegArg::DownloadCrossed => Self::DownloadCrossed,
+            LegArg::KnoDialsFirst => Self::KnoDialsFirst,
         }
     }
 }

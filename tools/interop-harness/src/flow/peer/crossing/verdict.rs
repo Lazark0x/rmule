@@ -18,9 +18,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{CrossingLeg, CrossingShape};
 use crate::flow::nat::claims::{Claim, Evidence, label};
-use crate::flow::pcap::{TcpCapture, records, tcp_capture};
+use crate::flow::pcap::{TcpCapture, records, tcp_capture, udp4_datagrams};
 
 mod dead_dial;
+mod first_dial;
 
 /// The flow's own dir under the run dir.
 pub(crate) const ROOT_DIR: &str = "peer-crossing";
@@ -370,6 +371,13 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     };
     let claims = match at.shape.leg {
         CrossingLeg::ServeDeadDial => dead_dial::dead_dial_claims(&rows, dial, own),
+        CrossingLeg::KnoDialsFirst => first_dial::claims(
+            &rows,
+            &udp4_datagrams(&root.join(RMULE_PCAP))?,
+            (IpAddr::V4(at.rmule), IpAddr::V4(at.peer)),
+            returned,
+            own,
+        ),
         CrossingLeg::ServeIdentifying => {
             let mut claims = dead_dial::dead_dial_claims(&rows, dial, own);
             claims.extend(dead_dial::identity_claims(

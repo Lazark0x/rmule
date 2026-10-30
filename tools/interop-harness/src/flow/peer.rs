@@ -37,6 +37,7 @@ pub use self::dial_back_grant::{
     score_run_dir as score_peer_dial_back_grant, stage_dial_back_files,
 };
 pub use self::direct_sui::{DirectSuiOptions, run_amule_direct_sui};
+pub use self::lowid_callback_reask::sharer_asks::score_run_dir as score_lowid_sharer_asks;
 pub use self::lowid_callback_reask::verdict::score_run_dir as score_lowid_callback_reask;
 pub use self::lowid_callback_reask::{
     PeerLowIdCallbackReaskOptions, run_peer_lowid_callback_reask,

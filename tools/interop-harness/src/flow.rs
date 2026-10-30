@@ -84,8 +84,8 @@ pub use self::peer::{
     default_seeds, run_amule_direct_sui, run_peer_lowid_callback_reask, run_peer_udp_reask,
     run_peer_udp_reask_emit, run_rmule_serves_amule_downloads, run_streaming_window, run_sx1_gate,
     run_two_hellos, score_emit_run_dir as score_peer_udp_reask_emit, score_lowid_callback_reask,
-    score_run_dir as score_peer_udp_reask, score_streaming_window, seed_holding_arg,
-    stage_reask_emit_files,
+    score_lowid_sharer_asks, score_run_dir as score_peer_udp_reask, score_streaming_window,
+    seed_holding_arg, stage_reask_emit_files,
 };
 pub use self::peer::{
     CrossingLeg, CrossingShape, PeerCrossingOptions, PeerReciprocityOptions, ReciprocityLeg,

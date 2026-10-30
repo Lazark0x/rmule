@@ -138,6 +138,10 @@ pub enum CrossingLeg {
     DownloadYield,
     /// rmule's download dial has written its hello when its seed's link lands.
     DownloadCrossed,
+    /// kno knows rmule from a hello, holds no link to it, adds a file rmule
+    /// shares and dials first (rmule's UDP on its TCP port number, which is
+    /// where kno's uTP aims).
+    KnoDialsFirst,
 }
 
 impl CrossingLeg {
@@ -556,6 +560,10 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
         if dead_dial {
             flags.push("--persist-credit".to_owned());
         }
+        let kno_first = shape.leg == CrossingLeg::KnoDialsFirst;
+        if kno_first {
+            flags.extend(["--udp-port".to_owned(), RMULE_SERVE_TCP_PORT.to_string()]);
+        }
         let download = options
             .rmule_client_container
             .download_start_detached_with_args(
@@ -574,7 +582,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             interface: DEFAULT_TAP_INTERFACE,
             host_dir: root.clone(),
             pcap_file: verdict::RMULE_PCAP,
-            bpf: &format!("tcp port {AMULE_PEER_TCP_PORT} or tcp port {RMULE_SERVE_TCP_PORT}"),
+            bpf: &format!(
+                "tcp port {AMULE_PEER_TCP_PORT} or tcp port {RMULE_SERVE_TCP_PORT} or udp port {RMULE_SERVE_TCP_PORT}"
+            ),
         };
         bench.start_extra(&capture, tap.container(), "run crossing tcpdump sidecar")?;
         wait_for_container_log(&bench.docker, &capture, "listening on", timeout)?;
@@ -774,6 +784,28 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             std::thread::sleep(Duration::from_secs(shape.watch_secs));
             marks.watch_ended_at = Some(verdict::unix_now());
             waiter_ip
+        } else if kno_first {
+            release_held_download(options.layout)?;
+            let completed = wait_for_container_log(
+                &bench.docker,
+                &rmule_name,
+                "download.completed id=1",
+                timeout,
+            )
+            .is_ok();
+            println!("peer_crossing download_completed={completed}");
+            // Past the 40 s idle close, so kno holds no socket to rmule.
+            std::thread::sleep(Duration::from_secs(shape.idle_secs));
+            marks.returned_at = Some(verdict::unix_now());
+            amulecmd(
+                &bench,
+                &seed,
+                &format!("Add {wait_at_rmule}"),
+                "kno adds a file from rmule",
+            )?;
+            std::thread::sleep(Duration::from_secs(shape.watch_secs));
+            marks.watch_ended_at = Some(verdict::unix_now());
+            seed_ip
         } else {
             if shape.leg == CrossingLeg::DownloadYield {
                 holds.add(
