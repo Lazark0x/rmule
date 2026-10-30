@@ -49,7 +49,7 @@
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -469,6 +469,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 (None, low_id),
             )?;
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
+            let queued_at = Instant::now();
             let known = shape.leg == CrossingLeg::ServeCrossedKnown;
             if known {
                 amulecmd(
@@ -502,7 +503,9 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 _ => {}
             }
             // Past aMule's idle close, so the waiter has no link when X stops.
-            std::thread::sleep(Duration::from_secs(shape.idle_secs));
+            std::thread::sleep(
+                Duration::from_secs(shape.idle_secs).saturating_sub(queued_at.elapsed()),
+            );
             // W cancels before X stops: `amulecmd` takes seconds on the debug
             // build, and rmule's dial-back hears W inside 15 s or ends. rmule
             // keeps W queued, so the dial-back goes out all the same.
