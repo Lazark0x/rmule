@@ -11,17 +11,15 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use rmule_peer::PeerIdentity;
 use rmule_primitives::PeerEndpoint;
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::{Notify, mpsc, watch};
+use tokio::sync::{mpsc, watch};
 
 use crate::adapters::{
-    AnnounceOutcome, DialBackOutcome, LinkServeHalf, ServeConnection, ServeInput, ServeOutput,
-    ServeRuntimeService,
+    AnnounceOutcome, DialBackOutcome, LinkServeHalf, ServeInput, ServeOutput, ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::content::on_pool;
@@ -38,9 +36,9 @@ use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
 use crate::store::registry::DurableSharedFileRegistry;
 use crate::upload_queue::UploadSlotQueue;
 
-/// How many outputs a **Link Outbox** holds. The Send-Ahead keeps blocks to ten
-/// of them, so a full one is a peer asking faster than it reads (ADR-0031).
-const LINK_OUTBOX_LEN: usize = 64;
+mod links;
+
+use links::{Link, NextLinks, register_serve_connection};
 
 /// The serve activity's task, over a runtime whose listener is **already
 /// bound**: the actor binds, announces `ServingStarted`, and
@@ -188,8 +186,11 @@ where
         // leaves no holder or waiter known. The serve activity is the one
         // owner of `Upload`, so ending the relation whole ends only its own.
         let _upload_relations = RelationLease::new(peer_roster.clone(), PeerRelation::Upload);
-        // Every link, keyed by requester endpoint.
+        // Every link, keyed by requester endpoint, and the links that follow
+        // one to its endpoint.
         let mut links: HashMap<PeerEndpoint, Link> = HashMap::new();
+        let mut dialed_next = NextLinks::default();
+        let mut dial_backs_next = NextLinks::default();
         // The sans-I/O serving brain (**Serve State**): it owns the share-set
         // snapshot, the upload slot queue, the served ranges, the peer
         // identities, and the AICH cache, and turns each input into an ordered
@@ -348,8 +349,18 @@ where
                         }
                     }
                 }
-                outcome = dial_back_rx.recv() => {
+                outcome = dial_backs_next.next_from(dial_back_rx.recv()) => {
                     let Some(outcome) = outcome else { continue };
+                    let outcome = match outcome {
+                        DialBackOutcome::Linked { ref conn, .. } => {
+                            let peer = conn.peer();
+                            match dial_backs_next.turn_of(peer, outcome, &links) {
+                                Some(outcome) => outcome,
+                                None => continue,
+                            }
+                        }
+                        failed @ DialBackOutcome::Failed { .. } => failed,
+                    };
                     let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     state.on_self_position(self_position(own_identity.as_ref()));
                     refresh_served(&served, &mut served_seen, &mut state);
@@ -424,14 +435,20 @@ where
                     Some(told) => say_told(&evt_tx, told).await,
                     None => session_told_rx = None,
                 },
-                dialed = recv_dialed(&mut dialed_serve_rx) => {
+                dialed = dialed_next.next_from(recv_dialed(&mut dialed_serve_rx)) => {
                     match dialed {
                         // A connection a download holds also serves the
                         // peer: admit it to the same queue as an accepted
                         // one. An adopted callback comes this way too, a
                         // link the peer opened, so only a link rmule dialed
                         // is marked so.
-                        Some(LinkServeHalf { conn, dialed }) => {
+                        Some(half) => {
+                            let peer = half.conn.peer();
+                            let Some(LinkServeHalf { conn, dialed }) =
+                                dialed_next.turn_of(peer, half, &links)
+                            else {
+                                continue;
+                            };
                             if let Some(far_end) = dialed {
                                 state.on_link_dialed(conn.peer(), far_end);
                             }
@@ -469,6 +486,8 @@ where
                     .await;
                     if closing {
                         links.remove(&peer);
+                        dialed_next.link_left(peer);
+                        dial_backs_next.link_left(peer);
                     }
                 }
                 _ = rerank_tick.tick() => {
@@ -568,29 +587,6 @@ struct ServeSinks<'a> {
     dial_backs: &'a mpsc::Sender<DialBackOutcome>,
     /// Where block reads start.
     reader: &'a BlockReader,
-}
-
-/// The serve loop's handle on one link's task.
-struct Link {
-    /// The **Link Outbox**: filled without waiting.
-    outbox: mpsc::Sender<LinkOutput>,
-    /// The latest flow of this link that has ended, read by its reads and
-    /// its task, so what is under way for it stops at the next look.
-    ended_through: Arc<AtomicU64>,
-    /// Ends the link now, whatever its outbox holds.
-    stop: Arc<Notify>,
-}
-
-impl Link {
-    /// Hand this link `output` without waiting. A full outbox ends the link:
-    /// its peer is asking faster than it reads. A closed one has its end on
-    /// the way already.
-    fn offer(&self, peer: PeerEndpoint, output: LinkOutput) {
-        if let Err(TrySendError::Full(_)) = self.outbox.try_send(output) {
-            tracing::debug!(%peer, "a link's outbox filled; the peer is not reading, so its link ends");
-            self.stop.notify_one();
-        }
-    }
 }
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime, in order,
@@ -844,70 +840,6 @@ fn refresh_served(served: &ServedDownloads, seen: &mut u64, state: &mut ServeSta
         *seen = read.version;
         state.on_served(read.entries);
     }
-}
-
-/// Register one identified serve connection (accepted *or* dialed): keep its
-/// [`Link`] keyed by endpoint and spawn the task that relays its outbox to it
-/// and its events to the shared `fact_tx`. The one path both connection sources
-/// go through, so the queue treats a same-socket (dialed) requester identically
-/// to an accepted one.
-///
-/// The task parks on neither side alone. An output waits for room on the
-/// connection while what the peer says still reaches the loop: the router
-/// behind the connection may be holding that very room until it has handed its
-/// event on (ADR-0031).
-fn register_serve_connection(
-    conn: ServeConnection,
-    links: &mut HashMap<PeerEndpoint, Link>,
-    fact_tx: &mpsc::Sender<(PeerEndpoint, ServeInput)>,
-) {
-    let peer = conn.peer();
-    let (outbox, mut outbox_rx) = mpsc::channel::<LinkOutput>(LINK_OUTBOX_LEN);
-    let ended_through = Arc::new(AtomicU64::new(0));
-    let stop = Arc::new(Notify::new());
-    let link = Link {
-        outbox,
-        ended_through: Arc::clone(&ended_through),
-        stop: Arc::clone(&stop),
-    };
-    links.insert(peer, link);
-    let fact_tx = fact_tx.clone();
-    let (command_tx, mut event_rx) = conn.into_halves();
-    tokio::spawn(async move {
-        // The output waiting for room on the connection.
-        let mut waiting: Option<ServeOutput> = None;
-        loop {
-            tokio::select! {
-                () = stop.notified() => {
-                    let _ = fact_tx.send((peer, ServeInput::closed_here())).await;
-                    break;
-                }
-                permit = command_tx.reserve(), if waiting.is_some() => {
-                    // A connection gone under an output says so on its event
-                    // stream, read below, which is what frees the peer's slot.
-                    if let (Ok(permit), Some(output)) = (permit, waiting.take()) {
-                        permit.send(output);
-                    }
-                }
-                output = outbox_rx.recv(), if waiting.is_none() => {
-                    let Some(output) = output else { break };
-                    // Awaited here, the link's own task: a block costs only
-                    // this link's next output (ADR-0031).
-                    waiting = output.ready(&ended_through).await;
-                }
-                event = event_rx.recv() => {
-                    let Some(event) = event else {
-                        let _ = fact_tx.send((peer, ServeInput::closed_here())).await;
-                        break;
-                    };
-                    let disconnected = event.is_disconnect();
-                    if fact_tx.send((peer, event)).await.is_err() || disconnected {
-                        break;
-                    }
-                }
-            }
-        }
-    });
 }
 
 /// The next outcome the follower said of a later session; pending with none.
