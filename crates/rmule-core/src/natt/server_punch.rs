@@ -23,7 +23,7 @@ use rmule_ed2k::{
     natt_keepalive_datagram, natt_keepalive_port,
 };
 use rmule_peer::natt::is_public_punch_address;
-use rmule_primitives::{AccountingKey, ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::acting::{ACTING_MIN_INTERVAL, ACTING_TRACKED_MAX};
 use crate::client_udp::ClientUdpSend;
@@ -123,8 +123,9 @@ pub(crate) struct ServerPunch {
     /// Requests sent and not yet answered, by the Low-ID they named.
     pending: HashMap<ClientId, Instant>,
     /// One burst per destination per window. Its own table — never the relay
-    /// service's — for the reason the acting path keeps its own.
-    destinations: IntervalLimiter,
+    /// service's — for the reason the acting path keeps its own. Keyed on
+    /// the endpoint: two targets behind one address are two mappings.
+    destinations: IntervalLimiter<Ipv4Endpoint>,
 }
 
 impl Default for ServerPunch {
@@ -164,10 +165,7 @@ impl ServerPunch {
         if is_own_interface(IpAddr::V4(target.ip)) {
             return IntroductionVerdict::Refuse(IntroductionRefusal::SelfPunch);
         }
-        if !self
-            .destinations
-            .admit(AccountingKey::of(target.ip.into()), now)
-        {
+        if !self.destinations.admit(target, now) {
             return IntroductionVerdict::Refuse(IntroductionRefusal::Repeat);
         }
         match info.peer_id {
@@ -539,6 +537,36 @@ mod tests {
             punch.on_info(&info, |_| false, t0 + ACTING_MIN_INTERVAL),
             IntroductionVerdict::Punch { .. }
         ));
+    }
+
+    /// Two Low-ID clients behind one public address are two mappings, and the
+    /// server hands each its own port (`holepunch.rs:80-112`). The second
+    /// introduction is news, not a repeat, and it settles its own request.
+    #[test]
+    fn two_targets_behind_one_address_are_both_punched() {
+        let mut punch = ServerPunch::default();
+        let t0 = Instant::now();
+        let (first, second) = (ClientId::from_u32(1337), ClientId::from_u32(1338));
+        punch.on_request(first, t0);
+        punch.on_request(second, t0);
+
+        let to_first = HolepunchInfo {
+            peer_id: Some(first),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        let to_second = HolepunchInfo {
+            peer_id: Some(second),
+            ..info_at([45, 55, 200, 7], 32000)
+        };
+        assert!(matches!(
+            punch.on_info(&to_first, |_| false, t0),
+            IntroductionVerdict::Punch { .. }
+        ));
+        assert!(matches!(
+            punch.on_info(&to_second, |_| false, t0 + Duration::from_secs(1)),
+            IntroductionVerdict::Punch { .. }
+        ));
+        assert!(punch.pending.is_empty(), "each settled its own request");
     }
 
     /// With two requests out, a `0x61` that names its peer settles that one

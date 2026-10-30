@@ -61,7 +61,7 @@ use rmule_net::natt::{
 use rmule_peer::natt::{
     EndpointHint, RendezvousFailure, RendezvousStep, holepunch_datagram, is_holepunch, punch_burst,
 };
-use rmule_primitives::{AccountingKey, ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
 use crate::adapters::{AwaitedInbound, SharedPeerPin, SharedTunnelAdmit};
@@ -402,8 +402,9 @@ pub(crate) struct NattFront<S> {
     /// One punch burst per destination per window, the limit ADR-0091 sets
     /// for the acting path. Every burst this front fires stamps it; only the cadence
     /// re-dial's burst is *refused* by it, because the coordinator paths'
-    /// bursts are the traversal itself.
-    bursts: IntervalLimiter,
+    /// bursts are the traversal itself. Keyed on the endpoint, as the
+    /// schedule above is on the target.
+    bursts: IntervalLimiter<Ipv4Endpoint>,
     risen_tx: mpsc::Sender<Risen>,
     /// The bounded hand-off to the adopter task. Filled with `try_send` only.
     adopt_tx: mpsc::Sender<tunnels::Adoption>,
@@ -859,7 +860,7 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// *are* the traversal and are never refused here, but they are what a
     /// cadence re-dial's burst must not double.
     async fn fire_burst(&mut self, target: Ipv4Endpoint, now: Instant) {
-        let _ = self.bursts.admit(AccountingKey::of(target.ip.into()), now);
+        let _ = self.bursts.admit(target, now);
         self.fire_burst_only(target).await;
     }
 

@@ -56,11 +56,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // The destination limiter is the acting path's number: a
                 // re-dial that cannot burst still dials, because the mapping
                 // may well be open anyway.
-                if burst
-                    && self
-                        .bursts
-                        .admit(rmule_primitives::AccountingKey::of(at.ip.into()), now)
-                {
+                if burst && self.bursts.admit(at, now) {
                     self.fire_burst_only(at).await;
                 }
                 if !self.spawn_dial(peer, at) {

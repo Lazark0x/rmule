@@ -8,16 +8,19 @@
 //! Buckets by [`AccountingKey`] rather than by exact address: an IPv6 sender
 //! is delegated a whole `/64` and can mint a fresh address inside it per
 //! datagram, so a per-`/128` bucket would be no limit at all (ADR-0087). The
-//! key is accounting only — nothing here bans, indexes or identifies.
+//! key is accounting only — nothing here bans, indexes or identifies. A path
+//! that limits a destination rather than a sender keys the endpoint instead:
+//! there the port is the mapping the limit is about.
 
 use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::AccountingKey;
 
 /// Which senders were honored inside the window.
 #[derive(Debug)]
-pub(crate) struct IntervalLimiter {
+pub(crate) struct IntervalLimiter<K = AccountingKey> {
     /// Minimum time between two honored requests from one bucket.
     interval: Duration,
     /// Hard cap on tracked buckets. At the cap the oldest honored entry is
@@ -28,16 +31,16 @@ pub(crate) struct IntervalLimiter {
     /// window?" in O(1); `expiry` orders the same entries oldest-first so
     /// pruning pops from the front in O(1) amortized instead of scanning the
     /// map on every datagram.
-    seen: HashMap<AccountingKey, Instant>,
+    seen: HashMap<K, Instant>,
     /// The honored entries in stamp order (each honor pushes back). Lazy
     /// expiry: a popped entry acts on the map only while the map still holds
     /// this entry's stamp for the bucket — a bucket re-honored later carries
     /// a newer stamp and its own newer queue entry, so a stale front entry is
     /// discarded without evicting the live one early.
-    expiry: VecDeque<(AccountingKey, Instant)>,
+    expiry: VecDeque<(K, Instant)>,
 }
 
-impl IntervalLimiter {
+impl<K: Copy + Eq + Hash> IntervalLimiter<K> {
     pub(crate) fn new(interval: Duration, tracked_max: usize) -> Self {
         Self {
             interval,
@@ -50,7 +53,7 @@ impl IntervalLimiter {
     /// Admit one request from `source`: `true` when it is honored (and its
     /// clock stamped), `false` when this bucket was already honored inside
     /// the window. Only an honored request stamps the clock.
-    pub(crate) fn admit(&mut self, source: AccountingKey, now: Instant) -> bool {
+    pub(crate) fn admit(&mut self, source: K, now: Instant) -> bool {
         // Prune entries past the window from the queue front — O(1) amortized
         // per datagram, where a whole-map `retain` would hand a spoofed-source
         // flood O(n) work per datagram — then any bucket still tracked was
@@ -83,7 +86,7 @@ impl IntervalLimiter {
     /// still carries this queue entry's stamp (lazy expiry — a re-honored
     /// bucket owns a newer stamp and a newer queue entry of its own, which
     /// must not be evicted by its predecessor).
-    fn retire(&mut self, key: AccountingKey, stamp: Instant) {
+    fn retire(&mut self, key: K, stamp: Instant) {
         if self.seen.get(&key) == Some(&stamp) {
             self.seen.remove(&key);
         }

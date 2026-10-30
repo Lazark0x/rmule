@@ -62,6 +62,53 @@ async fn an_attempt_redials_on_the_cadence_within_one_burst_window() {
     assert_eq!(harness.diagnostics.snapshot().session.natt_dials_total, 3);
 }
 
+/// A cadence re-dial's burst is limited per endpoint: a neighbour's newer
+/// burst at another port of the address leaves this target's mapping as old
+/// as it was.
+#[tokio::test]
+async fn a_redial_burst_is_not_refused_by_a_neighbour_on_one_address() {
+    let mut harness = Harness::new();
+    let t0 = Instant::now();
+    let first = hash(0x44);
+    let neighbour = Ipv4Endpoint::new(at(9, 31999).ip, 32000);
+    let introduce = |peer_hash, target| NattCommand::Introduced {
+        peer_hash,
+        target,
+        role: rmule_ed2k::HolepunchRole::Initiator,
+        burst: true,
+        source: rmule_peer::natt::PunchTargetSource::Observed,
+    };
+    harness
+        .front
+        .on_command(introduce(first, at(9, 31999)), t0)
+        .await;
+    harness
+        .front
+        .on_risen(
+            Risen::DialSettled { peer: first },
+            t0 + DIAL_ATTEMPT_TIMEOUT,
+        )
+        .await;
+    harness
+        .front
+        .on_command(
+            introduce(hash(0x45), neighbour),
+            t0 + ACTING_MIN_INTERVAL + Duration::from_secs(1),
+        )
+        .await;
+    harness.drained();
+
+    harness
+        .front
+        .on_tick(t0 + ACTING_MIN_INTERVAL + REDIAL_INTERVAL)
+        .await;
+    assert_eq!(
+        harness.drained().len(),
+        6 + 32,
+        "the re-dial re-opens its own mapping"
+    );
+}
+
 /// The attempt ends at ADR-0091's budget, with the retirement vocabulary it
 /// always used — and it says how many openers it spent getting there.
 #[tokio::test]
