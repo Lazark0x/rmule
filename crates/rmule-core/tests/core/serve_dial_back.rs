@@ -99,7 +99,7 @@ async fn linked(at: SocketAddrV4, hello: PeerHandshakeContext) -> Connection {
 /// `asking` under `hello`.
 async fn asking_as(at: SocketAddrV4, hello: PeerHandshakeContext, file: FileHash) -> Asker {
     let link = linked(at, hello).await;
-    let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]);
     link.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: file,
         file_size: 4096,

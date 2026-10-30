@@ -458,7 +458,7 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
         vec![0xA4]
     );
 
-    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: fh,
         file_size: size,

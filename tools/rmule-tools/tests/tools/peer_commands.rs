@@ -220,7 +220,7 @@ fn peer_packet_inspect_ask_shared_files_dir_ans_kind() {
 
 #[test]
 fn peer_packet_inspect_request_parts_lists_three_ranges() {
-    let ranges = PartRanges::new([(0, 100), (200, 300), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (200, 300), (0, 0)]);
     let pkt = RequestParts {
         file_hash: file_hash(),
         ranges,

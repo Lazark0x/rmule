@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     let mut conn = Connection::connect(peer, ctx, options).await?;
-    let ranges = PartRanges::new([(0, part0_len), (0, 0), (0, 0)])?;
+    let ranges = PartRanges::new([(0, part0_len), (0, 0), (0, 0)]);
 
     let mut accumulated: Vec<u8> = Vec::new();
     let mut part_hashes: Option<Vec<PartHash>> = None;

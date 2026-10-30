@@ -266,7 +266,7 @@ fn parts_request_after_grant_emits_parts_requested() {
     }));
     let _ = drain(|| s.poll_output());
 
-    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,
@@ -282,11 +282,47 @@ fn parts_request_after_grant_emits_parts_requested() {
             if *file_hash == fh && *r == ranges)));
 }
 
+/// aMule skips a range running backwards alone (`UploadClient.cpp:871-882`), so
+/// the one wire frame holding it still asks for its neighbours and keeps the
+/// connection.
+#[test]
+fn a_backward_range_on_the_wire_keeps_the_connection_and_its_neighbours() {
+    let mut s = inbound_session();
+    let fh = FileHash::from_bytes([0xB7; FileHash::BYTE_LEN]);
+    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
+        file_hash: fh,
+    }));
+    let _ = drain(|| s.poll_output());
+
+    let mut payload = fh.as_bytes().to_vec();
+    for offset in [0u32, 900, 2000, 100, 500, 2100] {
+        payload.extend_from_slice(&offset.to_le_bytes());
+    }
+    let opcode = rmule_peer::PeerOpcode::RequestParts;
+    s.handle_bytes(&Packet::new(opcode.protocol(), opcode.as_u8(), payload).encode());
+
+    let outputs = drain(|| s.poll_output());
+    assert!(
+        !outputs.iter().any(|o| matches!(o, PeerOutput::Close(_))),
+        "a backward range is no reason to close: {outputs:?}"
+    );
+    let asked: Vec<(u64, u64)> = outputs
+        .iter()
+        .find_map(|o| match o {
+            PeerOutput::Event(PeerEvent::Server(ServerEvent::PartsRequested {
+                ranges, ..
+            })) => Some(ranges.as_array().to_vec()),
+            _ => None,
+        })
+        .expect("the request reaches core");
+    assert_eq!(asked, [(0, 100), (900, 500), (2000, 2100)]);
+}
+
 #[test]
 fn parts_request_without_slot_reports_serve_parts_without_slot() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xEE; FileHash::BYTE_LEN]);
-    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,
@@ -525,7 +561,7 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     ));
 
     // 6. RequestParts → PartsRequested; stream the block.
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     s.handle_bytes(
         &RequestParts {
             file_hash: fh,

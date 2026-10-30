@@ -67,8 +67,7 @@ async fn live_transfer_reaches_hash_set_received() {
         (0, std::cmp::min(file.size, ED2K_PART_SIZE)),
         (0, 0),
         (0, 0),
-    ])
-    .expect("ranges");
+    ]);
 
     let mut identified = false;
     let mut probed = false;

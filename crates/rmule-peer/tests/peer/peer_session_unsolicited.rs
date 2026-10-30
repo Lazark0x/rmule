@@ -55,7 +55,7 @@ fn unsolicited_nofil_does_not_poison_a_later_request() {
     let _ = drain(|| session.poll_output());
 
     // A later legitimate request must not be vetoed by it.
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -91,7 +91,7 @@ fn unsolicited_compressed_parts_hold_no_inflight_budget() {
 
     // A legitimate transfer afterwards still has its full budget.
     let h = file_hash(0x93);
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,

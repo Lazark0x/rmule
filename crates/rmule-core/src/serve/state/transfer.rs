@@ -22,7 +22,8 @@ use crate::upload_queue::WaiterLeaveCause;
 
 impl ServeState {
     /// A granted flow's block request, judged whole before anything is read
-    /// (ADR-0031): one live range past the file's end or longer than three
+    /// (ADR-0031): a range whose end is not past its start is skipped alone;
+    /// one live range past the file's end or longer than three
     /// blocks, as asked, or — a Partial Share's — one sub-range left after the
     /// ranges already served outside its **Verified Range** (ADR-0113
     /// §"Reading a part file") ends the peer's slot with nothing of the request
@@ -46,16 +47,9 @@ impl ServeState {
         let Some(found) = self.lookup(file_hash).filter(Found::offered) else {
             return Vec::new();
         };
-        // `PartRanges::as_array()` yields the fixed `[(u64,u64); 3]`; the
-        // `(0,0)` padding slots are skipped by the `e > s` filter, as aMule
-        // skips every range whose end is not past its start
-        // (`UploadClient.cpp:871-882`).
-        let asked: Vec<(u64, u64)> = ranges
-            .as_array()
-            .iter()
-            .copied()
-            .filter(|(s, e)| e > s)
-            .collect();
+        // Only the live ranges are judged: padding and a backward pair are
+        // skipped alone, wherever they point (`UploadClient.cpp:871-882`).
+        let asked: Vec<(u64, u64)> = ranges.live().collect();
         let file_size = found.file_size();
         if let Some(fault) = asked
             .iter()

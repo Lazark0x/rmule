@@ -180,7 +180,7 @@ fn a_compressed_block_goes_out_as_a_run_sharing_its_start_and_total() {
 /// for the block at `start`.
 fn downloading(file: FileHash, start: u64) -> PeerSession {
     let mut client = identified_session();
-    let ranges = PartRanges::new([(start, start + BLOCK as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(start, start + BLOCK as u64), (0, 0), (0, 0)]);
     client.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: file,
         file_size: 1_000_000,

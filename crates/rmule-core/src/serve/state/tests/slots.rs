@@ -179,7 +179,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let p = peer(1);
     identify(&mut state, p, user(0x0B), t);
 
-    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     let read = ServeDecision::ReadRange {
         peer: p,
         path: "/shared/served.bin".into(),

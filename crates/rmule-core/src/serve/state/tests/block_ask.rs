@@ -12,7 +12,7 @@ const THREE_BLOCKS: u64 = 3 * EMBLOCKSIZE;
 fn parts(file_hash: FileHash, ranges: [(u64, u64); 3]) -> ServeInput {
     ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
-        ranges: PartRanges::new(ranges).unwrap(),
+        ranges: PartRanges::new(ranges),
     })
 }
 
@@ -131,4 +131,38 @@ fn a_range_past_the_files_end_ends_the_slot_and_nothing_of_the_request_is_read()
         &no_modifiers(),
     );
     assert_refused(&decisions, holder, waiter, file, BlockAskFault::PastEnd);
+}
+
+/// ADR-0031's table, read across one request: a backward pair is skipped alone
+/// even where it points past the file's end, and its neighbours are read.
+#[test]
+fn a_backward_range_is_skipped_alone_and_its_neighbours_are_read() {
+    let file = hash(0x35);
+    let (mut state, holder, _, t) = held(file, EMBLOCKSIZE);
+    let asked = parts(file, [(0, 100), (2 * GIB, GIB), (200, 300)]);
+
+    let decisions = state.on_conn_event(t, holder, asked, &no_modifiers());
+
+    let reads: Vec<(u64, u64)> = decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            ServeDecision::ReadRange { block, .. } => Some((block.start, block.end)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reads, [(0, 100), (200, 300)]);
+    assert!(state.queue.is_granted(holder), "the slot stays");
+}
+
+#[test]
+fn a_request_of_backward_ranges_alone_reads_nothing_and_keeps_the_slot() {
+    let file = hash(0x36);
+    let (mut state, holder, _, t) = held(file, EMBLOCKSIZE);
+    let asked = parts(file, [(10, 5), (0, 0), (7, 7)]);
+
+    assert_eq!(
+        state.on_conn_event(t, holder, asked, &no_modifiers()),
+        Vec::new()
+    );
+    assert!(state.queue.is_granted(holder));
 }

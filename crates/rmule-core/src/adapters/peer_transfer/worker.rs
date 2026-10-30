@@ -489,10 +489,7 @@ async fn stream_blocks(
         while let Some(blocks) = pipeline.next_request(Instant::now().into_std()) {
             let mut padded = [(0, 0); RANGES_PER_REQUEST];
             padded[..blocks.len()].copy_from_slice(&blocks);
-            let Ok(ranges) = PartRanges::new(padded) else {
-                let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-                return Streamed::WindDown;
-            };
+            let ranges = PartRanges::new(padded);
             if cmd_tx
                 .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash,

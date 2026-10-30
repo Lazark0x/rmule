@@ -16,7 +16,7 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
     let mut session = identified_session();
     let big: u64 = 5_000_000_000;
     let len: u64 = 16;
-    let ranges = PartRanges::new([(big, big + len), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(big, big + len), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 10_000_000_000,
@@ -41,7 +41,7 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
 fn compressed_part_inflates_to_part_received() {
     let h = file_hash(0x8C);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -70,7 +70,7 @@ fn compressed_part_inflates_to_part_received() {
 fn corrupt_compressed_part_is_skipped_and_keeps_session_open() {
     let h = file_hash(0x8D);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -106,7 +106,7 @@ fn corrupt_compressed_part_is_skipped_and_keeps_session_open() {
 fn oversized_declared_compressed_len_is_refused_before_buffering() {
     let h = file_hash(0x8E);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -139,7 +139,7 @@ fn oversized_declared_compressed_len_is_refused_before_buffering() {
 fn inflight_compressed_blocks_are_capped_session_wide() {
     let h = file_hash(0x8F);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -231,7 +231,7 @@ fn a_compressed_block_cut_by_the_slot_end_leaves_nothing_for_the_next_slot() {
 
     let h = file_hash(0x8F);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]);
     let request = || {
         PeerCommand::Requester(RequesterCommand::RequestParts {
             file_hash: h,

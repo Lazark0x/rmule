@@ -514,7 +514,7 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
 
     // Open a real requester-capability transfer: request parts, satisfy the
     // probe + hash-set gate, get the slot granted.
-    let ranges = PartRanges::new([(0, 16), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 16), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,

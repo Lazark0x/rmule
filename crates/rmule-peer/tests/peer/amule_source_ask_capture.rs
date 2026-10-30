@@ -224,7 +224,7 @@ fn a_requestparts_fallback_ask_for_a_one_part_file_is_the_name_request_alone() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: FILE_SIZE,
-        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
@@ -243,7 +243,7 @@ fn a_requestparts_fallback_ask_for_a_multi_part_file_still_bundles_setreqfileid(
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: hash(),
         file_size: 2 * ED2K_PART_SIZE,
-        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     let opcodes: Vec<u8> = sent.iter().map(Packet::opcode).collect();
@@ -336,7 +336,7 @@ fn amules_name_only_answer_to_a_one_part_bundle_opens_the_slot() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: ONE_PART_SIZE,
-        ranges: PartRanges::new([(0, 184_320), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 184_320), (0, 0), (0, 0)]),
     }));
     let sent = writes(&drain(|| session.poll_output()));
     assert!(sent.is_empty(), "the bundle already asked: {sent:?}");

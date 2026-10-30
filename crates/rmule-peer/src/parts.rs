@@ -87,22 +87,28 @@ pub struct PartRanges {
 }
 
 impl PartRanges {
-    /// Build the triple, rejecting any pair whose start is past its end.
-    /// The `(0, 0)` padding sentinel passes, not being inverted.
-    pub fn new(ranges: [(u64, u64); RANGE_COUNT]) -> Result<Self, PartRangesError> {
-        for (start, end) in ranges {
-            if start > end {
-                return Err(PartRangesError::StartAfterEnd { start, end });
-            }
-        }
-        Ok(Self { ranges })
+    /// Hold the triple as asked. A pair need not be live: `(0, 0)` is the
+    /// padding, and a pair running backwards is one a stock uploader skips
+    /// alone (`UploadClient.cpp:871-882`).
+    #[must_use]
+    pub const fn new(ranges: [(u64, u64); RANGE_COUNT]) -> Self {
+        Self { ranges }
     }
 
-    /// The three pairs as stored, padding included — a caller wanting only
-    /// the live ones filters the sentinel itself.
+    /// The three pairs as stored, padding included — the wire's view; what a
+    /// server acts on is [`live`](Self::live).
     #[must_use]
     pub fn as_array(&self) -> &[(u64, u64); RANGE_COUNT] {
         &self.ranges
+    }
+
+    /// The ranges that ask for something: those whose end is past their start
+    /// (ADR-0031).
+    pub fn live(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.ranges
+            .iter()
+            .copied()
+            .filter(|(start, end)| end > start)
     }
 }
 
@@ -168,7 +174,7 @@ impl RequestParts {
         }
         Ok(Self {
             file_hash,
-            ranges: PartRanges::new(ranges).map_err(PartsDecodeError::Ranges)?,
+            ranges: PartRanges::new(ranges),
         })
     }
 
@@ -392,19 +398,6 @@ fn write_offset(payload: &mut Vec<u8>, value: u64, width: PartOffsetWidth) {
     }
 }
 
-/// Why a range triple was refused.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum PartRangesError {
-    /// A pair runs backwards.
-    #[error("part range start {start} > end {end}")]
-    StartAfterEnd {
-        /// The start offered.
-        start: u64,
-        /// The end offered.
-        end: u64,
-    },
-}
-
 /// Why a part-transfer frame could not be read.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PartsDecodeError {
@@ -443,10 +436,6 @@ pub enum PartsDecodeError {
         /// What followed it.
         actual: usize,
     },
-
-    /// A request's three ranges did not hold up.
-    #[error("part packet ranges invalid: {0}")]
-    Ranges(#[from] PartRangesError),
 }
 
 impl From<WireTruncated> for PartsDecodeError {

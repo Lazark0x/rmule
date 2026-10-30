@@ -15,7 +15,7 @@ use rmule_testkit::peer_session::*;
 fn signal_slot_stale_releases_active_slot() {
     let h = file_hash(0xAB);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -69,7 +69,7 @@ fn slotless_standby_transition_on_cancel_transfer() {
     // OP_CANCELTRANSFER and enters standby (slot dropped, connection held).
     let h = file_hash(0xA8);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -117,7 +117,7 @@ fn standby_re_ask_skips_probe_and_hashset() {
     // immediately.
     let h = file_hash(0xA9);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
 
     // First ask-cycle: RequestParts → probe → hashset → start-upload → slot granted.
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
@@ -141,7 +141,7 @@ fn standby_re_ask_skips_probe_and_hashset() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
-        ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]),
     }));
     let out = drain(|| session.poll_output());
     let sent = writes(&out);
@@ -164,7 +164,7 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     // the re-ask transition.
     let h = file_hash(0xAA);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -201,7 +201,7 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
-        ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(4, 8), (0, 0), (0, 0)]),
     }));
     let _ = drain(|| session.poll_output());
 

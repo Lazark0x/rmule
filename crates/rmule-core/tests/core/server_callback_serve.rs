@@ -189,7 +189,7 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
         .expect("the sharer dials the requester back")
         .expect("the listener task lives");
 
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     link.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,

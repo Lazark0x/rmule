@@ -23,7 +23,7 @@ fn granted_and_asked(session: &mut PeerSession, file: FileHash) {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: file,
         file_size: SIZE,
-        ranges: PartRanges::new(first_blocks()).unwrap(),
+        ranges: PartRanges::new(first_blocks()),
     }));
     session.handle_bytes(&reqfilename_answer(file, "first.bin"));
     session.handle_bytes(&acceptuploadreq());

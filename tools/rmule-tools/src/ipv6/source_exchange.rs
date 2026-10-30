@@ -162,8 +162,7 @@ async fn connect(body: &SxBodyArgs) -> Result<PeerConnection> {
 /// that never opens a slot is a row, not an error.
 pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
     let file = file_link(&args.body.file)?;
-    let ranges = PartRanges::new([(0, file.size.min(HOLD_RANGE_BYTES)), (0, 0), (0, 0)])
-        .context("first block range")?;
+    let ranges = PartRanges::new([(0, file.size.min(HOLD_RANGE_BYTES)), (0, 0), (0, 0)]);
     let mut identified = false;
     let mut slot = String::new();
     let mut received = 0u64;

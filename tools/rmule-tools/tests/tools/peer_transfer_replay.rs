@@ -42,7 +42,7 @@ async fn full_transfer_flow_replays_against_real_connection() {
         .unwrap();
 
     let file_size = part_data.len() as u64;
-    let ranges = PartRanges::new([(0, file_size), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, file_size), (0, 0), (0, 0)]);
 
     let mut events = Vec::new();
     let mut accumulated: Vec<u8> = Vec::new();

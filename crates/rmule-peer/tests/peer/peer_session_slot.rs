@@ -19,7 +19,7 @@ use rmule_testkit::peer_session::*;
 fn request_parts_asks_the_probe_then_the_slot_and_never_the_hash_set() {
     let h = file_hash(0xC1);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -84,7 +84,7 @@ fn ask_slot_asks_once_with_no_part_and_no_hash_set() {
         e,
         PeerEvent::Requester(RequesterEvent::SlotGranted { file_hash, .. }) if *file_hash == h
     )));
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -135,7 +135,7 @@ fn request_hash_set_asks_once_and_moves_no_slot() {
 fn request_parts_for_sub_part_file_skips_hashset_gate_before_startuploadreq() {
     let h = file_hash(0xC2);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE - 1,
@@ -171,7 +171,7 @@ fn second_request_parts_while_slot_active_is_rejected_with_slotbusy() {
     let d = file_hash(0xD1);
     let e = file_hash(0xE1);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: d,
         file_size: ED2K_PART_SIZE + 1,
@@ -198,7 +198,7 @@ fn second_request_parts_while_slot_active_is_rejected_with_slotbusy() {
 fn queueranking_dedups_identical_ranks_and_emits_progress_on_improvement() {
     let h = file_hash(0xF1);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -248,7 +248,7 @@ fn queueranking_dedups_identical_ranks_and_emits_progress_on_improvement() {
 /// sent `OP_STARTUPLOADREQ`, its output drained.
 fn queued_for(f: rmule_primitives::FileHash) -> rmule_peer::PeerSession {
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: f,
         file_size: ED2K_PART_SIZE + 1,
@@ -305,7 +305,7 @@ fn outofpartreqs_on_a_granted_slot_queues_the_flow_again_on_the_link() {
         events(&ranked)
     );
 
-    let ranges = PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(4, 8), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: f,
         file_size: ED2K_PART_SIZE + 1,
@@ -377,7 +377,7 @@ fn outofpartreqs_while_only_queued_changes_nothing() {
 fn a_mid_slot_no_file_answer_ends_the_slot_as_file_not_found() {
     let h = file_hash(0x8A);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 32), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 32), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -415,7 +415,7 @@ fn slot_grant_then_part_download_completes() {
     let h = file_hash(0x88);
     let mut session = identified_session();
     let part_len: u32 = 32;
-    let ranges = PartRanges::new([(0, part_len as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, part_len as u64), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -513,7 +513,7 @@ fn release_slot_for_unheld_file_is_a_noop() {
 fn cancel_transfer_writes_op_canceltransfer_and_releases_the_active_slot() {
     let h = file_hash(0xC5);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: ED2K_PART_SIZE + 1,
@@ -593,7 +593,7 @@ fn cancel_transfer_for_unheld_file_is_a_noop() {
 fn additional_request_parts_under_held_slot_sends_requestparts_without_startuploadreq() {
     let h = file_hash(0x90);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -606,7 +606,7 @@ fn additional_request_parts_under_held_slot_sends_requestparts_without_startuplo
     let _ = drain(|| session.poll_output()); // first STARTUPLOADREQ + REQUESTPARTS
 
     // Second block request for the SAME file while the slot is held.
-    let next = PartRanges::new([(4, 8), (0, 0), (0, 0)]).unwrap();
+    let next = PartRanges::new([(4, 8), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -644,7 +644,7 @@ fn request_parts_with_mismatched_file_size_is_rejected() {
     let _ = drain(|| session.poll_output());
 
     // First RequestParts confirms the size the probe already recorded.
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
@@ -752,7 +752,7 @@ fn an_unasked_grant_taken_as_a_files_slot_asks_its_blocks_and_nothing_else() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 1_000_000,
-        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap(),
+        ranges: PartRanges::new([(0, 4), (0, 0), (0, 0)]),
     }));
     let asked = drain(|| session.poll_output());
     let opcodes: Vec<u8> = writes(&asked).iter().map(Packet::opcode).collect();

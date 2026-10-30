@@ -46,7 +46,7 @@ fn assert_cuts_fail(name: &str, packet: &Packet) {
 #[test]
 fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
     let root = AichRootHash::from_bytes([0x22; 20]);
-    let ranges = PartRanges::new([(0, 10), (20, 30), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 10), (20, 30), (0, 0)]);
     let sending = SendingPart {
         file_hash: hash(),
         start: 100,

@@ -28,7 +28,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
     let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());
 
-    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]).unwrap();
+    let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(first), &no_modifiers()),
         vec![read(0, 100), read(100, 200), read(200, 300)],
@@ -65,14 +65,14 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
     );
 
     // A re-request overlapping already-served ranges reads only the tail.
-    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]).unwrap();
+    let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(overlapping), &no_modifiers()),
         vec![read(300, 400)],
     );
 
     // A request for a file we do not share is dropped.
-    let unshared = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let unshared = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     assert_eq!(
         state.on_conn_event(
             t,
@@ -90,7 +90,7 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
     // and the forgotten identity earns no credit.
     let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
     let _ = state.on_conn_event(t, p, slot, &no_modifiers());
-    let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(again), &no_modifiers()),
         vec![read(0, 100)],
@@ -395,7 +395,7 @@ fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
         ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
-    let ranges = PartRanges::new([(0, 100), (100, 250), (250, 300)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (100, 250), (250, 300)]);
     let reads = state.on_conn_event(
         t,
         p,
@@ -445,7 +445,7 @@ fn a_read_that_lands_after_the_slot_ended_sends_nothing() {
         ServeInput::Server(ServerEvent::SlotRequested { file_hash }),
         &no_modifiers(),
     );
-    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     let _ = state.on_conn_event(
         t,
         p,

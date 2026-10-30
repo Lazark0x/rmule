@@ -139,7 +139,7 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     // the same file_hash. No second HASHSETREQUEST should hit the wire.
     let d = file_hash(0xDD);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: d,
         file_size: 1_000_000,
@@ -193,7 +193,7 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_of_the_files_real_
     // 20,000,000 bytes is 3 ED2K parts.
     let h = file_hash(0xEE);
     let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash: h,
         file_size: 20_000_000,

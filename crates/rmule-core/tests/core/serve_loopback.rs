@@ -64,7 +64,7 @@ async fn mock_peer_downloads_a_shared_part_over_a_real_socket() {
     // Drive the requester side: RequestParts auto-issues probe + hashset +
     // slot acquisition, and the serve side answers each step, grants
     // the slot, and streams the block.
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
@@ -166,7 +166,7 @@ async fn serving_a_block_records_uploaded_bytes_in_the_credit_store() {
     .await
     .expect("identified");
 
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,
@@ -245,7 +245,7 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
     .await
     .expect("identified");
 
-    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]).unwrap();
+    let ranges = PartRanges::new([(0, bytes.len() as u64), (0, 0), (0, 0)]);
     peer.send(PeerCommand::Requester(RequesterCommand::RequestParts {
         file_hash,
         file_size: bytes.len() as u64,

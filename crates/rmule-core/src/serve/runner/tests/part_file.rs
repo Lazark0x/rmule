@@ -167,7 +167,7 @@ impl Rig {
         self.conn_tx
             .send(ServeInput::Server(ServerEvent::PartsRequested {
                 file_hash: self.file,
-                ranges: PartRanges::new([(start, start + 100), (0, 0), (0, 0)]).unwrap(),
+                ranges: PartRanges::new([(start, start + 100), (0, 0), (0, 0)]),
             }))
             .await
             .unwrap();

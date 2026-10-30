@@ -71,7 +71,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                 _ => {}
             }
         }
-        let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]).unwrap();
+        let ranges = PartRanges::new([(0, 4096), (0, 0), (0, 0)]);
         let _ = conn
             .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                 file_hash,

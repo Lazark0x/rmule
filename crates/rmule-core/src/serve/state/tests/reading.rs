@@ -37,7 +37,7 @@ fn partial(file: FileHash, verified: &[u32]) -> ServeState {
 fn parts(ranges: [(u64, u64); 3], file_hash: FileHash) -> ServeInput {
     ServeInput::Server(ServerEvent::PartsRequested {
         file_hash,
-        ranges: PartRanges::new(ranges).unwrap(),
+        ranges: PartRanges::new(ranges),
     })
 }
 

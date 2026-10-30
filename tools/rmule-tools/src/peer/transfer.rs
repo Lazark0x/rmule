@@ -320,8 +320,7 @@ async fn send_next(
     let Some((start, end)) = asks.next() else {
         return Ok(());
     };
-    let ranges = rmule_peer::PartRanges::new([(start, end), (0, 0), (0, 0)])
-        .with_context(|| format!("range {start}-{end}"))?;
+    let ranges = rmule_peer::PartRanges::new([(start, end), (0, 0), (0, 0)]);
     let _ = conn
         .send(PeerCommand::Requester(RequesterCommand::RequestParts {
             file_hash: file.file_hash,
