@@ -121,6 +121,46 @@ fn a_promoted_waiter_with_a_live_link_is_granted_on_it() {
 }
 
 #[test]
+fn a_verified_waiters_promotion_never_reaches_an_unproved_link_of_its_hash() {
+    // A link that only says it is the client gets no grant of a client that
+    // proved it is (ADR-0107): the promotion dials the waiter instead.
+    let file = hash(0x4C);
+    let t = Instant::now();
+    let holder = peer_at([10, 0, 0, 1], 51000);
+    let waiter = peer_at([203, 0, 113, 9], 4662);
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let _ = slot_request(&mut state, holder, file, t);
+    let claim = HelloFacts {
+        client_id: rmule_primitives::ClientId::from_u32(u32::from_le_bytes([203, 0, 113, 9])),
+        ..hello_facts(user(0x0A), 0, 0, 2)
+    };
+    let _ = state.on_conn_event(t, waiter, claim.identified(), &no_modifiers());
+    let _ = slot_request(&mut state, waiter, file, t);
+    let proved = ServeInput::IdentityBound {
+        user_hash: user(0x0A),
+    };
+    let _ = state.on_conn_event(t, waiter, proved, &no_modifiers());
+    let unproved = v6_peer(9, 40000);
+    identify(&mut state, unproved, user(0x0A), t);
+    let _ = state.on_conn_event(t, waiter, disconnected(), &no_modifiers());
+
+    let decisions = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
+    assert!(
+        !decisions
+            .iter()
+            .any(|d| matches!(d, ServeDecision::Send { peer, .. } if *peer == unproved)),
+        "{decisions:?}"
+    );
+    assert!(
+        decisions
+            .iter()
+            .any(|d| matches!(d, ServeDecision::DialBack(_))),
+        "{decisions:?}"
+    );
+    assert!(!state.queue.is_granted(unproved));
+}
+
+#[test]
 fn a_waiter_back_before_its_dial_back_said_hello_is_granted_on_the_link_it_came_back_on() {
     // aMule grants a client it promoted unconnected on whichever link its
     // hellos finish first, inbound included (`ClientTCPSocket.cpp:417`,

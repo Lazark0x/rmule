@@ -302,13 +302,11 @@ async fn route(
         PeerEvent::Connection(ConnectionEvent::IdentityVerified {
             user_hash,
             public_key,
-        }) => {
-            match deps.secured_identities.bind(user_hash, &public_key).await {
-                KeyProof::Bound => ServeInput::IdentityBound { user_hash },
-                KeyProof::Mismatch => ServeInput::KeyMismatch { user_hash },
-                KeyProof::Unsettled => return Routed::Open,
-            }
-        }
+        }) => match deps.secured_identities.bind(user_hash, &public_key).await {
+            KeyProof::Bound => ServeInput::IdentityBound { user_hash },
+            KeyProof::Mismatch => ServeInput::KeyMismatch { user_hash },
+            KeyProof::Unsettled => return Routed::Open,
+        },
         PeerEvent::Connection(fact) => {
             if let ConnectionEvent::IdentityRevised {
                 identity: revised, ..

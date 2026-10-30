@@ -407,10 +407,12 @@ fn a_place_whose_link_ended_moves_to_the_clients_second_link_at_its_ask() {
     let _ = state.on_conn_event(t, held, disconnected(), &no_modifiers());
 
     let decisions = slot_request(&mut state, second, file, t);
-    assert!(decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterRelinked {
-        from: held,
-        to: second,
-    })));
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterRelinked {
+            from: held,
+            to: second,
+        }))
+    );
     assert!(decisions.contains(&send(second, ServerCommand::SetQueueRank { rank: 1 })));
     assert_eq!(state.queue.waiting_len(), 1);
 }
@@ -439,8 +441,5 @@ fn a_link_that_proves_another_key_under_a_linked_clients_hash_is_banned() {
     );
     // With no holder linked the proof is the ledger's to raise, and no ban's.
     let _ = state.on_conn_event(t, held, disconnected(), &no_modifiers());
-    assert_eq!(
-        state.on_conn_event(t, thief, mismatch, &no_modifiers()),
-        []
-    );
+    assert_eq!(state.on_conn_event(t, thief, mismatch, &no_modifiers()), []);
 }
