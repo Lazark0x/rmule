@@ -13,9 +13,10 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
+use super::flow::AskedRead;
 use super::served::Found;
 use super::{BlockRead, ServeDecision, ServeState, rank_updates};
-use crate::served_downloads::PartialEnd;
+use crate::served_downloads::{PartFileIdentity, PartialEnd};
 use crate::service::{BlockAskFault, ServeEvent};
 use crate::upload_queue::WaiterLeaveCause;
 
@@ -27,10 +28,12 @@ impl ServeState {
     /// ranges already served outside its **Verified Range** (ADR-0113
     /// §"Reading a part file") ends the peer's slot with nothing of the request
     /// read or sent ([`Self::refuse_block_ask`]). Otherwise every such
-    /// sub-range is read — a row's from its path, a Partial Share's from the
-    /// path holding its bytes, checked against its Part File Identity. A peer
-    /// holding no slot is read nothing, as aMule drops its block request
-    /// (`UploadClient.cpp:497-500`).
+    /// sub-range joins the peer's **Serve Flow**, to be read in turn — a row's
+    /// from its path, a Partial Share's from the path holding its bytes,
+    /// checked against its Part File Identity. A peer holding no slot is read
+    /// nothing, as aMule drops its block request
+    /// (`UploadClient.cpp:497-500`). An ask the flow has no room for is
+    /// dropped whole and not recorded as served, as if it had not come.
     pub(super) fn on_parts_requested(
         &mut self,
         now: Instant,
@@ -80,24 +83,24 @@ impl ServeState {
             let fault = BlockAskFault::Unverified;
             return self.refuse_block_ask(now, peer, file_hash, fault, modifiers);
         }
+        if !self.flow_has_room(peer, reads.len()) {
+            return Vec::new();
+        }
         // Recorded at decision time, not on the read result: a repeat
         // request must not double-send a range whose read is still in
         // flight, and a failed read ends the file's offer (its holders'
         // ranges go with their slots), so nothing is stranded.
         self.served_ranges.insert((peer, file_hash), served);
-        reads
-            .into_iter()
-            .map(|(start, end)| ServeDecision::ReadRange {
-                peer,
-                path: path.clone(),
-                block: BlockRead {
-                    file_hash,
-                    start,
-                    end,
-                },
-                check: check.clone(),
-            })
-            .collect()
+        let asked = reads.into_iter().map(|(start, end)| AskedRead {
+            path: path.clone(),
+            block: BlockRead {
+                file_hash,
+                start,
+                end,
+            },
+            check: check.clone(),
+        });
+        self.ask_flow(now, peer, asked).into_iter().collect()
     }
 
     /// End `peer`'s slot for its block request's `fault`, before anything of
@@ -128,56 +131,47 @@ impl ServeState {
         decisions
     }
 
-    /// Resume a [`ServeDecision::ReadRange`] round trip that read its bytes —
-    /// the read-side twin of `DownloadState::on_persist_result`.
+    /// A [`ServeDecision::ReadRange`] came back with its bytes — the read-side
+    /// twin of `DownloadState::on_persist_result`.
     ///
     /// A read lands after the state it was asked under may have moved on: a
-    /// file no longer offered sends nothing, and a block goes only to a peer
-    /// still holding a slot, as aMule drops a block ask from a client it is
-    /// not uploading to (`UploadClient.cpp:497-500`). A block goes to be
-    /// deflated unless it is an archive's (`Found::compressible`) or its peer
-    /// does not inflate (ADR-0031).
+    /// read of an ended flow is for nobody, a file no longer offered sends
+    /// nothing, and a block goes only to a peer still holding a slot, as aMule
+    /// drops a block ask from a client it is not uploading to
+    /// (`UploadClient.cpp:497-500`). A block goes to be deflated unless it is
+    /// an archive's (`Found::compressible`) or its peer does not inflate
+    /// (ADR-0031). It is credited and counted once it has left.
     pub(crate) fn on_read_result(
         &mut self,
         peer: PeerEndpoint,
+        flow: u64,
         block: BlockRead,
         bytes: Vec<u8>,
     ) -> Vec<ServeDecision> {
-        let BlockRead {
-            file_hash,
-            start,
-            end,
-        } = block;
-        if !self.in_share_set(file_hash) || !self.queue.is_granted(peer) {
+        if !self.read_ended(peer, flow) {
             return Vec::new();
+        }
+        let file_hash = block.file_hash;
+        if !self.in_share_set(file_hash) || !self.queue.is_granted(peer) {
+            return self.read_on(peer).into_iter().collect();
         }
         let compressible = self
             .lookup(file_hash)
             .is_some_and(|found| found.compressible());
-        let identity = self.identities.get(&peer);
-        let mut decisions = Vec::new();
-        if let Some(identity) = identity {
-            decisions.push(ServeDecision::RecordCredit {
-                user_hash: identity.user_hash(),
-                bytes: bytes.len() as u64,
-            });
-        }
-        decisions.push(
-            if compressible && identity.is_some_and(PeerIdentity::inflates_parts) {
-                ServeDecision::DeflateBlock { peer, block, bytes }
-            } else {
-                ServeDecision::Send {
-                    peer,
-                    command: ServerCommand::SendBlock {
-                        file_hash,
-                        start,
-                        end,
-                        bytes,
-                    },
-                }
-            },
-        );
-        decisions
+        let inflates = self
+            .identities
+            .get(&peer)
+            .is_some_and(PeerIdentity::inflates_parts);
+        let send = ServeDecision::SendBlock {
+            peer,
+            flow,
+            block,
+            bytes,
+            deflate: compressible && inflates,
+        };
+        std::iter::once(send)
+            .chain(self.block_ahead(peer))
+            .collect()
     }
 
     /// A read of a shared file's block failed: what is
@@ -189,9 +183,11 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
+        flow: u64,
         file_hash: FileHash,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
+        self.read_ended(peer, flow);
         let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
         decisions.push(ServeDecision::ReadFailed(file_hash));
         decisions
@@ -204,10 +200,12 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        file_hash: FileHash,
+        flow: u64,
+        block_of: (FileHash, Option<PartFileIdentity>),
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.withdraw_partial(now, peer, file_hash, PartialEnd::Unreadable, modifiers)
+        self.read_ended(peer, flow);
+        self.withdraw_partial(now, peer, block_of, PartialEnd::Unreadable, modifiers)
     }
 
     /// A checked read of a Partial Share found the file not the one its
@@ -218,33 +216,32 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        file_hash: FileHash,
+        flow: u64,
+        block_of: (FileHash, Option<PartFileIdentity>),
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.withdraw_partial(now, peer, file_hash, PartialEnd::Changed, modifiers)
+        self.read_ended(peer, flow);
+        self.withdraw_partial(now, peer, block_of, PartialEnd::Changed, modifiers)
     }
 
     /// Stop serving the Partial Share of `file_hash`, telling the peer whose
-    /// read found it so, and empty its range in the cell for `cause` — the
-    /// range as the read was checked against it, which is this brain's copy:
-    /// a read lands within the batch that decided it.
+    /// read found it so, and empty its range in the cell for `cause`: the
+    /// range as the read was `checked` against it, which the entry may have
+    /// moved on from while the read was out.
     fn withdraw_partial(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        file_hash: FileHash,
+        (file_hash, checked): (FileHash, Option<PartFileIdentity>),
         cause: PartialEnd,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let checked = self.served.get(&file_hash).map(|look| look.served.identity);
         let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
-        if let Some(checked) = checked {
-            decisions.push(ServeDecision::EmptyRange {
-                file_hash,
-                checked,
-                cause,
-            });
-        }
+        decisions.push(ServeDecision::EmptyRange {
+            file_hash,
+            checked,
+            cause,
+        });
         decisions
     }
 

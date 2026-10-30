@@ -1,8 +1,10 @@
 //! What the serve loop hands one link's task: an output as it stands, or a
-//! block for that task to deflate (ADR-0031). The deflate runs on the blocking
-//! pool, awaited by the task of the one connection it serves, so it holds
-//! neither an async worker nor the serve loop, and that connection's blocks
-//! keep their order.
+//! block to send. Only a block can come too late: its flow may have ended, and
+//! a block for deflate is deflated on the blocking pool, awaited by the task of
+//! the one connection it serves, so it holds neither an async worker nor the
+//! serve loop, and that connection's blocks keep their order (ADR-0031).
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rmule_peer::{ServerCommand, deflate_block};
 
@@ -10,13 +12,19 @@ use super::state::BlockRead;
 use crate::adapters::ServeOutput;
 use crate::content::on_pool;
 
-/// One entry of a link's command queue.
+/// One entry of a **Link Outbox**.
 #[derive(Debug)]
 pub(super) enum LinkOutput {
     /// Send this as it is.
     Ready(ServeOutput),
-    /// Send `block`, whose `bytes` these are, deflated if that is smaller.
-    Deflate { block: BlockRead, bytes: Vec<u8> },
+    /// Send `block` of `flow`, whose `bytes` these are, with `deflate`
+    /// deflated if that is smaller.
+    Block {
+        flow: u64,
+        block: BlockRead,
+        bytes: Vec<u8>,
+        deflate: bool,
+    },
 }
 
 impl From<ServeOutput> for LinkOutput {
@@ -26,14 +34,32 @@ impl From<ServeOutput> for LinkOutput {
 }
 
 impl LinkOutput {
-    /// What goes down the connection. Off the async runtime for a block.
-    pub(super) async fn ready(self) -> ServeOutput {
-        match self {
-            Self::Ready(output) => output,
-            Self::Deflate { block, bytes } => {
-                ServeOutput::Server(deflated(block, bytes, deflate_block).await)
+    /// What goes down the connection, or nothing for a block of a flow
+    /// `ended_through` covers. Off the async runtime for a block to deflate.
+    pub(super) async fn ready(self, ended_through: &AtomicU64) -> Option<ServeOutput> {
+        let (block, bytes, deflate) = match self {
+            Self::Ready(output) => return Some(output),
+            Self::Block { flow, .. } if ended_through.load(Ordering::Relaxed) >= flow => {
+                return None;
             }
-        }
+            Self::Block {
+                block,
+                bytes,
+                deflate,
+                ..
+            } => (block, bytes, deflate),
+        };
+        let command = if deflate {
+            deflated(block, bytes, deflate_block).await
+        } else {
+            ServerCommand::SendBlock {
+                file_hash: block.file_hash,
+                start: block.start,
+                end: block.end,
+                bytes,
+            }
+        };
+        Some(ServeOutput::Server(command))
     }
 }
 
@@ -107,6 +133,20 @@ mod tests {
             ),
             "the worker went on while the block deflated",
         );
+    }
+
+    #[tokio::test]
+    async fn a_block_of_an_ended_flow_goes_no_further() {
+        let output = |flow| LinkOutput::Block {
+            flow,
+            block: block(),
+            bytes: vec![1; 4],
+            deflate: true,
+        };
+        let ended_through = AtomicU64::new(2);
+
+        assert!(output(2).ready(&ended_through).await.is_none());
+        assert!(output(3).ready(&ended_through).await.is_some());
     }
 
     #[tokio::test]

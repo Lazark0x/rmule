@@ -180,8 +180,9 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     identify(&mut state, p, user(0x0B), t);
 
     let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
-    let read = ServeDecision::ReadRange {
+    let flow_read = |flow| ServeDecision::ReadRange {
         peer: p,
+        flow,
         path: "/shared/served.bin".into(),
         block: BlockRead {
             file_hash,
@@ -199,7 +200,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
-        vec![read.clone()],
+        vec![flow_read(1)],
     );
 
     // Cancel wipes the range record (and the credit identity) without
@@ -210,6 +211,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
         ServeInput::Server(ServerEvent::TransferCancelled { file_hash }),
         &no_modifiers(),
     );
+    let _ = state.end_slotless_flows();
     let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     assert_eq!(
         state.on_conn_event(
@@ -218,7 +220,7 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
             &no_modifiers(),
         ),
-        vec![read],
+        vec![flow_read(2)],
         "the same range reads again on the next slot: nothing is stranded as already-served"
     );
 }

@@ -22,7 +22,6 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
     let sinks = super::super::ServeSinks {
         bans: &Default::default(),
         credit: &credit,
-        held_places: &Default::default(),
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
         diagnostics: &diagnostics,
@@ -30,6 +29,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         read_failed_tx: None,
         served: &Default::default(),
         dial_backs: &mpsc::channel(1).0,
+        reader: &crate::serve::block_reader::BlockReader::new(mpsc::channel(1).0),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -116,7 +116,6 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
     let sinks = super::super::ServeSinks {
         bans: &Default::default(),
         credit: &credit,
-        held_places: &Default::default(),
         evt_tx: &evt_tx,
         client_udp_tx: &client_udp_tx,
         diagnostics: &diagnostics,
@@ -124,6 +123,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         read_failed_tx: None,
         served: &Default::default(),
         dial_backs: &mpsc::channel(1).0,
+        reader: &crate::serve::block_reader::BlockReader::new(mpsc::channel(1).0),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {

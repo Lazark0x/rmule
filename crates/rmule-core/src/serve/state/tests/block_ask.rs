@@ -150,7 +150,22 @@ fn a_backward_range_is_skipped_alone_and_its_neighbours_are_read() {
             _ => None,
         })
         .collect();
-    assert_eq!(reads, [(0, 100), (200, 300)]);
+    assert_eq!(reads, [(0, 100)]);
+    let landed = BlockRead {
+        file_hash: file,
+        start: 0,
+        end: 100,
+    };
+    assert!(
+        matches!(
+            state.on_read_result(holder, 1, landed, vec![0; 100]).as_slice(),
+            [
+                ServeDecision::SendBlock { .. },
+                ServeDecision::ReadRange { block, .. },
+            ] if (block.start, block.end) == (200, 300)
+        ),
+        "the range past the skipped one is read next",
+    );
     assert!(state.queue.is_granted(holder), "the slot stays");
 }
 

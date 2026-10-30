@@ -124,6 +124,11 @@ impl ServeConnection {
         self.peer
     }
 
+    /// The two channel ends, for the one task that races them.
+    pub(crate) fn into_halves(self) -> (mpsc::Sender<ServeOutput>, mpsc::Receiver<ServeInput>) {
+        (self.command_tx, self.event_rx)
+    }
+
     /// Push one output down the connection. Fails once the peer's task is
     /// gone, which is not an error worth retrying — the connection is over.
     pub async fn send(&self, command: ServeOutput) -> Result<(), CoreError> {

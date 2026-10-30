@@ -1,35 +1,46 @@
 //! The serve activity's enactor: the [`ServeTask`] select loop that feeds
 //! connection events, share-set snapshots, and rerank ticks into the sans-I/O
-//! [`ServeState`] and carries out the returned decisions — channel sends,
-//! event emission, the credit-ledger lock, `ContentFileStore` reads, and
-//! `OP_OFFERFILES` announces. No policy branches live here (cf. the download
-//! [`runner`](crate::download)).
+//! [`ServeState`] and carries out the returned decisions — sends into each
+//! link's **Link Outbox**, event emission, the credit ledger's memory, block
+//! reads on their own tasks, and `OP_OFFERFILES` announces. No policy branches
+//! live here (cf. the download [`runner`](crate::download)).
+//!
+//! The loop never waits on a peer, a disk or the store (ADR-0031): it parks in
+//! its `select!`, and a decision is a memory step, a `try_send`, or the start
+//! of a task whose end is one more input.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use rmule_peer::{PeerIdentity, ServerCommand};
+use rmule_peer::PeerIdentity;
 use rmule_primitives::PeerEndpoint;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{Notify, mpsc, watch};
 
 use crate::adapters::{
     AnnounceOutcome, DialBackOutcome, LinkServeHalf, ServeConnection, ServeInput, ServeOutput,
     ServeRuntimeService,
 };
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
-use crate::content::{CheckedReadError, ContentFileStore};
+use crate::content::on_pool;
 use crate::credit::SharedCreditStore;
 use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::aich_builder::{AichBuilder, AichLanded};
+use crate::serve::block_reader::{BlockReader, FlowRead, ReadEnd, ReadLanded};
 use crate::serve::link_output::LinkOutput;
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
 use crate::store::registry::DurableSharedFileRegistry;
 use crate::upload_queue::UploadSlotQueue;
+
+/// How many outputs a **Link Outbox** holds. The Send-Ahead keeps blocks to ten
+/// of them, so a full one is a peer asking faster than it reads (ADR-0031).
+const LINK_OUTBOX_LEN: usize = 64;
 
 /// The serve activity's task, over a runtime whose listener is **already
 /// bound**: the actor binds, announces `ServingStarted`, and
@@ -177,8 +188,8 @@ where
         // leaves no holder or waiter known. The serve activity is the one
         // owner of `Upload`, so ending the relation whole ends only its own.
         let _upload_relations = RelationLease::new(peer_roster.clone(), PeerRelation::Upload);
-        // Per-connection command senders, keyed by requester endpoint.
-        let mut conns: HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>> = HashMap::new();
+        // Every link, keyed by requester endpoint.
+        let mut links: HashMap<PeerEndpoint, Link> = HashMap::new();
         // The sans-I/O serving brain (**Serve State**): it owns the share-set
         // snapshot, the upload slot queue, the served ranges, the peer
         // identities, and the AICH cache, and turns each input into an ordered
@@ -200,10 +211,20 @@ where
         let (aich_landed_tx, mut aich_landed_rx) = mpsc::channel::<AichLanded>(1);
         let mut aich = AichBuilder::new(aich_landed_tx);
 
+        // Where each block read says it ended. The reader holds a sender, so
+        // the receiver never closes under the loop.
+        let (read_landed_tx, mut read_landed_rx) = mpsc::channel::<ReadLanded>(16);
+        let reader = BlockReader::new(read_landed_tx);
+
+        // Where a read of the share set lands, one out at a time; a trigger
+        // meanwhile asks for one more after it.
+        let (share_read_tx, mut share_read_rx) = mpsc::channel::<Vec<SharedFileEntry>>(1);
+        let mut share_read_out = false;
+        let mut share_read_owed = false;
+
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
             credit: &credit,
-            held_places: &held_places,
             bans: &bans,
             evt_tx: &evt_tx,
             client_udp_tx: &client_udp_tx,
@@ -212,6 +233,7 @@ where
             read_failed_tx: read_failed_tx.as_ref(),
             served: &served,
             dial_backs: &dial_back_tx,
+            reader: &reader,
         };
 
         // Announce the share set as of serve start — once the Registry
@@ -221,18 +243,17 @@ where
             // A trigger sent before this read signals a change the read
             // already holds: announcing again for it would say nothing new.
             while share_changed_rx.try_recv().is_ok() {}
+            // Awaited, off the runtime: no peer is served yet, and the first
+            // ask is answered from this set.
+            let rows = read_share_set(registry.clone(), withheld.clone()).await;
             refresh_served(&served, &mut served_seen, &mut state);
             let mut decisions: VecDeque<ServeDecision> = state
-                .on_share_set(
-                    read_share_set(&registry, &withheld),
-                    Instant::now(),
-                    &HashMap::new(),
-                )
+                .on_share_set(rows, Instant::now(), &HashMap::new())
                 .into();
             enact(
                 &mut decisions,
                 &mut state,
-                &conns,
+                &links,
                 &mut serve_runtime,
                 &mut aich,
                 sinks,
@@ -275,15 +296,27 @@ where
                     if changed.is_none() {
                         break;
                     }
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    if share_read_out {
+                        share_read_owed = true;
+                    } else {
+                        share_read_out = true;
+                        start_share_read(&registry, &withheld, &share_read_tx);
+                    }
+                }
+                rows = share_read_rx.recv() => {
+                    let Some(rows) = rows else { continue };
+                    share_read_out = share_read_owed;
+                    if std::mem::take(&mut share_read_owed) {
+                        start_share_read(&registry, &withheld, &share_read_tx);
+                    }
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     refresh_served(&served, &mut served_seen, &mut state);
-                    let mut decisions: VecDeque<ServeDecision> = state
-                        .on_share_set(read_share_set(&registry, &withheld), Instant::now(), &modifiers)
-                        .into();
+                    let mut decisions: VecDeque<ServeDecision> =
+                        state.on_share_set(rows, Instant::now(), &modifiers).into();
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
@@ -303,7 +336,7 @@ where
                             if let Some(queued) = serve_runtime.accept_backlog() {
                                 diagnostics.observe_serve_accept_backlog(queued + 1);
                             }
-                            register_serve_connection(conn, &mut conns, &fact_tx);
+                            register_serve_connection(conn, &mut links, &fact_tx);
                         }
                         None => {
                             reason = ServeStopReason::ListenerClosed;
@@ -313,7 +346,7 @@ where
                 }
                 outcome = dial_back_rx.recv() => {
                     let Some(outcome) = outcome else { continue };
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     state.on_self_position(self_position(own_identity.as_ref()));
                     refresh_served(&served, &mut served_seen, &mut state);
                     let now = Instant::now();
@@ -322,7 +355,7 @@ where
                         // so the grant the fold decides finds it.
                         DialBackOutcome::Linked { waiter, conn, identity, far_end } => {
                             let link = conn.peer();
-                            register_serve_connection(conn, &mut conns, &fact_tx);
+                            register_serve_connection(conn, &mut links, &fact_tx);
                             state.on_dial_back_linked(now, waiter, link, *identity, far_end, &modifiers)
                         }
                         DialBackOutcome::Failed { waiter, cause } => {
@@ -333,7 +366,34 @@ where
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
+                        &mut serve_runtime,
+                        &mut aich,
+                        sinks,
+                    )
+                    .await;
+                }
+                landed = read_landed_rx.recv() => {
+                    let Some(ReadLanded { peer, flow, block, end }) = landed else { continue };
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
+                    refresh_served(&served, &mut served_seen, &mut state);
+                    let now = Instant::now();
+                    let file = block.file_hash;
+                    let mut decisions: VecDeque<ServeDecision> = match end {
+                        ReadEnd::Bytes(bytes) => state.on_read_result(peer, flow, block, bytes),
+                        ReadEnd::Failed => state.on_read_failed(now, peer, flow, file, &modifiers),
+                        ReadEnd::Changed { checked } => {
+                            state.on_part_file_changed(now, peer, flow, (file, checked), &modifiers)
+                        }
+                        ReadEnd::Unreadable { checked } => {
+                            state.on_part_file_unreadable(now, peer, flow, (file, checked), &modifiers)
+                        }
+                    }
+                    .into();
+                    enact(
+                        &mut decisions,
+                        &mut state,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
@@ -342,14 +402,14 @@ where
                 }
                 landed = aich_landed_rx.recv() => {
                     let Some(AichLanded { file_hash, built }) = landed else { continue };
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_aich_landed(Instant::now(), file_hash, built, &modifiers)
                         .into();
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
@@ -371,7 +431,7 @@ where
                             if let Some(far_end) = dialed {
                                 state.on_link_dialed(conn.peer(), far_end);
                             }
-                            register_serve_connection(conn, &mut conns, &fact_tx);
+                            register_serve_connection(conn, &mut links, &fact_tx);
                         }
                         // The dialed source closed (core shutdown); stop polling
                         // it but keep serving accepted connections.
@@ -381,7 +441,7 @@ where
                 fact = fact_rx.recv() => {
                     let Some((peer, event)) = fact else { continue };
                     let closing = event.is_disconnect() || event == ServeInput::Readopted;
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     // Our own position, read fresh from the session's
                     // self-facts. A synchronous cell read, not a round
                     // trip: it must be current at the decision, because a
@@ -397,24 +457,26 @@ where
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
                     )
                     .await;
                     if closing {
-                        conns.remove(&peer);
+                        links.remove(&peer);
                     }
                 }
                 _ = rerank_tick.tick() => {
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
+                    let now = Instant::now();
                     let mut decisions: VecDeque<ServeDecision> =
-                        state.on_rerank_tick(Instant::now(), &modifiers).into();
+                        state.on_rerank_tick(now, &modifiers).into();
+                    decisions.extend(state.on_slot_sweep(now, &modifiers));
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
@@ -424,14 +486,14 @@ where
                 _ = purge_tick.tick() => {
                     // Reap waiters silent past the reask deadline or whose file
                     // stopped being shared (ADR-0057 disconnected standing).
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_purge(Instant::now(), purge_after, &modifiers)
                         .into();
                     enact(
                         &mut decisions,
                         &mut state,
-                        &conns,
+                        &links,
                         &mut serve_runtime,
                         &mut aich,
                         sinks,
@@ -449,7 +511,7 @@ where
                         enact(
                             &mut decisions,
                             &mut state,
-                            &conns,
+                            &links,
                             &mut serve_runtime,
                             &mut aich,
                             sinks,
@@ -482,8 +544,6 @@ where
 struct ServeSinks<'a> {
     /// The shared, `UserHash`-keyed credit ledger.
     credit: &'a SharedCreditStore,
-    /// The node's **Held Places**, read with the credit at every rank.
-    held_places: &'a SharedHeldPlaces,
     /// The node's peer bans, where a hash thief's address goes.
     bans: &'a crate::ban_store::SharedBanStore,
     evt_tx: &'a mpsc::Sender<CoreEvent>,
@@ -502,29 +562,51 @@ struct ServeSinks<'a> {
     served: &'a ServedDownloads,
     /// Where the serve adapter says how each dial-back ended.
     dial_backs: &'a mpsc::Sender<DialBackOutcome>,
+    /// Where block reads start.
+    reader: &'a BlockReader,
 }
 
-/// Carry out one `Vec<ServeDecision>` against the live runtime — the only
-/// async surface in the serve loop. Decisions drain in order; a `ReadRange`
-/// feeds its follow-up decisions back onto the queue (the read round trip), so
-/// the loop stays flat — no recursion. A `BuildAichTree` is not waited for: it
-/// runs on and comes back as an input of its own (ADR-0038).
+/// The serve loop's handle on one link's task.
+struct Link {
+    /// The **Link Outbox**: filled without waiting.
+    outbox: mpsc::Sender<LinkOutput>,
+    /// The latest flow of this link that has ended, read by its reads and
+    /// its task, so what is under way for it stops at the next look.
+    ended_through: Arc<AtomicU64>,
+    /// Ends the link now, whatever its outbox holds.
+    stop: Arc<Notify>,
+}
+
+impl Link {
+    /// Hand this link `output` without waiting. A full outbox ends the link:
+    /// its peer is asking faster than it reads. A closed one has its end on
+    /// the way already.
+    fn offer(&self, peer: PeerEndpoint, output: LinkOutput) {
+        if let Err(TrySendError::Full(_)) = self.outbox.try_send(output) {
+            tracing::debug!(%peer, "a link's outbox filled; the peer is not reading, so its link ends");
+            self.stop.notify_one();
+        }
+    }
+}
+
+/// Carry out one `Vec<ServeDecision>` against the live runtime, in order,
+/// ending the flows whose slots the input ended. A `ReadRange` and a `BuildAichTree` are
+/// not waited for: each runs on and comes back as an input of its own
+/// (ADR-0031, ADR-0038). The one wait here is the event stream to core.
 ///
-/// This is also where upload byte accounting happens (ADR-0077): the sinks'
-/// `diagnostics` learns a peer's slot lifetime from the emitted grant/release
-/// facts, and its `bytes_sent` from every `SendBlock` the connection writer
-/// accepted — the last core-owned step before the socket.
+/// The sinks' `diagnostics` learns a peer's slot lifetime from the emitted
+/// grant/release facts here, and its `bytes_sent` as each block's session says
+/// it left (ADR-0077).
 async fn enact<L: ServeRuntimeService>(
     decisions: &mut VecDeque<ServeDecision>,
     state: &mut ServeState,
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
+    links: &HashMap<PeerEndpoint, Link>,
     serve_runtime: &mut L,
     aich: &mut AichBuilder,
     sinks: ServeSinks<'_>,
 ) {
     let ServeSinks {
         credit,
-        held_places,
         bans,
         evt_tx,
         client_udp_tx,
@@ -533,32 +615,46 @@ async fn enact<L: ServeRuntimeService>(
         read_failed_tx,
         served,
         dial_backs,
+        reader,
     } = sinks;
+    decisions.extend(state.end_slotless_flows());
+    let output_to = |peer, output: LinkOutput| {
+        if let Some(link) = links.get(&peer) {
+            link.offer(peer, output);
+        }
+    };
     while let Some(decision) = decisions.pop_front() {
         match decision {
             ServeDecision::Send { peer, command } => {
-                // Payload size read before the command moves; counted only
-                // once the connection task actually took it, so bytes a dead
-                // connection never wrote are never claimed as uploaded.
-                let block = match &command {
-                    ServerCommand::SendBlock {
-                        file_hash, bytes, ..
-                    } => Some((*file_hash, bytes.len() as u64)),
-                    _ => None,
-                };
-                let delivered = send_conn(conns, peer, ServeOutput::Server(command).into()).await;
-                if delivered && let Some((file_hash, len)) = block {
-                    diagnostics.add_sent_bytes(peer, file_hash, len);
+                output_to(peer, ServeOutput::Server(command).into());
+            }
+            ServeDecision::SendBlock {
+                peer,
+                flow,
+                block,
+                bytes,
+                deflate,
+            } => output_to(
+                peer,
+                LinkOutput::Block {
+                    flow,
+                    block,
+                    bytes,
+                    deflate,
+                },
+            ),
+            ServeDecision::EndFlow { peer, flow } => {
+                if let Some(link) = links.get(&peer) {
+                    link.ended_through.fetch_max(flow, Ordering::Relaxed);
                 }
             }
-            ServeDecision::DeflateBlock { peer, block, bytes } => {
-                let (file_hash, len) = (block.file_hash, bytes.len() as u64);
-                if send_conn(conns, peer, LinkOutput::Deflate { block, bytes }).await {
-                    diagnostics.add_sent_bytes(peer, file_hash, len);
-                }
-            }
+            ServeDecision::CountSent {
+                peer,
+                file_hash,
+                bytes,
+            } => diagnostics.add_sent_bytes(peer, file_hash, bytes),
             ServeDecision::Disconnect { peer } => {
-                send_conn(conns, peer, ServeOutput::Disconnect.into()).await;
+                output_to(peer, ServeOutput::Disconnect.into());
             }
             ServeDecision::Emit(event) => {
                 match event {
@@ -634,57 +730,22 @@ async fn enact<L: ServeRuntimeService>(
             }
             ServeDecision::ReadRange {
                 peer,
+                flow,
                 path,
                 block,
-                check: None,
-            } => match ContentFileStore::read_range(&path, block.start, block.end - block.start)
-                .await
-            {
-                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
-                Err(error) => {
-                    tracing::warn!(%error, ?block, path = %path.display(), "serve read failed; the file is no longer offered");
-                    let modifiers =
-                        current_modifiers(credit, held_places, state.identities()).await;
-                    decisions.extend(state.on_read_failed(
-                        Instant::now(),
+                check,
+            } => {
+                if let Some(link) = links.get(&peer) {
+                    let read = FlowRead {
                         peer,
-                        block.file_hash,
-                        &modifiers,
-                    ));
+                        flow,
+                        path,
+                        block,
+                        check,
+                    };
+                    reader.start(read, Arc::clone(&link.ended_through));
                 }
-            },
-            // A Served Download's bytes: read only through a handle proven to
-            // be the file its range was read from (ADR-0113).
-            ServeDecision::ReadRange {
-                peer,
-                path,
-                block,
-                check: Some(check),
-            } => match ContentFileStore::read_checked(
-                &path,
-                &check,
-                block.start,
-                block.end - block.start,
-            )
-            .await
-            {
-                Ok(bytes) => decisions.extend(state.on_read_result(peer, block, bytes)),
-                Err(refused) => {
-                    let modifiers =
-                        current_modifiers(credit, held_places, state.identities()).await;
-                    let file_hash = block.file_hash;
-                    decisions.extend(match refused {
-                        CheckedReadError::Changed => {
-                            tracing::warn!(?block, path = %path.display(), "a download's part file changed; its parts are no longer offered");
-                            state.on_part_file_changed(Instant::now(), peer, file_hash, &modifiers)
-                        }
-                        CheckedReadError::Unreadable(error) => {
-                            tracing::warn!(%error, ?block, path = %path.display(), "a download's part file could not be read; its parts are no longer offered");
-                            state.on_part_file_unreadable(Instant::now(), peer, file_hash, &modifiers)
-                        }
-                    });
-                }
-            },
+            }
             ServeDecision::BuildAichTree {
                 file_hash,
                 path,
@@ -720,10 +781,9 @@ async fn enact<L: ServeRuntimeService>(
                 Some(tx) => {
                     // Plaintext plus the target's crypt facts: the socket
                     // boundary applies the ADR-0046 send gate (aMule encrypts in
-                    // `SendControlData`, not where the reply was built).
-                    let _ = tx
-                        .send(ClientUdpSend::to_peer(to, datagram, crypt_target))
-                        .await;
+                    // `SendControlData`, not where the reply was built). A
+                    // datagram no room takes is lost as any datagram may be.
+                    let _ = tx.try_send(ClientUdpSend::to_peer(to, datagram, crypt_target));
                 }
                 // No bound client-UDP socket (the advert then stays empty, so
                 // no peer expects a UDP reply): trace the reply, do not send.
@@ -750,13 +810,28 @@ async fn enact<L: ServeRuntimeService>(
 }
 
 /// The offered share set, for a snapshot refresh: the registry's rows less
-/// the withheld ones (ADR-0106). Errors degrade to an empty set (the
-/// registry is the durable truth; the serve side just stops answering).
-fn read_share_set(
-    registry: &DurableSharedFileRegistry,
-    withheld: &crate::registry_check::WithheldRows,
+/// the withheld ones (ADR-0106), read off the runtime. Errors degrade to an
+/// empty set (the registry is the durable truth; the serve side just stops
+/// answering).
+async fn read_share_set(
+    registry: Arc<DurableSharedFileRegistry>,
+    withheld: crate::registry_check::WithheldRows,
 ) -> Vec<SharedFileEntry> {
-    withheld.offered(registry.list().unwrap_or_default())
+    on_pool(move || withheld.offered(registry.list().unwrap_or_default())).await
+}
+
+/// Read the share set away from the serve loop; it lands on `landed_tx`.
+fn start_share_read(
+    registry: &Arc<DurableSharedFileRegistry>,
+    withheld: &crate::registry_check::WithheldRows,
+    landed_tx: &mpsc::Sender<Vec<SharedFileEntry>>,
+) {
+    let read = read_share_set(Arc::clone(registry), withheld.clone());
+    let landed_tx = landed_tx.clone();
+    tokio::spawn(async move {
+        // The loop that would read this is gone: nothing is owed to it.
+        let _ = landed_tx.send(read.await).await;
+    });
 }
 
 /// Refresh the brain's copy of the **Served Downloads** when the cell moved
@@ -769,30 +844,56 @@ fn refresh_served(served: &ServedDownloads, seen: &mut u64, state: &mut ServeSta
     }
 }
 
-/// Register one identified serve connection (accepted *or* dialed): record its
-/// command sender keyed by endpoint and spawn a forwarder that drains its
-/// events into the shared `fact_tx` and relays core's commands to it. The one
-/// path both connection sources go through, so the queue treats a same-socket
-/// (dialed) requester identically to an accepted one.
+/// Register one identified serve connection (accepted *or* dialed): keep its
+/// [`Link`] keyed by endpoint and spawn the task that relays its outbox to it
+/// and its events to the shared `fact_tx`. The one path both connection sources
+/// go through, so the queue treats a same-socket (dialed) requester identically
+/// to an accepted one.
+///
+/// The task parks on neither side alone. An output waits for room on the
+/// connection while what the peer says still reaches the loop: the router
+/// behind the connection may be holding that very room until it has handed its
+/// event on (ADR-0031).
 fn register_serve_connection(
-    mut conn: ServeConnection,
-    conns: &mut HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
+    conn: ServeConnection,
+    links: &mut HashMap<PeerEndpoint, Link>,
     fact_tx: &mpsc::Sender<(PeerEndpoint, ServeInput)>,
 ) {
     let peer = conn.peer();
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<LinkOutput>(16);
-    conns.insert(peer, cmd_tx);
+    let (outbox, mut outbox_rx) = mpsc::channel::<LinkOutput>(LINK_OUTBOX_LEN);
+    let ended_through = Arc::new(AtomicU64::new(0));
+    let stop = Arc::new(Notify::new());
+    let link = Link {
+        outbox,
+        ended_through: Arc::clone(&ended_through),
+        stop: Arc::clone(&stop),
+    };
+    links.insert(peer, link);
     let fact_tx = fact_tx.clone();
+    let (command_tx, mut event_rx) = conn.into_halves();
     tokio::spawn(async move {
+        // The output waiting for room on the connection.
+        let mut waiting: Option<ServeOutput> = None;
         loop {
             tokio::select! {
-                command = cmd_rx.recv() => {
-                    let Some(command) = command else { break };
-                    // Awaited here, the link's own task: a block costs only
-                    // this link's next command (ADR-0031).
-                    if conn.send(command.ready().await).await.is_err() { break; }
+                () = stop.notified() => {
+                    let _ = fact_tx.send((peer, ServeInput::closed_here())).await;
+                    break;
                 }
-                event = conn.next_event() => {
+                permit = command_tx.reserve(), if waiting.is_some() => {
+                    // A connection gone under an output says so on its event
+                    // stream, read below, which is what frees the peer's slot.
+                    if let (Ok(permit), Some(output)) = (permit, waiting.take()) {
+                        permit.send(output);
+                    }
+                }
+                output = outbox_rx.recv(), if waiting.is_none() => {
+                    let Some(output) = output else { break };
+                    // Awaited here, the link's own task: a block costs only
+                    // this link's next output (ADR-0031).
+                    waiting = output.ready(&ended_through).await;
+                }
+                event = event_rx.recv() => {
                     let Some(event) = event else {
                         let _ = fact_tx.send((peer, ServeInput::closed_here())).await;
                         break;
@@ -839,20 +940,6 @@ async fn recv_reask(
     }
 }
 
-/// Hand one command to `peer`'s connection task. `true` when it was accepted;
-/// `false` when the peer has no live connection or its task already ended
-/// (the command is dropped — its `Disconnected` will clean the peer up).
-async fn send_conn(
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
-    peer: PeerEndpoint,
-    command: LinkOutput,
-) -> bool {
-    match conns.get(&peer) {
-        Some(tx) => tx.send(command).await.is_ok(),
-        None => false,
-    }
-}
-
 /// Raise what an announce did with the share set; an unsaid one raises
 /// nothing.
 async fn say_told(evt_tx: &mpsc::Sender<CoreEvent>, outcome: AnnounceOutcome) {
@@ -873,9 +960,10 @@ async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
 /// Read the current score modifier for every peer rmule has identified, so the
 /// brain can rank its queue by `wait * modifier`: its credit (ADR-0041), times
 /// the **Reciprocity Factor** when its link's address and its User Hash name
-/// one of the node's **Held Places** (ADR-0116). One store read per peer; the
-/// map covers a superset of the waiting set, which is all the queue needs.
-async fn current_modifiers(
+/// one of the node's **Held Places** (ADR-0116). Both are memory reads
+/// (ADR-0031); the map covers a superset of the waiting set, which is all the
+/// queue needs.
+fn current_modifiers(
     credit: &SharedCreditStore,
     held_places: &SharedHeldPlaces,
     identities: &HashMap<PeerEndpoint, PeerIdentity>,

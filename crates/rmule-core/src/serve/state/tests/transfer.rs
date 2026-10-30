@@ -6,21 +6,23 @@ use super::*;
 use rmule_peer::{ServerCommand, ServerEvent};
 
 #[test]
-fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
+fn parts_requests_read_only_unserved_ranges() {
     let file_hash = hash(0x44);
     let mut state = serving_state(1, vec![entry(file_hash, 512, "served.bin")]);
     let t = Instant::now();
     let p = peer(1);
     identify(&mut state, p, user(0x0A), t);
 
-    let read = |start: u64, end: u64| ServeDecision::ReadRange {
+    let block = |start: u64, end: u64| BlockRead {
+        file_hash,
+        start,
+        end,
+    };
+    let read = |flow: u64, start: u64, end: u64| ServeDecision::ReadRange {
         peer: p,
+        flow,
         path: "/shared/served.bin".into(),
-        block: BlockRead {
-            file_hash,
-            start,
-            end,
-        },
+        block: block(start, end),
         check: None,
     };
     let parts_requested =
@@ -31,43 +33,38 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
     let first = PartRanges::new([(0, 100), (100, 200), (200, 300)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(first), &no_modifiers()),
-        vec![read(0, 100), read(100, 200), read(200, 300)],
+        vec![read(1, 0, 100)],
     );
 
-    // The read result closes the round trip: credit first, then the block.
+    // The read result closes the round trip: the block goes down the link
+    // and the flow's next read starts.
     let bytes = vec![0xEE_u8; 100];
     assert_eq!(
-        state.on_read_result(
-            p,
-            BlockRead {
-                file_hash,
-                start: 0,
-                end: 100,
-            },
-            bytes.clone(),
-        ),
+        state.on_read_result(p, 1, block(0, 100), bytes.clone()),
         vec![
-            ServeDecision::RecordCredit {
-                user_hash: user(0x0A),
-                bytes: 100,
+            ServeDecision::SendBlock {
+                peer: p,
+                flow: 1,
+                block: block(0, 100),
+                bytes,
+                deflate: false,
             },
-            send(
-                p,
-                ServerCommand::SendBlock {
-                    file_hash,
-                    start: 0,
-                    end: 100,
-                    bytes,
-                }
-            ),
+            read(1, 100, 200),
         ],
     );
 
-    // A re-request overlapping already-served ranges reads only the tail.
+    // A re-request overlapping already-served ranges adds only the tail.
     let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(overlapping), &no_modifiers()),
-        vec![read(300, 400)],
+        Vec::new(),
+    );
+    let _ = state.on_read_result(p, 1, block(100, 200), vec![0; 100]);
+    assert_eq!(
+        state
+            .on_read_result(p, 1, block(200, 300), vec![0; 100])
+            .last(),
+        Some(&read(1, 300, 400)),
     );
 
     // A request for a file we do not share is dropped.
@@ -85,34 +82,14 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
         Vec::new(),
     );
 
-    // Disconnecting wipes the flow: on a new slot the same range reads again,
-    // and the forgotten identity earns no credit.
+    // Disconnecting wipes the flow: on a new slot the same range reads again.
     let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
+    let _ = state.end_slotless_flows();
     let _ = state.on_conn_event(t, p, slot, &no_modifiers());
     let again = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
     assert_eq!(
         state.on_conn_event(t, p, parts_requested(again), &no_modifiers()),
-        vec![read(0, 100)],
-    );
-    assert_eq!(
-        state.on_read_result(
-            p,
-            BlockRead {
-                file_hash,
-                start: 0,
-                end: 100,
-            },
-            vec![0xEE_u8; 100],
-        ),
-        vec![send(
-            p,
-            ServerCommand::SendBlock {
-                file_hash,
-                start: 0,
-                end: 100,
-                bytes: vec![0xEE_u8; 100],
-            }
-        )],
+        vec![read(2, 0, 100)],
     );
 }
 
@@ -132,7 +109,7 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
     let _ = state.on_conn_event(t, peer(2), slot(file_hash), &no_modifiers());
     let _ = state.on_conn_event(t, peer(3), slot(other), &no_modifiers());
 
-    let decisions = state.on_read_failed(t, peer(1), file_hash, &no_modifiers());
+    let decisions = state.on_read_failed(t, peer(1), 1, file_hash, &no_modifiers());
     let not_found = |port| send(peer(port), ServerCommand::AnswerFileNotFound { file_hash });
     assert_eq!(
         decisions,
@@ -219,17 +196,18 @@ fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
         ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }),
         &no_modifiers(),
     );
-    assert_eq!(reads.len(), 3);
+    assert_eq!(reads.len(), 1);
     let block = |start, end| BlockRead {
         file_hash,
         start,
         end,
     };
 
-    let _ = state.on_read_failed(t, p, file_hash, &no_modifiers());
+    let _ = state.on_read_failed(t, p, 1, file_hash, &no_modifiers());
+    let _ = state.end_slotless_flows();
 
     assert_eq!(
-        state.on_read_result(p, block(100, 250), vec![0x5E; 150]),
+        state.on_read_result(p, 1, block(100, 250), vec![0x5E; 150]),
         Vec::new()
     );
 }
@@ -257,13 +235,17 @@ fn a_read_that_lands_after_the_slot_ended_sends_nothing() {
         &no_modifiers(),
     );
     let _ = state.on_conn_event(t, p, disconnected(), &no_modifiers());
+    let _ = state.end_slotless_flows();
 
     let block = BlockRead {
         file_hash,
         start: 0,
         end: 100,
     };
-    assert_eq!(state.on_read_result(p, block, vec![0x4D; 100]), Vec::new());
+    assert_eq!(
+        state.on_read_result(p, 1, block, vec![0x4D; 100]),
+        Vec::new()
+    );
 }
 
 /// A waiter for a withdrawn file leaves the queue, and the waiter behind it
@@ -323,16 +305,21 @@ fn only_a_block_a_peer_can_inflate_of_a_non_archive_goes_to_its_deflate() {
         };
         let _ = state.on_conn_event(t, p, hello.identified(), &no_modifiers());
         let _ = slot_request(&mut state, p, file_hash, t);
+        let ranges = PartRanges::new([(0, 100), (0, 0), (0, 0)]);
+        let ask = ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });
+        let _ = state.on_conn_event(t, p, ask, &no_modifiers());
         let block = BlockRead {
             file_hash,
             start: 0,
             end: 100,
         };
 
-        let decisions = state.on_read_result(p, block, vec![0; 100]);
-        assert_eq!(
-            matches!(decisions.last(), Some(ServeDecision::DeflateBlock { .. })),
-            deflated,
+        let decisions = state.on_read_result(p, 1, block, vec![0; 100]);
+        assert!(
+            matches!(
+                decisions.as_slice(),
+                [ServeDecision::SendBlock { deflate, .. }] if *deflate == deflated
+            ),
             "{name}, {inflates}: {decisions:?}"
         );
     }

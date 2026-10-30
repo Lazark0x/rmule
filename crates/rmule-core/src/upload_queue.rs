@@ -808,6 +808,14 @@ impl UploadSlotQueue {
         }
     }
 
+    /// The slot holders with a link: every grant but a dial-back still out.
+    pub fn linked_holders(&self) -> impl Iterator<Item = PeerEndpoint> + '_ {
+        self.granted
+            .iter()
+            .filter(|grant| grant.dial_back_since.is_none())
+            .map(|grant| grant.peer)
+    }
+
     /// Re-rank the wait list by current score at `now` and report the entries
     /// whose 1-based rank changed. The periodic re-rank tick calls this so a
     /// waiter's reported position tracks both elapsed wait and any credit it

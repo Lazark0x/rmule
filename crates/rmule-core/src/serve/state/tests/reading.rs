@@ -16,7 +16,8 @@ type Refusal = fn(
     &mut ServeState,
     Instant,
     PeerEndpoint,
-    FileHash,
+    u64,
+    (FileHash, Option<PartFileIdentity>),
     &HashMap<PeerEndpoint, f64>,
 ) -> Vec<ServeDecision>;
 
@@ -52,6 +53,7 @@ fn block(file_hash: FileHash, start: u64, end: u64) -> BlockRead {
 fn read(p: PeerEndpoint, file_hash: FileHash, start: u64, end: u64) -> ServeDecision {
     ServeDecision::ReadRange {
         peer: p,
+        flow: 1,
         path: "/temp/download.bin.part".into(),
         block: block(file_hash, start, end),
         check: Some(ReadCheck {
@@ -77,23 +79,23 @@ fn an_in_range_request_reads_its_part_file_and_a_re_request_checks_only_the_unse
             parts([(0, 100), (PART, PART + 100), (0, 0)], file),
             &no_modifiers()
         ),
-        [read(p, file, 0, 100), read(p, file, PART, PART + 100)]
+        [read(p, file, 0, 100)]
     );
     let bytes = vec![0xA5; 100];
     assert_eq!(
-        state
-            .on_read_result(p, block(file, 0, 100), bytes.clone())
-            .last(),
-        Some(&send(
-            p,
-            ServerCommand::SendBlock {
-                file_hash: file,
-                start: 0,
-                end: 100,
-                bytes,
-            }
-        ))
+        state.on_read_result(p, 1, block(file, 0, 100), bytes),
+        [
+            ServeDecision::SendBlock {
+                peer: p,
+                flow: 1,
+                block: block(file, 0, 100),
+                bytes: vec![0xA5; 100],
+                deflate: false,
+            },
+            read(p, file, PART, PART + 100),
+        ]
     );
+    let _ = state.on_read_result(p, 1, block(file, PART, PART + 100), vec![0; 100]);
 
     // The run dropped part 0 as damaged: what was served of it is not asked
     // again, so only the rest is checked, and it lies inside the range.
@@ -183,7 +185,8 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
             &no_modifiers(),
         );
 
-        let decisions = refused(&mut state, t, holder, file, &no_modifiers());
+        let checked = Some(identity());
+        let decisions = refused(&mut state, t, holder, 1, (file, checked), &no_modifiers());
         for told in [holder, waiter] {
             assert!(decisions.contains(&send(
                 told,
@@ -200,14 +203,10 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
         );
         assert!(!decisions.iter().any(|decision| matches!(
             decision,
-            ServeDecision::ReadFailed(_)
-                | ServeDecision::Send {
-                    command: ServerCommand::SendBlock { .. },
-                    ..
-                }
+            ServeDecision::ReadFailed(_) | ServeDecision::SendBlock { .. }
         )));
         assert_eq!(
-            state.on_read_result(holder, block(file, 0, 100), vec![0; 100]),
+            state.on_read_result(holder, 1, block(file, 0, 100), vec![0; 100]),
             Vec::new(),
             "a read landing after it sends nothing"
         );

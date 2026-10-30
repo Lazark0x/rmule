@@ -192,7 +192,8 @@ scheduling is (ADR-0026).
   | The loop | Is | Enacted as |
   |---|---|---|
   | its `select!` over its inboxes | the one place it parks | |
-  | the event stream to core | a wait on this process, kept: lossless, and a reader that stops holds nothing a peer can reach | `send().await` |
+  | the event stream to core | a wait on this process, kept: it is lossless, and only a front end that stops reading holds it, which no peer can cause | `send().await` |
+  | the ban list | a memory lock, kept: every holder holds it for a map step | `lock().await` |
   | a command to a link | a wait on a peer, so never | `try_send` into the link's **Link Outbox** |
   | a block read | a wait on a disk, so never | a read on its own task, its end an input |
   | the credit ledger | a wait on the store, so never | the ledger's memory; a task writes it |
@@ -255,10 +256,12 @@ scheduling is (ADR-0026).
   - A driver whose write moves no byte for 40 s closes the connection with
     `TimedOut`. Unlike aMule's, this clock is not reset by what the peer sends: a peer
     that asks and never reads has not moved the socket that is stuck.
-  - A slot holder with nothing left to send and nothing moving for 40 s, neither an ask
-    nor a block leaving, loses its link at the next purge sweep. This is the peer that
-    stopped reading with all its bytes in the kernel, which no write will ever show.
-    A read parked on the disk is not the peer's silence, and does not count.
+  - A slot holder with nothing left to send and nothing moving for 40 s, neither a word
+    from it nor a block leaving, loses its slot and its link at the next re-rank tick,
+    20 s by default. This is the peer that stopped reading with all its bytes in the
+    kernel, which no write will ever show. A read parked on the disk is not the peer's
+    silence, and does not count. The slot is released here and not left to the link's
+    close, because a download riding the link holds the link up (ADR-0107).
 
 **The listener is in `rmule-net`; core holds one connection registry.**
 

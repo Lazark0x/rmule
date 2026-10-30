@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use rmule_ed2k::OfferedFile;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 
 use super::AnnounceOutcome;
@@ -74,14 +74,20 @@ struct Announcing {
 /// each session. Dropping it stops following.
 pub(super) struct SessionFollower {
     /// The lock is held from reading or writing the set until its send is
-    /// answered, by the follower and by `announce` alike, so the sets reach a
-    /// session in the order they were set and the last one sent is the newest.
+    /// answered, by the follower and by the announcer alike, so the sets reach
+    /// a session in the order they were set and the last one sent is the
+    /// newest.
+    #[cfg(test)]
     state: Arc<Mutex<Announcing>>,
+    #[cfg(test)]
     session: SharedServerSession,
     /// What the follower's own tells — to sessions made after an announce —
     /// said, in order, until the serve takes it.
     session_told: Option<mpsc::UnboundedReceiver<AnnounceOutcome>>,
     task: JoinHandle<()>,
+    /// The latest set handed over, for [`Self::hand`]'s task to tell.
+    handed: watch::Sender<Option<Vec<OfferedFile>>>,
+    announcer: JoinHandle<()>,
 }
 
 impl SessionFollower {
@@ -97,6 +103,28 @@ impl SessionFollower {
         let mut changes = session.session_changes();
         let mut withhold = session.withhold_shares();
         let (said_tx, session_told) = mpsc::unbounded_channel();
+        let (handed, mut handed_rx) = watch::channel(None);
+        let announcer = tokio::spawn({
+            let state = Arc::clone(&state);
+            let session = session.clone();
+            let said_tx = said_tx.clone();
+            async move {
+                while handed_rx.changed().await.is_ok() {
+                    let Some(files) = handed_rx.borrow_and_update().clone() else {
+                        continue;
+                    };
+                    match announce_to(&state, &session, files).await {
+                        Ok(AnnounceOutcome::Unsaid) => {}
+                        Ok(outcome) => {
+                            let _ = said_tx.send(outcome);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "serve: announce failed; peers will not discover shared files");
+                        }
+                    }
+                }
+            }
+        });
         let task = tokio::spawn(async move {
             let mut live = follow_session.session_in_slot().await;
             loop {
@@ -130,30 +158,31 @@ impl SessionFollower {
             }
         });
         Self {
+            #[cfg(test)]
             state,
+            #[cfg(test)]
             session: session.clone(),
             session_told: Some(session_told),
             task,
+            handed,
+            announcer,
         }
     }
 
-    /// Announce `files` to the live session as the Announce Policy allows,
-    /// and keep them as the set every later session is told. With no session
-    /// the set waits for the next one; that is not an error, since the
-    /// announce has nowhere yet to go.
+    /// Have `files` announced without waiting on the server: what it does
+    /// comes back on the told channel, and a set handed before the last went
+    /// out is replaced by the newest.
+    pub(super) fn hand(&self, files: Vec<OfferedFile>) {
+        self.handed.send_replace(Some(files));
+    }
+
+    /// [`announce_to`], awaited.
+    #[cfg(test)]
     pub(super) async fn announce(
         &self,
         files: Vec<OfferedFile>,
     ) -> Result<AnnounceOutcome, CoreError> {
-        let mut state = self.state.lock().await;
-        state.share = Some(files);
-        match self.session.session_in_slot().await {
-            Some(handle) => {
-                let held = *self.session.withhold_shares().borrow();
-                tell(&self.session, &handle, &mut state, held, true).await
-            }
-            None => Ok(AnnounceOutcome::Unsaid),
-        }
+        announce_to(&self.state, &self.session, files).await
     }
 
     /// Take the outcomes of the tells the follower makes on its own, to each
@@ -166,6 +195,27 @@ impl SessionFollower {
 impl Drop for SessionFollower {
     fn drop(&mut self) {
         self.task.abort();
+        self.announcer.abort();
+    }
+}
+
+/// Announce `files` to the live session as the Announce Policy allows, and
+/// keep them as the set every later session is told. With no session the set
+/// waits for the next one; that is not an error, since the announce has
+/// nowhere yet to go.
+async fn announce_to(
+    state: &Mutex<Announcing>,
+    session: &SharedServerSession,
+    files: Vec<OfferedFile>,
+) -> Result<AnnounceOutcome, CoreError> {
+    let mut state = state.lock().await;
+    state.share = Some(files);
+    match session.session_in_slot().await {
+        Some(handle) => {
+            let held = *session.withhold_shares().borrow();
+            tell(session, &handle, &mut state, held, true).await
+        }
+        None => Ok(AnnounceOutcome::Unsaid),
     }
 }
 

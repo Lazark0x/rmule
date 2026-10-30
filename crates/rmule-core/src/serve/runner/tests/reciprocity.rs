@@ -46,7 +46,7 @@ async fn modifiers(
         .iter()
         .map(|&(peer, user_hash)| (peer, HelloFacts::of(user_hash).identity()))
         .collect();
-    current_modifiers(&credit, &places, &identities).await
+    current_modifiers(&credit, &places, &identities)
 }
 
 /// A held place's waiter scores by the factor; a waiter that only claims its

@@ -215,6 +215,7 @@ impl ServeState {
         input: ServeInput,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
+        self.link_moved(now, peer);
         match input {
             ServeInput::Server(request) => self.on_server_request(now, peer, request, modifiers),
             ServeInput::Connection(fact) => self.on_connection_fact(now, peer, fact, modifiers),
@@ -457,7 +458,12 @@ impl ServeState {
             }
             // A part ask without a granted slot frames nothing: the session
             // reported it and kept the link, and core has no answer for it.
-            ServerEvent::PartsWithoutSlot { .. } | ServerEvent::BlockLeft { .. } => Vec::new(),
+            ServerEvent::PartsWithoutSlot { .. } => Vec::new(),
+            ServerEvent::BlockLeft {
+                file_hash,
+                start,
+                end,
+            } => self.on_block_left(peer, file_hash, end - start),
         }
     }
 

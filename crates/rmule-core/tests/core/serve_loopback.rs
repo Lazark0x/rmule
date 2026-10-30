@@ -268,7 +268,13 @@ async fn serving_a_block_counts_upload_bytes_per_peer_and_for_the_session() {
 
     // Counted once the serve task hears the block left for the socket.
     timeout(HANG_GUARD, async {
-        while serving.core_mut().diagnostics_snapshot().session.up_bytes_total < 4096 {
+        while serving
+            .core_mut()
+            .diagnostics_snapshot()
+            .session
+            .up_bytes_total
+            < 4096
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })

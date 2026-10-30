@@ -6,6 +6,7 @@
 //! owns their lifecycle and the runtime they share.
 
 mod client_udp;
+mod credit_flush;
 mod download;
 mod kad;
 mod offer_check;
@@ -21,7 +22,6 @@ mod server;
 mod server_intent;
 mod server_udp_front;
 mod settings;
-mod credit_flush;
 mod share_flush;
 mod shared_directory;
 

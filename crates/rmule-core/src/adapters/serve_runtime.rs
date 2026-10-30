@@ -577,7 +577,12 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
     /// live session, if any, and to each later one.
     async fn announce(&mut self, files: Vec<OfferedFile>) -> Result<AnnounceOutcome, CoreError> {
         match self.follower.as_ref() {
-            Some(follower) => follower.announce(files).await,
+            // Handed on, because the send waits on the server (ADR-0031). The
+            // outcome comes back as the follower's own tells do.
+            Some(follower) => {
+                follower.hand(files);
+                Ok(AnnounceOutcome::Unsaid)
+            }
             None => Err(CoreError::Repository("serve not started".into())),
         }
     }

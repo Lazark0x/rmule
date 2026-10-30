@@ -150,7 +150,10 @@ fn what_moved_reaches_the_store_at_the_checkpoint_and_keeps_a_bound_key() {
     assert_eq!(stored(store.clone()).uploaded, 0);
 
     ledger.checkpoint().unwrap();
-    assert_eq!(ledger.bind_public_key(peer, &key).unwrap(), KeyBinding::Adopted);
+    assert_eq!(
+        ledger.bind_public_key(peer, &key).unwrap(),
+        KeyBinding::Adopted
+    );
     ledger.record_upload(peer, 3).unwrap();
     ledger.checkpoint().unwrap();
 

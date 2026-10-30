@@ -200,7 +200,9 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                 // Not exercised on a dialed serve half (no callback routing).
                 ServeInput::Readopted => break,
                 // No part ask without a slot from this mock.
-                ServeInput::Server(ServerEvent::PartsWithoutSlot { .. }) => {}
+                ServeInput::Server(
+                    ServerEvent::PartsWithoutSlot { .. } | ServerEvent::BlockLeft { .. },
+                ) => {}
                 ServeInput::Connection(ConnectionEvent::Identified { identity }) => {
                     assert_eq!(
                         identity.user_hash(),

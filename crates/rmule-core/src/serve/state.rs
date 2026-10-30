@@ -21,6 +21,7 @@ mod aich;
 mod connection;
 mod dial_back;
 mod exchange;
+mod flow;
 mod reask;
 mod relink;
 mod served;
@@ -39,6 +40,7 @@ use rmule_primitives::{Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHas
 
 pub(super) use self::aich::AichBuilt;
 use self::aich::AichTrees;
+use self::flow::ServeFlow;
 use crate::WaiterLeaveCause;
 use crate::adapters::{DialBack, FarEnd};
 use crate::registry::SharedFileEntry;
@@ -62,25 +64,36 @@ pub(super) enum ServeDecision {
     Disconnect { peer: PeerEndpoint },
     /// Forward a serve fact to the core event stream.
     Emit(ServeEvent),
-    /// Credit `user_hash` for serving `bytes`; the enactor holds the
-    /// ledger lock.
+    /// Credit `user_hash` for `bytes` that left for the socket.
     RecordCredit { user_hash: UserHash, bytes: u64 },
+    /// Count `bytes` of `file_hash` as sent to `peer` (ADR-0077).
+    CountSent {
+        peer: PeerEndpoint,
+        file_hash: FileHash,
+        bytes: u64,
+    },
     /// Ban `peer`'s address: its hello named the User Hash of an identified
     /// client still linked from another IPv4 address (aMule bans it,
     /// "Userhash invalid", `ClientList.cpp:384-392`), or its session proved
     /// another key under that hash (ADR-0107).
     Ban { peer: PeerEndpoint },
-    /// Send `block`'s `bytes` to `peer` as its link's task finds them: deflated
-    /// there, off the async runtime and off this loop, when that is smaller
-    /// (ADR-0031). The enactor counts them as sent like a plain `SendBlock`.
-    DeflateBlock {
+    /// Send `block`'s `bytes` down `peer`'s link for `flow`, unless the flow
+    /// has ended by the time the link's task reaches them. With `deflate` that
+    /// task deflates them first, off the async runtime and off this loop, and
+    /// sends the stream when that is smaller (ADR-0031).
+    SendBlock {
         peer: PeerEndpoint,
+        flow: u64,
         block: BlockRead,
         bytes: Vec<u8>,
+        deflate: bool,
     },
+    /// `peer`'s slot is over: what `flow` has under way is for nobody.
+    EndFlow { peer: PeerEndpoint, flow: u64 },
     /// Read `block` of the shared file at `path`, never longer than three
-    /// blocks (ADR-0031). A fallible effect: the enactor feeds the bytes back
-    /// through [`ServeState::on_read_result`] with this same `block`, and a
+    /// blocks (ADR-0031), away from the serve loop. A fallible effect: the end
+    /// comes back as an input, the bytes through
+    /// [`ServeState::on_read_result`] with this same `flow` and `block`, and a
     /// failed read through [`ServeState::on_read_failed`]. A Served
     /// Download's read carries its `check`: the handle the enactor opens must
     /// be the file its **Part File Identity** names before a byte is read,
@@ -88,6 +101,7 @@ pub(super) enum ServeDecision {
     /// §"Reading a part file"); a registry row's carries none.
     ReadRange {
         peer: PeerEndpoint,
+        flow: u64,
         path: PathBuf,
         block: BlockRead,
         check: Option<ReadCheck>,
@@ -221,6 +235,10 @@ pub(super) struct ServeState {
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
+    /// Each slot holder's **Serve Flow** (ADR-0031).
+    flows: HashMap<PeerEndpoint, ServeFlow>,
+    /// How many flows have begun, which numbers the next.
+    flows_begun: u64,
     /// The file and blocks each slot holder's last `OP_REQUESTPARTS` named:
     /// all it has pending, read again when its slot moves to a link it kept
     /// (ADR-0107 invariant 7).
@@ -255,6 +273,8 @@ impl ServeState {
             identified: HashSet::new(),
             dialed: HashMap::new(),
             served_ranges: HashMap::new(),
+            flows: HashMap::new(),
+            flows_begun: 0,
             last_ask: HashMap::new(),
             aich: AichTrees::default(),
             sx_part_status: HashMap::new(),

@@ -563,22 +563,30 @@ impl Halves<'_> {
 /// serving **without** tearing the socket down — the download half may still
 /// be pulling. Dropping this task's `peer_cmd_tx` clone lets the router close
 /// the socket once the download half is also done.
+///
+/// A command waits for room on the socket while what the peer says still goes
+/// to the serve task: the router holding that room may be waiting on this very
+/// bridge to take its event (ADR-0031).
 pub(crate) async fn bridge_dialed_serve(
     mut server_rx: mpsc::Receiver<ServeInput>,
     mut serve_cmd_rx: mpsc::Receiver<ServeOutput>,
     peer_cmd_tx: mpsc::Sender<PeerCommand>,
     serve_evt_tx: mpsc::Sender<ServeInput>,
 ) {
+    let mut waiting: Option<PeerCommand> = None;
     loop {
         tokio::select! {
-            command = serve_cmd_rx.recv() => {
-                let command = match command {
-                    None | Some(ServeOutput::Disconnect) => break,
-                    Some(ServeOutput::Server(command)) => PeerCommand::Server(command),
-                };
-                if peer_cmd_tx.send(command).await.is_err() {
-                    break;
+            permit = peer_cmd_tx.reserve(), if waiting.is_some() => {
+                let Ok(permit) = permit else { break };
+                if let Some(command) = waiting.take() {
+                    permit.send(command);
                 }
+            }
+            command = serve_cmd_rx.recv(), if waiting.is_none() => {
+                waiting = match command {
+                    None | Some(ServeOutput::Disconnect) => break,
+                    Some(ServeOutput::Server(command)) => Some(PeerCommand::Server(command)),
+                };
             }
             input = server_rx.recv() => {
                 let Some(input) = input else { break };
