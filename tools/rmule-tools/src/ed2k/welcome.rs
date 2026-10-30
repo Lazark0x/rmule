@@ -92,6 +92,7 @@ pub(crate) async fn welcome_live(args: LiveCaptureArgs) -> Result<()> {
         obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
+        offer_pace: false,
     };
 
     let mut conn = Connection::connect_with_options(server_endpoint, identity, options).await?;

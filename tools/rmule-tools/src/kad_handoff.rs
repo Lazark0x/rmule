@@ -309,6 +309,7 @@ async fn build_handshake_context(
         obfuscated_port: None,
         advertised_ipv6: None,
         udp_ports: None,
+        offer_pace: false,
     };
     let mut server_conn =
         Connection::connect_with_options(server_endpoint.clone(), identity.clone(), server_options)

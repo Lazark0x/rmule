@@ -188,6 +188,7 @@ pub(crate) async fn run_server_probe(args: Ipv6ServerProbeArgs) -> Result<()> {
         obfuscated_port: None,
         advertised_ipv6: args.advertise_ipv6,
         udp_ports: None,
+        offer_pace: false,
     };
     match Connection::connect_with_options(endpoint, identity, options).await {
         Ok(connection) => {

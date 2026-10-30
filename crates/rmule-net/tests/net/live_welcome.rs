@@ -76,6 +76,7 @@ async fn live_welcome_burst() {
         // `CT_MOD_IP_V6` and no `SRVCAP_IPV6` on the wire.
         advertised_ipv6: None,
         udp_ports: None,
+        offer_pace: false,
     };
 
     let mut conn = Connection::connect_with_options(endpoint, identity, options)

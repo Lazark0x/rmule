@@ -406,6 +406,7 @@ async fn probe_login(
                 kad_udp: 0,
                 client_udp,
             }),
+        offer_pace: false,
     };
     if let Some(advert) = options.udp_ports {
         report.line(format!("udp_ports_advert: 0x{:08X}", advert.word()));
