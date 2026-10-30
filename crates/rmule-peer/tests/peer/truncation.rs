@@ -32,14 +32,14 @@ fn bitmap() -> PartBitmap {
 
 /// The packet decodes whole, and fails at every payload cut short of whole.
 fn assert_cuts_fail(name: &str, packet: &Packet) {
-    assert_cuts_fail_but_at(name, packet, None);
+    assert_cuts_fail_past(name, packet, None);
 }
 
 /// As [`assert_cuts_fail`], but for a packet with a shorter whole shape of
-/// its own, `whole_at` payload bytes long.
-fn assert_cuts_fail_but_at(name: &str, packet: &Packet, whole_at: Option<usize>) {
+/// its own at up to `whole_to` payload bytes.
+fn assert_cuts_fail_past(name: &str, packet: &Packet, whole_to: Option<usize>) {
     PeerPacket::decode(packet).unwrap_or_else(|e| panic!("{name}: the whole packet: {e}"));
-    for cut in (0..packet.payload().len()).filter(|cut| Some(*cut) != whole_at) {
+    for cut in (0..packet.payload().len()).filter(|cut| whole_to.is_none_or(|to| *cut > to)) {
         let cut_packet = cut_payload(packet, cut);
         assert!(
             PeerPacket::decode(&cut_packet).is_err(),
@@ -170,7 +170,7 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
         recovery_data: Vec::new(),
     }
     .encode_packet();
-    assert_cuts_fail_but_at("aich answer header", &answer, Some(16));
+    assert_cuts_fail_past("aich answer header", &answer, Some(16));
 }
 
 #[test]
