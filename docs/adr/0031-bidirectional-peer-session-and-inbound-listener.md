@@ -83,9 +83,19 @@ scheduling is (ADR-0026).
   only takes the client out of the upload queue (`UploadClient.cpp:211-224`,
   `:270-281`); it bans nobody for it. A Partial Share's request whose unserved rest
   leaves its Verified Range ends the slot the same way (ADR-0113).
-- A range whose end is not past its start is skipped, as aMule skips one in
-  `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`); the `(0, 0)` padding is one. A pair
-  that runs backwards fails the request's decode, so core never sees it.
+- A range whose end is not past its start is skipped alone, as aMule skips one in
+  `OP_REQUESTPARTS` (`UploadClient.cpp:871-882`; 3.1.0 `UploadClient.cpp:317-322`). It
+  is not live, so the checks above never judge it, and the other ranges of the request
+  are served. Each of the three ranges reads one line of this table, top line first:
+
+  | The range | What it does |
+  |---|---|
+  | `start >= end`, padding and backward pairs alike, wherever they point | skipped alone; the slot stays |
+  | `end` past the file's end | ends the slot, nothing of the request sent |
+  | longer than three blocks | ends the slot, nothing of the request sent |
+  | a Partial Share's unserved rest outside its Verified Range | ends the slot, nothing of the request sent |
+  | anything else | served, less what was served already |
+
 - **Where rmule departs.** aMule judges each range as its turn comes, so ranges ahead
   of a bad one may already be sent; rmule judges the request whole and sends none of
   it. aMule 3.1.0 and eMule AI drop such a range at the ask and keep the slot
@@ -129,7 +139,7 @@ scheduling is (ADR-0026).
   eMule AI skips a fixed list instead (`zip`, `rar`, `7z`, `cbz`, `cbr`, `ace`, `ogm`;
   `srchybrid/UploadDiskIOThread.cpp:452-460`).
 - **The level.** Any zlib stream inflates the same, so the level is not on the wire;
-  it trades CPU for bytes. The session deflates a block at level 1 first: a block that
+  it trades CPU for bytes. A block is deflated at level 1 first: a block that
   does not shrink goes plain, and one that does is deflated again at level 6 and the
   smaller stream is sent. aMule 2.3.3 deflates at level 9 (`UploadClient.cpp:337`);
   aMule 3.1.0 and eMule 0.70b moved to level 1 for speed (aMule 3.1.0
@@ -143,6 +153,17 @@ scheduling is (ADR-0026).
   content is already compressed, so the first pass cuts the CPU an upload slot spends
   on such a block to a fifth of one pass at level 6, and a block that does shrink costs
   about a quarter more than level 6 alone, for level 6's bytes.
+- **Where it is deflated.** Off the async runtime, on the blocking pool, awaited by the
+  task that forwards that one connection's commands. Core marks a block for deflate only
+  when its file may be compressed and the peer's capability block says it inflates, so
+  no pass is spent on a peer that cannot use it. A block takes 5.1 ms on source text and
+  0.7 ms on random bytes (184,320 bytes, `flate2` 1.1.9, release build, Apple M1 Pro), far
+  too long for a runtime worker. It does not go in the read's closure, though that
+  already holds the block: the serve loop awaits every read in turn, so 5 ms a block
+  there would cap the node at about 36 MiB/s across all slots and stall every peer's
+  asks behind each block. On the connection's task it costs only that connection's next
+  command, the blocks of one connection keep their order, and slots deflate side by side.
+  The session frames what it is handed and never deflates.
 - **Compressed.** The block is deflated whole and sent compressed only when that is
   smaller (above). The one zlib stream is cut by the same rule into a run of
   `OP_COMPRESSEDPART`, every one carrying the block's start and the stream's total

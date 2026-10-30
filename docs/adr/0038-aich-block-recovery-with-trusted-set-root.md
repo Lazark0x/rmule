@@ -86,9 +86,49 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   the rootless path, and the peer session stays open. So does recovery data naming no
   corrupt block, and an ask whose worker ends before it answers. While the ask is out the
   part is verifying, so none of its blocks is handed.
-- **Serving is lazy.** The serve side builds a shared file's `AichHashSet` from the file's
-  bytes on the first `0x9B` or `0x9E` for it, caches it, and drops it when the file is
-  unshared. It answers recovery data (`0x9C`) and the master root (`0x9D`) from the cache.
+- **Serving is lazy, and the build leaves the serve loop.** The serve side builds a shared
+  file's `AichHashSet` from the file's bytes the first time a peer asks about it, caches it,
+  and drops it when the file is unshared. It answers recovery data (`0x9C`) and the master
+  root (`0x9D`) from the cache. The serve loop never waits for a build: it hands the build
+  to a task of its own and goes on, so other peers' asks and uploads run while it reads.
+- **Any peer may start a build.** No slot is needed. A stock downloader bundles its root ask
+  into its name ask, long before a slot (`DownloadClient.cpp:262-265`), and picks whoever
+  quoted the trusted root for a recovery ask, slot or none (`PartFile.cpp:3298-3312`), so a
+  slot gate would answer almost nobody. The bound is on the work instead: a file is built
+  once a run, and a build outlives the asker that started it, because a cancel on hang-up
+  would let a peer buy unlimited reads by asking and leaving. Whoever asks and however
+  often, the peers together cost one read of the share set per run, which is what aMule
+  spends at share time (`ThreadTasks.cpp:127-135`).
+- **One build at a time.** Files wait their turn in the order first asked, one place per
+  file. A build reads a whole file front to back; a second one would compete with it and
+  with the uploads for the same disk, and all that waits on a build has a fallback. aMule
+  also hashes one file at a time, on one scheduler thread at low priority
+  (`ThreadScheduler.cpp:262-300`, `ThreadTasks.cpp:69-71`, 3.1.0 unchanged), though that is
+  a fact about aMule, not the reason.
+- **What an asker gets while the tree is not built.** A root ask gets nothing yet: its
+  bundle's name and status go at once (ADR-0054), and the root follows in a standalone
+  `0x9D` when the tree lands, if the link is up and the file still offered. A link is owed
+  one root, its latest ask's, because that is the only one its peer keeps: aMule takes a
+  root only for its current request file (`DownloadClient.cpp:1707-1713`). A recovery ask
+  is refused at once and still starts the build: `0x9C` with the file hash alone, aMule's
+  own answer when its set is not ready (`DownloadClient.cpp:1659-1695`). An aMule asker has
+  no timer on the ask: only an answer or the link's end clears it (`BaseClient.cpp:427`,
+  `:1298`), so holding it would hold its part for a whole build. The refusal sends it to
+  its next source at once (`SHAHashSet.cpp:914-928`), and its next ask hits the cache.
+- **Every recovery ask is answered.** The same refusal goes to any ask that cannot be met:
+  a file not shared whole, a quoted root that is not ours, a part past the end, or a last
+  part of one block or less (`DownloadClient.cpp:1659-1661`). rmule's own asker reads a
+  refusal as an empty answer: the part goes to its refetch, and the link stays.
+- **What leaving does to a build.** When a file leaves the share set, its queued place goes
+  and a running build is told to stop; it stops before its next block, and its work is
+  dropped, cached nowhere. The stopped build keeps the one place until it has landed, so
+  two never overlap, and a file shared again meanwhile queues afresh. Owed roots go with
+  the file. A serve stop tells the running build to stop too. A build that cannot read its
+  file ends the offer as any failed read does (ADR-0106): each owed link is told
+  `OP_FILEREQANSNOFIL`.
+- **A root only counts for the file it names.** A late `0x9D` can cross a link that has
+  moved on, so the requester reads the file hash the wire carries and a run takes only its
+  own file's root.
 - **Honest advertisement.** The `MiscOptions1` AICH-version field (bits `[29..32)`) is lit
   because rmule builds, verifies and serves AICH (ADR-0047).
 
@@ -137,6 +177,17 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   converges but leaves the poisoner free to serve the same bad block again.
 - **Building and holding every shared file's tree up front.** Rejected: a tree is roughly
   a hundred times the size of the MD4 part hash set; building on request bounds the cost to
-  files peers ask about.
+  files peers ask about. Without persistence it would also read the whole share set at
+  every start.
+- **Holding a slotless peer's ask until it gets a slot.** Rejected: a queued downloader
+  waits hours and never gets to vote, and a slot says nothing about what a tree costs.
+- **Several builds at once.** Rejected: it finishes a few trees sooner by taking the disk
+  from the uploads, and every ask already has a fallback.
+- **Cancelling a build when its last asker leaves.** Rejected: ask, hang up and ask again
+  would buy unlimited reads; a finished tree is never wasted.
+- **Holding a recovery ask until the tree lands.** Rejected: aMule's ask has no timer, so
+  the corrupt part would wait on the build, where a refusal moves it to another source.
+- **Waiting on the build from the serve loop.** Rejected: any connected peer could stall
+  every upload for as long as a file takes to hash, one file per ask.
 - **Persisting trees, as eMule's `known2.met` does.** Not adopted: a file-format and schema
   effort that changes no wire behaviour.
