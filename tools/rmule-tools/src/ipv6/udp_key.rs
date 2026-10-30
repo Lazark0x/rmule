@@ -14,6 +14,12 @@
 //! unconditionally with an empty-body `OP_FILENOTFOUND` (`0x92`) before it looks
 //! the sender up. A plaintext control datagram rides in the same run so a silent
 //! obfuscated leg can be told apart from a socket that answers nothing at all.
+//!
+//! The answer is keyed only to a client the counterparty holds, one whose hello
+//! named this UDP port, claimed the crypt layer and a Kad version of at least 8.
+//! `--hold-link` makes that client: the row's hello is sent first and its link
+//! stands across the exchange, so the reply is the counterparty's own obfuscated
+//! datagram.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -21,14 +27,20 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use rmule_net::peer::{
+    ConnectOptions as PeerConnectOptions, Connection as PeerConnection, ObfuscationConfig,
+    ObfuscationPolicy,
+};
+use rmule_peer::{ConnectionEvent, PeerEvent, PeerHandshakeContext, UdpPortsAdvert};
 use rmule_primitives::{
-    ClientDecryptKeys, ClientEncryptKey, DatagramNonce, DatagramSenderAddress, FileHash, UserHash,
-    decrypt_datagram_client, ed2k_key_material, encrypt_datagram_client,
+    ClientDecryptKeys, ClientEncryptKey, ClientId, ClientIdentity, DatagramNonce,
+    DatagramSenderAddress, Ed2kText, FileHash, UserHash, decrypt_datagram_client,
+    ed2k_key_material, encrypt_datagram_client,
 };
 
 use crate::capture::{hex_lower, write_new};
 use crate::driver_row::Row;
-use crate::operand::{parse_hex16, parse_user_hash};
+use crate::operand::{parse_hex16, parse_peer_endpoint, parse_user_hash};
 
 /// The peer-UDP protocol byte every plaintext client datagram opens with.
 const PEER_UDP_PROTOCOL: u8 = 0xC5;
@@ -70,6 +82,11 @@ pub(crate) struct Ipv6UdpKeyArgs {
     /// from the port the hello named or it arrives from a stranger.
     #[arg(long, default_value_t = 0)]
     bind_port: u16,
+    /// The counterparty's TCP endpoint: say hello there first and hold the link
+    /// across the exchange. The hello claims the crypt layer and names
+    /// `--bind-port` as both UDP ports, which is what sets its Kad version.
+    #[arg(long)]
+    hold_link: Option<String>,
     /// Per-reply budget, seconds.
     #[arg(long, default_value_t = 15)]
     timeout: u64,
@@ -138,6 +155,10 @@ pub(crate) async fn run_udp_key(args: Ipv6UdpKeyArgs) -> Result<()> {
         .await
         .with_context(|| format!("bind {bind}"))?;
     let window = Duration::from_secs(args.timeout);
+    let _held_link = match &args.hold_link {
+        Some(endpoint) => Some(hold_link(endpoint, our_hash, &args, window).await?),
+        None => None,
+    };
 
     let ping = rmule_peer::ReaskFilePing {
         file_hash: missing,
@@ -181,6 +202,7 @@ pub(crate) async fn run_udp_key(args: Ipv6UdpKeyArgs) -> Result<()> {
         plaintext_control_raw: String::new(),
     };
 
+    write_new(&args.capture.join("obfuscated_sent.bin"), &obfuscated)?;
     socket
         .send_to(&obfuscated, peer)
         .await
@@ -271,6 +293,60 @@ pub(crate) async fn run_udp_key(args: Ipv6UdpKeyArgs) -> Result<()> {
         .bool("plaintext_control_answered", row.plaintext_control_answered)
         .str("plaintext_control_raw", &row.plaintext_control_raw);
     crate::driver_row::write_row(&args.out, out)
+}
+
+/// Say hello at `endpoint`, wait for the answer, and hand back the task that
+/// keeps the link alive by draining it for the rest of the process.
+///
+/// # Errors
+/// If the endpoint will not parse, the link cannot be made, or the counterparty
+/// never identifies itself inside `window`: without the link the exchange would
+/// measure a stranger, which the row without `--hold-link` already does.
+async fn hold_link(
+    endpoint: &str,
+    our_hash: UserHash,
+    args: &Ipv6UdpKeyArgs,
+    window: Duration,
+) -> Result<tokio::task::JoinHandle<()>> {
+    let peer = parse_peer_endpoint(endpoint)?;
+    let ctx = PeerHandshakeContext {
+        identity: ClientIdentity::new(our_hash, Ed2kText::from_utf8("rmule-tools"), 4662, 60),
+        client_id: ClientId::from_u32(0),
+        ed2k_client_id: ClientId::from_u32(0),
+        public_ip: None,
+        connected_server: None,
+    };
+    let options = PeerConnectOptions {
+        capture_dir: Some(args.capture.join("held-link")),
+        connect_timeout: window,
+        hello_timeout: window,
+        ipv6: match args.our_address {
+            IpAddr::V6(address) => Some(address),
+            IpAddr::V4(_) => None,
+        },
+        udp_ports: Some(UdpPortsAdvert::new(args.bind_port, args.bind_port)),
+        obfuscation: Some(ObfuscationConfig {
+            policy: ObfuscationPolicy::Supported,
+        }),
+        ..Default::default()
+    };
+    let mut connection = PeerConnection::connect(peer, ctx, options)
+        .await
+        .with_context(|| format!("hold a link to {endpoint}"))?;
+    tokio::time::timeout(window, async {
+        loop {
+            match connection.next_event().await {
+                Some(PeerEvent::Connection(ConnectionEvent::Identified { .. })) => return Ok(()),
+                Some(_) => {}
+                None => anyhow::bail!("the held link closed before the peer identified itself"),
+            }
+        }
+    })
+    .await
+    .with_context(|| format!("{endpoint} never identified itself"))??;
+    Ok(tokio::spawn(async move {
+        while connection.next_event().await.is_some() {}
+    }))
 }
 
 /// The first datagram back from `peer` inside `window`, or `None`.

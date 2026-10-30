@@ -418,6 +418,53 @@ fn udp_key(
                 "the control tells a silent crypt leg from a silent socket".to_owned(),
             ),
         ]);
+
+        // The same ask from a client emule-qt holds: the sender lookup finds it,
+        // so the file-not-found branch keys its answer, and the reply is
+        // emule-qt's own 35-byte-keyed datagram.
+        run_driver(
+            bench,
+            options,
+            stage,
+            "udpkey-emuleqt-keyed",
+            &[
+                "ipv6".to_owned(),
+                "udp-key".to_owned(),
+                "--peer".to_owned(),
+                format!("[{qt_v6}]:{BODY_CLIENT_UDP_PORT}"),
+                "--peer-user-hash".to_owned(),
+                qt_hash.clone(),
+                "--user-hash".to_owned(),
+                RMULE_USER_HASH.to_owned(),
+                "--our-address".to_owned(),
+                stage.v6(HOST_DRIVER).to_owned(),
+                "--bind-port".to_owned(),
+                BODY_CLIENT_UDP_PORT.to_string(),
+                "--hold-link".to_owned(),
+                format!("[{qt_v6}]:{BODY_PEER_TCP_PORT}"),
+                "--capture".to_owned(),
+                out("udpkey-emuleqt-keyed-capture"),
+                "--out".to_owned(),
+                out("udpkey-emuleqt-keyed.toml"),
+            ],
+        )?;
+        let row = DriverRow::read(&stage.leg_dir.join("udpkey-emuleqt-keyed.toml"))?;
+        claims.push(Claim::about(
+            "emuleqt-keys-its-answer-to-a-client-it-holds",
+            row.flag("obfuscated_reply_decrypted") && row.int("obfuscated_reply_opcode") == 0x92,
+            Evidence::Captured,
+            format!(
+                "with a held hello naming this UDP port, the crypt layer and a Kad version, the \
+                 answer came back obfuscated and our 35-byte inbound derivation over emule-qt's \
+                 own IPv6 recovered it: reply received={} plaintext={} decrypted={} opcode=0x{:02X} \
+                 raw={}",
+                row.flag("obfuscated_reply_received"),
+                row.flag("obfuscated_reply_was_plaintext"),
+                row.flag("obfuscated_reply_decrypted"),
+                row.int("obfuscated_reply_opcode").max(0),
+                row.text("obfuscated_reply_raw")
+            ),
+        ));
     }
 
     // kno's own refusal, measured rather than read.

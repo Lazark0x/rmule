@@ -151,6 +151,7 @@ fn ipv6_udp_key() {
         "key-material-is-35-bytes-both-ways",
         "emuleqt-parsed-our-35-byte-keyed-v6-datagram",
         "reply-is-op-filenotfound",
+        "emuleqt-keys-its-answer-to-a-client-it-holds",
         "amule-kno-does-not-decrypt-a-native-v6-datagram",
     ] {
         assert!(
