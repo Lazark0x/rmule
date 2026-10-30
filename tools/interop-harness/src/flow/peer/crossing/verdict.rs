@@ -100,6 +100,8 @@ struct Link {
     /// When rmule first answered a hello on it (`-1` without one).
     answer_from_rmule: f64,
     first_grant: f64,
+    /// How many `OP_ACCEPTUPLOADREQ` rmule wrote on it.
+    grants_from_rmule: usize,
     parts_from_rmule: usize,
     parts_from_peer: usize,
 }
@@ -168,6 +170,10 @@ fn ledger(capture: &TcpCapture, rmule: IpAddr, peer: IpAddr) -> Vec<Link> {
             hello_from_peer: first(&back, OP_HELLO),
             answer_from_rmule: first(&out, OP_HELLOANSWER),
             first_grant: first(&out, OP_ACCEPTUPLOADREQ),
+            grants_from_rmule: out
+                .iter()
+                .filter(|(_, op)| *op == OP_ACCEPTUPLOADREQ)
+                .count(),
             parts_from_rmule: parts(&out),
             parts_from_peer: parts(&back),
         });
@@ -303,6 +309,24 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .iter()
         .any(|line| line.starts_with("serve.crossed_hello_held"));
     let unanswered = |link: Option<&Link>| link.is_some_and(|link| link.answer_from_rmule < 0.0);
+    // A returning waiter drops the grant that follows its hello and asks, so
+    // the wire carries two; the Run Log writes the one slot once (ADR-0057).
+    let one_slot = |link: Option<&Link>| {
+        let wire = link.map_or(0, |link| link.grants_from_rmule);
+        let logged = rows
+            .records
+            .iter()
+            .filter(|line| line.starts_with("serve.upload_slot_granted"))
+            .count();
+        Claim::about(
+            "two-grants-on-the-wire-one-slot-in-the-log",
+            wire == 2 && logged == 1,
+            Evidence::Captured,
+            format!(
+                "OP_ACCEPTUPLOADREQ on that link: {wire}; serve.upload_slot_granted for the waiter: {logged}"
+            ),
+        )
+    };
     let claims = match at.shape.leg {
         CrossingLeg::ServeCalledOff
         | CrossingLeg::ServeCrossed
@@ -336,6 +360,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                 ),
                 one_left,
             ];
+            if !on_dial {
+                claims.push(one_slot(granted_on));
+            }
             if on_dial && !unheld {
                 claims.push(Claim::about(
                     "the-waiters-hello-was-held-and-never-answered",
@@ -383,6 +410,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
                         own.map_or(0, |link| link.parts_from_rmule)
                     ),
                 ),
+                one_slot(own),
             ]
         }
         CrossingLeg::DownloadYield | CrossingLeg::DownloadCrossed => {

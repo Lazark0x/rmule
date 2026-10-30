@@ -82,6 +82,8 @@ const X_KIB: u32 = 2;
 /// S's upload cap, KiB/s: rmule's 1 MiB download takes about 16 s.
 const SEED_MAX_UPLOAD_KIB: &str = "64";
 const STOP_GRACE_SECS: u64 = 10;
+/// X's stop where rmule's dial-back runs its 15 s while W is told to ask.
+const CROSSED_STOP_GRACE_SECS: u64 = 1;
 /// IP packets longer than a bare ACK (20-byte IP and 32-byte TCP headers
 /// with timestamps): with the SYN excluded (a SYN with its options is 60
 /// bytes), a data hold drops what carries eD2k bytes and lets the handshake
@@ -521,7 +523,14 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             }
             marks.holder_stopped_at = Some(verdict::unix_now());
             run_checked(
-                bench.docker.stop_container(holder.clone(), STOP_GRACE_SECS),
+                bench.docker.stop_container(
+                    holder.clone(),
+                    if known {
+                        CROSSED_STOP_GRACE_SECS
+                    } else {
+                        STOP_GRACE_SECS
+                    },
+                ),
                 "stop the body holding rmule's slot",
             )?;
             let freed = if low_id {
