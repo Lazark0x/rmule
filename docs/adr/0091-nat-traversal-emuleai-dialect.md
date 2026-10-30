@@ -298,7 +298,15 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint
 for a standalone frame — and its budget is bucketed on where the burst would land, not on the
-requester hash. The complement-XOR buddy lookup eMuleAI retries is not adopted. A null claim is
+requester hash. Every burst limiter here, the acting path's, the Server Coordinator's and the
+front's, keys the **endpoint**, IP and port: two targets behind one public address hold two
+mappings and are two traversals, and ed2k-server hands each its own observed port for that reason
+(`holepunch.rs:80-112`). Keyed on the IP alone, the second introduction read as a repeat, its burst
+never left and its request waited out the 15 s. The server's own re-sends of one INFO name the same
+endpoint and are still absorbed. What this gives up is a cap per address: a buddy or a server
+naming many ports at one address earns a burst per port, bounded by the 1 024 tracked destinations
+and by the carrier gate, or the session, it arrived on.
+The complement-XOR buddy lookup eMuleAI retries is not adopted. A null claim is
 legal and preferred to a guess; the hint's options byte is zero. The live paths enter below the
 public-address verdict: `is_public_punch_address` and the self-punch guard refuse loopback and
 our own interfaces, with no test bypass.

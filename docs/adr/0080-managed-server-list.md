@@ -176,6 +176,19 @@ announced (`OP_OFFERFILES`) as aMule re-sends it on every connect, unless the An
 Policy of ADR-0099 withholds it, and peer hellos read the live session, so a new client
 id is named at once.
 
+**`OP_GETSERVERLIST` is sent once per session, for the ident; its list is not folded.** A server
+sends no `OP_SERVERIDENT` on a plain login: Lugdunum's comes only after `OP_SERVERLIST` in the
+answer to `0x14`, and ed2k-server's the same way unless the client asked for OFFERFILES v1 or
+speaks IPv6 (`connection.rs:1029-1041`, `login.rs:375`). The connected server is left out of both
+UDP sweeps, so a server first reached by link had no other way to name itself, and no other way
+to state its file limits on the session (ADR-0099). The ask goes right after login, where aMule's
+goes (`ServerConnect.cpp:289`). aMule asks only under `AddServerListFromServer`, default off in
+2.3.3 and 3.1.0 (`Preferences.cpp:1053`, 3.1.0 `:1130`), and that preference is about the list.
+rmule folds none of it: the rows are bare addresses, a row is a server the operator will be
+offered, and a server's word for other servers is what the fake-server lists of this network are
+made of. The list comes from `server.met` and from what the operator adds; `OP_SERVERLIST` is read
+and dropped.
+
 ### The level
 
 ```rust

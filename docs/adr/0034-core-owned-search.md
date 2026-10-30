@@ -126,6 +126,12 @@ dropped and counted (`SessionCounters::search_rows_unattributed_total`).
   owner and their rows go only where they prove a query. The Owed Set lives and dies with the
   session.
 - **`0x99` answers** have no place: their rows go to every live keyword search that proves them.
+- **A search that names one file proves by its hash.** A phrase that is one word and no
+  constraint, in the forms ed2k-server reads as Lugdunum does (`proto/search.rs:118`: `ed2k::HASH`,
+  `ed2k:SIZE:HASH`, an `ed2k://|file|` link, either magnet), is answered from the server's hash
+  index on both TCP and UDP. Its row carries none of those words, so the words cannot prove it: the
+  hash does, and the size where the phrase gave one. A `0x99` row for it reaches the search instead
+  of being dropped as unattributed.
 - **The same query twice** sends both requests; each answer satisfies both, so both show the same
   rows.
 
