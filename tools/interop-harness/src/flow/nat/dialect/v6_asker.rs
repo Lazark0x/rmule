@@ -11,8 +11,8 @@
 //!
 //! emule-qt also learns rmule's IPv4 from the server and dials it beside the
 //! IPv6. That dial is dropped at rmule's listener, and only the server's probe
-//! gets through: a dual-stack peer's second link is a separate row of this
-//! ticket's, drawn in run `1793356626`, where rmule banned the peer's IPv4.
+//! gets through: a dual-stack peer's second link is its own question, drawn in
+//! run `1793356626`, where rmule banned the peer's IPv4.
 //!
 //! What a claim reads is emule-qt's own tap: who opened each link, what rode
 //! it, and the copy rmule ended with. emule-qt's own download of the asked file
