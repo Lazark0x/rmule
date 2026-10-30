@@ -13,10 +13,9 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
-use super::flow::AskedRead;
 use super::served::Found;
 use super::{BlockRead, ServeDecision, ServeState, rank_updates};
-use crate::served_downloads::{PartFileIdentity, PartialEnd};
+use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadTarget};
 use crate::service::{BlockAskFault, ServeEvent};
 use crate::upload_queue::WaiterLeaveCause;
 
@@ -29,8 +28,8 @@ impl ServeState {
     /// §"Reading a part file") ends the peer's slot with nothing of the request
     /// read or sent ([`Self::refuse_block_ask`]). Otherwise every such
     /// sub-range joins the peer's **Serve Flow**, to be read in turn — a row's
-    /// from its path, a Partial Share's from the path holding its bytes,
-    /// checked against its Part File Identity. A peer holding no slot is read
+    /// from its path, a Partial Share's from the path holding its bytes then,
+    /// checked against its Part File Identity then. A peer holding no slot is read
     /// nothing, as aMule drops its block request
     /// (`UploadClient.cpp:497-500`). An ask the flow has no room for is
     /// dropped whole and not recorded as served, as if it had not come.
@@ -59,12 +58,9 @@ impl ServeState {
         {
             return self.refuse_block_ask(now, peer, file_hash, fault, modifiers);
         }
-        let (path, check, range) = match found {
-            Found::Row(entry) => (entry.path.clone(), None, None),
-            Found::Download { look, .. } => {
-                let (path, check) = look.served.read_target();
-                (path, Some(check), Some(&look.served.range))
-            }
+        let range = match found {
+            Found::Row(_) => None,
+            Found::Download { look, .. } => Some(&look.served.range),
         };
         let mut served = self
             .served_ranges
@@ -91,14 +87,10 @@ impl ServeState {
         // flight, and a failed read ends the file's offer (its holders'
         // ranges go with their slots), so nothing is stranded.
         self.served_ranges.insert((peer, file_hash), served);
-        let asked = reads.into_iter().map(|(start, end)| AskedRead {
-            path: path.clone(),
-            block: BlockRead {
-                file_hash,
-                start,
-                end,
-            },
-            check: check.clone(),
+        let asked = reads.into_iter().map(|(start, end)| BlockRead {
+            file_hash,
+            start,
+            end,
         });
         self.ask_flow(now, peer, asked).into_iter().collect()
     }
@@ -195,33 +187,57 @@ impl ServeState {
 
     /// A checked read of a Partial Share found neither of its paths
     /// readable: it stops being served at once and its range empties
-    /// (ADR-0113). It has no row, so the Registry Check is not told.
+    /// (ADR-0113), unless its bytes moved first. It has no row, so the
+    /// Registry Check is not told.
     pub(crate) fn on_part_file_unreadable(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
         flow: u64,
-        block_of: (FileHash, Option<PartFileIdentity>),
+        read: (BlockRead, Option<ReadTarget>),
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.read_ended(peer, flow);
-        self.withdraw_partial(now, peer, block_of, PartialEnd::Unreadable, modifiers)
+        self.on_read_refused(now, peer, flow, read, PartialEnd::Unreadable, modifiers)
     }
 
     /// A checked read of a Partial Share found the file not the one its
     /// Verified Range was read from, or could not tell: nothing of it is
     /// sent, it stops being served at once, and its range empties until the
-    /// download's holder reads the file again (ADR-0113).
+    /// download's holder reads the file again (ADR-0113), unless its bytes
+    /// moved first.
     pub(crate) fn on_part_file_changed(
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
         flow: u64,
-        block_of: (FileHash, Option<PartFileIdentity>),
+        read: (BlockRead, Option<ReadTarget>),
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        self.read_ended(peer, flow);
-        self.withdraw_partial(now, peer, block_of, PartialEnd::Changed, modifiers)
+        self.on_read_refused(now, peer, flow, read, PartialEnd::Changed, modifiers)
+    }
+
+    /// A checked read, aimed at `target`, came to nothing. Against an entry
+    /// that moved since, it found the move and not a fault of the file: its
+    /// block is aimed again and nobody hears that the file left (ADR-0113).
+    /// Against the entry as it stands, it found a fault: `cause`.
+    fn on_read_refused(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        flow: u64,
+        (block, target): (BlockRead, Option<ReadTarget>),
+        cause: PartialEnd,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let flow_lives = self.read_ended(peer, flow);
+        if self.moved_since(block.file_hash, target.as_ref()) {
+            if !flow_lives {
+                return Vec::new();
+            }
+            return self.read_again(peer, block).into_iter().collect();
+        }
+        let checked = target.and_then(|target| target.identity);
+        self.withdraw_partial(now, peer, (block.file_hash, checked), cause, modifiers)
     }
 
     /// Stop serving the Partial Share of `file_hash`, telling the peer whose

@@ -712,9 +712,9 @@ async fn a_part_file_that_changes_after_a_pause_stopped_its_copy_is_never_read()
     served::let_go(&leg.runner).await;
     cell.take_back(hash, leg.runner.run);
 
-    let (path, check) = cell.served(hash).unwrap().read_target();
-    assert_eq!(path, leg.paths.part_path());
-    let read = ContentFileStore::read_checked(&path, &check, 0, 64).await;
+    let target = cell.served(hash).unwrap().read_target();
+    assert_eq!(target.path, leg.paths.part_path());
+    let read = ContentFileStore::read_checked(&target, 0, 64).await;
     assert_eq!(
         read.unwrap(),
         leg.bytes[..64],
@@ -723,7 +723,7 @@ async fn a_part_file_that_changes_after_a_pause_stopped_its_copy_is_never_read()
     let mut grown = leg.bytes.clone();
     grown.extend_from_slice(b"appended while paused");
     std::fs::write(leg.paths.part_path(), &grown).unwrap();
-    let read = ContentFileStore::read_checked(&path, &check, 0, 64).await;
+    let read = ContentFileStore::read_checked(&target, 0, 64).await;
     assert!(
         matches!(read, Err(CheckedReadError::Changed)),
         "a part file of another length is not read: {read:?}"

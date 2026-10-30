@@ -13,7 +13,7 @@ use std::path::Path;
 
 use super::{ContentFileStore, on_pool};
 use crate::file_key::FileKey;
-use crate::served_downloads::ReadCheck;
+use crate::served_downloads::ReadTarget;
 
 /// Why a checked read sent nothing.
 #[derive(Debug)]
@@ -26,35 +26,34 @@ pub(crate) enum CheckedReadError {
 }
 
 impl ContentFileStore {
-    /// Read exactly `len` bytes at `offset` from the file at `path` — or,
-    /// when nothing is there, at `check.other` — once its handle is proven
-    /// to be the file `check.identity` names. An entry holding no identity
-    /// reads nothing, and a `len` over three blocks is refused before
+    /// Read exactly `len` bytes at `offset` from the file at `target.path` —
+    /// or, when nothing is there, at `target.other` — once its handle is
+    /// proven to be the file `target.identity` names. An entry holding no
+    /// identity reads nothing, and a `len` over three blocks is refused before
     /// anything is opened or allocated (ADR-0031).
     pub(crate) async fn read_checked(
-        path: &Path,
-        check: &ReadCheck,
+        target: &ReadTarget,
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, CheckedReadError> {
         let len = super::read_len(len).map_err(CheckedReadError::Unreadable)?;
-        let (path, check) = (path.to_path_buf(), check.clone());
-        on_pool(move || read_checked_blocking(&path, &check, offset, len)).await
+        let target = target.clone();
+        on_pool(move || read_checked_blocking(&target, offset, len)).await
     }
 }
 
 fn read_checked_blocking(
-    path: &Path,
-    check: &ReadCheck,
+    target: &ReadTarget,
     offset: u64,
     len: usize,
 ) -> Result<Vec<u8>, CheckedReadError> {
-    let mut file = open_either(path, &check.other).map_err(CheckedReadError::Unreadable)?;
+    let mut file =
+        open_either(&target.path, &target.other).map_err(CheckedReadError::Unreadable)?;
     let opened = FileKey::of_open(&file).and_then(|key| Ok((key, file.metadata()?)));
     let Ok((key, meta)) = opened else {
         return Err(CheckedReadError::Changed);
     };
-    if !check
+    if !target
         .identity
         .is_some_and(|identity| identity.holds(key, &meta))
     {
@@ -90,8 +89,9 @@ mod tests {
         }
     }
 
-    fn check(identity: PartFileIdentity, other: &Path) -> ReadCheck {
-        ReadCheck {
+    fn target(path: &Path, identity: PartFileIdentity, other: &Path) -> ReadTarget {
+        ReadTarget {
+            path: path.to_path_buf(),
             identity: Some(identity),
             other: other.to_path_buf(),
         }
@@ -102,10 +102,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (part, done) = (dir.path().join("a.part"), dir.path().join("a.bin"));
         std::fs::write(&part, b"verified bytes").unwrap();
-        let check = check(identity_of(&part, true), &done);
+        let target = target(&part, identity_of(&part, true), &done);
         std::fs::rename(&part, &done).unwrap();
 
-        let read = ContentFileStore::read_checked(&part, &check, 9, 5).await;
+        let read = ContentFileStore::read_checked(&target, 9, 5).await;
         assert_eq!(read.unwrap(), b"bytes");
     }
 
@@ -115,11 +115,11 @@ mod tests {
         let (part, done) = (dir.path().join("a.part"), dir.path().join("a.bin"));
         let cap = rmule_peer::MAX_REQUESTED_RANGE;
         File::create(&part).unwrap().set_len(2 * cap).unwrap();
-        let check = check(identity_of(&part, true), &done);
+        let target = target(&part, identity_of(&part, true), &done);
 
-        let read = ContentFileStore::read_checked(&part, &check, 0, cap).await;
+        let read = ContentFileStore::read_checked(&target, 0, cap).await;
         assert_eq!(read.unwrap().len() as u64, cap);
-        let read = ContentFileStore::read_checked(&part, &check, 0, cap + 1).await;
+        let read = ContentFileStore::read_checked(&target, 0, cap + 1).await;
         assert!(matches!(
             read,
             Err(CheckedReadError::Unreadable(error)) if error.kind() == ErrorKind::InvalidInput
@@ -131,16 +131,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (part, done) = (dir.path().join("a.part"), dir.path().join("a.bin"));
         std::fs::write(&part, b"verified bytes").unwrap();
-        let check = check(identity_of(&part, false), &done);
+        let target = target(&part, identity_of(&part, false), &done);
         let replacement = dir.path().join("b.part");
         std::fs::write(&replacement, b"other bytes!!!").unwrap();
         std::fs::rename(&replacement, &part).unwrap();
 
-        let read = ContentFileStore::read_checked(&part, &check, 0, 5).await;
+        let read = ContentFileStore::read_checked(&target, 0, 5).await;
         assert!(matches!(read, Err(CheckedReadError::Changed)));
 
         std::fs::remove_file(&part).unwrap();
-        let read = ContentFileStore::read_checked(&part, &check, 0, 5).await;
+        let read = ContentFileStore::read_checked(&target, 0, 5).await;
         assert!(matches!(
             read,
             Err(CheckedReadError::Unreadable(error)) if error.kind() == ErrorKind::NotFound

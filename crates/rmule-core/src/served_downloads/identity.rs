@@ -59,13 +59,15 @@ impl PartFileIdentity {
     }
 }
 
-/// How a read of a Served Download's bytes is checked before it reads
-/// (ADR-0113 §"Reading a part file"): the file it opens must be the one the
-/// identity names, and a path that names nothing gives way to the other
-/// once — the completion move puts the bytes at one of the two at every
-/// instant.
+/// Where a read of a Served Download's bytes goes and how it is checked
+/// before it reads (ADR-0113 §"Reading a part file"), as the entry stood when
+/// the read took its turn: the file it opens must be the one the identity
+/// names, and a path that names nothing gives way to the other once — the
+/// completion move puts the bytes at one of the two at every instant.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReadCheck {
+pub(crate) struct ReadTarget {
+    /// The path that holds the bytes.
+    pub(crate) path: PathBuf,
     /// The file the entry's range was read from; `None` reads nothing.
     pub(crate) identity: Option<PartFileIdentity>,
     /// The download's other path.

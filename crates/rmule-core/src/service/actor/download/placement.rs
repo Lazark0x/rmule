@@ -90,7 +90,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let name = SafeFileName::clean("film.mkv", &FileHash::from_bytes([1; FileHash::BYTE_LEN]));
         symlink(dir.path().join("gone"), dir.path().join("film.mkv")).unwrap();
-        symlink(dir.path().join("gone"), dir.path().join("film (1).mkv.part")).unwrap();
+        symlink(
+            dir.path().join("gone"),
+            dir.path().join("film (1).mkv.part"),
+        )
+        .unwrap();
 
         let paths = free_paths(dir.path(), dir.path(), &name);
 

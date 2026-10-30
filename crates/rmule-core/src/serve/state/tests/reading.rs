@@ -7,7 +7,7 @@
 use super::served::{download, state_of};
 use super::*;
 use crate::file_key::FileKey;
-use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck};
+use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadTarget};
 
 const PART: u64 = ED2K_PART_SIZE;
 
@@ -17,7 +17,7 @@ type Refusal = fn(
     Instant,
     PeerEndpoint,
     u64,
-    (FileHash, Option<PartFileIdentity>),
+    (BlockRead, Option<ReadTarget>),
     &HashMap<PeerEndpoint, f64>,
 ) -> Vec<ServeDecision>;
 
@@ -47,12 +47,8 @@ fn read(p: PeerEndpoint, file_hash: FileHash, start: u64, end: u64) -> ServeDeci
     ServeDecision::ReadRange {
         peer: p,
         flow: 1,
-        path: "/temp/download.bin.part".into(),
+        from: ReadFrom::Download,
         block: block(file_hash, start, end),
-        check: Some(ReadCheck {
-            identity: Some(identity()),
-            other: "/downloads/download.bin".into(),
-        }),
     }
 }
 
@@ -178,8 +174,11 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
             &no_modifiers(),
         );
 
-        let checked = Some(identity());
-        let decisions = refused(&mut state, t, holder, 1, (file, checked), &no_modifiers());
+        let aimed = (
+            block(file, 0, 100),
+            Some(state.served[&file].served.read_target()),
+        );
+        let decisions = refused(&mut state, t, holder, 1, aimed, &no_modifiers());
         for told in [holder, waiter] {
             assert!(decisions.contains(&send(
                 told,
@@ -204,4 +203,74 @@ fn a_part_file_found_changed_or_gone_stops_serving_and_empties_the_range_without
             "a read landing after it sends nothing"
         );
     }
+}
+
+/// A slot holder of `file` with one read out, and the target it was aimed at.
+fn a_read_out(file: FileHash, t: Instant) -> (ServeState, PeerEndpoint, ReadTarget) {
+    let mut state = partial(file, &[0]);
+    let holder = peer(4000);
+    let _ = slot_request(&mut state, holder, file, t);
+    let ask = parts([(0, 100), (0, 0), (0, 0)], file);
+    let _ = state.on_conn_event(t, holder, ask, &no_modifiers());
+    let aimed = state.served[&file].served.read_target();
+    (state, holder, aimed)
+}
+
+/// ADR-0113: a read out across the swap, or across a numbered name, found the
+/// move and not a fault: it is aimed again and nobody hears the file left.
+#[test]
+fn a_read_refused_after_its_entry_moved_is_aimed_again_and_nothing_is_withdrawn() {
+    let changed = ServeState::on_part_file_changed as Refusal;
+    for refused in [changed, ServeState::on_part_file_unreadable] {
+        let file = hash(0x02);
+        let t = Instant::now();
+
+        let (mut state, holder, aimed) = a_read_out(file, t);
+        let mut swapped = state.served[&file].clone();
+        swapped.served.bytes_at = crate::served_downloads::BytesAt::FinalFile;
+        state.on_served([(file, swapped)].into());
+        let read_out = (block(file, 0, 100), Some(aimed));
+        assert_eq!(
+            refused(&mut state, t, holder, 1, read_out, &no_modifiers()),
+            [read(holder, file, 0, 100)]
+        );
+
+        let (mut state, holder, aimed) = a_read_out(file, t);
+        let mut numbered = state.served[&file].clone();
+        numbered.served.final_path = "/downloads/download (1).bin".into();
+        state.on_served([(file, numbered)].into());
+        let read_out = (block(file, 0, 100), Some(aimed));
+        assert_eq!(
+            refused(&mut state, t, holder, 1, read_out, &no_modifiers()),
+            [read(holder, file, 0, 100)]
+        );
+    }
+}
+
+/// A read that met an ended entry waits for the trigger already owed, which
+/// says what follows it; a Cancel's holder hears then, and once.
+#[test]
+fn a_read_refused_after_its_entry_ended_waits_for_the_trigger() {
+    let file = hash(0x02);
+    let t = Instant::now();
+    let (mut state, holder, _) = a_read_out(file, t);
+    state.on_served(HashMap::new());
+
+    let gone = (block(file, 0, 100), None);
+    assert_eq!(
+        state.on_part_file_unreadable(t, holder, 1, gone, &no_modifiers()),
+        Vec::new()
+    );
+
+    let decisions = state.on_share_set(Vec::new(), t, &no_modifiers());
+    let told = send(
+        holder,
+        ServerCommand::AnswerFileNotFound { file_hash: file },
+    );
+    assert_eq!(decisions.iter().filter(|d| **d == told).count(), 1);
+    assert!(
+        !decisions
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::ReadRange { .. }))
+    );
 }

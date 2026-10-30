@@ -5,13 +5,12 @@
 //! slot the same peer was granted since. Every way a slot ends ends its flow.
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::{FileHash, PeerEndpoint};
 
+use super::served::Aim;
 use super::{BlockRead, ServeDecision, ServeState};
-use crate::served_downloads::ReadCheck;
 use crate::service::ServeEvent;
 
 /// Blocks a flow may hold read and not yet left for the socket. aMule 3.1.0
@@ -28,19 +27,13 @@ const MAX_WAITING_RANGES: usize = 32;
 /// bound of the peer that stopped reading with its bytes all in the kernel.
 const SLOT_SILENCE_BOUND: Duration = Duration::from_secs(40);
 
-/// A read waiting its turn in a flow.
-#[derive(Debug)]
-pub(super) struct AskedRead {
-    pub(super) path: PathBuf,
-    pub(super) block: BlockRead,
-    pub(super) check: Option<ReadCheck>,
-}
-
 /// One slot holder's flow.
 #[derive(Debug)]
 pub(super) struct ServeFlow {
     number: u64,
-    waiting: VecDeque<AskedRead>,
+    /// The ranges asked, each aimed only when it comes up: a file may move
+    /// or change hands while they wait.
+    waiting: VecDeque<BlockRead>,
     read_out: bool,
     /// Blocks read and not yet left for the socket.
     ahead: usize,
@@ -81,27 +74,69 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        reads: impl IntoIterator<Item = AskedRead>,
+        reads: impl IntoIterator<Item = BlockRead>,
     ) -> Option<ServeDecision> {
         self.flow_of(peer, now).waiting.extend(reads);
         self.next_read(peer)
     }
 
-    /// The flow's next read, unless one is out or the Send-Ahead is full.
+    /// The flow's next read, unless one is out or the Send-Ahead is full: its
+    /// first range still in the share set, aimed at the file as the set holds
+    /// it now. A range whose file's entry has ended waits at the head of the
+    /// flow for the trigger owed ([`Aim::Trigger`]).
     fn next_read(&mut self, peer: PeerEndpoint) -> Option<ServeDecision> {
-        let flow = self.flows.get_mut(&peer)?;
-        if flow.read_out || flow.ahead >= SEND_AHEAD_BLOCKS {
-            return None;
+        loop {
+            let flow = self.flows.get(&peer)?;
+            if flow.read_out || flow.ahead >= SEND_AHEAD_BLOCKS {
+                return None;
+            }
+            let block = *flow.waiting.front()?;
+            let aim = self.aim(block.file_hash);
+            let flow = self.flows.get_mut(&peer)?;
+            match aim {
+                Aim::Trigger => return None,
+                Aim::Nowhere => {
+                    flow.waiting.pop_front();
+                }
+                Aim::At(from) => {
+                    flow.waiting.pop_front();
+                    flow.read_out = true;
+                    return Some(ServeDecision::ReadRange {
+                        peer,
+                        flow: flow.number,
+                        from,
+                        block,
+                    });
+                }
+            }
         }
-        let AskedRead { path, block, check } = flow.waiting.pop_front()?;
-        flow.read_out = true;
-        Some(ServeDecision::ReadRange {
-            peer,
-            flow: flow.number,
-            path,
-            block,
-            check,
-        })
+    }
+
+    /// The range of a read that came to nothing because its file moved first
+    /// goes back to the head of `peer`'s flow, to be aimed again.
+    pub(super) fn read_again(
+        &mut self,
+        peer: PeerEndpoint,
+        block: BlockRead,
+    ) -> Option<ServeDecision> {
+        self.flows.get_mut(&peer)?.waiting.push_front(block);
+        self.next_read(peer)
+    }
+
+    /// The reads a share trigger lets go: those that waited for it at the
+    /// head of a slot holder's flow.
+    pub(super) fn reads_after_trigger(&mut self) -> Vec<ServeDecision> {
+        let queue = &self.queue;
+        let holders: Vec<PeerEndpoint> = self
+            .flows
+            .keys()
+            .copied()
+            .filter(|peer| queue.is_granted(*peer))
+            .collect();
+        holders
+            .into_iter()
+            .filter_map(|peer| self.next_read(peer))
+            .collect()
     }
 
     /// A read of `flow` ended, whichever way. `false` when that flow is over:

@@ -4,7 +4,7 @@
 //! while no run writes it — from the final path when the completion move put
 //! the bytes there, and never through the Registry Check.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::*;
@@ -24,7 +24,9 @@ struct Rig {
     part: PathBuf,
     done: PathBuf,
     cell: ServedDownloads,
-    _lease: RunLease,
+    lease: RunLease,
+    store: Arc<crate::store::DurableStore>,
+    record: crate::DurableDownloadRecord,
     conn_tx: mpsc::Sender<ServeInput>,
     /// How many blocks were asked for, so each ask names bytes not yet
     /// served.
@@ -33,7 +35,7 @@ struct Rig {
     read_failed_rx: std::sync::mpsc::Receiver<CheckInput>,
     stop_tx: watch::Sender<bool>,
     /// Held: a closed trigger ends the task.
-    _share_changed_tx: mpsc::Sender<()>,
+    share_changed_tx: mpsc::Sender<()>,
     serve: tokio::task::JoinHandle<crate::serve::runner::ServeOutcome<FakeServeRuntime>>,
 }
 
@@ -49,6 +51,7 @@ async fn rig(paused: bool) -> Rig {
         lease,
         set,
     } = leased(file, dir.path().join("download.bin"));
+    let store_kept = store.clone();
     let (part, done) = (
         record.paths().part_path().to_path_buf(),
         record.paths().final_path().to_path_buf(),
@@ -140,13 +143,15 @@ async fn rig(paused: bool) -> Rig {
         part,
         done,
         cell,
-        _lease: lease,
+        lease,
+        store: store_kept,
+        record,
         conn_tx,
         asked: 0,
         cmd_rx,
         read_failed_rx,
         stop_tx,
-        _share_changed_tx: share_changed_tx,
+        share_changed_tx,
         serve,
     }
 }
@@ -172,6 +177,49 @@ impl Rig {
             .await
             .unwrap();
         next_command(&mut self.cmd_rx).await
+    }
+
+    /// Fill the Send-Ahead, so the next block asked stays in the flow, then
+    /// ask it and see the serve task take the ask.
+    async fn queue_a_read(&mut self) {
+        for _ in 0..10 {
+            assert!(matches!(
+                self.ask_block().await,
+                ServerCommand::SendBlock { .. }
+            ));
+        }
+        let start = self.asked * 100;
+        self.asked += 1;
+        let ask = ServerEvent::PartsRequested {
+            file_hash: self.file,
+            ranges: PartRanges::new([(start, start + 100), (0, 0), (0, 0)]),
+        };
+        self.conn_tx.send(ServeInput::Server(ask)).await.unwrap();
+        let slot = ServerEvent::SlotRequested {
+            file_hash: self.file,
+        };
+        self.conn_tx.send(ServeInput::Server(slot)).await.unwrap();
+        assert!(matches!(
+            next_command(&mut self.cmd_rx).await,
+            ServerCommand::GrantSlot { .. }
+        ));
+    }
+
+    /// A block left for the socket, so the read that was queued starts.
+    async fn free_the_send_ahead(&self) {
+        let left = ServerEvent::BlockLeft {
+            file_hash: self.file,
+            start: 0,
+            end: 100,
+        };
+        self.conn_tx.send(ServeInput::Server(left)).await.unwrap();
+    }
+
+    /// The identity, at rest, of the file at `path`.
+    fn identity_at(path: &Path) -> Option<PartFileIdentity> {
+        let held = std::fs::File::open(path).unwrap();
+        let key = FileKey::of_open(&held).unwrap();
+        PartFileIdentity::at_rest(key, &held.metadata().unwrap())
     }
 
     /// The block was sent, read from the bytes the part file holds.
@@ -268,5 +316,110 @@ async fn a_read_after_the_move_is_served_from_the_final_path_and_both_gone_ends_
             )]
         ),
         "never through the Registry Check"
+    );
+}
+
+/// ADR-0113: "no waiter or slot holder hears that the file left". A read
+/// waiting in its flow when a Completion Copy swapped in takes the finished
+/// file, with its own identity, though the part file it was asked of is gone.
+#[tokio::test]
+async fn a_read_queued_before_a_copy_swap_ends_on_the_finished_file() {
+    let mut copied = rig(false).await;
+    copied.queue_a_read().await;
+
+    std::fs::write(&copied.done, vec![0xA7; SIZE as usize]).unwrap();
+    let identity = Rig::identity_at(&copied.done);
+    assert!(copied.lease.bytes_in_place(&copied.done, identity));
+    std::fs::remove_file(&copied.part).unwrap();
+    copied.free_the_send_ahead().await;
+
+    assert!(matches!(
+        next_command(&mut copied.cmd_rx).await,
+        ServerCommand::SendBlock { .. }
+    ));
+    assert_eq!(copied.finish().await, (false, Vec::new()));
+}
+
+/// The same across a rename onto a numbered name: the read follows the
+/// entry, not the name it knew when it was asked.
+#[tokio::test]
+async fn a_read_queued_before_a_numbered_rename_ends_on_the_finished_file() {
+    let mut renamed = rig(false).await;
+    renamed.queue_a_read().await;
+
+    let numbered = renamed.done.with_file_name("download (1).bin");
+    std::fs::rename(&renamed.part, &numbered).unwrap();
+    let identity = Rig::identity_at(&numbered);
+    assert!(renamed.lease.bytes_in_place(&numbered, identity));
+    renamed.free_the_send_ahead().await;
+
+    assert!(matches!(
+        next_command(&mut renamed.cmd_rx).await,
+        ServerCommand::SendBlock { .. }
+    ));
+    assert_eq!(renamed.finish().await, (false, Vec::new()));
+}
+
+/// With the entry ended and its row written, a read waits for the trigger
+/// already owed and then takes the row: the file never left the share set.
+#[tokio::test]
+async fn a_read_queued_when_the_entry_ends_takes_the_registry_row_at_the_trigger() {
+    let mut done = rig(false).await;
+    done.queue_a_read().await;
+
+    std::fs::write(&done.done, vec![0xA7; SIZE as usize]).unwrap();
+    let identity = Rig::identity_at(&done.done);
+    assert!(done.lease.bytes_in_place(&done.done, identity));
+    let set = done.cell.served(done.file).unwrap();
+    let hashes = set.set.as_ref().unwrap().hashes().to_vec();
+    let row = SharedFileEntry::from_completed_download(&done.record, &done.done, hashes);
+    DurableSharedFileRegistry::new(done.store.clone())
+        .share(row)
+        .unwrap();
+    done.cell
+        .take_back(done.file, crate::download::RunNumber::new(1));
+    assert!(done.cell.end(set.download_id, PartialEnd::Completed));
+    std::fs::remove_file(&done.part).unwrap();
+
+    done.free_the_send_ahead().await;
+    // The read has met the ended entry long before the trigger lands.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    done.share_changed_tx.send(()).await.unwrap();
+
+    assert!(matches!(
+        next_command(&mut done.cmd_rx).await,
+        ServerCommand::SendBlock { .. }
+    ));
+    assert!(!done.finish().await.0, "never through the Registry Check");
+}
+
+/// ADR-0113: "a byte of a part file changed while paused is never sent". A
+/// read asked while the run wrote the file is checked as the entry stands
+/// when it reads, against the length and time the Pause recorded.
+#[tokio::test]
+async fn a_read_queued_across_a_pause_is_checked_at_rest() {
+    let mut paused = rig(false).await;
+    paused.queue_a_read().await;
+
+    let identity = Rig::identity_at(&paused.part).unwrap();
+    assert!(paused.lease.record_identity(identity));
+    paused
+        .cell
+        .take_back(paused.file, crate::download::RunNumber::new(1));
+    let written = std::fs::File::options()
+        .write(true)
+        .open(&paused.part)
+        .unwrap();
+    written
+        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(86_400))
+        .unwrap();
+    paused.free_the_send_ahead().await;
+
+    assert_eq!(
+        next_command(&mut paused.cmd_rx).await,
+        ServerCommand::AnswerFileNotFound {
+            file_hash: paused.file
+        },
+        "a file changed while paused sends no byte"
     );
 }

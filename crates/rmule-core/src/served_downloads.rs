@@ -42,7 +42,7 @@ mod identity;
 mod lease;
 mod range;
 
-pub(crate) use identity::{PartFileIdentity, ReadCheck};
+pub(crate) use identity::{PartFileIdentity, ReadTarget};
 pub(crate) use lease::RunLease;
 pub(crate) use range::{VerifiedRange, WholeSet};
 
@@ -133,16 +133,16 @@ pub(crate) struct Served {
 
 impl Served {
     /// The path that holds the bytes now, and how a read of it is checked.
-    pub(crate) fn read_target(&self) -> (PathBuf, ReadCheck) {
+    pub(crate) fn read_target(&self) -> ReadTarget {
         let (path, other) = match self.bytes_at {
             BytesAt::PartFile => (&self.part_path, &self.final_path),
             BytesAt::FinalFile => (&self.final_path, &self.part_path),
         };
-        let check = ReadCheck {
+        ReadTarget {
+            path: path.clone(),
             identity: self.identity,
             other: other.clone(),
-        };
-        (path.clone(), check)
+        }
     }
 }
 
@@ -498,6 +498,16 @@ impl ServedDownloads {
             .collect();
         offered.sort_unstable();
         offered
+    }
+
+    /// Where a read of `file_hash`'s bytes goes as its entry stands now, which
+    /// no read takes earlier than its turn (ADR-0113 §"Reading a part file");
+    /// `None` when the entry has ended.
+    pub(crate) fn read_target(&self, file_hash: FileHash) -> Option<ReadTarget> {
+        self.lock()
+            .entries
+            .get(&file_hash)
+            .map(|entry| entry.served.read_target())
     }
 
     /// The Served Download of `file_hash`, as it stands.

@@ -183,13 +183,12 @@ fn transfer_cancelled_wipes_served_ranges_so_a_fresh_ask_re_reads() {
     let flow_read = |flow| ServeDecision::ReadRange {
         peer: p,
         flow,
-        path: "/shared/served.bin".into(),
+        from: ReadFrom::Row("/shared/served.bin".into()),
         block: BlockRead {
             file_hash,
             start: 0,
             end: 100,
         },
-        check: None,
     };
     let slot = ServeInput::Server(ServerEvent::SlotRequested { file_hash });
     let _ = state.on_conn_event(t, p, slot.clone(), &no_modifiers());

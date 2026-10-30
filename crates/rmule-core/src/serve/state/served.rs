@@ -17,10 +17,10 @@ use rmule_peer::PartBitmap;
 use rmule_primitives::{Ed2kFileClass, Ed2kText, FileHash, PartHash, PeerEndpoint};
 
 use super::reask::full_bitmap;
-use super::{ServeDecision, ServeState};
+use super::{ReadFrom, ServeDecision, ServeState};
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::ServedFileKind;
-use crate::served_downloads::{ExchangePool, ServedLook};
+use crate::served_downloads::{ExchangePool, ReadTarget, ServedLook};
 
 /// The file an ask names, as the share set holds it.
 #[derive(Clone, Copy, Debug)]
@@ -126,6 +126,18 @@ impl<'a> Found<'a> {
     }
 }
 
+/// Where a block's read goes, as the share set holds its file now.
+#[derive(Debug)]
+pub(super) enum Aim {
+    /// Read it from there.
+    At(ReadFrom),
+    /// The file's entry has ended and the share trigger that says what
+    /// follows it is owed: a registry row, or nothing.
+    Trigger,
+    /// The file has left the share set.
+    Nowhere,
+}
+
 impl ServeState {
     /// Refresh the brain's copy of the **Served Downloads** with every entry
     /// as the cell holds it now. A level, like our own position: an entry the
@@ -161,6 +173,32 @@ impl ServeState {
             look,
             offered: self.partials.contains(&file_hash),
         })
+    }
+
+    /// Where a read of `file_hash` goes now: a row, which wins, a Partial
+    /// Share, or the trigger owed for an entry that ended.
+    pub(super) fn aim(&self, file_hash: FileHash) -> Aim {
+        if let Some(entry) = self.shared.get(&file_hash) {
+            Aim::At(ReadFrom::Row(entry.path.clone()))
+        } else if self.ended.contains(&file_hash) {
+            Aim::Trigger
+        } else if self.partials.contains(&file_hash) {
+            Aim::At(ReadFrom::Download)
+        } else {
+            Aim::Nowhere
+        }
+    }
+
+    /// Whether `file_hash` moved on from `target`, where a read was aimed:
+    /// its entry ended, a row took it, or the entry names another place or
+    /// file now. The brain's copy is refreshed before a read's end is judged.
+    pub(super) fn moved_since(&self, file_hash: FileHash, target: Option<&ReadTarget>) -> bool {
+        if self.ended.contains(&file_hash) || self.shared.contains_key(&file_hash) {
+            return true;
+        }
+        self.served
+            .get(&file_hash)
+            .is_some_and(|look| target != Some(&look.served.read_target()))
     }
 
     /// The asker `peer` of `file_hash`, handed to the download's run as a

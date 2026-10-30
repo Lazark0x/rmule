@@ -21,9 +21,8 @@ fn parts_requests_read_only_unserved_ranges() {
     let read = |flow: u64, start: u64, end: u64| ServeDecision::ReadRange {
         peer: p,
         flow,
-        path: "/shared/served.bin".into(),
+        from: ReadFrom::Row("/shared/served.bin".into()),
         block: block(start, end),
-        check: None,
     };
     let parts_requested =
         |ranges| ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges });

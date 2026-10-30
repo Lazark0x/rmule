@@ -45,7 +45,7 @@ use crate::WaiterLeaveCause;
 use crate::adapters::{DialBack, FarEnd};
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::SourceExchangeThrottle;
-use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadCheck, ServedLook};
+use crate::served_downloads::{PartFileIdentity, PartialEnd, ServedLook};
 use crate::service::{DialBackEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
@@ -95,16 +95,16 @@ pub(super) enum ServeDecision {
     /// comes back as an input, the bytes through
     /// [`ServeState::on_read_result`] with this same `flow` and `block`, and a
     /// failed read through [`ServeState::on_read_failed`]. A Served
-    /// Download's read carries its `check`: the handle the enactor opens must
-    /// be the file its **Part File Identity** names before a byte is read,
-    /// and a path that names nothing gives way to the other once (ADR-0113
-    /// §"Reading a part file"); a registry row's carries none.
+    /// Download's read is aimed by the enactor at the read's turn: the handle
+    /// it opens must be the file the entry's **Part File Identity** names then
+    /// before a byte is read, and a path that names nothing gives way to the
+    /// other once (ADR-0113 §"Reading a part file"); a registry row's is read
+    /// from its path, unchecked.
     ReadRange {
         peer: PeerEndpoint,
         flow: u64,
-        path: PathBuf,
+        from: ReadFrom,
         block: BlockRead,
-        check: Option<ReadCheck>,
     },
     /// Build the AICH tree of the `file_size`-byte shared file at `path`, away
     /// from the serve loop and one block at a time (ADR-0038, ADR-0031). One
@@ -161,6 +161,16 @@ pub(super) enum ServeDecision {
         file_hash: FileHash,
         sighting: SourceSighting,
     },
+}
+
+/// Where a [`ServeDecision::ReadRange`] takes its bytes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReadFrom {
+    /// A registry row's file, at the row's path.
+    Row(PathBuf),
+    /// A Served Download's, wherever its entry names when the read takes its
+    /// turn (ADR-0113 §"Reading a part file").
+    Download,
 }
 
 /// The block a [`ServeDecision::ReadRange`] reads for a granted flow: the
@@ -382,6 +392,7 @@ impl ServeState {
             .collect();
         self.partials = partials;
         decisions.push(ServeDecision::Announce(files));
+        decisions.extend(self.reads_after_trigger());
         decisions
     }
 

@@ -214,7 +214,7 @@ where
         // Where each block read says it ended. The reader holds a sender, so
         // the receiver never closes under the loop.
         let (read_landed_tx, mut read_landed_rx) = mpsc::channel::<ReadLanded>(16);
-        let reader = BlockReader::new(read_landed_tx);
+        let reader = BlockReader::new(read_landed_tx, served.clone());
 
         // Where a read of the share set lands, one out at a time; a trigger
         // meanwhile asks for one more after it.
@@ -386,11 +386,11 @@ where
                     let mut decisions: VecDeque<ServeDecision> = match end {
                         ReadEnd::Bytes(bytes) => state.on_read_result(peer, flow, block, bytes),
                         ReadEnd::Failed => state.on_read_failed(now, peer, flow, file, &modifiers),
-                        ReadEnd::Changed { checked } => {
-                            state.on_part_file_changed(now, peer, flow, (file, checked), &modifiers)
+                        ReadEnd::Changed { target } => {
+                            state.on_part_file_changed(now, peer, flow, (block, target), &modifiers)
                         }
-                        ReadEnd::Unreadable { checked } => {
-                            state.on_part_file_unreadable(now, peer, flow, (file, checked), &modifiers)
+                        ReadEnd::Unreadable { target } => {
+                            state.on_part_file_unreadable(now, peer, flow, (block, target), &modifiers)
                         }
                     }
                     .into();
@@ -735,17 +735,15 @@ async fn enact<L: ServeRuntimeService>(
             ServeDecision::ReadRange {
                 peer,
                 flow,
-                path,
+                from,
                 block,
-                check,
             } => {
                 if let Some(link) = links.get(&peer) {
                     let read = FlowRead {
                         peer,
                         flow,
-                        path,
+                        from,
                         block,
-                        check,
                     };
                     reader.start(read, Arc::clone(&link.ended_through));
                 }

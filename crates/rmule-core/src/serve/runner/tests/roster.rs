@@ -29,7 +29,10 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         read_failed_tx: None,
         served: &Default::default(),
         dial_backs: &mpsc::channel(1).0,
-        reader: &crate::serve::block_reader::BlockReader::new(mpsc::channel(1).0),
+        reader: &crate::serve::block_reader::BlockReader::new(
+            mpsc::channel(1).0,
+            Default::default(),
+        ),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
@@ -123,7 +126,10 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         read_failed_tx: None,
         served: &Default::default(),
         dial_backs: &mpsc::channel(1).0,
-        reader: &crate::serve::block_reader::BlockReader::new(mpsc::channel(1).0),
+        reader: &crate::serve::block_reader::BlockReader::new(
+            mpsc::channel(1).0,
+            Default::default(),
+        ),
     };
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
     let mut serve_runtime = FakeServeRuntime {
