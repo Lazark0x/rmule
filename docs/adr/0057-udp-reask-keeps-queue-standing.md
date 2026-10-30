@@ -209,38 +209,32 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   a pending dial-back grant; or its slot — when the link it held has ended, or is one the
   peer opened from the same address and listen port, which is closed for the new one
   (`:400-403`). A live link from anywhere else keeps its client, and so does a live link
-  rmule dialed: its hello went out on it, so the far side keeps it and deletes its own
-  socket (the same `:400-403` at its end), and the new link from that address and listen
-  port is let go — unless rmule's link is dead at the far end, a reset or a FIN read on it
-  or 40 s of silence both ways (ADR-0107 invariant 7), when the new link takes the client
-  as from a link that has ended. The hello of a link rmule dialed takes only a standing
+  rmule dialed, whose hello went out on it, unless that link is dead at the far end (a reset or
+  a FIN read on it, or 40 s of silence both ways, ADR-0107 invariant 7), when the new link takes
+  the client as from a link that has ended; the far end closes one of the two, and the standing
+  follows the one left. The hello of a link rmule dialed takes only a standing
   whose link has ended. `ServeEvent::WaiterRelinked` carries every row and mark
   keyed by the old link to the new one, and the new link's slot ask is answered at the
   place it kept. A slot is granted again on the link it moved to, so that link's session
   serves the part asks that follow, as aMule answers an uploading client's ask with
   `OP_ACCEPTUPLOADREQ` (`UploadQueue.cpp:486-493`). A pending dial-back grant moves the
-  same way, while the dial-back's hello has not gone out, and `OP_ACCEPTUPLOADREQ` goes on
-  the new link at once: aMule grants a client it promoted unconnected (`US_CONNECTING`) on
-  whichever link its hellos finish first, inbound or dialed (`ClientTCPSocket.cpp:328`,
-  `:417`, `BaseClient.cpp:1707-1716`).
-- **Two hellos of one client race.** Each end keeps the socket it read the other's
-  `OP_HELLO` on and deletes the one it held for the client, connecting or connected
-  (`ClientTCPSocket.cpp:391`, `ClientList.cpp:400-403`), so which of two crossed links
-  lives turns on whether rmule's dial-back sent its hello. The peer's hello on its own link
-  calls the dial-back off, and the call-off and the dial's hello going out are one claim:
-  whichever comes first holds. Called off first — its connect or crypt handshake still
-  running — the dial closes with no byte of its hello sent and is unfiled, and the pending
-  grant moves onto the peer's link and goes on it at once: the peer never reads a hello on
-  the dial, so it keeps its own link. With its hello out, the dial is past the call-off: the
-  peer will attach the dial and close its own link, so the grant stays pending for the dial
-  and goes on it at the peer's hello there, and the serve side lets the peer's link go;
-  a dial that ended since, before the peer's hello came back on it, is found so by the
-  call-off, and the grant moves onto the peer's link. A peer's link that comes in after the
-  dial's hellos finds the slot on the dialed link, which keeps it, and is let go the same
-  way, unless the dialed link is dead at the far end (ADR-0107 invariant 7), when the slot
-  moves onto the peer's link. Either way the grant goes on the one link both ends
-  keep; the link the peer opened still holds the Peer Link names it took until it closes
-  (ADR-0107 invariant 7).
+  same way, and `OP_ACCEPTUPLOADREQ` goes on the new link at once: aMule grants a client it
+  promoted unconnected (`US_CONNECTING`) on whichever link its hellos finish first, inbound or
+  dialed (`ClientTCPSocket.cpp:328`, `:417`, `BaseClient.cpp:1707-1716`).
+- **A slot is one slot, however often it is granted.** That grant comes before the client's ask.
+  aMule's client drops it when it opened the link to ask (`DS_CONNECTED`,
+  `ClientTCPSocket.cpp:640-645`), asks, and is answered `OP_ACCEPTUPLOADREQ` again
+  (`UploadQueue.cpp:486-493`); it acts on it when it came back on `DS_ONQUEUE` for another reason,
+  and then never asks before its reask, so the first grant stays on the wire, as aMule sends it. An
+  ask from the client already holding the slot for that file is answered the same and is no new
+  grant: `serve.upload_slot_granted` is written once per slot, and again only for a file it switches
+  to.
+- **Two hellos of one client race.** The far end keeps one socket, and rmule's part is not to
+  answer the peer's hello on its own link while rmule's dial to it has its hello out unanswered,
+  so that the far end asks on whichever it keeps. ADR-0107 invariant 7 traces every order and
+  holds the one table of dial, link and grant rules, the bound on the hold among them. A pending
+  grant so goes on the one link the far end keeps. A dial that ends with a hello held on it does
+  not end its grant: the held link is answered and takes it.
 - **Promotion reaches the waiter.** Every freed slot promotes the best waiter rmule can
   reach, and the grant goes out as aMule's `AddUpNextClient` sends it
   (`UploadQueue.cpp:202-222`):
@@ -253,7 +247,7 @@ aMule's `FILEREASKTIME` of 1 300 000 ms
   | the dial and the budget | `TryToConnect(true)` skips `TooManySockets` (`BaseClient.cpp:1398`) | no Dial Window token and no place under the Ceiling: the Connection Budget paces the roads downloads open (ADR-0116), and a grant is never admitted |
   | the dial's gates | the IP filter and the ban list refuse it before any socket (`BaseClient.cpp:1427`, `:1437`) | the same two gates, before any socket |
   | one peer, one link | one client, one socket | the dial is filed as a Dial in Flight under the waiter's endpoint and User Hash; a link or dial already filed under one of them is not dialed around (ADR-0107 invariant 7), and the grant goes on it once its hello reaches the serve side |
-  | the client's own link races the dial | each end keeps the socket it read the other's `OP_HELLO` on and deletes the one it held for the client (`ClientTCPSocket.cpp:391`, `ClientList.cpp:400-403`) | the peer's hello calls the dial off: before the dial's hello goes out, the dial closes unheard and the pending grant moves onto the peer's link, granted there at once; once it is out, the dial keeps the grant, granted at the peer's hello on it, and the peer's link is let go, as the peer will close it; a dial that has ended, or a dialed link dead at the far end, keeps nothing, and the grant or the slot moves onto the peer's link (ADR-0107 invariant 7) |
+  | the client's own link races the dial | each end keeps the socket it read the other's `OP_HELLO` on and deletes the one it held for the client (`ClientTCPSocket.cpp:391`, `ClientList.cpp:400-403`) | the stage of the dial decides, as read at the peer's hello (ADR-0107 invariant 7): before its hello the dial closes unheard and the grant moves onto the peer's link; with its hello out unanswered the peer's hello is held until the far end shows which link it kept; a dial that has ended, or a dialed link dead at the far end, keeps nothing, and the grant or the slot moves onto the peer's link |
   | after the hellos | `ConnectionEstablished` in `US_CONNECTING` sends `OP_ACCEPTUPLOADREQ` (`BaseClient.cpp:1707-1716`) | the pending grant moves onto the dialed link and `OP_ACCEPTUPLOADREQ` goes on it; the link is a Peer Link like any served one, filed under its hello's names and where it was dialed, so a download of ours rides it, and the serve side holds it from the dial (ADR-0107 invariant 9) |
   | the dial fails | `US_CONNECTING` on disconnect makes the client a dead source and deletes it (`BaseClient.cpp:1333-1337`), out of the upload and the waiting lists (`:413-417`); the next `Process` fills the slot (`UploadQueue.cpp:255-258`) | the pending grant ends and the waiter's place with it, so its next ask queues it at the tail with its wait from zero (`UploadQueue.cpp:501`); the slot promotes the next waiter at once |
   | the dialed hello names another client | the client takes the new hash (`BaseClient.cpp:475`) and is granted | departs: the grant is the waiter's, so it fails as a failed dial, and the link is left to whatever else holds it |
