@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Args;
-use rmule_ed2k::{Ed2kCommand, Ed2kEvent};
+use rmule_ed2k::{Ed2kCommand, Ed2kEvent, OfferedFile};
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_primitives::{
     ClientIdentity, Ed2kText, FileHash, PeerSource, ServerEndpoint, SourceLookupTarget, UserHash,
@@ -42,9 +42,13 @@ pub(crate) struct Ipv6ServerProbeArgs {
     /// what the IPv6 server row is looking for.
     #[arg(long)]
     file_hash: Option<String>,
-    /// The file size that accompanies the source request.
+    /// The file size that accompanies the source request or the offer.
     #[arg(long, default_value_t = 1_048_576)]
     file_size: u64,
+    /// Offer this file once logged in, so another session can ask for it and
+    /// draw this session as a source.
+    #[arg(long)]
+    offer_file: Option<String>,
     /// Nickname tag.
     #[arg(long, default_value = "rmule-tools")]
     nickname: String,
@@ -139,6 +143,12 @@ pub(crate) async fn run_server_probe(args: Ipv6ServerProbeArgs) -> Result<()> {
         .map(|hex| parse_hex16("--file-hash", hex))
         .transpose()?
         .map(FileHash::from_bytes);
+    let offer = args
+        .offer_file
+        .as_deref()
+        .map(|hex| parse_hex16("--offer-file", hex))
+        .transpose()?
+        .map(FileHash::from_bytes);
 
     let mut row = ServerProbeRow {
         server: format!("{}:{}", endpoint.host(), endpoint.port()),
@@ -182,7 +192,7 @@ pub(crate) async fn run_server_probe(args: Ipv6ServerProbeArgs) -> Result<()> {
     match Connection::connect_with_options(endpoint, identity, options).await {
         Ok(connection) => {
             row.connected = true;
-            listen(connection, &args, file_hash, &mut row).await;
+            listen(connection, &args, file_hash, offer, &mut row).await;
         }
         Err(error) => row.closed = error.to_string(),
     }
@@ -246,6 +256,7 @@ async fn listen(
     mut connection: Connection,
     args: &Ipv6ServerProbeArgs,
     file_hash: Option<FileHash>,
+    offer: Option<FileHash>,
     row: &mut ServerProbeRow,
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(args.window_secs);
@@ -273,6 +284,20 @@ async fn listen(
                 // trailing v6 block lives, the source list is where a Sentinel
                 // Source would.
                 let _ = connection.send(Ed2kCommand::RequestServerList).await;
+                if let Some(hash) = offer {
+                    let file = OfferedFile::new(
+                        hash,
+                        args.file_size,
+                        Ed2kText::from_utf8("rmule-bench-ipv6-source.bin"),
+                    );
+                    let _ = connection
+                        .send(Ed2kCommand::OfferFiles {
+                            files: vec![file],
+                            presented_id: None,
+                        })
+                        .await;
+                    println!("ipv6-server-probe offered");
+                }
                 if let Some(hash) = file_hash {
                     row.sources_requested = true;
                     let _ = connection

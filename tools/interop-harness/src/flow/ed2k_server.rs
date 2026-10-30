@@ -20,6 +20,7 @@ pub(crate) mod late_port_test;
 pub(crate) mod rmule_tools;
 pub(crate) mod search_wire;
 pub(crate) mod server_login_crypt;
+pub(crate) mod server_surface;
 pub(crate) mod skeleton;
 pub(crate) mod sweep_follows_list;
 
@@ -36,6 +37,9 @@ pub use self::search_wire::{
     SearchSpacingOptions, SearchWireOptions, SearchWireServer, run_search_spacing, run_search_wire,
 };
 pub use self::server_login_crypt::{ServerLoginCryptOptions, run_server_login_crypt};
+pub use self::server_surface::{
+    ServerSurfaceOptions, run_server_surface, score_run_dir as score_server_surface,
+};
 pub use self::skeleton::{RmuleClientAction, ServerSkeletonOptions, run_server_skeleton};
 pub use self::sweep_follows_list::{SweepFollowsListOptions, run_sweep_follows_list};
 

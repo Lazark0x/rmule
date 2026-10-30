@@ -76,6 +76,9 @@ use crate::cli::server_callback_serve::{
     ServerCallbackServeArgs, ServerCallbackServeScoreArgs, server_callback_serve,
     server_callback_serve_score,
 };
+use crate::cli::server_surface::{
+    ServerSurfaceArgs, ServerSurfaceScoreArgs, server_surface, server_surface_score,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "rmule-interop-harness")]
@@ -406,6 +409,12 @@ enum HarnessCommand {
     /// (0x62) is cut from the server tap for fixture promotion.
     #[command(name = "ed2ksrv-holepunch-fail")]
     Ed2ksrvHolepunchFail(HolepunchFailArgs),
+    /// What the pinned ed2k-server draws of the rows only it can: a crypt-pong
+    /// under a key learned from a plain advert and a Sentinel Source, with a
+    /// Documented Absence of `0x26` and the `OP_SERVERLIST` v6 block.
+    Ed2ksrvServerSurface(ServerSurfaceArgs),
+    /// Score a retained `ed2ksrv-server-surface` run dir without driving it.
+    Ed2ksrvServerSurfaceScore(ServerSurfaceScoreArgs),
     /// Score a finished or archived `ed2ksrv-holepunch-fail` run dir from its
     /// own tap, without driving the leg again.
     #[command(name = "ed2ksrv-holepunch-fail-score")]
@@ -482,6 +491,7 @@ impl HarnessCommand {
             Self::PeerReciprocityScore(args) => Some(&args.run_dir),
             Self::PeerCrossingScore(args) => Some(&args.run_dir),
             Self::Ed2ksrvHolepunchFailScore(args) => Some(&args.run_dir),
+            Self::Ed2ksrvServerSurfaceScore(args) => Some(&args.run_dir),
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
             Self::PeerPartialShareScore(args) => Some(&args.run_dir),
@@ -506,6 +516,7 @@ impl HarnessCommand {
                 | Self::PeerReciprocityScore(_)
                 | Self::PeerCrossingScore(_)
                 | Self::Ed2ksrvHolepunchFailScore(_)
+                | Self::Ed2ksrvServerSurfaceScore(_)
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
                 | Self::PeerPartialShareScore(_)
@@ -681,6 +692,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::ServerCallbackServeScore(args) => {
             server_callback_serve_score(args)?;
+        }
+        HarnessCommand::Ed2ksrvServerSurface(args) => {
+            server_surface(args)?;
+        }
+        HarnessCommand::Ed2ksrvServerSurfaceScore(args) => {
+            server_surface_score(args)?;
         }
         HarnessCommand::Ed2ksrvHolepunchFail(args) => {
             holepunch_fail(args)?;

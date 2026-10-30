@@ -50,6 +50,7 @@ pub use self::ed2k_server::{
     run_sweep_follows_list,
 };
 pub use self::ed2k_server::{HolepunchFailOptions, run_holepunch_fail, score_holepunch_fail};
+pub use self::ed2k_server::{ServerSurfaceOptions, run_server_surface, score_server_surface};
 pub use self::evidence::flush_golden_files;
 pub use self::gate::start_rmule_serve_with_login_retry;
 pub use self::kad_buddy::{

@@ -126,6 +126,7 @@ async fn main() -> Result<()> {
                 },
                 ServerCommand::Probe(args) => ed2k::server_probe(args).await?,
                 ServerCommand::UdpCapture(args) => ed2k::server_udp_capture(args).await?,
+                ServerCommand::CryptPong(args) => ed2k::server_crypt_pong(args).await?,
                 ServerCommand::SearchWire(args) => ed2k::search_wire(args).await?,
             },
             Ed2kCommand::Search(args) => search::run(args).await?,

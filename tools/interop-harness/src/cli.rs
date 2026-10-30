@@ -38,6 +38,7 @@ pub(crate) mod peer;
 pub(crate) mod queue_fanout;
 pub(crate) mod reciprocity;
 pub(crate) mod server_callback_serve;
+pub(crate) mod server_surface;
 pub(crate) mod streaming_window;
 pub(crate) mod sweep_follows_list;
 

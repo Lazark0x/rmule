@@ -313,10 +313,25 @@ pub(crate) enum ServerCommand {
     /// server and capture the raw counterparty replies (`0x97`, `0xA3` desc,
     /// `0x99` search) as fixture files (operator-run captures).
     UdpCapture(ServerUdpCaptureArgs),
+    /// Learn a live server's UDP key from its plain `0x97`, seal a `0x96` under
+    /// it to the obfuscation port it named, and write both answers.
+    CryptPong(ServerCryptPongArgs),
     /// Send bursts of back-to-back searches, tokenisation probes, Related-Files
     /// Searches and a `0x98` burst to a live server, and report what it did
     /// with each.
     SearchWire(SearchWireArgs),
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ServerCryptPongArgs {
+    /// Server endpoint as `host:port` (the eD2k TCP port).
+    pub(crate) endpoint: String,
+    /// Directory to write the two raw replies into.
+    #[arg(long)]
+    pub(crate) out: std::path::PathBuf,
+    /// Per-step UDP reply timeout, seconds.
+    #[arg(long, default_value_t = 15)]
+    pub(crate) timeout: u64,
 }
 
 #[derive(Debug, Args)]
