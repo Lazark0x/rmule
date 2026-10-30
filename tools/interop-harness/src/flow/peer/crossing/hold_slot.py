@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Hold rmule's upload slot for as long as the reask leg needs.
 
-Stimulus for `peer-crossing --leg serve-reask`. A stock aMule cannot hold a
-slot through a reask period: capped low, it stops reading and rmule releases it
+Stimulus for `peer-crossing --leg serve-reask` and the dead-dial legs. A stock
+aMule cannot hold a slot through a reask period, or surely through 45 s: capped low, it stops reading and rmule releases it
 as silent (run `1793368694`). This client says its hello, asks for the file,
 takes the grant, and asks one block every `ASK_EVERY` seconds, so the slot
 moves and stays. Nothing about the race under test touches it.

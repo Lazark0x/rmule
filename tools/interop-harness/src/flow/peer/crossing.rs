@@ -602,7 +602,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                 &rmule_ip.to_string(),
                 RMULE_SERVE_TCP_PORT,
             );
-            if reask {
+            if reask || dead_dial {
                 let script = root.join("hold_slot.py");
                 fs::write(&script, HOLD_SLOT)
                     .with_context(|| format!("write {}", script.display()))?;
