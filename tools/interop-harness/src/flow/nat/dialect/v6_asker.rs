@@ -11,8 +11,10 @@
 //!
 //! emule-qt also learns rmule's IPv4 from the server and dials it beside the
 //! IPv6. That dial is dropped at rmule's listener, and only the server's probe
-//! gets through: a dual-stack peer's second link is its own question, drawn in
-//! run `1793356626`, where rmule banned the peer's IPv4.
+//! gets through. A dual-stack peer's second link is its own question: run
+//! `1793356626` drew it and rmule banned the peer's IPv4, and with
+//! `--asker-both-dials` the dial is admitted and the leg also reads that one
+//! client on two links is no thief, holds one slot and is answered on both.
 //!
 //! What a claim reads is emule-qt's own tap: who opened each link, what rode
 //! it, and the copy rmule ended with. emule-qt's own download of the asked file
@@ -129,7 +131,14 @@ pub(super) fn drive(
             "RMULE_FORCE_LOW_ID_TCP_PORT",
             BODY_PEER_TCP_PORT.to_string(),
         ),
-        ("RMULE_TCP_ACCEPT_FROM", stage.v4(HOST_ED2KSRV).to_owned()),
+        (
+            "RMULE_TCP_ACCEPT_FROM",
+            if options.asker_both_dials {
+                format!("{} {qt_v4}", stage.v4(HOST_ED2KSRV))
+            } else {
+                stage.v4(HOST_ED2KSRV).to_owned()
+            },
+        ),
         (
             "RMULE_LOG",
             "info,rmule_core::serve=debug,rmule_core::adapters=debug".to_owned(),
@@ -211,7 +220,51 @@ pub(super) fn drive(
             first_line(&log, "download.link_shared")
         ),
     ));
+    if options.asker_both_dials {
+        let rmule_v4 = stage.v4(HOST_DRIVER);
+        claims.extend(two_link_claims(&log, &capture, rmule_v4, &qt_v4));
+    }
     Ok((claims, String::new()))
+}
+
+/// What one client on two links owes: no ban, one slot, an answer on each.
+fn two_link_claims(log: &str, capture: &TcpCapture, rmule_v4: &str, qt_v4: &str) -> [Claim; 3] {
+    let banned = first_line(log, "its address is banned");
+    let slots = log
+        .lines()
+        .filter(|line| line.contains("serve.upload_slot_granted"))
+        .count();
+    let v4_answers = capture
+        .streams
+        .iter()
+        .filter(|stream| {
+            stream.source.ip().to_string() == rmule_v4
+                && stream.source.port() == BODY_PEER_TCP_PORT
+                && stream.destination.ip().to_string() == qt_v4
+        })
+        .flat_map(|stream| stream.ed2k_frames())
+        .map(|frame| format!("0x{:02x}", frame.opcode))
+        .collect::<Vec<_>>();
+    [
+        Claim::about(
+            "the-peers-ipv4-link-banned-nothing",
+            banned.is_empty(),
+            Evidence::Captured,
+            format!("rmule's line: {banned:?}"),
+        ),
+        Claim::about(
+            "one-slot-for-the-client",
+            slots <= 1,
+            Evidence::Captured,
+            format!("{slots} `serve.upload_slot_granted` lines"),
+        ),
+        Claim::about(
+            "the-ipv4-link-was-answered",
+            !v4_answers.is_empty(),
+            Evidence::Captured,
+            format!("rmule's frames on emule-qt's IPv4 link: {v4_answers:?}"),
+        ),
+    ]
 }
 
 /// The first line of `log` holding `marker`, or nothing.

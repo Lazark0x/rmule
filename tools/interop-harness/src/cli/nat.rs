@@ -599,6 +599,9 @@ pub(crate) struct Ipv6DialectArgs {
     /// kno legs stay plaintext: their lifts read plain opcode bytes.
     #[arg(long)]
     pub(crate) rmule_kad_crypt: bool,
+    /// `ipv6-asker`: admit emule-qt's IPv4 dial beside its IPv6 one.
+    #[arg(long)]
+    pub(crate) asker_both_dials: bool,
     /// Per-step readiness timeout in seconds.
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
     pub(crate) timeout: u64,
@@ -647,6 +650,7 @@ pub(crate) fn ipv6_dialect(args: Ipv6DialectArgs) -> Result<()> {
             ],
             detail: std::iter::once(args.flow.name())
                 .chain(args.rmule_kad_crypt.then_some("rmule-kad-crypt"))
+                .chain(args.asker_both_dials.then_some("asker-both-dials"))
                 .map(ToOwned::to_owned)
                 .collect(),
             public_kad_used: false,
@@ -675,6 +679,7 @@ pub(crate) fn ipv6_dialect(args: Ipv6DialectArgs) -> Result<()> {
         natgw_image: &args.natgw_image,
         natgw_build_context: &args.natgw_build_context,
         rmule_kad_crypt: args.rmule_kad_crypt,
+        asker_both_dials: args.asker_both_dials,
         keep_containers: args.bench.keep_containers,
         timeout_secs: args.timeout,
     })

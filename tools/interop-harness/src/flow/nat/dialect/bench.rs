@@ -167,6 +167,9 @@ pub struct Ipv6DialectOptions<'a> {
     /// `ipv6-kad-tags`: arm Kad datagram obfuscation on the emule-qt leg's
     /// rmule bodies, for the verify-key three-way.
     pub rmule_kad_crypt: bool,
+    /// `ipv6-asker`: emule-qt's IPv4 dial reaches rmule's listener beside its
+    /// IPv6 one, so the leg reads one client on two links.
+    pub asker_both_dials: bool,
     /// Keep containers after the run.
     pub keep_containers: bool,
     /// Per-step readiness budget.

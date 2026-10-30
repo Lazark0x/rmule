@@ -122,6 +122,7 @@ pub fn run_server_surface(options: ServerSurfaceOptions<'_>) -> Result<()> {
             options.layout.root(),
         )?;
     }
+    crate::run_record::note_image(&bench.docker, options.rmule_tools_image, true);
     let root = options.layout.root().join(ROOT_DIR);
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     let timeout = Duration::from_secs(options.timeout_secs);

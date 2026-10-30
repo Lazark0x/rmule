@@ -492,11 +492,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
         )?;
         let reask = shape.leg == CrossingLeg::ServeReask;
         let reask_secs = file_reask_secs(options.amule_env);
-        let waits = if reask {
-            reask_secs
-        } else {
-            shape.idle_secs
-        };
+        let waits = if reask { reask_secs } else { shape.idle_secs };
         let deadline = 4 * options.timeout_secs + waits + 4 * shape.hold_secs;
         let flags: Vec<String> = [
             "--stamp-events",
