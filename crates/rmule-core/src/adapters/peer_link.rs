@@ -148,7 +148,11 @@ struct Proven {
 struct Filed {
     filing: u64,
     remote: PeerEndpoint,
-    join_tx: mpsc::Sender<LinkJoin>,
+    /// Unbounded: a join is a download's one worker asking, nothing a peer
+    /// can send more of, and it must never wait for room. A dial that fails
+    /// retires what is queued, so a join still waiting outside it would dial
+    /// the failed peer again, and hear no `Shutdown` while it waited.
+    join_tx: mpsc::UnboundedSender<LinkJoin>,
 }
 
 impl Book {
@@ -212,7 +216,7 @@ pub(super) struct DownloadHalf {
 pub(crate) struct FoundLink {
     /// The link's remote end.
     pub(crate) remote: PeerEndpoint,
-    join_tx: mpsc::Sender<LinkJoin>,
+    join_tx: mpsc::UnboundedSender<LinkJoin>,
 }
 
 /// A link a download took its turn on: the peer as the link knows it, and
@@ -255,7 +259,7 @@ pub(super) enum Reach {
 /// before.
 pub(crate) struct DialInFlight {
     filing: Filing,
-    joins: mpsc::Receiver<LinkJoin>,
+    joins: mpsc::UnboundedReceiver<LinkJoin>,
     /// Where the dial hears that the peer's own link took one of its names
     /// before its hello went out; `None` once it claimed its hello.
     overtaken: Option<oneshot::Receiver<FoundLink>>,
@@ -264,7 +268,7 @@ pub(crate) struct DialInFlight {
 impl DialInFlight {
     /// The socket is up and the hello goes out with it: the dial no longer
     /// yields, and the link's router takes the filing and the joins.
-    pub(super) fn into_parts(self) -> (Filing, mpsc::Receiver<LinkJoin>) {
+    pub(super) fn into_parts(self) -> (Filing, mpsc::UnboundedReceiver<LinkJoin>) {
         let Self {
             mut filing, joins, ..
         } = self;
@@ -351,7 +355,7 @@ impl SharedPeerLinks {
         &self,
         remote: PeerEndpoint,
         names: Vec<LinkName>,
-    ) -> (Filing, mpsc::Receiver<LinkJoin>, Moving) {
+    ) -> (Filing, mpsc::UnboundedReceiver<LinkJoin>, Moving) {
         let mut book = self.book.lock().expect("peer links lock");
         self.file_in(&mut book, remote, names)
     }
@@ -381,8 +385,8 @@ impl SharedPeerLinks {
         book: &mut Book,
         remote: PeerEndpoint,
         names: Vec<LinkName>,
-    ) -> (Filing, mpsc::Receiver<LinkJoin>, Moving) {
-        let (join_tx, join_rx) = mpsc::channel(4);
+    ) -> (Filing, mpsc::UnboundedReceiver<LinkJoin>, Moving) {
+        let (join_tx, join_rx) = mpsc::unbounded_channel();
         book.filed += 1;
         let filing = book.filed;
         let filed = Filed {
@@ -451,7 +455,7 @@ impl FoundLink {
     /// `behind`, follow it onto the link in their order.
     pub(super) async fn take_turn_ahead_of(
         self,
-        behind: Option<mpsc::Receiver<LinkJoin>>,
+        behind: Option<mpsc::UnboundedReceiver<LinkJoin>>,
         worker_evt_tx: &mpsc::Sender<PeerWorkerEvent>,
         commands: &mut mpsc::Receiver<PeerWorkerCommand>,
     ) -> Turn {
@@ -470,7 +474,7 @@ impl FoundLink {
             seated,
         };
         let Self { join_tx, .. } = self;
-        if join_tx.send(join).await.is_err() {
+        if join_tx.send(join).is_err() {
             return Turn::LinkEnded;
         }
         // A waiter the link ended under before it joined looks the peer up
@@ -478,7 +482,7 @@ impl FoundLink {
         // unasked grant go.
         if let Some(mut behind) = behind {
             while let Ok(waiter) = behind.try_recv() {
-                if join_tx.send(waiter).await.is_err() {
+                if join_tx.send(waiter).is_err() {
                     break;
                 }
             }
@@ -531,7 +535,9 @@ impl FoundLink {
 
 /// The next join a filed link takes; never resolves once the link holds no
 /// name any more.
-pub(super) async fn recv_join(joins: &mut Option<mpsc::Receiver<LinkJoin>>) -> Option<LinkJoin> {
+pub(super) async fn recv_join(
+    joins: &mut Option<mpsc::UnboundedReceiver<LinkJoin>>,
+) -> Option<LinkJoin> {
     match joins {
         Some(joins) => joins.recv().await,
         None => std::future::pending().await,

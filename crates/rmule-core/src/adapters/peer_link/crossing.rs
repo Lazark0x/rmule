@@ -145,7 +145,7 @@ pub(in crate::adapters) enum AnswerHeard {
 /// An accepted link, answered and filed under its names.
 pub(in crate::adapters) struct AcceptedLink {
     pub(in crate::adapters) filing: Filing,
-    pub(in crate::adapters) joins: mpsc::Receiver<LinkJoin>,
+    pub(in crate::adapters) joins: mpsc::UnboundedReceiver<LinkJoin>,
     pub(in crate::adapters) moving: Moving,
 }
 

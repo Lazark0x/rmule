@@ -32,7 +32,7 @@ use super::{Book, DialInFlight, FarEnd, Filed, FoundLink, LinkJoin};
 /// grant the link holds for them meanwhile.
 #[derive(Default)]
 pub(in crate::adapters) struct Moving {
-    joins: Option<mpsc::Receiver<LinkJoin>>,
+    joins: Option<mpsc::UnboundedReceiver<LinkJoin>>,
     grant_held: bool,
     /// The dials dead at the far end this link took names from.
     dead_dials: Vec<FarEnd>,
@@ -97,7 +97,7 @@ impl Book {
             let Some(yielding) = self.yielding.remove(filing) else {
                 continue;
             };
-            let (move_tx, _) = joins.get_or_insert_with(|| mpsc::channel(4));
+            let (move_tx, _) = joins.get_or_insert_with(mpsc::unbounded_channel);
             let _ = yielding.send(FoundLink {
                 remote: by.remote,
                 join_tx: move_tx.clone(),
@@ -148,7 +148,7 @@ impl DialInFlight {
     /// Give the dial up for the link that overtook it: unfiled, nobody
     /// retired, and the downloads that waited on it handed back in their
     /// order, to follow the dialing download onto that link.
-    pub(in crate::adapters) fn yielded(self) -> mpsc::Receiver<LinkJoin> {
+    pub(in crate::adapters) fn yielded(self) -> mpsc::UnboundedReceiver<LinkJoin> {
         let Self {
             filing, mut joins, ..
         } = self;

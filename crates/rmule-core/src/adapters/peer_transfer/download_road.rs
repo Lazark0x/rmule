@@ -60,7 +60,7 @@ async fn let_go(commands: &mut mpsc::Receiver<PeerWorkerCommand>) {
 /// the waiters of a dial that yielded to it behind.
 struct Onto {
     link: FoundLink,
-    behind: Option<mpsc::Receiver<LinkJoin>>,
+    behind: Option<mpsc::UnboundedReceiver<LinkJoin>>,
 }
 
 impl DownloadRoad {

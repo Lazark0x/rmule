@@ -219,7 +219,7 @@ fn a_dial_in_flight_is_found_by_the_next_download_and_its_failure_retires_the_wa
     assert_eq!(found.remote, at);
     let (waiter, _told, mut turn) = join();
     assert!(
-        found.join_tx.try_send(waiter).is_ok(),
+        found.join_tx.send(waiter).is_ok(),
         "the dial takes the join"
     );
 
@@ -229,6 +229,75 @@ fn a_dial_in_flight_is_found_by_the_next_download_and_its_failure_retires_the_wa
         Ok(Seat::DialEnded(DialEnd::ConnectionRefused))
     ));
     assert!(links.find(&names).is_none(), "a failed dial is unfiled");
+}
+
+/// Five downloads waiting on one dial, each with its command sender and the
+/// turn it is taking.
+async fn five_waiters_on(
+    dial_names: (&SharedPeerLinks, PeerEndpoint, &[LinkName]),
+) -> Vec<(
+    mpsc::Sender<PeerWorkerCommand>,
+    tokio::task::JoinHandle<Turn>,
+)> {
+    let (links, at, names) = dial_names;
+    let mut waiters = Vec::new();
+    for _ in 0..5 {
+        let Reach::Found(found) = links.reach(at, names) else {
+            panic!("the dial is found");
+        };
+        let (commands_tx, mut commands) = mpsc::channel(1);
+        let (events, mut heard) = mpsc::channel(8);
+        tokio::spawn(async move { while heard.recv().await.is_some() {} });
+        let turn = tokio::spawn(async move { found.take_turn(&events, &mut commands).await });
+        tokio::task::yield_now().await;
+        waiters.push((commands_tx, turn));
+    }
+    waiters
+}
+
+/// However many downloads wait on a dial, every one takes its outcome: none
+/// is left to dial the failed peer again (ADR-0107 invariant 11).
+#[tokio::test]
+async fn a_failed_dial_retires_its_fifth_waiter_with_its_cause() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 8], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x42))];
+    let Reach::Dial(dial) = links.reach(at, &names) else {
+        panic!("nothing is filed: the first download dials");
+    };
+    let waiters = five_waiters_on((&links, at, &names)).await;
+
+    dial.failed(DialEnd::ConnectionRefused);
+
+    for (_commands, turn) in waiters {
+        let turn = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
+            .await
+            .expect("the turn ends")
+            .expect("the turn ran");
+        assert!(matches!(turn, Turn::DialEnded(DialEnd::ConnectionRefused)));
+    }
+}
+
+/// A download let go while it waits gives its place up at once, the fifth on a
+/// dial as the first.
+#[tokio::test]
+async fn the_fifth_waiter_on_a_dial_hears_its_shutdown() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 8], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x43))];
+    let Reach::Dial(_dial) = links.reach(at, &names) else {
+        panic!("nothing is filed: the first download dials");
+    };
+    let mut waiters = five_waiters_on((&links, at, &names)).await;
+
+    let (commands, turn) = waiters.pop().expect("five waiters");
+    drop(commands);
+
+    let turn = tokio::time::timeout(std::time::Duration::from_secs(5), turn)
+        .await
+        .expect("the waiter heard it")
+        .expect("the turn ran");
+    assert!(matches!(turn, Turn::Stopped));
 }
 
 /// A link that closes before its hello retires the downloads waiting on it,
@@ -329,7 +398,7 @@ fn dial_past_its_hello(
     links: &SharedPeerLinks,
     at: PeerEndpoint,
     names: &[LinkName],
-) -> (Filing, tokio::sync::mpsc::Receiver<LinkJoin>) {
+) -> (Filing, tokio::sync::mpsc::UnboundedReceiver<LinkJoin>) {
     let Reach::Dial(dial) = links.reach(at, names) else {
         panic!("nothing is filed yet");
     };

@@ -81,7 +81,7 @@ pub(crate) struct DialedRoute {
 /// the downloads that joined the dial, which follow it there.
 pub(crate) struct GaveWay {
     pub(crate) link: FoundLink,
-    pub(crate) behind: Option<mpsc::Receiver<LinkJoin>>,
+    pub(crate) behind: Option<mpsc::UnboundedReceiver<LinkJoin>>,
 }
 
 /// How a link a download holds came up.
@@ -372,7 +372,7 @@ struct DialedLink {
     dialed_at: Option<PeerEndpoint>,
     identity: Option<PeerIdentity>,
     filing: Option<Filing>,
-    joins: Option<mpsc::Receiver<LinkJoin>>,
+    joins: Option<mpsc::UnboundedReceiver<LinkJoin>>,
     /// The downloads of the dials an adopted link overtook, moving over.
     moving: Moving,
 }
