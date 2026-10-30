@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use tokio::sync::Notify;
+
 use rmule_net::peer::{Connection as PeerConnection, PeerNetError};
 use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent};
 use rmule_primitives::PeerEndpoint;
@@ -35,6 +37,8 @@ struct Reading {
     crossed_ms: AtomicU64,
     /// The link's session ended.
     ended: AtomicBool,
+    /// The peer's own link came with this link dead at the far end.
+    let_go: Notify,
 }
 
 impl Default for FarEnd {
@@ -51,6 +55,7 @@ impl FarEnd {
             since: Instant::now(),
             crossed_ms: AtomicU64::new(0),
             ended: AtomicBool::new(false),
+            let_go: Notify::new(),
         }))
     }
 
@@ -65,6 +70,17 @@ impl FarEnd {
     /// closed it.
     pub fn ended(&self) {
         self.0.ended.store(true, Ordering::Release);
+    }
+
+    /// The peer's own link arrived with this one dead at the far end: its
+    /// driver closes it, whatever rides it (ADR-0107 invariant 7).
+    pub fn let_go(&self) {
+        self.0.let_go.notify_one();
+    }
+
+    /// Whether `other` reads the same link.
+    pub(super) fn same_as(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Note one event read off the link: its close ends the link, anything
@@ -92,6 +108,15 @@ impl FarEnd {
             self.0.since + Duration::from_millis(self.0.crossed_ms.load(Ordering::Acquire));
         (now.saturating_duration_since(crossed) > FAR_END_SOCKET_TIMEOUT)
             .then_some(DeadDialSign::Silent)
+    }
+}
+
+/// Resolves when the link `far_end` reads, dead at the far end, was let go
+/// for the peer's own link; never on a link the peer opened.
+pub(in crate::adapters) async fn let_go_of(far_end: Option<&FarEnd>) {
+    match far_end {
+        Some(far_end) => far_end.0.let_go.notified().await,
+        None => std::future::pending().await,
     }
 }
 

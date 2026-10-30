@@ -280,10 +280,16 @@ pub enum ServeEvent {
         /// The link it waits on now.
         to: rmule_primitives::PeerEndpoint,
     },
-    /// The link `peer` opened to us was let go: it crossed a link rmule
-    /// dialed to the same client whose hello went out first, so the client
-    /// keeps rmule's link and closes its own, and its standing stays on the
-    /// dialed link (ADR-0057, "Two hellos of one client race").
+    /// The hello on the link `peer` opened to us was held unanswered: rmule's
+    /// own dial to the same client has its hello out, and the client must
+    /// finish its hellos only on the link it keeps (ADR-0107 invariant 7).
+    CrossedHelloHeld {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The link `peer` opened to us was let go unanswered: the client answered
+    /// rmule's dial, so it keeps that link and has dropped this one, and its
+    /// standing stays on the dial (ADR-0107 invariant 7).
     CrossedLinkLetGo {
         /// The link the peer opened, as it came in.
         peer: rmule_primitives::PeerEndpoint,

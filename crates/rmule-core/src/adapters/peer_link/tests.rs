@@ -323,3 +323,103 @@ fn an_unasked_grant_goes_to_the_standing_holder_and_the_waiter_is_called() {
     links.call_waiters(&names);
     assert_eq!(waiter_rx.try_recv(), Ok(LinkOffer::Call(at)));
 }
+
+/// A dial filed under `names` at `at`, with its hello out.
+fn dial_past_its_hello(
+    links: &SharedPeerLinks,
+    at: PeerEndpoint,
+    names: &[LinkName],
+) -> (Filing, tokio::sync::mpsc::Receiver<LinkJoin>) {
+    let Reach::Dial(dial) = links.reach(at, names) else {
+        panic!("nothing is filed yet");
+    };
+    dial.into_parts()
+}
+
+fn meet(links: &SharedPeerLinks, names: &[LinkName]) -> Meeting {
+    let came_back = v4([203, 0, 113, 3], 50_288);
+    links.meet(came_back, names.to_vec(), Some(user(0x80)))
+}
+
+#[tokio::test]
+async fn a_hello_meeting_a_dial_past_its_hello_is_held_until_the_dial_is_answered_or_ends() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+
+    let (mut answered, _joins) = dial_past_its_hello(&links, at, &names);
+    let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
+        panic!("the dial's hello is out: this hello waits");
+    };
+    assert_eq!(links.find(&names).map(|found| found.remote), Some(at));
+    answered.answered(None);
+    assert_eq!(crossed.settled().await, DialSettled::Answered);
+    assert!(
+        matches!(meet(&links, &names), Meeting::Clear(_)),
+        "an answered dial holds no hello up: the far end closes one of the two"
+    );
+    drop(answered);
+
+    let (ended, _joins) = dial_past_its_hello(&links, at, &names);
+    let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
+        panic!("the dial's hello is out: this hello waits");
+    };
+    drop(ended);
+    assert_eq!(crossed.settled().await, DialSettled::Ended);
+    assert!(matches!(meet(&links, &names), Meeting::Clear(_)));
+}
+
+#[tokio::test]
+async fn a_dial_given_up_at_the_bound_hears_it_and_the_hello_is_filed() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
+    let Meeting::Crossed(crossed) = meet(&links, &names) else {
+        panic!("the dial's hello is out: this hello waits");
+    };
+
+    crossed.give_up();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), dial.given_up())
+        .await
+        .expect("the dial hears it was given up");
+    assert!(matches!(meet(&links, &names), Meeting::Clear(_)));
+}
+
+#[test]
+fn of_two_rmules_crossing_the_higher_hash_gives_its_dial_up_first() {
+    // Each holds the other's hello, and only the bound settles that.
+    let at = v4([203, 0, 113, 3], 4662);
+    let came_back = v4([203, 0, 113, 3], 50_288);
+    let hold = |own: u8, peer: u8| {
+        let links = SharedPeerLinks::default();
+        let names = [LinkName::User(user(peer))];
+        let (_dial, _joins) = dial_past_its_hello(&links, at, &names);
+        let Meeting::Crossed(crossed) = links.meet(came_back, names.to_vec(), Some(user(own)))
+        else {
+            panic!("the dial's hello is out: this hello waits");
+        };
+        crossed.hold()
+    };
+    assert!(hold(0x90, 0x10) < hold(0x10, 0x90));
+    assert!(
+        hold(0x10, 0x90) < std::time::Duration::from_secs(40),
+        "inside the peer's clock on the link it waits on (`ClientTCPSocket.cpp:201-229`)"
+    );
+}
+
+#[test]
+fn a_hello_meeting_a_dial_before_its_hello_overtakes_it() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    let Reach::Dial(mut dial) = links.reach(at, &names) else {
+        panic!("nothing is filed yet");
+    };
+    assert!(matches!(meet(&links, &names), Meeting::Clear(_)));
+    assert!(
+        dial.claim_hello().is_err(),
+        "no byte of the dial's hello may follow the answer"
+    );
+}

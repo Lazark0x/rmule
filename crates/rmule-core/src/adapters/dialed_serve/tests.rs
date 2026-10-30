@@ -209,7 +209,10 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                     );
                 }
                 // No SUI, no revisions on this test's connections.
-                ServeInput::Connection(_) | ServeInput::IdentityBound { .. } => {}
+                ServeInput::Connection(_)
+                | ServeInput::IdentityBound { .. }
+                | ServeInput::CrossedHelloHeld
+                | ServeInput::CrossedLinkLetGo => {}
             }
         }
     })

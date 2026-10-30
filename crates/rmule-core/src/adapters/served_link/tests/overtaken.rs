@@ -2,7 +2,8 @@
 //! invariant 7). The far side attaches a socket at the `OP_HELLO` on it and
 //! deletes the one it held for the client (`ClientTCPSocket.cpp:391`,
 //! `ClientList.cpp:400-403`), so a dial whose hello has not gone out yields to
-//! the peer's link, and one whose hello is out is kept.
+//! the peer's link, and with its hello out the peer's own hello is held until
+//! the far end shows which link it kept.
 //!
 //! The far side is two sockets here: the asker's own link into rmule's
 //! listener, and the asker's listen port where rmule's dial arrives.
@@ -177,14 +178,15 @@ async fn a_dial_the_peers_own_link_overtakes_before_its_hello_moves_its_download
     );
 }
 
-/// A dial whose hello went out is the socket the far side keeps: aMule
-/// attaches it at that hello and drops its own (`ClientList.cpp:400-403`). So
-/// the peer's own link filed after it takes the names but not the download,
-/// and when the far side drops that link the names come back to the dial: a
-/// second download of the peer waits on the dial, and the far side never sees
-/// a second socket of rmule's.
+/// A dial whose hello went out is the socket the far side keeps when it
+/// reads it: aMule attaches it at that hello and drops its own
+/// (`ClientList.cpp:400-403`). So the peer's own hello is held, the names stay
+/// with the dial, and the far side's answer on the dial closes that link
+/// unanswered, leaving the peer in `DS_CONNECTING` to ask on the dial
+/// (`BaseClient.cpp:1692-1698`). A second download of the peer waits on the
+/// dial, and the far side never sees a second socket of rmule's.
 #[tokio::test]
-async fn a_dial_whose_hello_went_out_keeps_its_download_and_takes_the_names_back_when_the_peers_link_ends()
+async fn a_hello_crossing_a_downloads_dial_is_held_and_closes_unanswered_once_the_far_end_answers_it()
  {
     let links = SharedPeerLinks::default();
     let (mut serve, ours) = serving(&links).await;
@@ -206,12 +208,25 @@ async fn a_dial_whose_hello_went_out_keeps_its_download_and_takes_the_names_back
         .expect("the dial's hello arrives")
         .expect("readable");
 
-    let (asker, mut served) = asker_links(&mut serve, ours, at).await;
-    let user = LinkName::User(asker_hash());
-    assert!(
-        links.find(&[user]).is_some_and(|found| found.remote != at),
-        "the peer's own link, filed later, holds the names"
+    let mut asker =
+        PeerConnection::connect(ours, asker_ctx(at.port()), ConnectOptions::default())
+            .await
+            .expect("rmule accepts the asker");
+    let mut served = timeout(Duration::from_secs(5), serve.accept())
+        .await
+        .expect("the link is accepted")
+        .expect("a serve connection");
+    assert!(matches!(
+        timeout(Duration::from_secs(5), served.next_event()).await,
+        Ok(Some(ServeInput::CrossedHelloHeld))
+    ));
+    assert_eq!(
+        links.find(&[LinkName::Endpoint(at)]).map(|found| found.remote),
+        Some(at),
+        "the dial keeps its names"
     );
+    let user = LinkName::User(asker_hash());
+    assert!(links.find(&[user]).is_none(), "the held link is not filed");
 
     // The far side answers the dial's hello on the socket it keeps.
     let dialed_from = PeerEndpoint::V4(match dialed_from {
@@ -230,20 +245,32 @@ async fn a_dial_whose_hello_went_out_keeps_its_download_and_takes_the_names_back
         "the download keeps riding its dial"
     );
 
-    // The far side drops its own link, as aMule does at the dial's hello.
-    drop(asker);
-    let names_back = async {
-        loop {
-            if links.find(&[user]).map(|found| found.remote) == Some(at) {
-                return;
+    // Its answer settles the crossing: the serve side lets its own link go
+    // unanswered, and hears nothing of a client on it.
+    assert!(matches!(
+        timeout(Duration::from_secs(5), served.next_event()).await,
+        Ok(Some(ServeInput::CrossedLinkLetGo))
+    ));
+    let unanswered = timeout(Duration::from_secs(5), async {
+        while let Some(event) = asker.next_event().await {
+            match event {
+                PeerEvent::Connection(ConnectionEvent::Identified { .. }) => return false,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => return true,
+                _ => {}
             }
+        }
+        true
+    })
+    .await;
+    assert_eq!(unanswered, Ok(true), "the link closes unanswered");
+    let names_back = async {
+        while links.find(&[user]).map(|found| found.remote) != Some(at) {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     };
-    let _ = timeout(Duration::from_secs(5), served.next_event()).await;
     assert!(
         timeout(Duration::from_secs(5), names_back).await.is_ok(),
-        "the dial is filed under the peer's names again"
+        "the dial is filed under the peer's names"
     );
 
     let second = Ed2kFileLink {

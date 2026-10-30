@@ -9,7 +9,7 @@
 use rmule_primitives::PeerCrypt;
 
 use super::*;
-use crate::adapters::{DialBackCallOff, FarEnd};
+use crate::adapters::FarEnd;
 use crate::service::{DeadDialSign, DialBackEnd, DialEnd, GrantRoad};
 
 /// The slot `holder` holds, and `waiter` — identified as `user_hash`, a High
@@ -124,9 +124,9 @@ fn a_promoted_waiter_with_a_live_link_is_granted_on_it() {
 fn a_waiter_back_before_its_dial_back_said_hello_is_granted_on_the_link_it_came_back_on() {
     // aMule grants a client it promoted unconnected on whichever link its
     // hellos finish first, inbound included (`ClientTCPSocket.cpp:417`,
-    // `BaseClient.cpp:1707-1716`) — not at its next ask. The dial is called
-    // off first: one the peer never read a hello on leaves it its own link
-    // (`ClientList.cpp:400-403`).
+    // `BaseClient.cpp:1707-1716`) — not at its next ask. A hello that reaches
+    // this side crossed no dial with its hello out: the Peer Links held it
+    // otherwise (ADR-0107 invariant 7).
     let file = hash(0x43);
     let t = Instant::now();
     let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
@@ -135,13 +135,9 @@ fn a_waiter_back_before_its_dial_back_said_hello_is_granted_on_the_link_it_came_
 
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
-    assert_eq!(
-        state.on_conn_event(t, back, hello, &no_modifiers()),
-        [ServeDecision::CallOffDialBack { waiter, link: back }]
-    );
     let [grant, said] = granted(back, file, GrantRoad::CameBack);
     assert_eq!(
-        state.on_dial_back_call_off(waiter, back, DialBackCallOff::Stopped),
+        state.on_conn_event(t, back, hello, &no_modifiers()),
         [
             ServeDecision::Emit(ServeEvent::WaiterRelinked {
                 from: waiter,
@@ -155,59 +151,36 @@ fn a_waiter_back_before_its_dial_back_said_hello_is_granted_on_the_link_it_came_
 }
 
 #[test]
-fn a_waiter_back_after_its_dial_back_said_hello_is_let_go_and_the_dial_keeps_the_grant() {
-    // The peer keeps the socket it read our hello on and deletes its own
-    // (`ClientList.cpp:400-403` at its end): moving the grant onto the link
-    // it opened would lose it with that link.
-    let file = hash(0x49);
+fn a_returning_waiters_ask_after_its_grant_is_answered_and_is_no_second_grant() {
+    // The grant at its hello is dropped by a client that came back to ask
+    // (`DS_CONNECTED`, `ClientTCPSocket.cpp:640-645`), and acted on by one
+    // that came back in `DS_ONQUEUE`, so it stays; the ask is answered too
+    // (`UploadQueue.cpp:486-493`). One slot is one `upload_slot_granted`.
+    let file = hash(0x4F);
     let t = Instant::now();
     let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
     let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
     let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
-
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
-    assert_eq!(
-        state.on_conn_event(t, back, hello, &no_modifiers()),
-        [ServeDecision::CallOffDialBack { waiter, link: back }]
-    );
-    assert_eq!(
-        state.on_dial_back_call_off(waiter, back, DialBackCallOff::PastHello),
-        [
-            ServeDecision::Disconnect { peer: back },
-            ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer: back }),
-        ]
-    );
-    assert_eq!(state.queue.pending_grant(waiter), Some(file));
+    let _ = state.on_conn_event(t, back, hello, &no_modifiers());
 
-    // The peer's hello on the dial: the grant goes on it.
-    let link = waiter.with_port(4662);
-    let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
-    let [grant, said] = granted(link, file, GrantRoad::DialedBack);
-    assert_eq!(
-        state.on_dial_back_linked(t, waiter, link, dialed, FarEnd::new(), &no_modifiers()),
-        [
-            ServeDecision::Emit(ServeEvent::WaiterRelinked {
-                from: waiter,
-                to: link,
-            }),
-            grant,
-            said,
-        ]
+    let answered = slot_request(&mut state, back, file, t);
+    assert!(answered.contains(&send(back, ServerCommand::GrantSlot { file_hash: file })));
+    assert!(
+        !answered
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::Emit(ServeEvent::UploadSlotGranted { .. }))),
+        "{answered:?}"
     );
-    assert_eq!(
-        state.on_conn_event(t, back, disconnected(), &no_modifiers()),
-        [],
-        "the let-go link's close frees no slot"
-    );
-    assert!(state.queue.is_granted(link));
 }
 
 #[test]
-fn a_link_the_peer_opens_after_the_dialed_hellos_is_let_go_and_the_slot_stays_on_the_dialed_link() {
-    // The peer read our hello on the dial and keeps it, deleting its own
-    // socket (`ClientList.cpp:400-403` at its end): the slot stays on the
-    // dialed link, and the link the peer opened is let go.
+fn a_link_the_peer_opens_after_the_dialed_hellos_closes_nothing_and_the_slot_stays_on_the_dial() {
+    // The peer holds one socket: it deleted this link when it read our hello
+    // on the dial, or holds this link because the dial is dead with its close
+    // on the way. Closing this one would be a dead source in the second case
+    // (`BaseClient.cpp:1340-1346`), and in the first it closes by itself.
     let file = hash(0x48);
     let t = Instant::now();
     let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
@@ -219,18 +192,57 @@ fn a_link_the_peer_opens_after_the_dialed_hellos_is_let_go_and_the_slot_stays_on
 
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
-    assert_eq!(
-        state.on_conn_event(t, back, hello, &no_modifiers()),
-        [
-            ServeDecision::Disconnect { peer: back },
-            ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer: back }),
-        ]
-    );
+    assert_eq!(state.on_conn_event(t, back, hello, &no_modifiers()), []);
     assert!(state.queue.is_granted(link));
     assert_eq!(
         state.on_conn_event(t, back, disconnected(), &no_modifiers()),
         [],
-        "the let-go link's close frees no slot"
+        "the peer's closing its own link frees no slot"
+    );
+    assert!(state.queue.is_granted(link));
+}
+
+#[test]
+fn a_slot_whose_link_ends_moves_to_the_link_the_client_kept_with_its_asked_blocks() {
+    // The peer attached the other link at its hello: no `Disconnected` ran
+    // (`ClientTCPSocket.cpp:278-288`), so it stays `DS_DOWNLOADING` waiting
+    // for the blocks it asked, drops a grant (`ClientTCPSocket.cpp:640-645`)
+    // and takes those blocks on the link it kept (`:713-720`).
+    let file = hash(0x4E);
+    let t = Instant::now();
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 51000), peer_at([10, 0, 0, 2], 51318));
+    let mut state = hung_up_behind(file, holder, waiter, user(0x0A), t);
+    let _ = state.on_conn_event(t, holder, disconnected(), &no_modifiers());
+    let link = waiter.with_port(4662);
+    let dialed = hello_facts(user(0x0A), 0, 0, 2).identity();
+    let _ = state.on_dial_back_linked(t, waiter, link, dialed, FarEnd::new(), &no_modifiers());
+    let back = peer_at([10, 0, 0, 2], 50288);
+    let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
+    let _ = state.on_conn_event(t, back, hello, &no_modifiers());
+    let ranges = PartRanges::new([(0, 1024), (0, 0), (0, 0)]).expect("one range");
+    let ask = ServeInput::Server(ServerEvent::PartsRequested {
+        file_hash: file,
+        ranges,
+    });
+    let _ = state.on_conn_event(t, link, ask, &no_modifiers());
+
+    let moved = state.on_conn_event(t, link, disconnected(), &no_modifiers());
+
+    assert!(state.queue.is_granted(back), "the slot stands on the link left");
+    assert!(moved.contains(&send(back, ServerCommand::GrantSlot { file_hash: file })));
+    assert!(
+        moved.iter().any(|decision| matches!(
+            decision,
+            ServeDecision::ReadRange { peer, block, .. }
+                if *peer == back && (block.start, block.end) == (0, 1024)
+        )),
+        "the blocks last asked are read again for it: {moved:?}"
+    );
+    assert!(
+        !moved
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::Emit(ServeEvent::UploadSlotReleased { .. }))),
+        "the slot was not released"
     );
 }
 
@@ -330,11 +342,7 @@ fn a_waiter_back_after_its_dial_back_ended_past_its_hello_takes_the_grant() {
 
     let back = peer_at([10, 0, 0, 2], 50288);
     let hello = hello_facts(user(0x0A), 0, 0, 2).identified();
-    assert_eq!(
-        state.on_conn_event(t, back, hello, &no_modifiers()),
-        [ServeDecision::CallOffDialBack { waiter, link: back }]
-    );
-    let moved = state.on_dial_back_call_off(waiter, back, DialBackCallOff::Ended);
+    let moved = state.on_conn_event(t, back, hello, &no_modifiers());
     assert_eq!(
         moved.first(),
         Some(&ServeDecision::Emit(ServeEvent::WaiterRelinked {

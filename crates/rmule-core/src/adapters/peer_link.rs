@@ -17,15 +17,17 @@
 //! the moment it starts connecting (`DownloadQueue.cpp:610-704`), so a second
 //! download of the peer waits on the dial rather than racing it. A dial that
 //! fails before the hello is a dead source for every download waiting on it
-//! (`BaseClient.cpp:1340-1346`, `:419`, `DownloadQueue.cpp:763-786`). A
-//! download's dial whose hello has not gone out yields to the peer's own link
-//! filed under one of its names, and its downloads move onto that link
-//! (ADR-0107 invariant 7); a name a link gives up goes back to the newest live
-//! link that proves it.
+//! (`BaseClient.cpp:1340-1346`, `:419`, `DownloadQueue.cpp:763-786`). A dial
+//! whose hello has not gone out yields to the peer's own link filed under one
+//! of its names, and its downloads move onto that link; with its hello out and
+//! unanswered, the peer's own hello waits for it ([`crossing`], ADR-0107
+//! invariant 7). A name a link gives up goes back to the newest live link that
+//! proves it.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use rmule_peer::{ConnectionCommand, PeerCommand, PeerEvent, PeerIdentity};
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
@@ -36,14 +38,16 @@ use crate::server_list::SharedServerListStore;
 use crate::service::{DialEnd, LinkTurn};
 
 mod awaited_grants;
+mod crossing;
 mod far_end;
 mod overtaking;
 mod riders;
 mod serve_hold;
 
 pub(crate) use awaited_grants::{AwaitedGrant, GrantSender, LinkOffer};
+pub(super) use crossing::{AcceptedLink, CrossedDial, DialSettled, Meeting, MetHello};
 pub use far_end::FarEnd;
-pub(super) use far_end::LinkConnection;
+pub(super) use far_end::{LinkConnection, let_go_of};
 pub(super) use overtaking::Moving;
 pub(super) use riders::Riders;
 pub(super) use serve_hold::ServeHold;
@@ -120,9 +124,13 @@ struct Book {
     /// Every live filing and the names it proves, whether it holds them or a
     /// link filed later does: where a name goes back to.
     live: HashMap<u64, Proven>,
-    /// The download dials whose hello has not gone out, told when the peer's
-    /// own link takes one of their names (ADR-0107 invariant 7).
+    /// The dials whose hello has not gone out, told when the peer's own link
+    /// takes one of their names (ADR-0107 invariant 7).
     yielding: HashMap<u64, oneshot::Sender<FoundLink>>,
+    /// The dials whose hello is out, until the far end answers one or it ends.
+    unanswered: HashMap<u64, crossing::UnansweredDial>,
+    /// What each accepted hello met, from its session's gate to its triage.
+    met: HashMap<PeerEndpoint, Meeting>,
     awaited: HashMap<LinkName, Vec<awaited_grants::Awaiting>>,
 }
 
@@ -130,6 +138,8 @@ struct Book {
 struct Proven {
     filed: Filed,
     names: Vec<LinkName>,
+    /// What a link rmule dialed shows of its far end, once it answered.
+    far_end: Option<FarEnd>,
 }
 
 #[derive(Clone)]
@@ -216,9 +226,8 @@ pub(super) enum Reach {
 pub(crate) struct DialInFlight {
     filing: Filing,
     joins: mpsc::Receiver<LinkJoin>,
-    /// Where a download's dial hears that the peer's own link took one of its
-    /// names before its hello went out; `None` for the serve side's
-    /// dial-back, which the serve side calls off itself.
+    /// Where the dial hears that the peer's own link took one of its names
+    /// before its hello went out; `None` once it claimed its hello.
     overtaken: Option<oneshot::Receiver<FoundLink>>,
 }
 
@@ -226,22 +235,34 @@ impl DialInFlight {
     /// The socket is up and the hello goes out with it: the dial no longer
     /// yields, and the link's router takes the filing and the joins.
     pub(super) fn into_parts(self) -> (Filing, mpsc::Receiver<LinkJoin>) {
-        let Self { filing, joins, .. } = self;
+        let Self {
+            mut filing, joins, ..
+        } = self;
         filing.hello_out();
         (filing, joins)
     }
 
     /// The dial failed before any link: unfile it, and retire every download
-    /// waiting on it with `cause`.
-    pub(super) fn failed(self, cause: DialEnd) {
+    /// waiting on it with `cause`. Says whether a hello of the peer's own
+    /// link was held on it: that link is answered now, and takes what the
+    /// dial was for.
+    pub(super) fn failed(self, cause: DialEnd) -> bool {
         let Self {
             filing, mut joins, ..
         } = self;
+        let held = filing.holds_a_hello();
         drop(filing);
         joins.close();
         while let Ok(join) = joins.try_recv() {
             let _ = join.seated.send(Seat::DialEnded(cause));
         }
+        held
+    }
+
+    /// Resolves if the dial, its hello out, was given up for the peer's own
+    /// link ([`CrossedDial::give_up`]); never otherwise.
+    pub(super) async fn given_up(&mut self) {
+        self.filing.given_up().await;
     }
 }
 
@@ -285,6 +306,7 @@ impl SharedPeerLinks {
     /// that name: aMule keeps a client on its newest socket. A download's
     /// dial whose hello has not gone out yields to it, and the downloads
     /// moving over from such dials arrive on the returned [`Moving`].
+    #[cfg(test)]
     pub(super) fn file(
         &self,
         remote: PeerEndpoint,
@@ -295,36 +317,22 @@ impl SharedPeerLinks {
     }
 
     /// The link filed under the first of `names` that names one, or — when
-    /// none does — a download's dial at `dial_at`, filed under `names` in the
-    /// same step so a download looking the peer up next finds it. Until its
-    /// hello goes out the dial yields to the peer's own link
+    /// none does — a dial at `dial_at`, filed under `names` in the same step
+    /// so a download looking the peer up next finds it. Until its hello goes
+    /// out the dial yields to the peer's own link
     /// ([`DialInFlight::overtaken`]).
     pub(super) fn reach(&self, dial_at: PeerEndpoint, names: &[LinkName]) -> Reach {
-        self.reach_with(dial_at, names, true)
-    }
-
-    /// [`reach`](Self::reach) for the serve side's dial-back to grant a slot
-    /// on (ADR-0057): its dial never yields here, as the serve side calls it
-    /// off itself when the waiter comes back on a link of its own.
-    pub(super) fn reach_for_grant(&self, dial_at: PeerEndpoint, names: &[LinkName]) -> Reach {
-        self.reach_with(dial_at, names, false)
-    }
-
-    fn reach_with(&self, dial_at: PeerEndpoint, names: &[LinkName], yields: bool) -> Reach {
         let mut book = self.book.lock().expect("peer links lock");
         if let Some(found) = Self::found_in(&book, names) {
             return Reach::Found(found);
         }
         let (filing, joins, _) = self.file_in(&mut book, dial_at, names.to_vec());
-        let overtaken = yields.then(|| {
-            let (tell, told) = oneshot::channel();
-            book.yielding.insert(filing.filing, tell);
-            told
-        });
+        let (tell, told) = oneshot::channel();
+        book.yielding.insert(filing.filing, tell);
         Reach::Dial(DialInFlight {
             filing,
             joins,
-            overtaken,
+            overtaken: Some(told),
         })
     }
 
@@ -348,11 +356,19 @@ impl SharedPeerLinks {
                 took_from.push(held.filing);
             }
         }
-        let moving = book.overtake(&took_from, &filed);
-        book.live.insert(filing, Proven { filed, names });
+        let moving = book.overtake(&took_from, &filed, Instant::now());
+        book.live.insert(
+            filing,
+            Proven {
+                filed,
+                names,
+                far_end: None,
+            },
+        );
         let filing = Filing {
             links: self.clone(),
             filing,
+            given_up: None,
         };
         (filing, join_rx, moving)
     }
@@ -493,6 +509,8 @@ async fn recv_once(rx: &mut Option<oneshot::Receiver<()>>) -> Result<(), ()> {
 pub(super) struct Filing {
     links: SharedPeerLinks,
     filing: u64,
+    /// Where a dial with its hello out hears it was given up.
+    given_up: Option<oneshot::Receiver<()>>,
 }
 
 impl Filing {
@@ -531,10 +549,57 @@ impl Filing {
         }
     }
 
-    /// The dial's hello went out with its socket: it no longer yields.
-    fn hello_out(&self) {
-        if let Ok(mut book) = self.links.book.lock() {
-            book.yielding.remove(&self.filing);
+    /// The dial's hello goes out with its socket: it no longer yields, and a
+    /// hello of the peer's own link now waits for the far end's answer to it.
+    /// `false` when it is no dial still yielding, overtaken or claimed.
+    fn hello_out(&mut self) -> bool {
+        let Ok(mut book) = self.links.book.lock() else {
+            return false;
+        };
+        if book.yielding.remove(&self.filing).is_none() {
+            return false;
+        }
+        let (dial, given_up) = crossing::UnansweredDial::new();
+        book.unanswered.insert(self.filing, dial);
+        self.given_up = Some(given_up);
+        true
+    }
+
+    /// The far end answered the dial's hello on the link: it attached this
+    /// link (`ClientList.cpp:400-403`), and a hello held on it closes. `far_end`
+    /// is what the link's driver reads of it from now on.
+    pub(super) fn answered(&mut self, far_end: Option<&FarEnd>) {
+        self.given_up = None;
+        let Ok(mut book) = self.links.book.lock() else {
+            return;
+        };
+        if let Some(proven) = book.live.get_mut(&self.filing) {
+            proven.far_end = far_end.cloned();
+        }
+        if let Some(dial) = book.unanswered.remove(&self.filing) {
+            dial.answered();
+        }
+    }
+
+    /// Whether a hello of the peer's own link waits on this dial.
+    fn holds_a_hello(&self) -> bool {
+        self.links.book.lock().is_ok_and(|book| {
+            book.unanswered
+                .get(&self.filing)
+                .is_some_and(crossing::UnansweredDial::holds_a_hello)
+        })
+    }
+
+    /// Resolves if the dial was given up for the peer's own link; never
+    /// otherwise.
+    pub(super) async fn given_up(&mut self) {
+        let given_up = match self.given_up.as_mut() {
+            Some(given_up) => given_up.await.is_ok(),
+            None => false,
+        };
+        self.given_up = None;
+        if !given_up {
+            std::future::pending::<()>().await;
         }
     }
 }
@@ -543,6 +608,7 @@ impl Drop for Filing {
     fn drop(&mut self) {
         if let Ok(mut book) = self.links.book.lock() {
             book.yielding.remove(&self.filing);
+            book.unanswered.remove(&self.filing);
             if let Some(proven) = book.live.remove(&self.filing) {
                 release(&mut book, self.filing, &proven.names);
             }

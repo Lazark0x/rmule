@@ -42,6 +42,7 @@ impl ServeState {
         if !self.queue.is_granted(peer) {
             return Vec::new();
         }
+        self.last_ask.insert(peer, (file_hash, *ranges));
         let Some(found) = self.lookup(file_hash).filter(Found::offered) else {
             return Vec::new();
         };

@@ -127,18 +127,6 @@ pub(super) enum ServeDecision {
     /// it ended ([`ServeState::on_dial_back_linked`],
     /// [`ServeState::on_dial_back_failed`]).
     DialBack(DialBack),
-    /// Call off the dial-back to `waiter`: the client came back on `link`, a
-    /// link of its own, while its grant was held for the dial (ADR-0057,
-    /// "Two hellos of one client race"). What the call-off found decides
-    /// which link takes the grant ([`ServeState::on_dial_back_call_off`]):
-    /// `link`, when no byte of the dial's hello went out; the dial, when it
-    /// did, `link` being let go.
-    CallOffDialBack {
-        /// The waiter the dial is for, keyed by the link it waited on.
-        waiter: PeerEndpoint,
-        /// The link the client came back on.
-        link: PeerEndpoint,
-    },
     /// Hand `sighting`, a peer that asked about `file_hash`, to the run of
     /// the download serving it as a candidate source (ADR-0113). The run
     /// takes it under its own source cap; a full inbox drops it.
@@ -239,6 +227,10 @@ pub(super) struct ServeState {
     /// Ranges already decided for a granted flow, so a re-request serves only
     /// the missing subranges.
     served_ranges: HashMap<(PeerEndpoint, FileHash), Vec<(u64, u64)>>,
+    /// The file and blocks each slot holder's last `OP_REQUESTPARTS` named:
+    /// all it has pending, read again when its slot moves to a link it kept
+    /// (ADR-0107 invariant 7).
+    last_ask: HashMap<PeerEndpoint, (FileHash, rmule_peer::PartRanges)>,
     /// Lazily-built AICH trees per shared file (ADR-0038), built by the
     /// first round-tripped [`ServeDecision::BuildAichTree`] and reused after —
     /// a cache hit answers with no build. Durable persistence (known2.met) is
@@ -271,6 +263,7 @@ impl ServeState {
             identified: HashSet::new(),
             dialed: HashMap::new(),
             served_ranges: HashMap::new(),
+            last_ask: HashMap::new(),
             aich_cache: HashMap::new(),
             sx_part_status: HashMap::new(),
             sx_throttle: SourceExchangeThrottle::default(),

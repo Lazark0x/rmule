@@ -351,8 +351,12 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
             address(*from),
             address(*to)
         )),
+        Sv::CrossedHelloHeld { peer } => Sentence::owned(format!(
+            "upload peer {} crossed our connection to it, so we wait to see which it keeps",
+            address(*peer)
+        )),
         Sv::CrossedLinkLetGo { peer } => Sentence::owned(format!(
-            "upload peer {} crossed our connection to it, which said hello first; it keeps ours, so we let its own go",
+            "upload peer {} kept our connection to it, so we let its own go",
             address(*peer)
         )),
         Sv::DeadDialLetGo { peer, sign } => Sentence::owned(format!(

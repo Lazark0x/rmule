@@ -26,6 +26,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
 use crate::adapters::HelloAdverts;
+use crate::adapters::peer_link::{MetHello, SharedPeerLinks};
 use crate::awaited_testers::{AwaitedServer, SharedAwaitedTesters};
 use crate::server_session::HelloSource;
 use crate::service::{LoginStep, PortTestAdmission, PortTestLateAdmission};
@@ -45,8 +46,18 @@ const DIAL_BACK_TIMEOUT: Duration = Duration::from_secs(15);
 /// fresh challenge per accepted connection among them (ADR-0041).
 /// The peer's crypt side is unknown here and unused: a responder keys from its
 /// own User Hash.
-fn build_accept_options(adverts: &HelloAdverts) -> PeerConnectOptions {
-    adverts.connect_options(PeerCrypt::unknown())
+///
+/// The session answers the peer's hello through a gate on `links`: what the
+/// hello meets among rmule's dials is settled in the step that reads it
+/// (ADR-0107 invariant 7).
+fn build_accept_options(
+    adverts: &HelloAdverts,
+    links: &SharedPeerLinks,
+    own: UserHash,
+) -> PeerConnectOptions {
+    let mut options = adverts.connect_options(PeerCrypt::unknown());
+    options.hello_gate = Some(MetHello::gate(links.clone(), own));
+    options
 }
 
 /// Where a stream core opened or raised elsewhere enters the serve pipeline:
@@ -107,6 +118,7 @@ struct TunnelAdmit {
     hello: HelloSource,
     adverts: HelloAdverts,
     gates: AcceptGates,
+    links: SharedPeerLinks,
 }
 
 impl SharedTunnelAdmit {
@@ -171,8 +183,9 @@ impl SharedTunnelAdmit {
                 .accept_tx
                 .upgrade()
                 .ok_or(TunnelAdmitRefusal::PipelineClosed)?;
-            let options = build_accept_options(&admit.adverts);
             let handshake = admit.hello.now();
+            let own = handshake.identity.user_hash();
+            let options = build_accept_options(&admit.adverts, &admit.links, own);
             (
                 accept_tx,
                 admit.gates.clone(),
@@ -281,6 +294,7 @@ impl SharedTunnelAdmit {
             hello: HelloSource::Fixed(ctx),
             adverts,
             gates: AcceptGates::default(),
+            links: SharedPeerLinks::default(),
         });
     }
 }
@@ -350,6 +364,7 @@ pub(super) fn spawn_accept_pump(
     tunnel_admit: &SharedTunnelAdmit,
     awaited: SharedAwaitedTesters,
     gates: AcceptGates,
+    links: SharedPeerLinks,
 ) -> AcceptPump {
     let (accept_tx, accept_rx) = mpsc::channel(16);
     // A risen NAT-T Tunnel joins this same channel (ADR-0091), answered with
@@ -359,6 +374,7 @@ pub(super) fn spawn_accept_pump(
         hello: hello.clone(),
         adverts: adverts.clone(),
         gates: gates.clone(),
+        links: links.clone(),
     });
     let task = tokio::spawn(async move {
         // Errno-agnostic fatal detection (see [`ACCEPT_RETRY_BACKOFF`]):
@@ -369,7 +385,12 @@ pub(super) fn spawn_accept_pump(
             // Both are read once the peer has arrived, not when the wait began:
             // the listener can sit idle for as long as it likes, and a hello
             // must answer with what is true now.
-            let fresh = || (hello.now(), build_accept_options(&adverts));
+            let fresh = || {
+                let handshake = hello.now();
+                let own = handshake.identity.user_hash();
+                let options = build_accept_options(&adverts, &links, own);
+                (handshake, options)
+            };
             tokio::select! {
                 // Serve stopped (receiver dropped): exit, releasing the port.
                 _ = accept_tx.closed() => break,

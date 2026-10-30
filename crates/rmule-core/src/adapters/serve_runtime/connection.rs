@@ -39,6 +39,11 @@ pub enum ServeInput {
         /// The User Hash the verification proved.
         user_hash: UserHash,
     },
+    /// The peer's hello on this link was held: a dial of ours to it has its
+    /// hello out unanswered (ADR-0107 invariant 7).
+    CrossedHelloHeld,
+    /// The far end answered that dial: this link closes unanswered.
+    CrossedLinkLetGo,
 }
 
 impl ServeInput {

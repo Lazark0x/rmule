@@ -1,13 +1,15 @@
-//! A download's dial the peer's own link overtakes (ADR-0107 invariant 7):
-//! the far side attaches a socket at the `OP_HELLO` on it, deleting the one it
-//! held for the client, connecting or connected (`ClientTCPSocket.cpp:391`,
-//! `ClientList.cpp:400-403`). So until a download's dial has sent its hello —
-//! its connect, or its crypt handshake, still running — it yields to the
-//! peer's accepted link filed under one of its names: the dial closes,
-//! retiring nobody, and the dialing download and its waiters move onto that
-//! link, as aMule's connecting client carries on over the socket the peer
-//! opened (`BaseClient.cpp:1692-1698`). Once the dial's hello is out the far
-//! side keeps the dial, and so does rmule.
+//! A dial the peer's own link overtakes (ADR-0107 invariant 7): the far side
+//! attaches a socket at the `OP_HELLO` on it, deleting the one it held for the
+//! client, connecting or connected (`ClientTCPSocket.cpp:391`,
+//! `ClientList.cpp:400-403`). So until a dial has sent its hello — its
+//! connect, or its crypt handshake, still running — it yields to the peer's
+//! accepted link filed under one of its names: the dial closes, retiring
+//! nobody, and the dialing download and its waiters move onto that link, as
+//! aMule's connecting client carries on over the socket the peer opened
+//! (`BaseClient.cpp:1692-1698`); a serve side's dial-back leaves its grant to
+//! that link. Once its hello is out the peer's hello waits for it instead
+//! (`crossing`). A dial that was answered and has since died at the far end
+//! is let go for the peer's link, so whatever rides it leaves it now.
 //!
 //! The hello is claimed under the same lock an overtaking link files under,
 //! so a link filed while the dial's socket came up still overtakes it.
@@ -16,9 +18,11 @@
 //! (`BaseClient.cpp:1707-1716`), so the link holds an unasked grant read
 //! before the moving downloads have joined it until they have.
 
+use std::time::Instant;
+
 use tokio::sync::mpsc;
 
-use super::{Book, DialInFlight, Filed, FoundLink, LinkJoin};
+use super::{Book, DialInFlight, FarEnd, Filed, FoundLink, LinkJoin};
 
 /// The downloads moving over from the dials a link overtook, and an unasked
 /// grant the link holds for them meanwhile.
@@ -26,9 +30,19 @@ use super::{Book, DialInFlight, Filed, FoundLink, LinkJoin};
 pub(in crate::adapters) struct Moving {
     joins: Option<mpsc::Receiver<LinkJoin>>,
     grant_held: bool,
+    /// The dials dead at the far end this link took names from.
+    dead_dials: Vec<FarEnd>,
 }
 
 impl Moving {
+    /// Let the dials this link found dead go: called once the serve side has
+    /// heard this link's hello, so their standing moves here, not out.
+    pub(in crate::adapters) fn let_dead_dials_go(&mut self) {
+        for far_end in self.dead_dials.drain(..) {
+            far_end.let_go();
+        }
+    }
+
     /// Whether downloads are still moving over.
     pub(in crate::adapters) fn coming(&self) -> bool {
         self.joins.is_some()
@@ -62,12 +76,20 @@ impl Moving {
 }
 
 impl Book {
-    /// The link `by` was just filed under names the filings `took_from` held:
-    /// every download dial among them whose hello has not gone out yields to
-    /// it, and the downloads moving over arrive on the returned [`Moving`].
-    pub(super) fn overtake(&mut self, took_from: &[u64], by: &Filed) -> Moving {
+    /// The link `by` was just filed at `now` under names the filings
+    /// `took_from` held: every dial among them whose hello has not gone out
+    /// yields to it, the downloads moving over arrive on the returned
+    /// [`Moving`], and a dial dead at the far end is noted for letting go.
+    pub(super) fn overtake(&mut self, took_from: &[u64], by: &Filed, now: Instant) -> Moving {
         let mut joins = None;
+        let mut dead_dials = Vec::new();
         for filing in took_from {
+            if let Some(far_end) = self.live.get(filing).and_then(|held| held.far_end.as_ref())
+                && far_end.dead_at(now).is_some()
+                && !dead_dials.iter().any(|dead: &FarEnd| dead.same_as(far_end))
+            {
+                dead_dials.push(far_end.clone());
+            }
             let Some(yielding) = self.yielding.remove(filing) else {
                 continue;
             };
@@ -80,6 +102,7 @@ impl Book {
         Moving {
             joins: joins.map(|(_, move_rx)| move_rx),
             grant_held: false,
+            dead_dials,
         }
     }
 }
@@ -101,19 +124,12 @@ impl DialInFlight {
     /// Claim the hello for a dial whose socket came up: from here the dial no
     /// longer yields. `Err` with the peer's own link when that link overtook
     /// the dial first, while its socket came up: no byte of the hello may go
-    /// out then, and the dial gives way as before its socket was up. A dial
-    /// that does not yield claims it always.
+    /// out then, and the dial gives way as before its socket was up.
     pub(in crate::adapters) fn claim_hello(&mut self) -> Result<(), FoundLink> {
         let Some(told) = self.overtaken.as_mut() else {
             return Ok(());
         };
-        let claimed = self
-            .filing
-            .links
-            .book
-            .lock()
-            .is_ok_and(|mut book| book.yielding.remove(&self.filing.filing).is_some());
-        if claimed {
+        if self.filing.hello_out() {
             self.overtaken = None;
             return Ok(());
         }

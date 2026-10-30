@@ -17,7 +17,6 @@ use crate::adapters::ServeInput;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_low_id_abuse};
 
-use super::relink::Relink;
 use super::transfer::answer_aich_recovery;
 use super::{AichAsk, ServeDecision, ServeState};
 
@@ -259,6 +258,12 @@ impl ServeState {
                 self.on_identity_bound(peer, user_hash);
                 Vec::new()
             }
+            ServeInput::CrossedHelloHeld => {
+                vec![ServeDecision::Emit(ServeEvent::CrossedHelloHeld { peer })]
+            }
+            ServeInput::CrossedLinkLetGo => {
+                vec![ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer })]
+            }
         }
     }
 
@@ -348,21 +353,32 @@ impl ServeState {
                 } else {
                     GrantRoad::Linked
                 };
+                // An ask from the client holding the slot for this file is
+                // answered as any is (`UploadQueue.cpp:486-493`), and is no
+                // new grant (ADR-0057).
+                let slot_held = self.queue.live_slot_file(peer) == Some(file_hash);
                 let admission = self.queue.admit(peer, file_hash, now);
                 let counted = !waiting_already && admission != Admission::RefusedAddressCap;
                 let mut decisions = match admission {
-                    Admission::Granted => vec![
-                        ServeDecision::Send {
+                    Admission::Granted => {
+                        let grant = ServeDecision::Send {
                             peer,
                             command: ServerCommand::GrantSlot { file_hash },
-                        },
-                        ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                            peer,
-                            file_hash,
-                            software: self.software_of(peer),
-                            road,
-                        }),
-                    ],
+                        };
+                        if slot_held {
+                            vec![grant]
+                        } else {
+                            vec![
+                                grant,
+                                ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                                    peer,
+                                    file_hash,
+                                    software: self.software_of(peer),
+                                    road,
+                                }),
+                            ]
+                        }
+                    }
                     Admission::Queued { rank } => {
                         // Stamp the waiter's advertised UDP contact so its
                         // reask heartbeat matches by IP + port (ADR-0057); an
@@ -505,21 +521,17 @@ impl ServeState {
                         ServeDecision::Disconnect { peer },
                     ];
                 }
+                self.identities.insert(peer, identity.clone());
                 let relink = self.relink_waiter(now, peer, &identity);
-                self.identities.insert(peer, identity);
-                match relink {
-                    Relink::Moved(mut moved) => {
-                        self.stamp_contact(peer);
-                        // A link coming up is what makes a waiter reachable:
-                        // a slot nobody could be reached for goes to it now
-                        // (ADR-0057).
-                        let filled = self.queue.fill_free_slot(now, modifiers);
-                        moved.extend(self.promotion_decisions(filled));
-                        moved
-                    }
-                    Relink::Held(held) => held,
-                    Relink::None => Vec::new(),
-                }
+                let Some(mut moved) = relink else {
+                    return Vec::new();
+                };
+                self.stamp_contact(peer);
+                // A link coming up is what makes a waiter reachable: a slot
+                // nobody could be reached for goes to it now (ADR-0057).
+                let filled = self.queue.fill_free_slot(now, modifiers);
+                moved.extend(self.promotion_decisions(filled));
+                moved
             }
             // Only a peer the serve side already holds a hello for: the map is
             // keyed by live identified connections. A waiter already on the
@@ -536,6 +548,10 @@ impl ServeState {
             }
             ConnectionEvent::Disconnected { .. } => {
                 self.dialed.remove(&peer);
+                if let Some(moved) = self.on_link_ended(now, peer, modifiers) {
+                    return moved;
+                }
+                self.last_ask.remove(&peer);
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
                 // A waiting peer keeps its queue position across disconnect —

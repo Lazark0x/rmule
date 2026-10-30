@@ -14,8 +14,8 @@ use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_link::{
-    DialInFlight, DownloadHalf, FarEnd, Filing, LinkConnection, LinkJoin, LinkName, Moving, Riders,
-    ServeHold, recv_join,
+    AcceptedLink, DialInFlight, DownloadHalf, FarEnd, Filing, LinkConnection, LinkJoin, LinkName,
+    Moving, Riders, ServeHold, let_go_of, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
@@ -78,8 +78,13 @@ pub(crate) enum LinkOrigin {
     /// (ADR-0107 invariant 11), its hello still to come.
     Dialed(DialInFlight),
     /// An adopted inbound link (ADR-0039): the identity its accept side read
-    /// off the hello.
-    Adopted(PeerIdentity),
+    /// off the hello, and its filing there.
+    Adopted {
+        /// The peer as its hello named it.
+        identity: PeerIdentity,
+        /// The link as its hello was answered and filed.
+        accepted: AcceptedLink,
+    },
 }
 
 /// Own one dialed `PeerConnection` and split it into the two consumers
@@ -119,7 +124,7 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
         origin,
         far_end,
     } = route;
-    let mut conn = LinkConnection::new(conn, far_end);
+    let mut conn = LinkConnection::new(conn, far_end.clone());
     let remote = conn.peer_endpoint();
     let mut riders = Riders::seated(rider);
     let mut link = DialedLink {
@@ -143,12 +148,24 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
         // as any inbound link's does (`ClientTCPSocket.cpp:391`): ahead of
         // anything the peer asks over it, so its asks are scored, and its
         // bans read, under that hello (ADR-0107).
-        LinkOrigin::Adopted(identity) => {
+        LinkOrigin::Adopted {
+            identity,
+            accepted,
+        } => {
             let hello = ConnectionEvent::Identified {
                 identity: identity.clone(),
             };
             let _ = server_tx.send(ServeInput::Connection(hello)).await;
-            link.identified(&deps, remote, identity);
+            let AcceptedLink {
+                filing,
+                joins,
+                mut moving,
+            } = accepted;
+            moving.let_dead_dials_go();
+            link.filing = Some(filing);
+            link.joins = Some(joins);
+            link.moving = moving;
+            link.identity = Some(identity);
         }
     }
     // Why the link closed, for the downloads waiting on it before its hello.
@@ -233,6 +250,22 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
                     }
                 }
             },
+            // Given up for the peer's own link before it answered, or dead at
+            // the far end with that link come (ADR-0107 invariant 7): whatever
+            // rides it leaves it now.
+            () = dial_given_up(&mut link.filing), if open => {
+                closed = DialEnd::ClosedLocally;
+                closing = close(&mut conn).await;
+                if closing.is_none() {
+                    break;
+                }
+            }
+            () = let_go_of(far_end.as_ref()), if open => {
+                closing = close(&mut conn).await;
+                if closing.is_none() {
+                    break;
+                }
+            }
             () = tokio::time::sleep_until(closing.unwrap_or_else(tokio::time::Instant::now)),
                 if closing.is_some() => break,
             event = conn.next_event() => {
@@ -242,7 +275,7 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
                     Routed::Pulled => serve.pulled(),
                     Routed::Identified(identity) => {
                         riders.identified(&identity);
-                        link.identified(&deps, remote, identity);
+                        link.identified(remote, identity, far_end.as_ref());
                     }
                     Routed::Revised(identity) => link.revised(remote, identity),
                     // An uploader's grant nobody on the link asked for: the
@@ -278,6 +311,15 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
     let _ = conn.shutdown().await;
 }
 
+/// Resolves if the link's dial was given up for the peer's own link; never
+/// otherwise.
+async fn dial_given_up(filing: &mut Option<Filing>) {
+    match filing {
+        Some(filing) => filing.given_up().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Tell the session to close behind the commands it already has; the grace
 /// deadline, or `None` when the driver is gone already.
 async fn close(conn: &mut LinkConnection) -> Option<tokio::time::Instant> {
@@ -298,18 +340,17 @@ struct DialedLink {
 }
 
 impl DialedLink {
-    /// The peer identified: file the link under its names — a dial's filing
-    /// moves to them, an adopted link is filed now.
-    fn identified(&mut self, deps: &InboundPeerDeps, remote: PeerEndpoint, identity: PeerIdentity) {
+    /// The peer answered the dial: its filing moves to the names it proves.
+    fn identified(
+        &mut self,
+        remote: PeerEndpoint,
+        identity: PeerIdentity,
+        far_end: Option<&FarEnd>,
+    ) {
         let names = self.names(remote, &identity);
-        match &mut self.filing {
-            Some(filing) => filing.refile(names),
-            None => {
-                let (filing, joins, moving) = deps.peer_links.file(remote, names);
-                self.filing = Some(filing);
-                self.joins = Some(joins);
-                self.moving = moving;
-            }
+        if let Some(filing) = &mut self.filing {
+            filing.refile(names);
+            filing.answered(far_end);
         }
         self.identity = Some(identity);
     }

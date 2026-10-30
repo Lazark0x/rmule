@@ -29,11 +29,15 @@ use super::kad_runtime::{
     SharedKadBootstrap, SharedKadPump, broker_peer_kad_handoff, report_kad_firewall_ack,
     report_kad_udp_firewall_request,
 };
-use super::peer_link::SharedPeerLinks;
+use super::peer_link::{AcceptedLink, SharedPeerLinks};
 use super::peer_transfer::PeerWorker;
 use super::peer_transfer::worker::drive_peer_worker;
 use super::serve_runtime::{ServeInput, ServeOutput};
-use super::served_link::drive_served_link;
+use super::served_link::{ServedOrigin, drive_served_link};
+
+mod crossed_hello;
+
+use crossed_hello::{Settled, settle_hello};
 
 /// The runtime handles the inbound accept path threads as **one value** —
 /// accept → triage → adopt/serve — instead of a positional parade. Grouped so
@@ -138,6 +142,16 @@ pub(crate) async fn triage_inbound_connection(
         }
     };
 
+    // What the hello met among rmule's dials settles before anything takes
+    // this link for one the peer keeps (ADR-0107 invariant 7).
+    let accepted = match settle_hello(&mut conn, &identity, &event_tx, &deps).await {
+        Settled::Answered(accepted) => accepted,
+        Settled::Closed(closed_by) => {
+            let _ = conn.shutdown().await;
+            return InboundEnd::Closed(closed_by);
+        }
+    };
+
     // ed2k→Kad handoff (ADR-0067): an accepted peer that carries a Kad node
     // hint bootstraps our Kad node — aMule's `ConnectionEstablished` handoff, on
     // every connected peer regardless of the callback routing below. A no-op
@@ -202,7 +216,8 @@ pub(crate) async fn triage_inbound_connection(
                 // the callback's key, whichever road landed.
                 let _ = event_tx.send(ServeInput::Readopted).await;
                 let peer = conn.peer_endpoint();
-                let worker = adopt_inbound_worker(conn, peer, &identity, adoption.brief, deps);
+                let worker =
+                    adopt_inbound_worker(conn, peer, &identity, accepted, adoption.brief, deps);
                 permit.send((adoption.callback, worker));
                 return InboundEnd::Adopted;
             }
@@ -228,7 +243,8 @@ pub(crate) async fn triage_inbound_connection(
             identity: identity.clone(),
         }))
         .await;
-    InboundEnd::Closed(drive_served_link(conn, identity, command_rx, event_tx, deps, None).await)
+    let origin = ServedOrigin::Accepted(accepted);
+    InboundEnd::Closed(drive_served_link(conn, identity, command_rx, event_tx, deps, origin).await)
 }
 
 /// A Kad firewall-check frame that arrived before the hello: a dial-back can
@@ -264,6 +280,7 @@ fn adopt_inbound_worker(
     conn: PeerConnection,
     peer: PeerEndpoint,
     identity: &PeerIdentity,
+    accepted: AcceptedLink,
     brief: AdoptionBrief,
     deps: InboundPeerDeps,
 ) -> PeerWorker {
@@ -282,7 +299,7 @@ fn adopt_inbound_worker(
             file,
             own_status,
             want_sources,
-            LinkOrigin::Adopted(identity),
+            LinkOrigin::Adopted { identity, accepted },
             command_rx,
             event_tx,
             // The adopted peer already identified during accept, where the

@@ -146,6 +146,9 @@ impl ServeEvent {
             S::WaiterRelinked { from, to } => Record::new("serve.waiter_relinked")
                 .peer_address("from", from)
                 .peer_address("to", to),
+            S::CrossedHelloHeld { peer } => {
+                Record::new("serve.crossed_hello_held").peer_address("peer", peer)
+            }
             S::CrossedLinkLetGo { peer } => {
                 Record::new("serve.crossed_link_let_go").peer_address("peer", peer)
             }

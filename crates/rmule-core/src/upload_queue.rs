@@ -365,6 +365,15 @@ impl UploadSlotQueue {
         self.granted.iter().any(|g| g.peer == peer)
     }
 
+    /// The file of `peer`'s live slot: granted, its dial-back grant delivered.
+    #[must_use]
+    pub fn live_slot_file(&self, peer: PeerEndpoint) -> Option<FileHash> {
+        self.granted
+            .iter()
+            .find(|g| g.peer == peer && g.dial_back_since.is_none())
+            .map(|g| g.file_hash)
+    }
+
     /// The peers engaged in an upload relationship for `file_hash` — a granted
     /// slot or a wait-list position — i.e. aMule's `m_ClientUploadList`
     /// filtered to the file. This is the candidate pool a complete shared

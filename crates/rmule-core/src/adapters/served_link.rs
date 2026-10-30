@@ -18,7 +18,8 @@ use tokio::sync::mpsc;
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::peer_link::{
-    DialInFlight, FarEnd, LinkConnection, LinkName, Moving, Riders, ServeHold, recv_join,
+    AcceptedLink, DialInFlight, FarEnd, LinkConnection, LinkName, Moving, Riders, ServeHold,
+    let_go_of, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::serve_runtime::{ServeInput, ServeOutput};
@@ -40,11 +41,10 @@ use crate::service::PortTestClosedBy;
 /// detaches the held link, freeing the buddy slot at once (aMule frees
 /// `m_pBuddy` when the buddy's socket dies).
 ///
-/// A link the serve side dialed back comes `dialed`: it keeps its Dial in
-/// Flight's filing, moved to its hello's names and where it was dialed, the
-/// serve side holds it from the dial, and what crosses it is noted on its far
-/// end, which the serve side reads before it lets the client's own link go
-/// for this one (ADR-0107 invariant 7).
+/// A link the serve side dialed back keeps its Dial in Flight's filing, moved
+/// to its hello's names and where it was dialed, the serve side holds it from
+/// the dial, and what crosses it is noted on its far end, which is read when
+/// the client's own link comes (ADR-0107 invariant 7).
 ///
 /// Returns who closed the connection: the peer session's own close reason
 /// when it ended there, rmule when every half let it go.
@@ -54,17 +54,23 @@ pub(super) async fn drive_served_link(
     mut command_rx: mpsc::Receiver<ServeOutput>,
     event_tx: mpsc::Sender<ServeInput>,
     deps: InboundPeerDeps,
-    dialed: Option<DialedLink>,
+    origin: ServedOrigin,
 ) -> PortTestClosedBy {
     let remote = conn.peer_endpoint();
-    let dialed_at = dialed.is_some().then_some(remote);
+    let (dialed_at, far_end) = match &origin {
+        ServedOrigin::Accepted(_) => (None, None),
+        ServedOrigin::Dialed(dialed) => (Some(remote), Some(dialed.far_end.clone())),
+    };
     let names = LinkName::proven(remote, &identity, dialed_at);
-    let far_end = dialed.as_ref().map(|dialed| dialed.far_end.clone());
-    let mut conn = LinkConnection::new(conn, far_end);
-    let (mut filing, joins, mut moving, mut serve) = match dialed {
-        Some(DialedLink { in_flight, .. }) => {
+    let mut conn = LinkConnection::new(conn, far_end.clone());
+    let (mut filing, joins, mut moving, mut serve) = match origin {
+        ServedOrigin::Dialed(DialedLink {
+            in_flight,
+            far_end,
+        }) => {
             let (mut filing, joins) = in_flight.into_parts();
             filing.refile(names);
+            filing.answered(Some(&far_end));
             (
                 filing,
                 joins,
@@ -72,19 +78,21 @@ pub(super) async fn drive_served_link(
                 ServeHold::dialed(remote, deps.buddy_slot.clone()),
             )
         }
-        // An accepted link: a download's dial to its peer that has not sent
-        // its hello yields to it, and that dial's downloads move over
-        // (ADR-0107 invariant 7).
-        None => {
-            let (filing, joins, moving) = deps.peer_links.file(remote, names);
-            (
-                filing,
-                joins,
-                moving,
-                ServeHold::new(remote, deps.buddy_slot.clone()),
-            )
-        }
+        // An accepted link, filed at its hello: a dial to its peer that had
+        // not sent its hello yielded to it, and that dial's downloads move
+        // over (ADR-0107 invariant 7).
+        ServedOrigin::Accepted(AcceptedLink {
+            filing,
+            joins,
+            moving,
+        }) => (
+            filing,
+            joins,
+            moving,
+            ServeHold::new(remote, deps.buddy_slot.clone()),
+        ),
     };
+    moving.let_dead_dials_go();
     let mut joins = Some(joins);
     let mut riders = Riders::default();
     let closed_by = loop {
@@ -160,6 +168,14 @@ pub(super) async fn drive_served_link(
                     }
                 }
             },
+            // Dead at the far end, with the peer's own link come: whatever
+            // rides it leaves it now (ADR-0107 invariant 7).
+            () = let_go_of(far_end.as_ref()) => {
+                if serve.serving() {
+                    let _ = event_tx.send(ServeInput::closed_here()).await;
+                }
+                break PortTestClosedBy::Us;
+            }
             event = conn.next_event() => {
                 let Some(event) = event else {
                     if serve.serving() {
@@ -220,6 +236,14 @@ pub(super) async fn drive_served_link(
         );
     }
     closed_by
+}
+
+/// How a served link came up.
+pub(super) enum ServedOrigin {
+    /// The peer opened it, and its hello was answered and filed.
+    Accepted(AcceptedLink),
+    /// The serve side dialed it back to a waiter it promoted.
+    Dialed(DialedLink),
 }
 
 /// A link the serve side dialed back (ADR-0057): the Dial in Flight it was

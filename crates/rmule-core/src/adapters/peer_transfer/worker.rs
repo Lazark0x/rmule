@@ -73,12 +73,12 @@ pub(crate) async fn drive_peer_worker(
     // its identity reaches the download before the router starts, so every
     // revision the router forwards follows it. A dialed worker's comes from
     // the router at the peer's hello.
-    let adopted = matches!(origin, LinkOrigin::Adopted(_));
+    let adopted = matches!(origin, LinkOrigin::Adopted { .. });
     // A link rmule dialed: what crosses it is noted on its far end, which the
     // serve side reads before letting the peer's own link go for it
     // (ADR-0107 invariant 7).
     let far_end = (!adopted).then(FarEnd::new);
-    if let LinkOrigin::Adopted(identity) = &origin
+    if let LinkOrigin::Adopted { identity, .. } = &origin
         && event_tx
             .send(PeerWorkerEvent::Identity(identity.clone()))
             .await

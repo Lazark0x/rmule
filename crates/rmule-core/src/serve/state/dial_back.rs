@@ -192,6 +192,7 @@ impl ServeState {
     pub(super) fn shed_link_state(&mut self, peer: PeerEndpoint) {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
+        self.last_ask.remove(&peer);
         self.forget(peer);
         self.sx_throttle.forget(peer);
     }

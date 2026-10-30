@@ -144,7 +144,7 @@ pub use adapters::{
     RuntimeSourceLookupService, ServeConnection, ServeInput, ServeOutput, ServeRuntimeService,
     SourceLookupOutcome, SourceLookupService, WorkerBrief, WorkerOpening,
 };
-pub use adapters::{DialBack, DialBackCallOff, DialBackOutcome, FarEnd};
+pub use adapters::{DialBack, DialBackOutcome, FarEnd};
 pub use address_learning::{
     AddressObservation, AssignedAddress, ConfidenceTier, EndpointVerdict, ExternalAddressOverride,
     NatHint, ObservationOutcome, ObservationSource, SocketRole,
