@@ -201,8 +201,10 @@ scheduling is (ADR-0026).
   | an announce | a wait on a server, so never | handed to the Session Follower, its outcome an input |
   | a reask reply | a wait on a socket, so never | `try_send`; a datagram the full queue refuses is lost as any datagram may be |
 
-  Before the loop starts the activity awaits its first read of the share set, so the
-  first ask is answered from it; a read at a share trigger is off the loop and an ask
+  The first read of the share set is the one thing a peer's input waits for, so the
+  first ask is answered from it: the activity awaits it before the loop starts or, while
+  the Registry Check's first look is unfinished, the loop holds peers' inputs while the
+  read that look's end starts is out. After that a read is off the loop, and an ask
   meanwhile is answered from the set before it.
 - **A slot's flow.** A slot holder's asked ranges wait in its **Serve Flow**, in the
   Serve State. One read of a flow is out at a time, so its blocks land in the order

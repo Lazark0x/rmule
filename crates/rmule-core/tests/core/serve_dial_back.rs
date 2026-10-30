@@ -12,7 +12,7 @@
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
-use rmule_core::{Core, CoreCommand, CoreConfig, ServeCommand};
+use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, ServeCommand};
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener, PeerStreamRole};
 use rmule_peer::{
     ConnectionEvent, PartRanges, PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand,
@@ -46,6 +46,17 @@ fn ctx(user_hash: UserHash, listen_port: u16) -> PeerHandshakeContext {
 /// loopback; its event stream is drained so the serve side never stalls on
 /// it.
 async fn serving_one_slot() -> (SocketAddrV4, FileHash, tempfile::TempDir) {
+    let (at, file, share, _held) = serving_one_slot_saying_held().await;
+    (at, file, share)
+}
+
+/// [`serving_one_slot`], saying each peer's hello it holds (ADR-0107).
+async fn serving_one_slot_saying_held() -> (
+    SocketAddrV4,
+    FileHash,
+    tempfile::TempDir,
+    tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
     let bytes = vec![0x5D_u8; 4096];
     let file_hash = FileHashSummary::digest_bytes(&bytes).file_hash();
     let share = tempfile::tempdir().unwrap();
@@ -70,8 +81,18 @@ async fn serving_one_slot() -> (SocketAddrV4, FileHash, tempfile::TempDir) {
     .await
     .unwrap();
     serving_started(&mut core).await;
-    tokio::spawn(async move { while core.next_event().await.is_some() {} });
-    (listen_addr, file_hash, share)
+    let (held_tx, held) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(event) = core.next_event().await {
+            if matches!(
+                event,
+                CoreEvent::Serve(rmule_core::ServeEvent::CrossedHelloHeld { .. })
+            ) {
+                let _ = held_tx.send(());
+            }
+        }
+    });
+    (listen_addr, file_hash, share, held)
 }
 
 /// A peer linked to the core and asking for the file's one part: it reads

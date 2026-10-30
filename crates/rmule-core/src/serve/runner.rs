@@ -221,6 +221,9 @@ where
         let (share_read_tx, mut share_read_rx) = mpsc::channel::<Vec<SharedFileEntry>>(1);
         let mut share_read_out = false;
         let mut share_read_owed = false;
+        // No set has been read yet. While the first read is out a peer's input
+        // waits for it, so the first ask is answered from it (ADR-0031).
+        let mut share_set_known = withheld.is_looked();
 
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
@@ -305,6 +308,7 @@ where
                 }
                 rows = share_read_rx.recv() => {
                     let Some(rows) = rows else { continue };
+                    share_set_known = true;
                     share_read_out = share_read_owed;
                     if std::mem::take(&mut share_read_owed) {
                         start_share_read(&registry, &withheld, &share_read_tx);
@@ -438,7 +442,7 @@ where
                         None => dialed_serve_rx = None,
                     }
                 }
-                fact = fact_rx.recv() => {
+                fact = fact_rx.recv(), if share_set_known || !share_read_out => {
                     let Some((peer, event)) = fact else { continue };
                     let closing = event.is_disconnect() || event == ServeInput::Readopted;
                     let modifiers = current_modifiers(&credit, &held_places, state.identities());

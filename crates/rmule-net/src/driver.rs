@@ -352,6 +352,10 @@ where
         }
     };
 
+    // What the session said before the end reaches the consumer ahead of it.
+    for event in unsent {
+        let _ = evt_tx.send(event).await;
+    }
     let (label, error) = match ending {
         Ending::Closed { label } => (label, None),
         Ending::Failed(error) => {

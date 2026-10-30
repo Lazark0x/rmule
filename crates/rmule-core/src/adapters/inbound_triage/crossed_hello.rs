@@ -41,6 +41,8 @@ pub(super) async fn settle_hello(
                 let answer = PeerCommand::Connection(ConnectionCommand::AnswerHello);
                 return match conn.send(answer).await {
                     Ok(()) => Settled::Answered(accepted),
+                    // The driver stopped first: the peer hung up on the
+                    // answer, and its paired `Disconnected` says so.
                     Err(_) => {
                         let closed_by = close_reason(conn).await;
                         let _ = event_tx.send(ServeInput::closed_here()).await;
