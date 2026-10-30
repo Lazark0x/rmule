@@ -32,6 +32,7 @@ pub(crate) mod kad_network;
 pub(crate) mod lowid_callback_reask;
 pub(crate) mod nat;
 pub(crate) mod one_link;
+pub(crate) mod own_source;
 pub(crate) mod packed_source_exchange;
 pub(crate) mod partial_share;
 pub(crate) mod peer;

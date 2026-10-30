@@ -17,6 +17,7 @@ pub(crate) mod crypt_ping_port;
 pub(crate) mod cycle;
 pub(crate) mod holepunch_fail;
 pub(crate) mod late_port_test;
+pub(crate) mod own_source;
 pub(crate) mod rmule_tools;
 pub(crate) mod search_wire;
 pub(crate) mod server_login_crypt;
@@ -33,6 +34,7 @@ pub use self::holepunch_fail::{
     HolepunchFailOptions, run_holepunch_fail, score_run_dir as score_holepunch_fail,
 };
 pub use self::late_port_test::{DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, run_late_port_test};
+pub use self::own_source::{OwnSourceOptions, run_own_source};
 pub use self::search_wire::{
     SearchSpacingOptions, SearchWireOptions, SearchWireServer, run_search_spacing, run_search_wire,
 };

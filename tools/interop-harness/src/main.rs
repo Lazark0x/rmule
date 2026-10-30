@@ -137,6 +137,10 @@ enum HarnessCommand {
     /// the server says when each `OP_GETSOURCES` went and what answered it.
     #[command(name = "ask-budget")]
     AskBudget(crate::cli::ask_budget::AskBudgetArgs),
+    /// Own source: one rmule core shares and downloads one file on Lugdunum;
+    /// an answer naming rmule draws no dial of its own listener.
+    #[command(name = "own-source")]
+    OwnSource(crate::cli::own_source::OwnSourceArgs),
     /// Search spacing: against a fresh Lugdunum per round, rmule sends four
     /// searches a set gap apart, alone on a fresh login or after the
     /// search-wire leg's reconnect history, many times over, each sweep from
@@ -566,6 +570,9 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::AskBudget(args) => {
             crate::cli::ask_budget::ask_budget(args)?;
+        }
+        HarnessCommand::OwnSource(args) => {
+            crate::cli::own_source::own_source(args)?;
         }
         HarnessCommand::LatePortTest(args) => {
             crate::cli::ed2k_server::late_port_test(args)?;
