@@ -19,10 +19,10 @@
 //! fails before the hello is a dead source for every download waiting on it
 //! (`BaseClient.cpp:1340-1346`, `:419`, `DownloadQueue.cpp:763-786`). A dial
 //! whose hello has not gone out yields to the peer's own link filed under one
-//! of its names, and its downloads move onto that link; with its hello out and
-//! unanswered, the peer's own hello waits for it ([`crossing`], ADR-0107
-//! invariant 7). A name a link gives up goes back to the newest live link that
-//! proves it.
+//! of its names, and its downloads move onto that link; with its hello out,
+//! the peer's own hello waits until the far end shows which link it kept
+//! ([`crossing`], ADR-0107 invariant 7). A name a link gives up goes back to
+//! the newest live link that proves it.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
