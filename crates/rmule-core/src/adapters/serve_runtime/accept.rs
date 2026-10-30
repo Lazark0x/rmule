@@ -18,8 +18,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::{
-    Admitted, ConnectOptions as PeerConnectOptions, Connection as PeerConnection, PeerListener,
-    PeerNetError, PeerStreamRole,
+    Admitted, ConnectOptions as PeerConnectOptions, Connection as PeerConnection,
+    PEER_SOCKET_TIMEOUT, PeerListener, PeerNetError, PeerStreamRole,
 };
 use rmule_primitives::{PeerCrypt, PeerEndpoint, UserHash};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -35,11 +35,6 @@ mod gates;
 
 pub(super) use gates::AcceptGates;
 use gates::Arrival;
-
-/// How long a callback dial-back's TCP connect is given. A requester that
-/// asked to be dialed is waiting for it, so a connect that does not come up
-/// quickly is a requester that is gone.
-const DIAL_BACK_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Per-accept connect options, built fresh for every accept from the one
 /// [`HelloAdverts`] read every hello starts from — SUI with a
@@ -234,14 +229,16 @@ impl SharedTunnelAdmit {
     /// Silent either way: aMule treats a refused callback dial as silent and
     /// the requester's own timeout is what notices. A crypt handshake that
     /// does not complete lands in the same place, because to the requester the
-    /// two are the same silence.
+    /// two are the same silence. The connect is given what aMule's socket
+    /// gives it (ADR-0107 invariant 7).
     pub(crate) async fn callback_dial_back(
         &self,
         requester: PeerEndpoint,
         obfuscate_toward: Option<UserHash>,
     ) {
         let stream =
-            match PeerConnection::dial_stream(requester, DIAL_BACK_TIMEOUT, obfuscate_toward).await
+            match PeerConnection::dial_stream(requester, PEER_SOCKET_TIMEOUT, obfuscate_toward)
+                .await
             {
                 Ok(stream) => stream,
                 Err(error) => {

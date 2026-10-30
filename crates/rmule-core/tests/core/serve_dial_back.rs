@@ -246,14 +246,17 @@ async fn a_waiter_that_hung_up_is_dialed_back_and_granted_after_the_hellos() {
     assert_eq!(said.last().map(String::as_str), Some("grant"), "{said:#?}");
 }
 
-#[tokio::test]
-async fn a_waiter_whose_own_link_crosses_its_dial_back_past_the_hello_is_granted_on_the_dial() {
-    // aMule asks on the link it keeps only from `DS_CONNECTING`
-    // (`BaseClient.cpp:1692-1698`), so the waiter's own hello goes unanswered
-    // while the dial's is out (ADR-0107 invariant 7). Its answer on the dial
-    // settles it: the waiter deleted its own link (`ClientList.cpp:400-403`),
-    // which closes unanswered, and the grant goes on the dial.
-    let (at, file, _share) = serving_one_slot().await;
+/// A waiter queued and gone, its own link and the core's dial to it crossed:
+/// the core dialed it back when the holder stopped, and held its hello.
+struct CrossedWaiter {
+    /// Its own link, its hello held.
+    own: Connection,
+    /// The far end's end of the core's dial, answered.
+    dial: Connection,
+}
+
+async fn crossed_and_answered() -> (CrossedWaiter, (SocketAddrV4, tempfile::TempDir)) {
+    let (at, file, share) = serving_one_slot().await;
     let holder_hash = UserHash::from_bytes([0xA1; UserHash::BYTE_LEN]);
     let waiter_hash = UserHash::from_bytes([0xB2; UserHash::BYTE_LEN]);
 
@@ -295,22 +298,58 @@ async fn a_waiter_whose_own_link_crosses_its_dial_back_past_the_hello_is_granted
     );
 
     let dialer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, dialer.port()));
-    let mut dial = Connection::over_stream(
+    let dial = Connection::over_stream(
         stream,
         dialer,
         PeerStreamRole::Responder,
         ctx(waiter_hash, listen_port),
         ConnectOptions::default(),
     );
+    (CrossedWaiter { own, dial }, (at, share))
+}
+
+#[tokio::test]
+async fn a_waiter_whose_own_link_closes_past_its_dial_backs_hello_is_granted_on_the_dial() {
+    // aMule asks on the link it keeps only from `DS_CONNECTING`
+    // (`BaseClient.cpp:1692-1698`), so the waiter's own hello goes unanswered
+    // while the dial's is out (ADR-0107 invariant 7). Its attach deletes its
+    // own link ahead of its answer on the dial (`ClientList.cpp:400-403`),
+    // and the grant goes on the dial.
+    let (crossed, _serving) = crossed_and_answered().await;
+    let CrossedWaiter { own, mut dial } = crossed;
+    let _ = own.shutdown().await;
     next_matching(&mut dial, |event| {
         matches!(event, PeerEvent::Requester(RequesterEvent::SlotOffered))
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_waiter_that_answers_the_dial_back_and_keeps_its_own_link_is_granted_there() {
+    // A client with no address refuses the attach: a second client with no
+    // file answers the dial, and a grant there draws `OP_CANCELTRANSFER`
+    // (`ClientList.cpp:388-397`, `ClientTCPSocket.cpp:639-653`). The real one
+    // waits on its own link, which takes the grant once answered.
+    let (crossed, _serving) = crossed_and_answered().await;
+    let CrossedWaiter { mut own, mut dial } = crossed;
     assert_eq!(
         timeout(HANG_GUARD, answered(&mut own)).await,
-        Ok(false),
-        "its own link closes unanswered"
+        Ok(true),
+        "its own link is answered past the close bound"
     );
+    next_matching(&mut own, |event| {
+        matches!(event, PeerEvent::Requester(RequesterEvent::SlotOffered))
+    })
+    .await;
+    let mut granted_on_the_dial = false;
+    while let Ok(Some(event)) = timeout(HANG_GUARD, dial.next_event()).await {
+        match event {
+            PeerEvent::Requester(RequesterEvent::SlotOffered) => granted_on_the_dial = true,
+            PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => break,
+            _ => {}
+        }
+    }
+    assert!(!granted_on_the_dial, "no grant goes on the dial");
 }
 
 /// Whether `link`'s hello was answered, read up to the answer or its close.

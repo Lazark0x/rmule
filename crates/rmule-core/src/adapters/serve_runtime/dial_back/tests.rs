@@ -283,10 +283,10 @@ const SILENCE: Duration = Duration::from_millis(300);
 const SOON: Duration = Duration::from_secs(5);
 
 #[tokio::test]
-async fn a_hello_crossing_a_dial_back_is_held_and_closes_unanswered_once_the_far_end_answers_it() {
-    // Answered on the link it is about to replace, aMule's client reaches
-    // `DS_CONNECTED`, so it asks nothing on the dial and drops the grant
-    // there: 0 parts (`BaseClient.cpp:1692-1698`, `ClientTCPSocket.cpp:640-645`).
+async fn an_answer_on_a_dial_back_says_nothing_until_the_far_end_closes_its_own_link() {
+    // The far end answers the dial whether it attached it or not
+    // (`ClientList.cpp:388-403`), so the grant waits for what shows which:
+    // the close of its own link, the dial's hello having deleted it.
     let links = SharedPeerLinks::default();
     let (mut serve, ours, at, stream, dialer, mut outcomes) = dial_with_its_hello_out(&links).await;
 
@@ -311,12 +311,63 @@ async fn a_hello_crossing_a_dial_back_is_held_and_closes_unanswered_once_the_far
         waiter_at(at),
         ConnectOptions::default(),
     );
+    assert!(
+        timeout(SILENCE, outcomes.recv()).await.is_err(),
+        "no grant goes on a dial the far end may have refused"
+    );
+    assert_eq!(own_link_within(&mut own, SILENCE).await, OwnLink::Silent);
+
+    drop(own);
     let outcome = timeout(SOON, outcomes.recv()).await.expect("the dial ends");
     assert!(
         matches!(outcome, Some(DialBackOutcome::Linked { .. })),
-        "the dial comes up to grant on"
+        "the far end kept the dial: it comes up to grant on"
     );
-    assert_eq!(own_link_within(&mut own, SOON).await, OwnLink::Closed);
+}
+
+#[tokio::test]
+async fn a_far_end_that_answers_the_dial_and_keeps_its_own_link_is_answered_there() {
+    // A client with no address refuses the attach and a second client with
+    // no file answers the dial (`ClientList.cpp:388-397`): the real one waits
+    // on its own link, and a grant on the dial draws `OP_CANCELTRANSFER`.
+    let links = SharedPeerLinks::default();
+    let (mut serve, ours, at, stream, dialer, mut outcomes) = dial_with_its_hello_out(&links).await;
+
+    let mut own = PeerConnection::connect(ours, waiter_at(at), ConnectOptions::default())
+        .await
+        .expect("the serve adapter accepts the waiter");
+    let _served = serve.accept().await.expect("the link reaches triage");
+    assert_eq!(own_link_within(&mut own, SILENCE).await, OwnLink::Silent);
+
+    let mut second_client = PeerConnection::over_stream(
+        stream,
+        dialer,
+        PeerStreamRole::Responder,
+        waiter_at(at),
+        ConnectOptions::default(),
+    );
+
+    assert_eq!(own_link_within(&mut own, SOON).await, OwnLink::Answered);
+    let said = timeout(SOON, outcomes.recv()).await.expect("the road ends");
+    assert!(said.is_none(), "the dial says nothing: {}", said.is_some());
+    let closed = timeout(SOON, async {
+        while let Some(event) = second_client.next_event().await {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            ) {
+                return true;
+            }
+        }
+        true
+    })
+    .await;
+    assert_eq!(closed, Ok(true), "the dial is let go");
+    let came_back = filed(&links, LinkName::User(WAITER), |found| {
+        found.is_some_and(|remote| remote != at)
+    })
+    .await;
+    assert!(came_back.is_some(), "the waiter's link holds its names");
 }
 
 #[tokio::test]

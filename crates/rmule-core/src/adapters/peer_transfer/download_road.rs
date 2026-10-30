@@ -9,7 +9,8 @@
 //! dial retires nobody, and the download takes its turn on that link with
 //! the dial's waiters behind it, as aMule's connecting client carries on over
 //! the socket the peer opened (`ClientList.cpp:400-403`,
-//! `BaseClient.cpp:1692-1698`, ADR-0107 invariant 7).
+//! `BaseClient.cpp:1692-1698`, ADR-0107 invariant 7). A dial answered by a far
+//! end that stayed on its own link does the same.
 
 use std::time::Instant;
 
@@ -67,9 +68,10 @@ impl DownloadRoad {
     /// reporting on `event_tx`.
     pub(super) async fn drive(
         self,
-        mut command_rx: mpsc::Receiver<PeerWorkerCommand>,
+        command_rx: mpsc::Receiver<PeerWorkerCommand>,
         event_tx: mpsc::Sender<PeerWorkerEvent>,
     ) {
+        let mut command_rx = command_rx;
         let Self {
             peer,
             ctx,
@@ -194,20 +196,29 @@ impl DownloadRoad {
                         }
                         let conn = opened.hello(ctx.clone());
                         // A dialed worker has not identified yet, so the drive
-                        // body waits for the peer's hello.
-                        drive_peer_worker(
+                        // body waits for the peer's hello, unless the dial
+                        // gives way to the peer's own link first.
+                        let gave_way = drive_peer_worker(
                             conn,
                             peer,
-                            file,
-                            own_status,
+                            file.clone(),
+                            own_status.clone(),
                             want_sources,
                             LinkOrigin::Dialed(dial),
                             command_rx,
-                            event_tx,
-                            deps,
+                            event_tx.clone(),
+                            deps.clone(),
                         )
                         .await;
-                        return;
+                        let Some((gave_way, commands)) = gave_way else {
+                            return;
+                        };
+                        command_rx = commands;
+                        yielded = Some(Onto {
+                            link: gave_way.link,
+                            behind: gave_way.behind,
+                        });
+                        continue;
                     }
                 },
             };

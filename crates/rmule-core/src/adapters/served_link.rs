@@ -68,7 +68,7 @@ pub(super) async fn drive_served_link(
         ServedOrigin::Dialed(DialedLink { in_flight, far_end }) => {
             let (mut filing, joins) = in_flight.into_parts();
             filing.refile(names);
-            filing.answered(Some(&far_end));
+            filing.read_through(Some(&far_end));
             (
                 filing,
                 joins,

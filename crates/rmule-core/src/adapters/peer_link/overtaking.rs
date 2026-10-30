@@ -8,8 +8,10 @@
 //! aMule's connecting client carries on over the socket the peer opened
 //! (`BaseClient.cpp:1692-1698`); a serve side's dial-back leaves its grant to
 //! that link. Once its hello is out the peer's hello waits for it instead
-//! (`crossing`). A dial that was answered and has since died at the far end
-//! is let go for the peer's link, so whatever rides it leaves it now.
+//! (`crossing`), and an answer with that hello held puts the dial back on the
+//! yielding list until the far end shows which link it kept. A dial that was
+//! answered and has since died at the far end is let go for the peer's link,
+//! so whatever rides it leaves it now.
 //!
 //! The hello is claimed under the same lock an overtaking link files under,
 //! so a link filed while the dial's socket came up still overtakes it.

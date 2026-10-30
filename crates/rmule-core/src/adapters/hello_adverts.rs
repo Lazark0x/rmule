@@ -96,6 +96,16 @@ impl HelloAdverts {
         firewalled.then(|| self.buddy.snapshot().serving).flatten()
     }
 
+    /// The options of a link a peer's own record is dialed on
+    /// ([`connect_options`](Self::connect_options)): it waits for the peer's
+    /// hello as long as aMule's socket does (ADR-0107 invariant 7).
+    pub(crate) fn dial_options(&self, peer_crypt: PeerCrypt) -> ConnectOptions {
+        ConnectOptions {
+            hello_timeout: rmule_net::peer::PEER_SOCKET_TIMEOUT,
+            ..self.connect_options(peer_crypt)
+        }
+    }
+
     /// The options one connection starts from: every advert read now, and our
     /// crypt policy met with `peer_crypt` — the peer's own stance and key, as
     /// far as the road knows them (ADR-0049's outbound rule; the accept side,

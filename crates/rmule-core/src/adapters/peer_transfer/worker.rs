@@ -13,12 +13,12 @@ use rmule_peer::{
     PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::adapters::InboundPeerDeps;
 use crate::adapters::dialed_serve::{
-    DialedRoute, LinkOrigin, LinkServeHalf, bridge_dialed_serve, route_dialed_connection,
+    DialedRoute, GaveWay, LinkOrigin, LinkServeHalf, bridge_dialed_serve, route_dialed_connection,
 };
 use crate::adapters::hello_wait::{Opening, await_hello};
 use crate::adapters::peer_link::{DownloadHalf, FarEnd, JoinedLink};
@@ -41,6 +41,10 @@ use self::wait::{
 /// `own_status` is what rmule holds of `file`; the connect-time name ask
 /// carries it. `want_sources` is the download's source-ask
 /// decision for this connection (ADR-0108).
+///
+/// Returns what moves on when the dial gave way to the peer's own link, its
+/// hello having told nobody anything (ADR-0107 invariant 7); `None` once the
+/// worker is done.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn drive_peer_worker(
     conn: PeerConnection,
@@ -52,7 +56,7 @@ pub(crate) async fn drive_peer_worker(
     command_rx: mpsc::Receiver<PeerWorkerCommand>,
     event_tx: mpsc::Sender<PeerWorkerEvent>,
     deps: InboundPeerDeps,
-) {
+) -> Option<(GaveWay, mpsc::Receiver<PeerWorkerCommand>)> {
     let slot_wait_timeout = deps.slot_wait_timeout;
     let hello_refusals = deps.hello_refusals.clone();
     let dialed_serve_sink = deps.dialed_serve_sink.clone();
@@ -83,8 +87,9 @@ pub(crate) async fn drive_peer_worker(
             .await
             .is_err()
     {
-        return;
+        return None;
     }
+    let (gave_way_tx, mut gave_way) = oneshot::channel();
     tokio::spawn(route_dialed_connection(
         conn,
         DialedRoute {
@@ -98,14 +103,22 @@ pub(crate) async fn drive_peer_worker(
             deps,
             origin,
             far_end: far_end.clone(),
+            gave_way: gave_way_tx,
         },
     ));
-    if !adopted
-        && let Err(cause) = wait_for_peer_identified(&mut requester_rx, &hello_refusals).await
-    {
-        super::end_dial(&event_tx, cause).await;
-        let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
-        return; // dropping both command senders winds the router (and socket) down
+    if !adopted {
+        // Told before the router drops this worker's events, so a dial that
+        // gave way never reads as one that closed before its hello.
+        let identified = tokio::select! {
+            biased;
+            Ok(gave_way) = &mut gave_way => return Some((gave_way, command_rx)),
+            identified = wait_for_peer_identified(&mut requester_rx, &hello_refusals) => identified,
+        };
+        if let Err(cause) = identified {
+            super::end_dial(&event_tx, cause).await;
+            let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
+            return None; // dropping both command senders winds the router (and socket) down
+        }
     }
     work_the_link(
         WorkerHalves {
@@ -128,6 +141,7 @@ pub(crate) async fn drive_peer_worker(
         slot_wait_timeout,
     )
     .await;
+    None
 }
 
 /// Drive a download worker over a **Served Link** it joined (ADR-0107, "One

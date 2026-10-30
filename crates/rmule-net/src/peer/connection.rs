@@ -19,7 +19,7 @@ use crate::driver::{
 use crate::peer::capture::{PeerCaptureFormat, event_to_toml};
 use crate::peer::driver::PeerDriven;
 use crate::peer::obfuscation::{ObfuscationPolicy, crypt_advertisement};
-use crate::peer::{ConnectOptions, PEER_CRYPT_TIMEOUT, PeerNetError};
+use crate::peer::{ConnectOptions, PEER_SOCKET_TIMEOUT, PeerNetError};
 
 mod opened_dial;
 
@@ -161,7 +161,7 @@ impl Connection {
     /// [`DriverError::ConnectTimeout`] when the connect outlives
     /// `connect_timeout`, [`PeerNetError::Connect`] for a refused or
     /// unreachable peer, [`PeerNetError::CryptUnanswered`] when an obfuscated
-    /// dial is never answered inside [`PEER_CRYPT_TIMEOUT`], and the crypt
+    /// dial is never answered inside [`PEER_SOCKET_TIMEOUT`], and the crypt
     /// handshake's own I/O error when it is not answered in kind.
     pub async fn dial_stream(
         peer: PeerEndpoint,
@@ -171,7 +171,7 @@ impl Connection {
         // Eagerly, so a requester that cannot speak obfuscation surfaces as a
         // failed dial rather than as a doomed stream occupying a serve slot.
         Ok(
-            match open_stream(peer, connect_timeout, PEER_CRYPT_TIMEOUT, obfuscate_toward).await? {
+            match open_stream(peer, connect_timeout, PEER_SOCKET_TIMEOUT, obfuscate_toward).await? {
                 OpenedStream::Plain(stream) => Box::new(stream),
                 OpenedStream::Obfuscated(crypt) => crypt,
             },

@@ -1,6 +1,7 @@
 //! An accepted hello settled against rmule's own dials (ADR-0107 invariant
 //! 7): answered and filed when nothing crosses it; held, while a dial's hello
-//! is out unanswered, until the far end shows which link it kept.
+//! is out, until the far end shows which link it kept: this one's close says
+//! the dial, this one standing open past the dial's answer says this one.
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity};
@@ -36,7 +37,7 @@ pub(super) async fn settle_hello(
         let meeting = met
             .take()
             .unwrap_or_else(|| deps.peer_links.meet(remote, names.clone(), None));
-        let crossed = match meeting {
+        let mut crossed = match meeting {
             Meeting::Clear(accepted) => {
                 let answer = PeerCommand::Connection(ConnectionCommand::AnswerHello);
                 return match conn.send(answer).await {
@@ -56,14 +57,16 @@ pub(super) async fn settle_hello(
             told = true;
             let _ = event_tx.send(ServeInput::CrossedHelloHeld).await;
         }
-        match hold(conn, crossed).await {
+        match hold(conn, &mut crossed).await {
             Held::DialEnded => {}
-            Held::DialAnswered => {
-                let _ = event_tx.send(ServeInput::CrossedLinkLetGo).await;
-                let _ = event_tx.send(ServeInput::closed_here()).await;
-                return Settled::Closed(PortTestClosedBy::Us);
+            Held::Refused => {
+                let _ = event_tx.send(ServeInput::CrossedDialRefused).await;
+                // Filed before `crossed` lets the dial go, so it yields to
+                // this link rather than go on.
+                met = Some(deps.peer_links.meet(remote, names.clone(), None));
             }
             Held::LinkClosed(closed_by) => {
+                let _ = event_tx.send(ServeInput::CrossedDialKept).await;
                 let _ = event_tx.send(ServeInput::closed_here()).await;
                 return Settled::Closed(closed_by);
             }
@@ -86,27 +89,35 @@ async fn close_reason(conn: &mut PeerConnection) -> PortTestClosedBy {
 enum Held {
     /// The dial ended, or the bound gave it up: the hello is met again.
     DialEnded,
-    /// The far end answered the dial.
-    DialAnswered,
+    /// The far end answered the dial and left this link open past the close
+    /// bound: it refused the attach, and its real client waits here.
+    Refused,
     /// The far end closed this link: it attached the dial.
     LinkClosed(PortTestClosedBy),
 }
 
-/// Wait for the first of the dial settling, this link closing and the bound.
-/// The peer sends nothing more before its answer, so nothing read here is
-/// anyone's but the close.
-async fn hold(conn: &mut PeerConnection, mut crossed: CrossedDial) -> Held {
+/// Wait for the first of the dial ending, this link closing and the bound,
+/// the dial's answer shortening the bound to the close bound: what it showed
+/// is this link's close, or that link's standing open past it. The peer sends
+/// nothing more before its answer, so nothing read here is anyone's but the
+/// close.
+async fn hold(conn: &mut PeerConnection, crossed: &mut CrossedDial) -> Held {
     let bound = tokio::time::sleep(crossed.hold());
     tokio::pin!(bound);
+    let mut answered = false;
     loop {
         tokio::select! {
-            settled = crossed.settled() => {
-                return match settled {
-                    DialSettled::Answered => Held::DialAnswered,
-                    DialSettled::Ended => Held::DialEnded,
-                };
-            }
+            settled = crossed.settled(), if !answered => match settled {
+                DialSettled::Answered => {
+                    answered = true;
+                    bound.as_mut().reset(tokio::time::Instant::now() + crossed.close_bound());
+                }
+                DialSettled::Ended => return Held::DialEnded,
+            },
             () = &mut bound => {
+                if answered {
+                    return Held::Refused;
+                }
                 crossed.give_up();
                 return Held::DialEnded;
             }

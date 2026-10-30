@@ -87,6 +87,14 @@ impl Riders {
         }
     }
 
+    /// The answered dial gave way to the peer's own link: every waiter looks
+    /// the peer up again, and finds it.
+    pub(in crate::adapters) fn dial_gave_way(&mut self) {
+        for waiter in self.waiting.drain(..) {
+            let _ = waiter.seated.send(Seat::LookAgain);
+        }
+    }
+
     fn seat_next(&mut self, identity: &PeerIdentity) {
         while let Some(waiter) = self.waiting.pop_front() {
             if self.seat(waiter, identity) {

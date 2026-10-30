@@ -214,7 +214,8 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                 | ServeInput::IdentityBound { .. }
                 | ServeInput::KeyMismatch { .. }
                 | ServeInput::CrossedHelloHeld
-                | ServeInput::CrossedLinkLetGo => {}
+                | ServeInput::CrossedDialKept
+                | ServeInput::CrossedDialRefused => {}
             }
         }
     })

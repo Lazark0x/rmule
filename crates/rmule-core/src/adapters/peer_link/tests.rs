@@ -342,24 +342,53 @@ fn meet(links: &SharedPeerLinks, names: &[LinkName]) -> Meeting {
 }
 
 #[tokio::test]
-async fn a_hello_meeting_a_dial_past_its_hello_is_held_until_the_dial_is_answered_or_ends() {
+async fn a_hello_meeting_a_dial_past_its_hello_is_held_until_the_far_end_shows_which_link_it_kept()
+{
+    let within = std::time::Duration::from_secs(5);
     let links = SharedPeerLinks::default();
     let at = v4([203, 0, 113, 3], 4662);
     let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
 
-    let (mut answered, _joins) = dial_past_its_hello(&links, at, &names);
+    // The far end stayed on its own link: filed, it overtakes the dial.
+    let (mut refused, _joins) = dial_past_its_hello(&links, at, &names);
     let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
         panic!("the dial's hello is out: this hello waits");
     };
     assert_eq!(links.find(&names).map(|found| found.remote), Some(at));
-    answered.answered(None);
+    let verdict = tokio::spawn(async move { refused.heard_answer().await.map(|link| link.remote) });
     assert_eq!(crossed.settled().await, DialSettled::Answered);
-    assert!(
-        matches!(meet(&links, &names), Meeting::Clear(_)),
-        "an answered dial holds no hello up: the far end closes one of the two"
+    let Meeting::Clear(_filed) = meet(&links, &names) else {
+        panic!("an answered dial holds no hello up");
+    };
+    drop(crossed);
+    assert_eq!(
+        tokio::time::timeout(within, verdict)
+            .await
+            .unwrap()
+            .unwrap(),
+        Some(v4([203, 0, 113, 3], 50_288)),
+        "the dial gives way to the peer's own link"
     );
-    drop(answered);
 
+    // The far end closed its own link: the dial stands.
+    let links = SharedPeerLinks::default();
+    let (mut kept, _joins) = dial_past_its_hello(&links, at, &names);
+    let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
+        panic!("the dial's hello is out: this hello waits");
+    };
+    let verdict = tokio::spawn(async move { kept.heard_answer().await.map(|link| link.remote) });
+    assert_eq!(crossed.settled().await, DialSettled::Answered);
+    drop(crossed);
+    assert_eq!(
+        tokio::time::timeout(within, verdict)
+            .await
+            .unwrap()
+            .unwrap(),
+        None
+    );
+
+    // The dial ended: the hello is met again.
+    let links = SharedPeerLinks::default();
     let (ended, _joins) = dial_past_its_hello(&links, at, &names);
     let Meeting::Crossed(mut crossed) = meet(&links, &names) else {
         panic!("the dial's hello is out: this hello waits");
@@ -367,6 +396,19 @@ async fn a_hello_meeting_a_dial_past_its_hello_is_held_until_the_dial_is_answere
     drop(ended);
     assert_eq!(crossed.settled().await, DialSettled::Ended);
     assert!(matches!(meet(&links, &names), Meeting::Clear(_)));
+}
+
+#[tokio::test]
+async fn a_dial_answered_with_no_hello_held_stands_at_once() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let names = [LinkName::Endpoint(at), LinkName::User(user(0x23))];
+    let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
+    assert!(dial.heard_answer().await.is_none());
+    assert!(
+        matches!(meet(&links, &names), Meeting::Clear(_)),
+        "an answered dial holds no hello up: the far end closes one of the two"
+    );
 }
 
 #[tokio::test]
@@ -404,7 +446,7 @@ fn of_two_rmules_crossing_the_higher_hash_gives_its_dial_up_first() {
     };
     assert!(hold(0x90, 0x10) < hold(0x10, 0x90));
     assert!(
-        hold(0x10, 0x90) < std::time::Duration::from_secs(40),
+        hold(0x10, 0x90) + super::crossing::CLOSE_BOUND < std::time::Duration::from_secs(40),
         "inside the peer's clock on the link it waits on (`ClientTCPSocket.cpp:201-229`)"
     );
 }
@@ -435,7 +477,8 @@ async fn the_peers_own_link_lets_a_dial_dead_at_the_far_end_go_and_spares_a_live
     for (far_end, dead) in [(FarEnd::silent_for(silent), true), (FarEnd::new(), false)] {
         let links = SharedPeerLinks::default();
         let (mut dial, _joins) = dial_past_its_hello(&links, at, &names);
-        dial.answered(Some(&far_end));
+        assert!(dial.heard_answer().await.is_none());
+        dial.read_through(Some(&far_end));
 
         let Meeting::Clear(mut accepted) = meet(&links, &names) else {
             panic!("an answered dial holds no hello up");

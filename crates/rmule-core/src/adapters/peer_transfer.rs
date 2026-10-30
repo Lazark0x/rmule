@@ -763,7 +763,7 @@ impl PeerTransferService for RuntimePeerTransferService {
         let road = DownloadRoad {
             peer,
             ctx,
-            options: self.adverts.connect_options(brief.peer_crypt),
+            options: self.adverts.dial_options(brief.peer_crypt),
             file,
             brief,
             ban_store: self.ban_store.clone(),

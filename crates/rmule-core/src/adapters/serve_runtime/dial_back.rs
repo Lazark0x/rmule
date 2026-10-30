@@ -16,9 +16,11 @@
 //! When the client comes back on a link of its own, the Peer Links settle the
 //! dial, as every dial's (ADR-0107 invariant 7): before its hello goes out it
 //! stops without a word, no byte of its hello sent, and the grant goes on the
-//! client's link. Once its hello is out, the client's hello waits for it: the
-//! far end's answer here keeps the grant on this dial, and its end leaves the
-//! grant to the client's link, which is answered then.
+//! client's link. Once its hello is out, the client's hello waits for it, and
+//! no grant goes here before the far end shows which link it kept: the close
+//! of the client's link keeps the grant on this dial, and that link standing
+//! open past the dial's answer, or the dial's end, leaves the grant to it,
+//! answered then.
 
 use rmule_net::peer::{Connection as PeerConnection, ObfuscationPolicy, PeerNetError};
 use rmule_peer::{PeerCloseReason, PeerIdentity};
@@ -99,7 +101,8 @@ impl DialBackRoad {
     /// it the same way: its socket closes unheard, and its Dial in Flight is
     /// unfiled, so a download waiting on it looks again. A dial that ends with
     /// that link's hello held on it says nothing either: that link takes the
-    /// grant as it is answered.
+    /// grant as it is answered. Neither does one answered by a far end that
+    /// stayed on that link, which refused the attach.
     pub(super) async fn run(self, dial: DialBack, outcomes: mpsc::Sender<DialBackOutcome>) {
         let Self {
             hello,
@@ -140,7 +143,7 @@ impl DialBackRoad {
                 return;
             }
         };
-        let options = adverts.connect_options(crypt);
+        let options = adverts.dial_options(crypt);
         let ours = ObfuscationPolicy::stance_of(options.obfuscation.map(|config| config.policy));
         let opened = tokio::select! {
             biased;
@@ -192,6 +195,12 @@ impl DialBackRoad {
                 return;
             }
         };
+        // The far end answers a dial it refused too, with a client that holds
+        // no file: it stayed on its own link, which takes the grant.
+        if in_flight.heard_answer().await.is_some() {
+            let _ = conn.shutdown().await;
+            return;
+        }
         // What every identified link feeds, as a download's dialed link does.
         broker_peer_kad_handoff(&deps.kad_bootstrap, at, &identity).await;
         crate::address_learning::record_peer_ipv6_vote(&deps.addresses, at, &identity);

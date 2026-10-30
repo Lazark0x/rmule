@@ -287,10 +287,17 @@ pub enum ServeEvent {
         /// The link the peer opened, as it came in.
         peer: rmule_primitives::PeerEndpoint,
     },
-    /// The link `peer` opened to us was let go unanswered: the client answered
-    /// rmule's dial, so it keeps that link and has dropped this one, and its
-    /// standing stays on the dial (ADR-0107 invariant 7).
-    CrossedLinkLetGo {
+    /// The link `peer` opened to us closed with its hello held: the client
+    /// attached rmule's dial, so its standing stays there (ADR-0107
+    /// invariant 7).
+    CrossedDialKept {
+        /// The link the peer opened, as it came in.
+        peer: rmule_primitives::PeerEndpoint,
+    },
+    /// The client answered rmule's dial and left the link `peer` it opened up
+    /// past the close bound: it refused the attach, its real client waits on
+    /// that link, and the dial gives way to it (ADR-0107 invariant 7).
+    CrossedDialRefused {
         /// The link the peer opened, as it came in.
         peer: rmule_primitives::PeerEndpoint,
     },

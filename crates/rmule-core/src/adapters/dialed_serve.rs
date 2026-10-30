@@ -8,14 +8,14 @@ use rmule_peer::{
     RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::PeerEndpoint;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
 use super::kad_runtime::broker_peer_kad_handoff;
 use super::peer_link::{
-    AcceptedLink, DialInFlight, DownloadHalf, FarEnd, Filing, LinkConnection, LinkJoin, LinkName,
-    Moving, Riders, ServeHold, let_go_of, recv_join,
+    AcceptedLink, DialInFlight, DownloadHalf, FarEnd, Filing, FoundLink, LinkConnection, LinkJoin,
+    LinkName, Moving, Riders, ServeHold, let_go_of, recv_join,
 };
 use super::peer_transfer::PeerWorkerEvent;
 use super::peer_transfer::dial_end::closed_before_hello;
@@ -71,6 +71,17 @@ pub(crate) struct DialedRoute {
     /// On a link rmule dialed, the far end its router notes what crosses the
     /// link on (ADR-0107 invariant 7).
     pub(crate) far_end: Option<FarEnd>,
+    /// Where the download riding a dial hears the dial gave way to the peer's
+    /// own link (ADR-0107 invariant 7).
+    pub(crate) gave_way: oneshot::Sender<GaveWay>,
+}
+
+/// An answered dial gave way to the peer's own link, the far end having
+/// stayed on that (ADR-0107 invariant 7): the link its rider moves onto, and
+/// the downloads that joined the dial, which follow it there.
+pub(crate) struct GaveWay {
+    pub(crate) link: FoundLink,
+    pub(crate) behind: Option<mpsc::Receiver<LinkJoin>>,
 }
 
 /// How a link a download holds came up.
@@ -124,6 +135,7 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
         deps,
         origin,
         far_end,
+        gave_way,
     } = route;
     let mut conn = LinkConnection::new(conn, far_end.clone());
     let remote = conn.peer_endpoint();
@@ -269,6 +281,22 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
                 if closing.is_some() => break,
             event = conn.next_event() => {
                 let Some(event) = event else { break }; // driver/peer gone
+                // The hello says nothing of which link the far end kept, and
+                // nobody hears it until that shows (ADR-0107 invariant 7).
+                if matches!(
+                    event,
+                    PeerEvent::Connection(ConnectionEvent::Identified { .. })
+                ) && let Some(found) = link.heard_answer().await
+                {
+                    riders.dial_gave_way();
+                    let mut behind = link.joins.take();
+                    if let Some(behind) = &mut behind {
+                        behind.close();
+                    }
+                    let _ = gave_way.send(GaveWay { link: found, behind });
+                    let _ = conn.shutdown().await;
+                    return;
+                }
                 match halves.dispatch(remote, event, riders.rider(), serve.serving()).await {
                     Routed::Open => {}
                     Routed::Pulled => serve.pulled(),
@@ -339,6 +367,12 @@ struct DialedLink {
 }
 
 impl DialedLink {
+    /// The far end answered the dial: the peer's own link, when the dial gives
+    /// way to it.
+    async fn heard_answer(&mut self) -> Option<FoundLink> {
+        self.filing.as_mut()?.heard_answer().await
+    }
+
     /// The peer answered the dial: its filing moves to the names it proves.
     fn identified(
         &mut self,
@@ -349,7 +383,7 @@ impl DialedLink {
         let names = self.names(remote, &identity);
         if let Some(filing) = &mut self.filing {
             filing.refile(names);
-            filing.answered(far_end);
+            filing.read_through(far_end);
         }
         self.identity = Some(identity);
     }

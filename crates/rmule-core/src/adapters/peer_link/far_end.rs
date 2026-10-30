@@ -12,17 +12,11 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
 
-use rmule_net::peer::{Connection as PeerConnection, PeerNetError};
+use rmule_net::peer::{Connection as PeerConnection, PEER_SOCKET_TIMEOUT, PeerNetError};
 use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent};
 use rmule_primitives::PeerEndpoint;
 
 use crate::service::DeadDialSign;
-
-/// aMule's socket timeout, `CONNECTION_TIMEOUT` (40 s, `Constants.h:34`,
-/// `EMSocket.cpp:61`): a socket nothing was sent or received on for longer
-/// is closed (`ClientTCPSocket.cpp:201-229`), its timer restarting at every
-/// packet either way (`:1886-1895`, `:2059-2080`).
-const FAR_END_SOCKET_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// The far end of one link rmule dialed, as its driver saw it (see the module
 /// docs). Clones share one reading.
@@ -110,7 +104,10 @@ impl FarEnd {
 
     /// Whether the link is a **Dead Dial** at `now`, and what shows it: its
     /// session ended, or nothing crossed it either way for longer than
-    /// aMule's socket timeout. `None` while the far end may still hold it.
+    /// aMule's socket timeout, which closes a silent socket
+    /// (`ClientTCPSocket.cpp:201-229`), its timer restarting at every packet
+    /// either way (`:1886-1895`, `:2059-2080`). `None` while the far end may
+    /// still hold it.
     #[must_use]
     pub fn dead_at(&self, now: Instant) -> Option<DeadDialSign> {
         if self.0.ended.load(Ordering::Acquire) {
@@ -118,7 +115,7 @@ impl FarEnd {
         }
         let crossed =
             self.0.since + Duration::from_millis(self.0.crossed_ms.load(Ordering::Acquire));
-        (now.saturating_duration_since(crossed) > FAR_END_SOCKET_TIMEOUT)
+        (now.saturating_duration_since(crossed) > PEER_SOCKET_TIMEOUT)
             .then_some(DeadDialSign::Silent)
     }
 }

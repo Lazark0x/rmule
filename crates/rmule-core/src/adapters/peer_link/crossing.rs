@@ -5,9 +5,18 @@
 //! replace, and it has asked there, asks nothing on the one it keeps
 //! (`ClientList.cpp:400-403`) and drops the grant on it
 //! (`ClientTCPSocket.cpp:640-645`). Close that link instead and it is a dead
-//! source (`BaseClient.cpp:1340-1346`). So while a dial's hello is out
-//! unanswered the peer's hello is held: unanswered, unfiled, and unheard of
-//! by the serve side, until the far end shows which link it kept.
+//! source (`BaseClient.cpp:1340-1346`). So while a dial's hello is out the
+//! peer's hello is held: unanswered, unfiled, and unheard of by the serve
+//! side, until the far end shows which link it kept.
+//!
+//! An answer on the dial does not show that: a client with no address yet
+//! refuses the attach and a second client with no file answers
+//! (`ClientList.cpp:388-397`), with the real one waiting on the held link.
+//! What shows it is that link's close: the attach deletes it ahead of the
+//! answer. So a dial answered with a hello held on it goes back on the
+//! yielding list and tells its rider and its grant nothing; the close lets it
+//! go on, and the [`CLOSE_BOUND`] passing makes it yield to the held link,
+//! answered then, as a dial yields before its hello.
 //!
 //! The session reads the hello, and this decides, in one step under the book's
 //! lock: a dial claims its hello under the same lock, so no hello of ours can
@@ -33,6 +42,13 @@ const HOLD_AS_THE_LOWER_HASH: Duration = Duration::from_secs(20);
 /// first, answering the lower's, whose own dial is so answered in time.
 const HOLD_AS_THE_HIGHER_HASH: Duration = Duration::from_secs(10);
 
+/// How long past the dial's answer the held link may stay open before the far
+/// end has refused the attach. The attach closes that link ahead of the answer
+/// (`ClientList.cpp:400-403`, `ClientTCPSocket.cpp:391`), so this is no aMule
+/// timer: it only outlasts a FIN retransmitted on a live path. Read short, it
+/// loses a client that kept the dial; read long, it delays a first contact.
+pub(super) const CLOSE_BOUND: Duration = Duration::from_secs(3);
+
 /// A dial whose hello is out and not answered yet.
 pub(super) struct UnansweredDial {
     answered: watch::Sender<bool>,
@@ -48,7 +64,8 @@ impl UnansweredDial {
         (Self { answered, give_up }, given_up)
     }
 
-    /// The far end answered: every hello held on the dial learns it.
+    /// The far end answered: every hello held on the dial learns it, and
+    /// starts the [`CLOSE_BOUND`].
     pub(super) fn answered(&self) {
         self.answered.send_replace(true);
     }
@@ -77,13 +94,15 @@ pub(in crate::adapters) enum Meeting {
 /// How a dial a hello was held on settled.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::adapters) enum DialSettled {
-    /// The far end answered it: it attached the dial and deleted its own link.
+    /// The far end answered it, which alone says nothing of which link it
+    /// kept.
     Answered,
     /// It ended unanswered: the far end is on its own link.
     Ended,
 }
 
-/// The dial a held hello waits on.
+/// The dial a held hello waits on. Dropped with the dial waiting for its
+/// verdict and nothing having overtaken it, the dial goes on.
 pub(in crate::adapters) struct CrossedDial {
     links: SharedPeerLinks,
     filing: u64,
@@ -97,6 +116,11 @@ impl CrossedDial {
         self.hold
     }
 
+    /// How long past the dial's answer it may stay held.
+    pub(in crate::adapters) const fn close_bound(&self) -> Duration {
+        CLOSE_BOUND
+    }
+
     /// Resolves when the dial is answered or ends.
     pub(in crate::adapters) async fn settled(&mut self) -> DialSettled {
         match self.answered.wait_for(|answered| *answered).await {
@@ -107,12 +131,20 @@ impl CrossedDial {
 
     /// The bound passed with the hello held: the far end read nothing on the
     /// dial and stays on its own link, so the dial is given up.
-    pub(in crate::adapters) fn give_up(self) {
+    pub(in crate::adapters) fn give_up(&self) {
         let Ok(mut book) = self.links.book.lock() else {
             return;
         };
         if let Some(dial) = book.unanswered.remove(&self.filing) {
             let _ = dial.give_up.send(());
+        }
+    }
+}
+
+impl Drop for CrossedDial {
+    fn drop(&mut self) {
+        if let Ok(mut book) = self.links.book.lock() {
+            book.yielding.remove(&self.filing);
         }
     }
 }

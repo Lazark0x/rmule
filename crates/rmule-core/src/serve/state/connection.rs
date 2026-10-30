@@ -240,8 +240,11 @@ impl ServeState {
             ServeInput::CrossedHelloHeld => {
                 vec![ServeDecision::Emit(ServeEvent::CrossedHelloHeld { peer })]
             }
-            ServeInput::CrossedLinkLetGo => {
-                vec![ServeDecision::Emit(ServeEvent::CrossedLinkLetGo { peer })]
+            ServeInput::CrossedDialKept => {
+                vec![ServeDecision::Emit(ServeEvent::CrossedDialKept { peer })]
+            }
+            ServeInput::CrossedDialRefused => {
+                vec![ServeDecision::Emit(ServeEvent::CrossedDialRefused { peer })]
             }
         }
     }

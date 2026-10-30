@@ -13,6 +13,8 @@ use rmule_primitives::{CryptStance, PeerCrypt};
 use tokio::io::AsyncReadExt;
 
 use crate::adapters::HelloAdverts;
+use crate::adapters::peer_transfer::PeerWorker;
+use crate::adapters::serve_runtime::ServeConnection;
 
 use super::*;
 
@@ -178,92 +180,121 @@ async fn a_dial_the_peers_own_link_overtakes_before_its_hello_moves_its_download
     );
 }
 
-/// A dial whose hello went out is the socket the far side keeps when it
-/// reads it: aMule attaches it at that hello and drops its own
-/// (`ClientList.cpp:400-403`). So the peer's own hello is held, the names stay
-/// with the dial, and the far side's answer on the dial closes that link
-/// unanswered, leaving the peer in `DS_CONNECTING` to ask on the dial
-/// (`BaseClient.cpp:1692-1698`). A second download of the peer waits on the
-/// dial, and the far side never sees a second socket of rmule's.
+/// A dial whose hello is out and a hello of the peer's own link held on it.
+struct CrossedDownload {
+    links: SharedPeerLinks,
+    at: PeerEndpoint,
+    listen: TcpListener,
+    dialer: RuntimePeerTransferService,
+    worker: PeerWorker,
+    far: PeerConnection,
+    asker: PeerConnection,
+    served: ServeConnection,
+}
+
+impl CrossedDownload {
+    /// The dial's hello on the wire, the asker's own link come and its hello
+    /// held, then the far side's answer on the dial's socket.
+    async fn answered() -> Self {
+        let links = SharedPeerLinks::default();
+        let (mut serve, ours) = serving(&links).await;
+        let (listen, at) = asker_listen().await;
+        let mut dialer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
+            .with_peer_links(links.clone());
+        let worker = dialer
+            .start_peer_worker(at, dialed_serve_ctx(), file())
+            .await
+            .expect("a worker starts");
+        let (dial, dialed_from) = timeout(Duration::from_secs(5), listen.accept())
+            .await
+            .expect("the dial reaches the asker's listen port")
+            .expect("accepted");
+        // The dial's hello is on the wire before the asker's own link comes.
+        let mut first_byte = [0_u8; 1];
+        timeout(Duration::from_secs(5), dial.peek(&mut first_byte))
+            .await
+            .expect("the dial's hello arrives")
+            .expect("readable");
+
+        let asker = PeerConnection::connect(ours, asker_ctx(at.port()), ConnectOptions::default())
+            .await
+            .expect("rmule accepts the asker");
+        let mut served = timeout(Duration::from_secs(5), serve.accept())
+            .await
+            .expect("the link is accepted")
+            .expect("a serve connection");
+        assert!(matches!(
+            timeout(Duration::from_secs(5), served.next_event()).await,
+            Ok(Some(ServeInput::CrossedHelloHeld))
+        ));
+        assert_eq!(
+            links
+                .find(&[LinkName::Endpoint(at)])
+                .map(|found| found.remote),
+            Some(at),
+            "the dial keeps its names"
+        );
+        let user = LinkName::User(asker_hash());
+        assert!(links.find(&[user]).is_none(), "the held link is not filed");
+
+        // The far side answers the dial's hello on the socket it keeps.
+        let dialed_from = PeerEndpoint::V4(match dialed_from {
+            std::net::SocketAddr::V4(v4) => Ipv4Endpoint::new(*v4.ip(), v4.port()),
+            std::net::SocketAddr::V6(_) => unreachable!("a loopback IPv4 dial"),
+        });
+        let far = PeerConnection::over_stream(
+            dial,
+            dialed_from,
+            PeerStreamRole::Responder,
+            asker_ctx(at.port()),
+            ConnectOptions::default(),
+        );
+        Self {
+            links,
+            at,
+            listen,
+            dialer,
+            worker,
+            far,
+            asker,
+            served,
+        }
+    }
+}
+
+/// The far side's answer on the dial says nothing alone, so the download asks
+/// nothing on it until the far side's close of its own link shows it attached
+/// the dial (`ClientList.cpp:400-403`). The peer stays in `DS_CONNECTING` and
+/// asks on the dial (`BaseClient.cpp:1692-1698`). A second download of the
+/// peer waits on the dial, and the far side never sees a second socket of
+/// rmule's.
 #[tokio::test]
-async fn a_hello_crossing_a_downloads_dial_is_held_and_closes_unanswered_once_the_far_end_answers_it()
- {
-    let links = SharedPeerLinks::default();
-    let (mut serve, ours) = serving(&links).await;
-    let (listen, at) = asker_listen().await;
-    let mut dialer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT)
-        .with_peer_links(links.clone());
-    let _first = dialer
-        .start_peer_worker(at, dialed_serve_ctx(), file())
-        .await
-        .expect("a worker starts");
-    let (dial, dialed_from) = timeout(Duration::from_secs(5), listen.accept())
-        .await
-        .expect("the dial reaches the asker's listen port")
-        .expect("accepted");
-    // The dial's hello is on the wire before the asker's own link comes.
-    let mut first_byte = [0_u8; 1];
-    timeout(Duration::from_secs(5), dial.peek(&mut first_byte))
-        .await
-        .expect("the dial's hello arrives")
-        .expect("readable");
-
-    let mut asker = PeerConnection::connect(ours, asker_ctx(at.port()), ConnectOptions::default())
-        .await
-        .expect("rmule accepts the asker");
-    let mut served = timeout(Duration::from_secs(5), serve.accept())
-        .await
-        .expect("the link is accepted")
-        .expect("a serve connection");
-    assert!(matches!(
-        timeout(Duration::from_secs(5), served.next_event()).await,
-        Ok(Some(ServeInput::CrossedHelloHeld))
-    ));
-    assert_eq!(
-        links
-            .find(&[LinkName::Endpoint(at)])
-            .map(|found| found.remote),
-        Some(at),
-        "the dial keeps its names"
+async fn a_hello_crossing_a_downloads_dial_closed_by_the_far_end_leaves_the_download_on_the_dial() {
+    let CrossedDownload {
+        links,
+        at,
+        listen,
+        mut dialer,
+        worker: _first,
+        mut far,
+        asker,
+        mut served,
+    } = CrossedDownload::answered().await;
+    assert!(
+        !asked_for(&mut far, file().file_hash, Duration::from_millis(300)).await,
+        "nobody asks on a dial the far side may have refused"
     );
-    let user = LinkName::User(asker_hash());
-    assert!(links.find(&[user]).is_none(), "the held link is not filed");
 
-    // The far side answers the dial's hello on the socket it keeps.
-    let dialed_from = PeerEndpoint::V4(match dialed_from {
-        std::net::SocketAddr::V4(v4) => Ipv4Endpoint::new(*v4.ip(), v4.port()),
-        std::net::SocketAddr::V6(_) => unreachable!("a loopback IPv4 dial"),
-    });
-    let mut far = PeerConnection::over_stream(
-        dial,
-        dialed_from,
-        PeerStreamRole::Responder,
-        asker_ctx(at.port()),
-        ConnectOptions::default(),
-    );
+    drop(asker);
     assert!(
         asked_for(&mut far, file().file_hash, Duration::from_secs(5)).await,
         "the download keeps riding its dial"
     );
-
-    // Its answer settles the crossing: the serve side lets its own link go
-    // unanswered, and hears nothing of a client on it.
     assert!(matches!(
         timeout(Duration::from_secs(5), served.next_event()).await,
-        Ok(Some(ServeInput::CrossedLinkLetGo))
+        Ok(Some(ServeInput::CrossedDialKept))
     ));
-    let unanswered = timeout(Duration::from_secs(5), async {
-        while let Some(event) = asker.next_event().await {
-            match event {
-                PeerEvent::Connection(ConnectionEvent::Identified { .. }) => return false,
-                PeerEvent::Connection(ConnectionEvent::Disconnected { .. }) => return true,
-                _ => {}
-            }
-        }
-        true
-    })
-    .await;
-    assert_eq!(unanswered, Ok(true), "the link closes unanswered");
+    let user = LinkName::User(asker_hash());
     let names_back = async {
         while links.find(&[user]).map(|found| found.remote) != Some(at) {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -300,6 +331,60 @@ async fn a_hello_crossing_a_downloads_dial_is_held_and_closes_unanswered_once_th
             .await
             .is_err(),
         "the far side sees no second socket of rmule's"
+    );
+}
+
+/// A far side with no address for rmule refuses the attach, and a second
+/// client with no file answers the dial (`ClientList.cpp:388-397`). Its own
+/// link stays open past the close bound: that link is answered, the dial
+/// closes retiring nobody, and the download moves onto the client that wants
+/// something of rmule.
+#[tokio::test]
+async fn a_far_end_that_answers_a_downloads_dial_and_keeps_its_own_link_takes_the_download_there() {
+    let CrossedDownload {
+        links,
+        at,
+        listen: _listen,
+        dialer: _dialer,
+        mut worker,
+        mut far,
+        mut asker,
+        mut served,
+    } = CrossedDownload::answered().await;
+
+    assert!(matches!(
+        timeout(Duration::from_secs(5), served.next_event()).await,
+        Ok(Some(ServeInput::CrossedDialRefused))
+    ));
+    assert!(
+        asked_for(&mut asker, file().file_hash, Duration::from_secs(5)).await,
+        "the download rides the link the far side stayed on"
+    );
+    let closed = timeout(Duration::from_secs(5), async {
+        while let Some(event) = far.next_event().await {
+            if matches!(
+                event,
+                PeerEvent::Connection(ConnectionEvent::Disconnected { .. })
+            ) {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(closed.is_ok(), "the dial is let go");
+    let filed = links.find(&[LinkName::User(asker_hash())]);
+    assert_ne!(filed.map(|found| found.remote), Some(at));
+
+    let mut seen = Vec::new();
+    while let Ok(Some(event)) = timeout(Duration::from_millis(200), worker.next_event()).await {
+        seen.push(event);
+    }
+    assert!(
+        !seen.iter().any(|event| matches!(
+            event,
+            PeerWorkerEvent::DialEnded { .. } | PeerWorkerEvent::Disconnected
+        )),
+        "the dial retires nobody: {seen:?}"
     );
 }
 

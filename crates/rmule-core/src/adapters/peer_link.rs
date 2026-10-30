@@ -124,10 +124,12 @@ struct Book {
     /// Every live filing and the names it proves, whether it holds them or a
     /// link filed later does: where a name goes back to.
     live: HashMap<u64, Proven>,
-    /// The dials whose hello has not gone out, told when the peer's own link
-    /// takes one of their names (ADR-0107 invariant 7).
+    /// The dials that yield, told when the peer's own link takes one of their
+    /// names (ADR-0107 invariant 7).
     yielding: HashMap<u64, oneshot::Sender<FoundLink>>,
     /// The dials whose hello is out, until the far end answers one or it ends.
+    /// One answered with a hello held on it is back in `yielding` until that
+    /// hello settles.
     unanswered: HashMap<u64, crossing::UnansweredDial>,
     /// What each accepted hello met, from its session's gate to its triage.
     met: HashMap<PeerEndpoint, Meeting>,
@@ -183,6 +185,9 @@ pub(super) struct LinkJoin {
 enum Seat {
     /// Its turn: the peer as the link knows it.
     Riding(Box<PeerIdentity>),
+    /// The answered dial it waited on gave way to the peer's own link: it
+    /// looks the peer up again.
+    LookAgain,
     /// The Dial in Flight it waited on failed before the hello, for this
     /// cause.
     DialEnded(DialEnd),
@@ -284,6 +289,11 @@ impl DialInFlight {
     /// link ([`CrossedDial::give_up`]); never otherwise.
     pub(super) async fn given_up(&mut self) {
         self.filing.given_up().await;
+    }
+
+    /// The far end answered the dial ([`Filing::heard_answer`]).
+    pub(super) async fn heard_answer(&mut self) -> Option<FoundLink> {
+        self.filing.heard_answer().await
     }
 }
 
@@ -474,6 +484,7 @@ impl FoundLink {
                     let identity = match seat {
                         Ok(Seat::Riding(identity)) => *identity,
                         Ok(Seat::DialEnded(cause)) => return Turn::DialEnded(cause),
+                        Ok(Seat::LookAgain) => return Turn::LinkEnded,
                         // Told it waits, though the word may still sit
                         // unread beside the link's end.
                         Err(_) if waited || told_waiting.as_mut().is_some_and(|told| told.try_recv().is_ok()) => {
@@ -591,19 +602,33 @@ impl Filing {
         true
     }
 
-    /// The far end answered the dial's hello on the link: it attached this
-    /// link (`ClientList.cpp:400-403`), and a hello held on it closes. `far_end`
-    /// is what the link's driver reads of it from now on.
-    pub(super) fn answered(&mut self, far_end: Option<&FarEnd>) {
+    /// The far end answered the dial's hello on the link, which says nothing
+    /// alone: with a hello of its own link held on the dial, wait for what
+    /// does ([`crossing`]). `None` when the dial stands; the peer's own link
+    /// when the far end stayed on that, and this dial gives way to it. Nothing
+    /// may reach the dial's rider or its grant before this returns.
+    pub(super) async fn heard_answer(&mut self) -> Option<FoundLink> {
         self.given_up = None;
-        let Ok(mut book) = self.links.book.lock() else {
-            return;
-        };
-        if let Some(proven) = book.live.get_mut(&self.filing) {
-            proven.far_end = far_end.cloned();
-        }
-        if let Some(dial) = book.unanswered.remove(&self.filing) {
+        let verdict = {
+            let mut book = self.links.book.lock().ok()?;
+            let dial = book.unanswered.remove(&self.filing)?;
+            let verdict = dial.holds_a_hello().then(|| {
+                let (tell, told) = oneshot::channel();
+                book.yielding.insert(self.filing, tell);
+                told
+            });
             dial.answered();
+            verdict
+        }?;
+        verdict.await.ok()
+    }
+
+    /// `far_end` is what the link's driver reads of it from now on.
+    pub(super) fn read_through(&self, far_end: Option<&FarEnd>) {
+        if let Ok(mut book) = self.links.book.lock()
+            && let Some(proven) = book.live.get_mut(&self.filing)
+        {
+            proven.far_end = far_end.cloned();
         }
     }
 

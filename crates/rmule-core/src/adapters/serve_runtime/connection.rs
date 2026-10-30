@@ -48,8 +48,11 @@ pub enum ServeInput {
     /// The peer's hello on this link was held: a dial of ours to it has its
     /// hello out unanswered (ADR-0107 invariant 7).
     CrossedHelloHeld,
-    /// The far end answered that dial: this link closes unanswered.
-    CrossedLinkLetGo,
+    /// The far end closed this link with its hello held: it kept that dial.
+    CrossedDialKept,
+    /// The far end answered that dial and left this link open past the close
+    /// bound: it refused the attach, and this link is answered.
+    CrossedDialRefused,
 }
 
 impl ServeInput {
