@@ -47,15 +47,24 @@ async fn a_peer_that_stops_reading_holds_no_other_peer_up() {
     let (other, mut other_rx) = rig.link(peer_at([198, 51, 100, 4], 4000)).await;
     stuck.send(hello(0x0D)).await.unwrap();
     other.send(hello(0x0E)).await.unwrap();
-    for _ in 0..MORE_THAN_THE_QUEUES_HOLD {
-        stuck.send(status_ask(file)).await.unwrap();
-    }
+    tokio::spawn(async move {
+        for _ in 0..MORE_THAN_THE_QUEUES_HOLD {
+            if stuck.send(status_ask(file)).await.is_err() {
+                return;
+            }
+        }
+        stuck.closed().await;
+    });
 
-    other.send(status_ask(file)).await.unwrap();
-    assert!(matches!(
-        said(&mut other_rx, "another peer's ask answered").await,
-        ServerCommand::AnswerFileStatus { .. }
-    ));
+    // Asked as often as the stuck peer does, so these outlast whatever part of
+    // its flood the loop has not reached yet.
+    for _ in 0..2 * MORE_THAN_THE_QUEUES_HOLD {
+        other.send(status_ask(file)).await.unwrap();
+        assert!(matches!(
+            said(&mut other_rx, "another peer's ask answered").await,
+            ServerCommand::AnswerFileStatus { .. }
+        ));
+    }
     rig.stop().await;
 }
 
