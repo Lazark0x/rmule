@@ -39,13 +39,13 @@ const OP_REASKFILEPING: u8 = 0x90;
 /// aMule `MIN_REQUESTTIME` (`Constants.h:67`), seconds.
 const MIN_REQUEST_SECS: f64 = 590.0;
 /// aMule `FILEREASKTIME` (`Constants.h:35`), seconds: the reask cycle.
-const FILE_REASK_SECS: f64 = 1300.0;
+pub(crate) const FILE_REASK_SECS: f64 = 1300.0;
 /// The UDP ping leads the TCP full ask by 20 s; a slot ask this soon after an
 /// unanswered ping is that ping's fallback, which aMule's own downloader also
 /// sends (`PartFile.cpp:1449-1483`).
 const UDP_LEAD_SECS: f64 = 20.0;
 /// aMule bans at this aggressiveness (`UploadClient.cpp:810`).
-const BAN_SCORE: u32 = 10;
+pub(crate) const BAN_SCORE: u32 = 10;
 
 /// What a retained two-download emit run is scored from.
 pub(crate) struct StandingRun<'a> {
@@ -109,7 +109,7 @@ struct StandingVerdict<'a> {
 
 /// Every slot ask and UDP reask rmule sent the sharer in `run`'s tap, in
 /// capture order, with whether the sharer answered it.
-pub(super) fn asks(run: &StandingRun<'_>) -> Result<Vec<Ask>> {
+pub(crate) fn asks(run: &StandingRun<'_>) -> Result<Vec<Ask>> {
     let mut asks = Vec::new();
     let streams = tcp_streams(run.pcap)?;
     let answers: Vec<f64> = streams
@@ -189,7 +189,7 @@ fn file_hash(body: &[u8]) -> Option<[u8; 16]> {
 }
 
 /// aMule's aggressiveness after each of `asks`, replayed from its rule.
-pub(super) fn aggressiveness(asks: &[Ask]) -> Vec<u32> {
+pub(crate) fn aggressiveness(asks: &[Ask]) -> Vec<u32> {
     let mut score = 0_u32;
     let mut last: Option<f64> = None;
     asks.iter()

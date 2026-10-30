@@ -256,6 +256,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
         .map(|secs| tokio::time::Instant::now() + Duration::from_secs(secs));
     // Each download ends on its own; the run ends when every one has.
     let mut endings = Endings::new(args.out.len());
+    let add_file = args
+        .gates
+        .add_file
+        .as_deref()
+        .zip(args.gates.add_out.as_deref());
     let mut parts_tick = args.report_parts_every_ms.map(|ms| {
         let mut ticker = tokio::time::interval(Duration::from_millis(ms.max(1)));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -334,6 +339,19 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                         &mut shared,
                     )
                     .await?;
+                    continue;
+                }
+                Gate::Add => {
+                    if let Some((text, out)) = add_file {
+                        let Ed2kLink::File(file) = Ed2kLink::parse(text)
+                            .with_context(|| format!("parse ed2k link {text}"))?
+                        else {
+                            anyhow::bail!("--add-file must be an ed2k file link, got {text}");
+                        };
+                        endings.expect_one_more();
+                        core.send(crate::output::start(file, Some(server.clone()), out)?)
+                            .await?;
+                    }
                     continue;
                 }
                 Gate::Stop => {

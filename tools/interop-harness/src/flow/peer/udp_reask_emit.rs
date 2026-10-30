@@ -42,7 +42,7 @@ use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
 
 mod hand_over;
 mod known_sources;
-mod standing;
+pub(crate) mod standing;
 mod verdict;
 
 pub use self::verdict::score_run_dir;

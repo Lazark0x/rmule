@@ -34,6 +34,7 @@ pub use self::verdict::score_run_dir;
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -59,10 +60,10 @@ pub(crate) const ROOT_DIR: &str = "streaming-window";
 /// The stream file's xorshift seed.
 const STREAM_BYTES_SEED: u64 = 0x5EED_5712;
 /// Where a seed's Temp and Incoming dirs are mounted.
-const SEED_TEMP_MOUNT: &str = "/seed-temp";
-const SEED_INCOMING_MOUNT: &str = "/seed-incoming";
+pub(crate) const SEED_TEMP_MOUNT: &str = "/seed-temp";
+pub(crate) const SEED_INCOMING_MOUNT: &str = "/seed-incoming";
 /// The stock image's ready line, printed once it is on the server.
-const AMULE_READY: &str = "rmule-amule-ready";
+pub(crate) const AMULE_READY: &str = "rmule-amule-ready";
 /// How long rmule's download runs past the end the flow waits for.
 const RMULE_MARGIN_SECS: u64 = 120;
 
@@ -244,7 +245,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
                 .env_assignments(options.amule_env);
             bench.start_extra(&name, container, "run a seed aMule")?;
             wait_for_amule_ready(&bench.docker, options.layout, &name, timeout, AMULE_READY)?;
-            wait_for_share(&bench.docker, &name, timeout)?;
+            wait_for_share(&bench.docker, &name, 1, timeout)?;
             if let Some(corrupt) = options.corrupt.filter(|corrupt| corrupt.role == seed.role) {
                 corrupt::overwrite_part(&bench, &name, corrupt, options.file_size, &root)?;
             }
@@ -273,7 +274,7 @@ pub fn run_streaming_window(options: StreamingWindowOptions<'_>) -> Result<()> {
             stream.link.clone()
         };
         let link = if options.link_sources {
-            with_sources(&link, &rows)
+            with_sources(&link, &rows.iter().map(|row| row.ip).collect::<Vec<_>>())
         } else {
             link
         };
@@ -484,7 +485,12 @@ fn stage_seeds(
 
 /// Hold until the seed's `Show shared` lists the stream file: at start when
 /// its `.part.met` date held, after its rehash when it did not.
-fn wait_for_share(docker: &Docker, container: &str, timeout: Duration) -> Result<()> {
+pub(crate) fn wait_for_share(
+    docker: &Docker,
+    container: &str,
+    files: usize,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
         let shared = docker
@@ -493,7 +499,7 @@ fn wait_for_share(docker: &Docker, container: &str, timeout: Duration) -> Result
             .output()
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
             .unwrap_or_default();
-        if shared.contains(seed::STREAM_FILE_NAME) {
+        if shared.matches(seed::STREAM_FILE_NAME).count() >= files {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -544,10 +550,10 @@ fn without_part_hashes(link: &str) -> String {
 }
 
 /// The link naming every seed as a source as well.
-fn with_sources(link: &str, seeds: &[SeedRow]) -> String {
+pub(crate) fn with_sources(link: &str, seeds: &[Ipv4Addr]) -> String {
     let sources: Vec<String> = seeds
         .iter()
-        .map(|seed| format!("{}:{AMULE_PEER_TCP_PORT}", seed.ip))
+        .map(|ip| format!("{ip}:{AMULE_PEER_TCP_PORT}"))
         .collect();
     let body = link.strip_suffix("|/").unwrap_or(link);
     format!("{body}|/|sources,{}|/", sources.join(","))

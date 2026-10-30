@@ -148,6 +148,16 @@ pub(crate) struct GateArgs {
     /// End the run, as its deadline would, once this path exists.
     #[arg(long)]
     pub(crate) stop_gate: Option<PathBuf>,
+    /// Add the `--add-file` download once this path exists, so a run can stage
+    /// what the first downloads left behind before the next one starts.
+    #[arg(long, requires_all = ["add_file", "add_out"])]
+    pub(crate) add_gate: Option<PathBuf>,
+    /// The ED2K file link the add gate starts.
+    #[arg(long, requires = "add_gate")]
+    pub(crate) add_file: Option<String>,
+    /// Output path for the add gate's verified bytes.
+    #[arg(long, requires = "add_gate")]
+    pub(crate) add_out: Option<PathBuf>,
 }
 
 /// What the gates said at one look.
@@ -157,6 +167,8 @@ pub(crate) enum Gate {
     Shut,
     /// The pause gate appeared: pause now, once.
     Pause,
+    /// The add gate appeared: start the further download, once.
+    Add,
     /// The stop gate appeared: end the run.
     Stop,
 }
@@ -165,14 +177,17 @@ pub(crate) enum Gate {
 pub(crate) struct Gates {
     pause: Option<PathBuf>,
     stop: Option<PathBuf>,
+    add: Option<PathBuf>,
     paused: bool,
+    added: bool,
     ticker: Option<tokio::time::Interval>,
 }
 
 impl Gates {
     /// The gates `args` names; with none, [`Self::tick`] never resolves.
     pub(crate) fn new(args: &GateArgs) -> Self {
-        let ticker = (args.pause_gate.is_some() || args.stop_gate.is_some()).then(|| {
+        let any = args.pause_gate.is_some() || args.stop_gate.is_some() || args.add_gate.is_some();
+        let ticker = any.then(|| {
             let mut ticker = tokio::time::interval(Duration::from_secs(1));
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             ticker
@@ -180,7 +195,9 @@ impl Gates {
         Self {
             pause: args.pause_gate.clone(),
             stop: args.stop_gate.clone(),
+            add: args.add_gate.clone(),
             paused: false,
+            added: false,
             ticker,
         }
     }
@@ -203,6 +220,10 @@ impl Gates {
         if !self.paused && self.pause.as_deref().is_some_and(Path::exists) {
             self.paused = true;
             return Gate::Pause;
+        }
+        if !self.added && self.add.as_deref().is_some_and(Path::exists) {
+            self.added = true;
+            return Gate::Add;
         }
         Gate::Shut
     }
@@ -267,6 +288,9 @@ mod tests {
         let stop = dir.path().join("stop");
         let mut gates = Gates::new(&GateArgs {
             pause_gate: Some(pause.clone()),
+            add_gate: None,
+            add_file: None,
+            add_out: None,
             share_after_pause: Vec::new(),
             stop_gate: Some(stop.clone()),
         });

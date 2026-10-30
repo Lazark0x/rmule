@@ -48,6 +48,11 @@ impl Endings {
         }
     }
 
+    /// One more download joined the run.
+    pub(super) const fn expect_one_more(&mut self) {
+        self.expected += 1;
+    }
+
     /// Take `event` in. A download's second ending is not counted: the first
     /// is the one that ended it.
     pub(super) fn observe(&mut self, event: &DownloadEvent) -> Noted {

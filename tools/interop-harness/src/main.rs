@@ -57,6 +57,10 @@ use crate::cli::nat::{
     SentinelSourcesLegacyArgs, ipv6_dialect, ipv6_net_accept, natgw_selfproof, natt, portmap,
     sentinel_sources_legacy,
 };
+use crate::cli::source_handover::{
+    PeerSourceHandoverArgs, PeerSourceHandoverScoreArgs, peer_source_handover,
+    peer_source_handover_score,
+};
 use crate::cli::one_link::{
     PeerOneLinkArgs, PeerOneLinkScoreArgs, peer_one_link, peer_one_link_score,
 };
@@ -356,6 +360,15 @@ enum HarnessCommand {
     /// copies and rmule's log, without driving the flow again.
     #[command(name = "peer-one-link-score")]
     PeerOneLinkScore(PeerOneLinkScoreArgs),
+    /// The Source Handover flow: a stock aMule holding nothing more of one
+    /// download keeps rmule's standing for another, asked a reask period
+    /// after the peer's last ask (ADR-0090). A tap in rmule's namespace.
+    #[command(name = "peer-source-handover")]
+    PeerSourceHandover(PeerSourceHandoverArgs),
+    /// Score a finished or archived `peer-source-handover` run dir from its
+    /// tap, the second copy and rmule's log, without driving the flow again.
+    #[command(name = "peer-source-handover-score")]
+    PeerSourceHandoverScore(PeerSourceHandoverScoreArgs),
     /// The dial-back grant flow: the eserver, a High-ID stock aMule sharer
     /// held to two slots by two stock aMule holders, and one rmule core
     /// queued behind them; one holder stops and the sharer dials rmule back
@@ -490,6 +503,7 @@ impl HarnessCommand {
             Self::PeerLowIdCallbackReaskScore(args) => Some(&args.run_dir),
             Self::ServerCallbackServeScore(args) => Some(&args.run_dir),
             Self::PeerOneLinkScore(args) => Some(&args.run_dir),
+            Self::PeerSourceHandoverScore(args) => Some(&args.run_dir),
             Self::PeerDialBackGrantScore(args) => Some(&args.run_dir),
             Self::PeerQueueFanoutScore(args) => Some(&args.run_dir),
             Self::PeerReciprocityScore(args) => Some(&args.run_dir),
@@ -515,6 +529,7 @@ impl HarnessCommand {
                 | Self::PeerLowIdCallbackReaskScore(_)
                 | Self::ServerCallbackServeScore(_)
                 | Self::PeerOneLinkScore(_)
+                | Self::PeerSourceHandoverScore(_)
                 | Self::PeerDialBackGrantScore(_)
                 | Self::PeerQueueFanoutScore(_)
                 | Self::PeerReciprocityScore(_)
@@ -669,6 +684,12 @@ fn dispatch(command: HarnessCommand) -> Result<()> {
         }
         HarnessCommand::PeerOneLinkScore(args) => {
             peer_one_link_score(args)?;
+        }
+        HarnessCommand::PeerSourceHandover(args) => {
+            peer_source_handover(args)?;
+        }
+        HarnessCommand::PeerSourceHandoverScore(args) => {
+            peer_source_handover_score(args)?;
         }
         HarnessCommand::PeerDialBackGrant(args) => {
             peer_dial_back_grant(args)?;
