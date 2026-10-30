@@ -15,9 +15,8 @@ use rmule_primitives::{
 use crate::{
     CallbackRequest, CloseReason, CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kError,
     Ed2kEvent, GetServerList, GetSourcesRequest, HolepunchRequest, Ipv6Update, LoginAdvert,
-    LoginRequest,
-    OfferFiles, QueryMoreResults, RelatedSearchRequest, SearchRequest, ServerAssignedFacts,
-    ServerCapability, ServerGrants, ServerPacket, UdpPortsAdvert,
+    LoginRequest, OfferFiles, QueryMoreResults, RelatedSearchRequest, SearchRequest,
+    ServerAssignedFacts, ServerCapability, ServerGrants, ServerPacket, UdpPortsAdvert,
     server_packet::DecodedServerFrame,
 };
 

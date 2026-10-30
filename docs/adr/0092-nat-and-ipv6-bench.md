@@ -98,7 +98,7 @@ Facts the bench has to respect:
 | stock aMule 2.3.3 | `amule` | Ubuntu 24.04 package | legacy oracle: ignores every new tag and opcode |
 | kno's aMule | `amule-kno` (the fork's Debian Dockerfile, ffprobe stage stripped, a `--quic` variant) | Fork Pin `kno/amule` `integration/network-parity` `ab483654` | IPv6 client↔client, Kad tags, uTP, rendezvous target, the QUIC gate |
 | emule-qt 0.4.2 | `emuleqt` | `73fff714` | reference body for the IPv6 and port-mapping rows; a Kad body in `kad-node` mode; stimulus elsewhere |
-| ed2k-server | `ed2ksrv` | `4da4774fa8f61f5c1e40ac5054494502c5d75e6d` (`v0.9.75`) | the server punch coordinator |
+| ed2k-server | `ed2ksrv` | `878fc830f60dde3907811baede83bb2ece42e19b` (`v0.9.85`) | the server punch coordinator, and the IPv6 server surface on `config-ipv6.toml` |
 
 Plus `natgw`, `natprobe` and a `miniupnpd` gateway (`--ipv6 --igd2`, `enable_pcp_pmp=yes`).
 The ed2ksrv pin is verified at build time: `images/ed2ksrv/pin.env` names the commit,
@@ -156,7 +156,7 @@ its NAT Type Proof; every `-symmetric` variant runs the reflector probe in the s
 | `ipv6-extsx` | emuleqt and a queued rmule | the ExtSX record carries the IPv6; unknown tags skipped | fast |
 | `ipv6-direct-dial-lowid` | amule-kno (Low ID on IPv4, IPv6 reachable) | rung 0 dials IPv6 directly | slow |
 | `ipv6-kad-tags` | amule-kno, emuleqt, rmule storers | `ip6` and `bi6` published, stored, re-served and parsed; a byte-equal transfer off emule-qt's row over IPv6 | slow |
-| `ipv6-server-sentinel` | ed2ksrv | a sentinel emitted to a capable session and dialed (a documented absence while the pin has no IPv6) | slow |
+| `ed2ksrv-server-surface` | ed2ksrv | a sentinel emitted to a Low-ID session with the tag, the classic record without it, a crypt-pong under a learned key, and no `0x26` or `OP_SERVERLIST` v6 block | slow |
 | `ipv6-udp-key` | emuleqt | the 35-byte key decrypts an IPv6 datagram | fast |
 | `natt-caps-utp` | amule-kno | CAPS / CAPS-ACK, KEY frame, uTP SYN answered | fast |
 | `natt-buddy-rendezvous-{cone,restricted,symmetric}` | rmule mesh, natgw | the punch succeeds behind cone and restricted, fails honestly behind symmetric with proof | slow |

@@ -92,6 +92,10 @@ own grant field, never raw bits.
 | `0x00000080` | `TYPETAGINTEGER` | integer `FT_FILETYPE` tag in offers (`KnownFile.cpp`) |
 | `0x00000100` | `LARGEFILES` | 64-bit sizes in offers/get-sources (`Server.h` `SupportsLargeFilesTCP()`); rmule's session large-file command gates |
 | `0x00000400` | `TCPOBFUSCATION` | server-crypt dial (`Server.h` `SupportsObfuscationTCP()`: non-zero obfuscation TCP port **and** (UDP-flag `0x400` **or** this bit); dial gate `ServerSocket.cpp` adds the crypt pref) — feeds ADR-0042 through the port the IDCHANGE extension supplies |
+| `0x00001000` | `NAT_CALLBACK` | none: Lugdunum's callback, named for the operator (ADR-0091) |
+| `0x00008000` | `IPV6_UPDATE` | the session's `OP_IPV6_UPDATE` gate (ADR-0087) |
+| `0x00020000` | `LOWID_HOLEPUNCH` | the session's `0x60` gate and the Server Coordinator's start (ADR-0091) |
+| `0x00100000` | `HOLEPUNCH_EXTENSION` | none: rmule does not announce it (ADR-0091) |
 
 Out of that first scope (per ADR-0018):
 

@@ -97,11 +97,11 @@ impl GlobServStatReq {
 ///
 /// - the **eserver family** (Lugdunum) admits an obfuscated ping of
 ///   `4..=18` bytes;
-/// - **ed2k-server** (`andrey23127/ed2k-server` @`eacf7f1`) reads that same
-///   `4..=18` arm, but its pre-flight drops anything shorter than 10 bytes
-///   before the arm is reached — an effective `10..=18` window.
+/// - **ed2k-server** (`andrey23127/ed2k-server`) answers `4..=19` since
+///   v0.9.83, but servers before it read `4..=18` behind a pre-flight that
+///   drops anything shorter than 10 bytes — an effective `10..=18` window.
 ///
-/// `4 + 6..=4 + 14` = `10..=18` total sits inside both, so no server drops the
+/// `4 + 6..=4 + 14` = `10..=18` total sits inside all of them, so no server drops the
 /// ping silently — which on the wire is indistinguishable from "the server
 /// never answered", and cost a single-shot probe ~1 run in 16 before the clamp.
 /// The wire form is unchanged: aMule mints paddings across this range too, so a

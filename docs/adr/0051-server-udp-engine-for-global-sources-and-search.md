@@ -27,8 +27,12 @@ Wire facts that shape it:
   (aMule `DownloadQueue.cpp:870`, eMule `DownloadQueue.cpp:759-761`): reading the
   answers depends on session facts (our own client ID, whether we are firewalled), and
   the callback request carries our public contact, learned from the session.
-- ed2k-server bans a client for 24 hours after a burst of `0x98` faster than about 200 a
-  minute.
+- ed2k-server sanctions one address (a /64 for IPv6) for 24 hours, by rate over at least 10 s
+  across UDP searches and source requests: over 600 datagrams a minute is a ban, over 200 at
+  uniform timing a throttle. By file over an hour, TCP and UDP together: 2 000 files with 1 000
+  different, each asked at most three times, read as a scanner, and 3 000 asks at five a minute
+  per file as a hammer (`bot_detector.rs`, v0.9.85). The one-minute re-ask, 31 hashes to a
+  datagram, stays clear of all four until past 18 000 live downloads.
 
 ## Decision
 
