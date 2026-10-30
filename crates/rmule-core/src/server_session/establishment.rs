@@ -231,8 +231,10 @@ async fn establish_into(
     shared.session_established();
     // IPv4 only, and by type: the punch is IPv4, and a session over IPv6
     // says nothing about our IPv4 mapping — so there is nothing to keep alive
-    // and the chooser is never told the server can introduce us.
+    // and the chooser is never told the server can introduce us. And only on
+    // a server that said it coordinates: `0x20000` is the whole gate (ADR-0091).
     if udp_ports.is_some()
+        && grants.lowid_holepunch
         && let Some(std::net::SocketAddr::V4(server_addr)) = resolved
     {
         // The server's own port, not the one dialed: an obfuscated link

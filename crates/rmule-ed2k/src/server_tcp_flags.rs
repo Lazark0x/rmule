@@ -47,6 +47,15 @@ pub struct ServerGrants {
     /// the login tag is gated on rmule's own address — so this is what a
     /// capable server looks like from the outside, not a permission.
     pub ipv6: bool,
+    /// `IPV6_UPDATE`: an address that moves in session is told to the server
+    /// by `OP_IPV6_UPDATE` (ADR-0087). Consumer: the session's update command
+    /// gate.
+    pub ipv6_update: bool,
+    /// `LOWID_HOLEPUNCH`: the server coordinates a punch (ADR-0091). The
+    /// whole gate: without it no `0x60` leaves and no keepalive runs.
+    /// Consumer: the session's punch command gate and the establishment of
+    /// the Server Coordinator.
+    pub lowid_holepunch: bool,
 }
 
 impl From<ServerTcpFlags> for ServerGrants {
@@ -60,6 +69,8 @@ impl From<ServerTcpFlags> for ServerGrants {
             large_files: flags.supports_large_files(),
             tcp_obfuscation: flags.supports_tcp_obfuscation(),
             ipv6: flags.supports_ipv6(),
+            ipv6_update: flags.supports_ipv6_update(),
+            lowid_holepunch: flags.supports_lowid_holepunch(),
         }
     }
 }
@@ -74,7 +85,7 @@ mod tests {
     fn each_wire_bit_projects_onto_exactly_its_grant() {
         // The (bit, projection) table IS the parity claim: aMule
         // `Client2Server/TCP.h` values routed per `Server.h`'s predicates.
-        let cases: [(u32, GrantRead); 8] = [
+        let cases: [(u32, GrantRead); 10] = [
             (0x0000_0001, |g| g.compression),
             (0x0000_0008, |g| g.new_tags),
             (0x0000_0010, |g| g.unicode),
@@ -83,6 +94,8 @@ mod tests {
             (0x0000_0100, |g| g.large_files),
             (0x0000_0400, |g| g.tcp_obfuscation),
             (0x0000_4000, |g| g.ipv6),
+            (0x0000_8000, |g| g.ipv6_update),
+            (0x0002_0000, |g| g.lowid_holepunch),
         ];
         for (bit, grant) in cases {
             let granted = ServerGrants::from(ServerTcpFlags::from_bits(bit));

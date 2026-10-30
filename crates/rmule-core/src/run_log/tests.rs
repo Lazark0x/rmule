@@ -370,7 +370,7 @@ fn the_lean_log_holds_the_login_steps_with_our_address_and_ports_and_no_peer() {
          closed_by=peer",
         "server.login server=203.0.113.7:4661 step=answered client_id=83915211 \
          public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no \
-         type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no",
+         type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no",
         "server.login server=203.0.113.7:4661 step=port_test_window_closed arrived=yes",
         "server.login server=203.0.113.7:4661 step=port_test_late late_by_ms=1250 \
          admission=refused",

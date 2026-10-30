@@ -179,9 +179,8 @@ impl SessionLink {
     /// reporting whether the request was queued. `try_send`, never `send`:
     /// the caller is the NAT-T front's loop, which may not wait on a consumer
     /// it does not drain — a full session inbox costs this introduction. The
-    /// answer is an event on the session, or — from a server that does not
-    /// speak the punch — nothing at all, which the ledger's timeout turns
-    /// into a fallback.
+    /// answer is an event on the session, or — a frame lost on the way —
+    /// nothing at all, which the ledger's timeout turns into a fallback.
     pub(crate) fn request_holepunch(&self, target: ClientId, our_udp_port: u16) -> bool {
         self.requests.upgrade().is_some_and(|requests| {
             requests
@@ -504,9 +503,9 @@ async fn run_session<L: ServerLink>(
     let mut disconnect_ack: Option<oneshot::Sender<()>> = None;
     // The introduction clock (ADR-0091). It lives on the session
     // for the reason the `0x9F` keepalive's cadence does: the session is an
-    // introduction's whole lifetime. A server that does not speak the punch
-    // says nothing at all, so this tick is the only thing that can ever turn
-    // that silence into a fall-through to the target's buddy.
+    // introduction's whole lifetime. A frame lost on the way says nothing at
+    // all, so this tick is the only thing that can ever turn that silence
+    // into a fall-through to the target's buddy.
     let mut introductions = tokio::time::interval(crate::natt::server_punch::INTRODUCTION_POLL);
     introductions.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {

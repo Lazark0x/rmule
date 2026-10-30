@@ -38,14 +38,13 @@ pub(crate) const SERVER_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How often the session re-reads the introduction clock. Finer than
 /// [`INTRODUCTION_TIMEOUT`] by an order of magnitude, and one wake-up a second
-/// on a connected session costs nothing — silence is the *only* signal a
-/// server that does not speak the punch gives, so the whole fall-through to
-/// the buddy hangs off this tick.
+/// on a connected session costs nothing — silence is the *only* signal a lost
+/// frame gives, so the fall-through to the buddy hangs off this tick.
 pub(crate) const INTRODUCTION_POLL: Duration = Duration::from_secs(1);
 
-/// How long a `0x60` waits for either answer. A server that does not speak
-/// the punch ignores the opcode entirely, so this silence is the *only*
-/// signal there — and the cue to fall back to the buddy coordinator. The same
+/// How long a `0x60` waits for either answer. Only a server that set
+/// `0x20000` gets one, so this silence is a lost frame or a server that broke
+/// its word, and the cue to fall back to the buddy coordinator. The same
 /// fifteen seconds the buddy path gives its hint.
 pub(crate) const INTRODUCTION_TIMEOUT: Duration = super::requester::HINT_TIMEOUT;
 
@@ -114,9 +113,7 @@ pub(crate) enum IntroductionFailure {
         reason: HolepunchFailReason,
         permanent: bool,
     },
-    /// Nothing came back in [`INTRODUCTION_TIMEOUT`] — a server that does not
-    /// speak the punch, or a lost frame. Indistinguishable, and treated the
-    /// same: move on.
+    /// Nothing came back in [`INTRODUCTION_TIMEOUT`]: move on.
     Silence,
 }
 
@@ -414,8 +411,8 @@ impl Default for CoordinatorSession {
 }
 
 impl CoordinatorSession {
-    /// Whether a session that advertised `0xF9` holds the cell and still
-    /// runs.
+    /// Whether a session that advertised `0xF9`, on a server that said it
+    /// coordinates, holds the cell and still runs.
     pub(crate) fn is_live(&self) -> bool {
         self.0
             .borrow()

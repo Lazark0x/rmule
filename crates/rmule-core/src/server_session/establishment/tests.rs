@@ -378,6 +378,48 @@ fn session_under(
     shared
 }
 
+/// `0x20000` is the whole gate (ADR-0091): the same login, on a server that
+/// did not set it, starts no keepalive and tells the chooser nothing, so an
+/// attempt falls past this server at once instead of sending it an opcode it
+/// may close the link on.
+#[tokio::test]
+async fn only_a_server_that_set_the_punch_bit_becomes_the_coordinator() {
+    for (flags, coordinates) in [
+        (0, false),
+        (rmule_ed2k::ServerTcpFlags::LOWID_HOLEPUNCH, true),
+    ] {
+        let fake = rmule_testkit::FakeEd2kServer::start().await;
+        fake.set_tcp_flags(Some(rmule_ed2k::ServerTcpFlags::from_bits(flags)))
+            .await;
+        let (facts, _events_tx, _events) = facts_listing(&fake.endpoint());
+        let shared = session_under(None, facts);
+        let (udp_tx, mut udp_rx) = tokio::sync::mpsc::channel(8);
+        shared.server_punch().install_client_udp(udp_tx);
+        shared.own_identity().addresses().record_bind(
+            SocketRole::Udp,
+            &rmule_net::family::FamilyBinds {
+                bound: vec![AddressFamily::V4],
+                refused: Vec::new(),
+            },
+            4672,
+        );
+
+        connect_to_server(
+            &shared,
+            fake.endpoint(),
+            identity(),
+            &SharedIpFilter::default(),
+        )
+        .await
+        .expect("the login is answered");
+
+        assert_eq!(shared.server_punch().is_live(), coordinates, "{flags:#x}");
+        let keepalive =
+            tokio::time::timeout(std::time::Duration::from_millis(200), udp_rx.recv()).await;
+        assert_eq!(keepalive.is_ok(), coordinates, "{flags:#x}");
+    }
+}
+
 /// Under `Requested`, a server whose status answer named an obfuscation port
 /// and `TCPOBFUSCATION` is dialed there, the crypt handshake runs, and the
 /// login is answered over it (aMule `ServerSocket.cpp:786-791`).

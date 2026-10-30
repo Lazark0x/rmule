@@ -58,8 +58,8 @@ pub enum Ed2kCommand {
     /// (`OP_LOWID_HOLEPUNCH_REQUEST`, ADR-0091). The answer is a
     /// [`HolepunchIntroduced`](Ed2kEvent::HolepunchIntroduced) — sent to the
     /// target too — or a [`HolepunchRefused`](Ed2kEvent::HolepunchRefused).
-    /// A server that does not speak this ignores the opcode and answers
-    /// nothing, so the caller's own timeout is the only failure signal there.
+    /// Refused locally unless the server set `LOWID_HOLEPUNCH`: another server
+    /// may close the link on the opcode.
     RequestHolepunch {
         /// The target's server-assigned Low-ID.
         target: ClientId,
@@ -114,6 +114,9 @@ pub enum ServerCapability {
     /// (`SearchResultsWnd.cpp:1658-1663`) and aMule refuses
     /// (`SearchListCtrl.cpp:999-1016`).
     RelatedSearch,
+    /// `SRV_TCPFLG_LOWID_HOLEPUNCH`: without it a `0x60` may close the link
+    /// (ADR-0091).
+    LowIdHolepunch,
 }
 
 /// Why the session refused a command instead of putting it on the wire.

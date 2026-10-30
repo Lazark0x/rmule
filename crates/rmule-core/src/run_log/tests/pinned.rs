@@ -164,10 +164,10 @@ const PINNED_LEAN: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_arrived admission=test_connection
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_ended end=tester_closed
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_ended end=peer_connection_ended closed_by=peer
- INFO run_log: server.login server=203.0.113.7:4661 step=answered client_id=83915211 public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no
+ INFO run_log: server.login server=203.0.113.7:4661 step=answered client_id=83915211 public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_window_closed arrived=yes
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_late late_by_ms=1250 admission=refused
- INFO run_log: server.login server=203.0.113.7:4661 step=reassigned client_id=10775 public_ip=refused_server_own reported=203.0.113.7 compression=no new_tags=no unicode=no related_search=no type_tag_integer=no large_files=no tcp_obfuscation=no ipv6=no
+ INFO run_log: server.login server=203.0.113.7:4661 step=reassigned client_id=10775 public_ip=refused_server_own reported=203.0.113.7 compression=no new_tags=no unicode=no related_search=no type_tag_integer=no large_files=no tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no
  INFO run_log: server.login server=192.0.2.44:4242 step=link_chosen link=obfuscated port=4254
  INFO run_log: server.login server=192.0.2.44:4242 step=dial_failed cause=crypt_handshake error=unexpected_eof os_code=none
  INFO run_log: server.login server=192.0.2.44:4242 step=link_chosen link=plain why=obfuscated_attempt_failed
@@ -213,10 +213,10 @@ const PINNED_FULL: &str = r#" INFO run_log: server.connected server=203.0.113.7:
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_arrived admission=test_connection
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_ended end=tester_closed
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_ended end=peer_connection_ended closed_by=peer
- INFO run_log: server.login server=203.0.113.7:4661 step=answered client_id=83915211 public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no
+ INFO run_log: server.login server=203.0.113.7:4661 step=answered client_id=83915211 public_ip=203.0.113.5 compression=yes new_tags=no unicode=no related_search=no type_tag_integer=no large_files=yes tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_window_closed arrived=yes
  INFO run_log: server.login server=203.0.113.7:4661 step=port_test_late late_by_ms=1250 admission=refused
- INFO run_log: server.login server=203.0.113.7:4661 step=reassigned client_id=10775 public_ip=refused_server_own reported=203.0.113.7 compression=no new_tags=no unicode=no related_search=no type_tag_integer=no large_files=no tcp_obfuscation=no ipv6=no
+ INFO run_log: server.login server=203.0.113.7:4661 step=reassigned client_id=10775 public_ip=refused_server_own reported=203.0.113.7 compression=no new_tags=no unicode=no related_search=no type_tag_integer=no large_files=no tcp_obfuscation=no ipv6=no ipv6_update=no lowid_holepunch=no
  INFO run_log: server.login server=192.0.2.44:4242 step=link_chosen link=obfuscated port=4254
  INFO run_log: server.login server=192.0.2.44:4242 step=dial_failed cause=crypt_handshake error=unexpected_eof os_code=none
  INFO run_log: server.login server=192.0.2.44:4242 step=link_chosen link=plain why=obfuscated_attempt_failed

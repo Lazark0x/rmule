@@ -6,11 +6,22 @@ use std::net::Ipv4Addr;
 
 use rmule_ed2k::{
     CommandRejectReason, Ed2kCommand, Ed2kCommandKind, Ed2kEvent, HolepunchFail,
-    HolepunchFailReason, HolepunchInfo, HolepunchRole, Output,
+    HolepunchFailReason, HolepunchInfo, HolepunchRole, Output, ServerCapability, ServerTcpFlags,
 };
 use rmule_primitives::{ClientId, Ipv4Endpoint, Packet, PacketProtocol, UserHash};
 
 use crate::fixture;
+
+/// A logged-in session on a server that set `LOWID_HOLEPUNCH`.
+fn on_a_punching_server() -> rmule_ed2k::Ed2kSession {
+    let mut session = fixture::started_session(7);
+    fixture::login_with_flags(
+        &mut session,
+        Some(ServerTcpFlags::from_bits(ServerTcpFlags::LOWID_HOLEPUNCH)),
+    );
+    while session.poll_output().is_some() {}
+    session
+}
 
 fn ask(target: u32) -> Ed2kCommand {
     Ed2kCommand::RequestHolepunch {
@@ -36,7 +47,7 @@ fn a_holepunch_request_goes_out_only_once_logged_in() {
     ));
     assert!(early.poll_output().is_none(), "nothing was written");
 
-    let mut session = fixture::logged_in_session(7);
+    let mut session = on_a_punching_server();
     session.handle_command(ask(1337));
     let Some(Output::Write(bytes)) = session.poll_output() else {
         panic!("the request is a write");
@@ -47,6 +58,25 @@ fn a_holepunch_request_goes_out_only_once_logged_in() {
             0xE3, 0x07, 0x00, 0x00, 0x00, 0x60, 0x39, 0x05, 0x00, 0x00, 0x39, 0x12
         ]
     );
+}
+
+/// README *Is this server doing it?*: some servers close the link on an opcode
+/// they do not know, and a server without `0x20000` is one of those until it
+/// says otherwise. The refusal is local and nothing reaches the wire.
+#[test]
+fn a_server_that_never_set_the_punch_bit_is_never_sent_a_request() {
+    let mut session = fixture::logged_in_session(7);
+    session.handle_command(ask(1337));
+    assert!(matches!(
+        session.poll_output(),
+        Some(Output::Event(Ed2kEvent::CommandRejected {
+            command: Ed2kCommandKind::RequestHolepunch,
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LowIdHolepunch,
+            },
+        }))
+    ));
+    assert!(session.poll_output().is_none(), "nothing was written");
 }
 
 /// An introduction arrives whether we asked or the peer did, and a refusal

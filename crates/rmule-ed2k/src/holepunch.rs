@@ -66,7 +66,11 @@ impl HolepunchRequest {
     /// [`Ed2kError::InvalidPayload`] unless the body is exactly six bytes
     /// under this opcode.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchRequest, REQUEST_LEN..=REQUEST_LEN)?;
+        let body = body_of(
+            packet,
+            Opcode::LowIdHolepunchRequest,
+            REQUEST_LEN..=REQUEST_LEN,
+        )?;
         Ok(Self {
             target: ClientId::from_u32(u32::from_le_bytes([body[0], body[1], body[2], body[3]])),
             our_udp_port: u16::from_le_bytes([body[4], body[5]]),
@@ -169,7 +173,11 @@ impl HolepunchInfo {
     /// endpoint is somewhere a punch may be aimed is the precedence rule's
     /// question, and it is asked where the punch is decided.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchInfo, INFO_MIN_LEN..=usize::MAX)?;
+        let body = body_of(
+            packet,
+            Opcode::LowIdHolepunchInfo,
+            INFO_MIN_LEN..=usize::MAX,
+        )?;
         let ip = Ipv4Addr::new(body[0], body[1], body[2], body[3]);
         let peer_tcp_port = u16::from_le_bytes([body[4], body[5]]);
         let udp_port = u16::from_le_bytes([body[6], body[7]]);

@@ -350,6 +350,15 @@ impl Ed2kSession {
                     );
                     return;
                 }
+                if !self.grants.lowid_holepunch {
+                    self.reject_command(
+                        Ed2kCommandKind::RequestHolepunch,
+                        CommandRejectReason::UnsupportedServerCapability {
+                            capability: ServerCapability::LowIdHolepunch,
+                        },
+                    );
+                    return;
+                }
                 let bytes = HolepunchRequest {
                     target,
                     our_udp_port,

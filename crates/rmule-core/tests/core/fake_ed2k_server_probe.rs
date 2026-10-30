@@ -153,6 +153,9 @@ async fn a_login_claiming_the_nat_callback_is_dropped() {
             )
         }
     };
-    assert!(answered(advertising.clone()).await, "the tag alone is served");
+    assert!(
+        answered(advertising.clone()).await,
+        "the tag alone is served"
+    );
     assert!(!answered(claiming).await, "the claim is dropped");
 }

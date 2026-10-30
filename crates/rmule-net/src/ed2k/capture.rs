@@ -232,5 +232,8 @@ pub(crate) fn command_reject_reason_label(reason: &CommandRejectReason) -> &'sta
         CommandRejectReason::UnsupportedServerCapability {
             capability: ServerCapability::RelatedSearch,
         } => "UnsupportedServerCapability:RelatedSearch",
+        CommandRejectReason::UnsupportedServerCapability {
+            capability: ServerCapability::LowIdHolepunch,
+        } => "UnsupportedServerCapability:LowIdHolepunch",
     }
 }

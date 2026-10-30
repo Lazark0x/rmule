@@ -23,7 +23,11 @@ fn tcp_grant_word(flag: ServerTcpFlag) -> &'static str {
         ServerTcpFlag::TypeTagInteger => "integer type tags",
         ServerTcpFlag::LargeFiles => "large files",
         ServerTcpFlag::TcpObfuscation => "obfuscation",
+        ServerTcpFlag::NatCallback => "NAT callback",
         ServerTcpFlag::Ipv6 => "IPv6",
+        ServerTcpFlag::Ipv6Update => "IPv6 updates",
+        ServerTcpFlag::LowIdHolepunch => "Low-ID hole punch",
+        ServerTcpFlag::HolepunchExtension => "hole-punch extension",
     }
 }
 

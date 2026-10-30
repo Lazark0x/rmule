@@ -31,6 +31,9 @@ impl ServerTcpFlags {
     pub const LARGE_FILES: u32 = 0x0000_0100;
     /// The server accepts obfuscated TCP connections.
     pub const TCPOBFUSCATION: u32 = 0x0000_0400;
+    /// The server runs Lugdunum's NAT callback (`0xA6` / `0x37` / `0xA7`).
+    /// rmule speaks none of it (ADR-0091): named so an operator can read it.
+    pub const NAT_CALLBACK: u32 = 0x0000_1000;
     /// The server speaks the emule-qt IPv6 extension (ADR-0087 §4.2): it may
     /// publish **Sentinel Sources**, carry the `OP_SERVERIDENT` IPv6 tags, and
     /// relay `OP_CALLBACKREQUESTED_IPV6`.
@@ -42,6 +45,15 @@ impl ServerTcpFlags {
     /// server *visible* — to diagnostics, and to a future decision that wants
     /// to know before it asks.
     pub const IPV6: u32 = 0x0000_4000;
+    /// The server accepts `OP_IPV6_UPDATE` (`0x63`), ed2k-server's in-session
+    /// change of a login's `CT_MOD_IP_V6` (ADR-0087).
+    pub const IPV6_UPDATE: u32 = 0x0000_8000;
+    /// The server coordinates a LowID punch: `0x60` is safe to send it
+    /// (ADR-0091). Absent, the opcode may close the link.
+    pub const LOWID_HOLEPUNCH: u32 = 0x0002_0000;
+    /// ed2k-server's fresh-port punch for a pair that both announced it with
+    /// [`Self::NAT_CALLBACK`]. rmule does not announce it (ADR-0091).
+    pub const HOLEPUNCH_EXTENSION: u32 = 0x0010_0000;
 
     /// Wrap the advertised word. Unknown bits are kept, not masked.
     #[must_use]
@@ -102,6 +114,18 @@ impl ServerTcpFlags {
     pub const fn supports_ipv6(self) -> bool {
         self.0 & Self::IPV6 != 0
     }
+
+    /// Whether [`Self::IPV6_UPDATE`] is set.
+    #[must_use]
+    pub const fn supports_ipv6_update(self) -> bool {
+        self.0 & Self::IPV6_UPDATE != 0
+    }
+
+    /// Whether [`Self::LOWID_HOLEPUNCH`] is set.
+    #[must_use]
+    pub const fn supports_lowid_holepunch(self) -> bool {
+        self.0 & Self::LOWID_HOLEPUNCH != 0
+    }
 }
 
 /// One `SRV_TCPFLG_*` bit rmule names. Declaration order is bit order.
@@ -122,13 +146,21 @@ pub enum ServerTcpFlag {
     LargeFiles = ServerTcpFlags::LARGE_FILES,
     /// [`ServerTcpFlags::TCPOBFUSCATION`].
     TcpObfuscation = ServerTcpFlags::TCPOBFUSCATION,
+    /// [`ServerTcpFlags::NAT_CALLBACK`].
+    NatCallback = ServerTcpFlags::NAT_CALLBACK,
     /// [`ServerTcpFlags::IPV6`].
     Ipv6 = ServerTcpFlags::IPV6,
+    /// [`ServerTcpFlags::IPV6_UPDATE`].
+    Ipv6Update = ServerTcpFlags::IPV6_UPDATE,
+    /// [`ServerTcpFlags::LOWID_HOLEPUNCH`].
+    LowIdHolepunch = ServerTcpFlags::LOWID_HOLEPUNCH,
+    /// [`ServerTcpFlags::HOLEPUNCH_EXTENSION`].
+    HolepunchExtension = ServerTcpFlags::HOLEPUNCH_EXTENSION,
 }
 
 impl ServerTcpFlag {
     /// Every named flag, in bit order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 12] = [
         Self::Compression,
         Self::NewTags,
         Self::Unicode,
@@ -136,7 +168,11 @@ impl ServerTcpFlag {
         Self::TypeTagInteger,
         Self::LargeFiles,
         Self::TcpObfuscation,
+        Self::NatCallback,
         Self::Ipv6,
+        Self::Ipv6Update,
+        Self::LowIdHolepunch,
+        Self::HolepunchExtension,
     ];
 
     /// The flag's wire bit.
@@ -195,12 +231,24 @@ impl ServerUdpFlags {
     pub const UDPOBFUSCATION: u32 = 0x0000_0200;
     /// The server accepts obfuscated TCP connections.
     pub const TCPOBFUSCATION: u32 = 0x0000_0400;
+    /// The server runs Lugdunum's NAT callback (`0xA6` / `0x37` / `0xA7`).
+    /// rmule speaks none of it (ADR-0091): named so an operator can read it.
+    pub const NAT_CALLBACK: u32 = 0x0000_1000;
     /// The server speaks the emule-qt IPv6 extension over UDP (ADR-0087 §4.2):
     /// the same `0x4000` bit as the TCP `OP_IDCHANGE` word, and stated
     /// independently of it. Read, never gated on — a `0x9B` reply's sentinel
     /// records are gated by the *query's own source family*, because a UDP
     /// query carries no session state to gate on.
     pub const IPV6: u32 = 0x0000_4000;
+    /// The server accepts `OP_IPV6_UPDATE` (`0x63`), ed2k-server's in-session
+    /// change of a login's `CT_MOD_IP_V6` (ADR-0087).
+    pub const IPV6_UPDATE: u32 = 0x0000_8000;
+    /// The server coordinates a LowID punch: `0x60` is safe to send it
+    /// (ADR-0091). Absent, the opcode may close the link.
+    pub const LOWID_HOLEPUNCH: u32 = 0x0002_0000;
+    /// ed2k-server's fresh-port punch for a pair that both announced it with
+    /// [`Self::NAT_CALLBACK`]. rmule does not announce it (ADR-0091).
+    pub const HOLEPUNCH_EXTENSION: u32 = 0x0010_0000;
 
     /// Wrap the advertised flag word. Unknown bits are kept, not masked — a
     /// future flag must survive a round trip.
@@ -268,6 +316,18 @@ impl ServerUdpFlags {
     #[must_use]
     pub const fn supports_ipv6(self) -> bool {
         self.0 & Self::IPV6 != 0
+    }
+
+    /// Whether [`Self::IPV6_UPDATE`] is set.
+    #[must_use]
+    pub const fn supports_ipv6_update(self) -> bool {
+        self.0 & Self::IPV6_UPDATE != 0
+    }
+
+    /// Whether [`Self::LOWID_HOLEPUNCH`] is set.
+    #[must_use]
+    pub const fn supports_lowid_holepunch(self) -> bool {
+        self.0 & Self::LOWID_HOLEPUNCH != 0
     }
 }
 
@@ -357,13 +417,13 @@ mod tests {
 
     #[test]
     fn a_word_splits_into_its_named_flags_and_the_bits_no_client_names() {
-        // Related search, plus bits 2, 11, 12 and 31, which no client names.
-        let tcp = ServerTcpFlags::from_bits(0x8000_1844);
+        // Related search, plus bits 2, 11 and 31, which no client names.
+        let tcp = ServerTcpFlags::from_bits(0x8000_0844);
         assert_eq!(
             tcp.named().collect::<Vec<_>>(),
             [ServerTcpFlag::RelatedSearch]
         );
-        assert_eq!(tcp.unnamed_bits(), 0x8000_1804);
+        assert_eq!(tcp.unnamed_bits(), 0x8000_0804);
         let udp = ServerUdpFlags::from_bits(0x0000_0723);
         assert_eq!(
             udp.named().collect::<Vec<_>>(),
