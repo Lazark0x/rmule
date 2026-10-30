@@ -9,7 +9,7 @@
 
 use rmule_primitives::{Packet, PacketProtocol};
 
-use crate::aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRequest};
+use crate::aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest};
 use crate::buddy::{Callback, ReaskCallbackTcp};
 use crate::capability::MiscOptions1;
 use crate::compressed_frame::CompressedFrameSkipReason;
@@ -129,9 +129,11 @@ pub enum PeerPacket {
     AichRequest(AichRequest),
     /// `OP_AICHANSWER` (`0x9C`): that branch.
     AichAnswer(AichAnswer),
+    /// `OP_AICHANSWER` (`0x9C`) with the file hash alone: no branch for that ask.
+    AichRefused(AichRefused),
     /// `OP_AICHFILEHASHREQ` (`0x9E`): the file's AICH master root.
     AichFileHashReq(AichFileHashReq),
-    /// `OP_AICHFILEHASHANS` (`0x9D`): that root. The wire names no file — it is the link's current one.
+    /// `OP_AICHFILEHASHANS` (`0x9D`): that root.
     AichFileHashAns(AichFileHashAns),
     /// `OP_SECIDENTSTATE` (`0x87`): which half of the identity proof the peer wants next (ADR-0041).
     SecIdentState(SecIdentStatePacket),
@@ -441,6 +443,11 @@ impl PeerPacket {
             PeerOpcode::AichRequest => AichRequest::decode_packet(packet)
                 .map(Self::AichRequest)
                 .map_err(|source| PeerPacketDecodeError::Aich { source }),
+            PeerOpcode::AichAnswer if AichRefused::is_form_of(packet) => {
+                AichRefused::decode_packet(packet)
+                    .map(Self::AichRefused)
+                    .map_err(|source| PeerPacketDecodeError::Aich { source })
+            }
             PeerOpcode::AichAnswer => AichAnswer::decode_packet(packet)
                 .map(Self::AichAnswer)
                 .map_err(|source| PeerPacketDecodeError::Aich { source }),
@@ -615,6 +622,7 @@ impl PeerPacket {
             Self::AnswerSources2(a) => a.encode_packet(),
             Self::AichRequest(r) => r.encode_packet(),
             Self::AichAnswer(a) => a.encode_packet(),
+            Self::AichRefused(a) => a.encode_packet(),
             Self::AichFileHashReq(r) => r.encode_packet(),
             Self::AichFileHashAns(a) => a.encode_packet(),
             Self::SecIdentState(p) => p.encode_packet(),

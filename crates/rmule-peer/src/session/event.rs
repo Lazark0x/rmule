@@ -73,8 +73,14 @@ impl PeerEvent {
                 root: a.root,
                 recovery_data: a.recovery_data.clone(),
             }),
+            PeerPacket::AichRefused(a) => Self::Requester(RequesterEvent::AichRefused {
+                file_hash: a.file_hash,
+            }),
             PeerPacket::AichFileHashAns(a) => {
-                Self::Requester(RequesterEvent::AichFileHashReceived { root: a.root })
+                Self::Requester(RequesterEvent::AichFileHashReceived {
+                    file_hash: a.file_hash,
+                    root: a.root,
+                })
             }
             PeerPacket::HashSetAnswer(a) => Self::Requester(RequesterEvent::HashSetReceived {
                 file_hash: a.file_hash,

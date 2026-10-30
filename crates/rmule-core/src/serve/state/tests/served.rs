@@ -408,21 +408,25 @@ fn an_ipv6_asker_is_a_source_at_its_links_address_whatever_id_it_claims() {
 }
 
 #[test]
-fn an_aich_ask_for_a_served_download_decides_nothing() {
+fn an_aich_ask_for_a_served_download_starts_no_build() {
     let file = hash(0x02);
     let mut state = state_of(Vec::new(), vec![(file, download(true, &[0], true))]);
     let p = peer(4001);
     let root = rmule_primitives::AichRootHash::from_bytes([7; 20]);
-    for request in [
-        ServerEvent::AichRequested {
-            file_hash: file,
-            part: 0,
-            root,
-        },
-        ServerEvent::AichFileHashRequested { file_hash: file },
-    ] {
-        assert_eq!(ask(&mut state, p, request), []);
-    }
+    let recovery = ServerEvent::AichRequested {
+        file_hash: file,
+        part: 0,
+        root,
+    };
+    assert_eq!(
+        ask(&mut state, p, recovery),
+        [ServeDecision::Send {
+            peer: p,
+            command: ServerCommand::RefuseAich { file_hash: file },
+        }],
+    );
+    let root_ask = ServerEvent::AichFileHashRequested { file_hash: file };
+    assert_eq!(ask(&mut state, p, root_ask), []);
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //! The core actor (`service.rs`) spawns one serve activity through this
 //! module.
 
+mod aich_builder;
 mod liveness;
 mod runner;
 mod source_exchange;

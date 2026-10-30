@@ -68,6 +68,13 @@ pub struct PeerIdentity {
     /// `CT_EMULE_MISCOPTIONS1` bits [8..12) (aMule `m_byExtendedRequestsVer`).
     /// `0` claims no part status in its name asks and reasks.
     extended_requests_version: u8,
+    /// The peer's advertised data-compression version, the nibble of
+    /// `CT_EMULE_MISCOPTIONS1` bits [20..24) or a legacy `OP_EMULEINFO`'s.
+    /// Above `0` it inflates `OP_COMPRESSEDPART` (ADR-0031).
+    data_compression_version: u8,
+    /// The peer's advertised AICH version, `CT_EMULE_MISCOPTIONS1` bits
+    /// [29..32) (aMule `m_fSupportsAICH`, ADR-0038).
+    aich_version: u8,
     /// The peer's advertised protocol-obfuscation stance, the crypt bits of
     /// `CT_EMULE_MISCOPTIONS2` (aMule `m_fSupportsCryptLayer` /
     /// `m_fRequestsCryptLayer` / `m_fRequiresCryptLayer`). Read by the per-datagram
@@ -151,6 +158,9 @@ impl PeerIdentity {
             udp_version: MiscOptions1::from_tags(&body.tags).map_or(0, MiscOptions1::udp_version),
             extended_requests_version: MiscOptions1::from_tags(&body.tags)
                 .map_or(0, MiscOptions1::extended_requests_version),
+            data_compression_version: MiscOptions1::from_tags(&body.tags)
+                .map_or(0, MiscOptions1::data_compression_version),
+            aich_version: MiscOptions1::from_tags(&body.tags).map_or(0, MiscOptions1::aich_version),
             crypt: crypt_stance_from_tags(&body.tags),
             // The IPv6 dialect's two channels (ADR-0087): the claim says what
             // the peer *can* speak, the tag says where it *is*. Both are read;
@@ -162,6 +172,19 @@ impl PeerIdentity {
             source_exchange: SourceExchangeSupport::default(),
             unknown_tags,
         }
+    }
+
+    /// Whether it inflates `OP_COMPRESSEDPART` (aMule
+    /// `GetDataCompressionVersion() != 0`, `UploadClient.cpp:252`).
+    #[must_use]
+    pub const fn inflates_parts(&self) -> bool {
+        self.data_compression_version > 0
+    }
+
+    /// Whether it claims AICH (aMule `IsSupportingAICH`, `updownclient.h:389`).
+    #[must_use]
+    pub const fn supports_aich(&self) -> bool {
+        self.aich_version & 0x01 != 0
     }
 
     #[must_use]
@@ -205,6 +228,14 @@ impl PeerIdentity {
     pub(crate) fn revise_software(&mut self, software: ClientSoftware) -> bool {
         let changed = self.software != software;
         self.software = software;
+        changed
+    }
+
+    /// Take the compression version of a legacy `OP_EMULEINFO`, when the
+    /// hello named no capability block of its own. `true` when it changed.
+    pub(crate) const fn revise_data_compression(&mut self, version: u8) -> bool {
+        let changed = self.data_compression_version != version;
+        self.data_compression_version = version;
         changed
     }
 

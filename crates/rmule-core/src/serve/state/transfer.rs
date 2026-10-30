@@ -3,19 +3,18 @@
 //! three blocks, or outside a Partial Share's **Verified Range**, which ends
 //! the slot (ADR-0031, ADR-0113 §"Reading a part file") — what a completed
 //! block read becomes for the flow
-//! that asked, the AICH answers from the hash tree the enactor builds and this
-//! state caches (ADR-0038), and what a failed or refused read does: the file
-//! stops being offered at once.
+//! that asked, and what a failed or refused read does: the file stops being
+//! offered at once.
 
 use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, ServerCommand};
-use rmule_primitives::{AichHashSet, ED2K_PART_SIZE, FileHash, PeerEndpoint};
+use rmule_primitives::{FileHash, PeerEndpoint};
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
 use super::served::Found;
-use super::{AichAsk, BlockRead, ServeDecision, ServeState, rank_updates};
+use super::{BlockRead, ServeDecision, ServeState, rank_updates};
 use crate::served_downloads::PartialEnd;
 use crate::service::{BlockAskFault, ServeEvent};
 use crate::upload_queue::WaiterLeaveCause;
@@ -174,32 +173,7 @@ impl ServeState {
         decisions
     }
 
-    /// Resume a [`ServeDecision::BuildAichTree`] round trip that built the
-    /// file's tree: it is cached and `ask` answered from it. A file no longer
-    /// offered answers nothing and caches nothing.
-    pub(crate) fn on_aich_tree(
-        &mut self,
-        peer: PeerEndpoint,
-        ask: AichAsk,
-        tree: AichHashSet,
-    ) -> Vec<ServeDecision> {
-        let file_hash = ask.file_hash();
-        if !self.in_share_set(file_hash) {
-            return Vec::new();
-        }
-        let tree = self.aich_cache.entry(file_hash).or_insert(tree);
-        match ask {
-            AichAsk::Recovery { part, .. } => answer_aich_recovery(peer, file_hash, part, tree),
-            AichAsk::MasterRoot { .. } => vec![ServeDecision::Send {
-                peer,
-                command: ServerCommand::AnswerAichFileHash {
-                    root: tree.master_root(),
-                },
-            }],
-        }
-    }
-
-    /// A read of a shared file failed, a block's or an AICH build's: what is
+    /// A read of a shared file's block failed: what is
     /// offered must be readable now, so the file stops being served at once
     /// ([`stop_serving`](Self::stop_serving)), the peer that asked is told
     /// `OP_FILEREQANSNOFIL`, and the **Registry Check** looks at the row
@@ -297,13 +271,15 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         self.shared.remove(&file_hash);
         self.partials.remove(&file_hash);
-        self.aich_cache.remove(&file_hash);
         let (holders, waiters): (Vec<PeerEndpoint>, Vec<PeerEndpoint>) = self
             .queue
             .engaged_peers(file_hash)
             .into_iter()
             .partition(|peer| self.queue.is_granted(*peer));
         let mut decisions = Vec::new();
+        if self.aich.leave(file_hash) {
+            decisions.push(ServeDecision::StopAichBuild);
+        }
         // Every release reports the ranks it moved. They are told once, after
         // the last release: a later report supersedes an earlier one for the
         // same waiter, and a waiter that left or took a slot meanwhile is told
@@ -351,34 +327,9 @@ const fn range_fault(file_size: u64, start: u64, end: u64) -> Option<BlockAskFau
     }
 }
 
-fn not_found(peer: PeerEndpoint, file_hash: FileHash) -> ServeDecision {
+pub(super) fn not_found(peer: PeerEndpoint, file_hash: FileHash) -> ServeDecision {
     ServeDecision::Send {
         peer,
         command: ServerCommand::AnswerFileNotFound { file_hash },
     }
-}
-
-/// The requested part's recovery data from a built tree, or nothing when the
-/// part offset falls outside the file (the request is dropped; the requester's
-/// own timeout handles it).
-pub(super) fn answer_aich_recovery(
-    peer: PeerEndpoint,
-    file_hash: FileHash,
-    part: u16,
-    tree: &AichHashSet,
-) -> Vec<ServeDecision> {
-    let part_start = u64::from(part) * ED2K_PART_SIZE;
-    tree.create_part_recovery_data(part_start)
-        .map(|recovery_data| {
-            vec![ServeDecision::Send {
-                peer,
-                command: ServerCommand::AnswerAich {
-                    file_hash,
-                    part,
-                    root: tree.master_root(),
-                    recovery_data,
-                },
-            }]
-        })
-        .unwrap_or_default()
 }

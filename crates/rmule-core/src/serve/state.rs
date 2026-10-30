@@ -5,8 +5,8 @@
 //! decision — probe/status/hash-set answers from a **Shared File Registry**
 //! snapshot and its copy of the **Served Downloads** (ADR-0113), slot
 //! admission via the **Upload Slot Queue** it contains, block
-//! sends with served-range subtraction, AICH tree building round-tripped
-//! through the enactor's block-at-a-time read, credit recording, and **Secured Identity** binding — and
+//! sends with served-range subtraction, which AICH tree is built when and
+//! who is answered from it, credit recording, and **Secured Identity** binding — and
 //! returns an ordered `Vec<`[`ServeDecision`]`>` that the `ServeTask` enacts.
 //! It never touches a socket, a clock, the registry, the content store, or an
 //! `mpsc` channel; byte reads are fallible effects that round-trip through
@@ -17,6 +17,7 @@
 //! This split is what makes every serve policy path assertable as a plain
 //! decision sequence instead of only through a live `ServeTask` loopback rig.
 
+mod aich;
 mod connection;
 mod dial_back;
 mod exchange;
@@ -34,8 +35,10 @@ use std::time::{Duration, Instant};
 use rmule_ed2k::{FileCompleteness, OfferedFile};
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
-use rmule_primitives::{AichHashSet, Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
+use rmule_primitives::{Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
 
+pub(super) use self::aich::AichBuilt;
+use self::aich::AichTrees;
 use crate::WaiterLeaveCause;
 use crate::adapters::{DialBack, FarEnd};
 use crate::registry::SharedFileEntry;
@@ -80,17 +83,18 @@ pub(super) enum ServeDecision {
         block: BlockRead,
         check: Option<ReadCheck>,
     },
-    /// Build the AICH tree of the `file_size`-byte shared file at `path`,
-    /// read one block at a time (ADR-0038, ADR-0031). A fallible effect: the
-    /// enactor feeds the tree back through [`ServeState::on_aich_tree`] with
-    /// this same `ask`, and a failed read through
-    /// [`ServeState::on_read_failed`].
+    /// Build the AICH tree of the `file_size`-byte shared file at `path`, away
+    /// from the serve loop and one block at a time (ADR-0038, ADR-0031). One
+    /// is out at a time; its end comes back through
+    /// [`ServeState::on_aich_landed`].
     BuildAichTree {
-        peer: PeerEndpoint,
+        file_hash: FileHash,
         path: PathBuf,
         file_size: u64,
-        ask: AichAsk,
     },
+    /// Tell the build out to stop before its next block: its file left the
+    /// share set (ADR-0038).
+    StopAichBuild,
     /// A read of `file_hash`'s Served Download, checked against `checked`,
     /// found its file changed or unreadable: its **Verified Range** empties
     /// in the cell for `cause`, whoever holds it (ADR-0113).
@@ -144,25 +148,6 @@ pub(super) struct BlockRead {
     pub(super) file_hash: FileHash,
     pub(super) start: u64,
     pub(super) end: u64,
-}
-
-/// The ask a [`ServeDecision::BuildAichTree`] answers once the tree is built
-/// and cached (ADR-0038).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum AichAsk {
-    /// Answer the requested part's recovery data.
-    Recovery { file_hash: FileHash, part: u16 },
-    /// Answer the master root.
-    MasterRoot { file_hash: FileHash },
-}
-
-impl AichAsk {
-    /// The file whose tree answers it.
-    pub(super) const fn file_hash(self) -> FileHash {
-        match self {
-            Self::Recovery { file_hash, .. } | Self::MasterRoot { file_hash } => file_hash,
-        }
-    }
 }
 
 /// Our own position as the serve brain needs it — the half of the **Low-ID
@@ -231,11 +216,9 @@ pub(super) struct ServeState {
     /// all it has pending, read again when its slot moves to a link it kept
     /// (ADR-0107 invariant 7).
     last_ask: HashMap<PeerEndpoint, (FileHash, rmule_peer::PartRanges)>,
-    /// Lazily-built AICH trees per shared file (ADR-0038), built by the
-    /// first round-tripped [`ServeDecision::BuildAichTree`] and reused after —
-    /// a cache hit answers with no build. Durable persistence (known2.met) is
-    /// deferred.
-    aich_cache: HashMap<FileHash, AichHashSet>,
+    /// The AICH trees of the files peers asked about, and the one being built
+    /// (ADR-0038).
+    aich: AichTrees,
     /// The parts each peer holds of a file we share, from the part status its
     /// last name ask or UDP reask wrote (read through
     /// `PartBitmap::advertised_parts`, ADR-0055 §Serving) — aMule's
@@ -264,7 +247,7 @@ impl ServeState {
             dialed: HashMap::new(),
             served_ranges: HashMap::new(),
             last_ask: HashMap::new(),
-            aich_cache: HashMap::new(),
+            aich: AichTrees::default(),
             sx_part_status: HashMap::new(),
             sx_throttle: SourceExchangeThrottle::default(),
             ours: ServeSelfPosition::default(),

@@ -116,12 +116,6 @@ pub struct PeerSession {
     /// drained by [`Self::try_flush_multipacket_answer`] once every sub-item the
     /// bundle actually asked for has answered.
     served_multipacket: HashMap<FileHash, PendingMultipacketAnswer>,
-    /// The file a still-unanswered `OP_AICHFILEHASHREQ` (standalone or bundled)
-    /// named — `OP_AICHFILEHASHANS`/`AnswerAichFileHash` carries no file hash of
-    /// its own (the file is "the connection's requested file"), so this is the
-    /// only way to route the eventual answer back to a pending bundle. Sessions
-    /// don't yet track more than one outstanding AICH-root request at a time.
-    served_aich_request: Option<FileHash>,
     /// The wire form each file's latest source ask is answered in (ADR-0055),
     /// picked from the asker's advert when the ask arrived and kept here so
     /// core answers with sources alone. Overwritten by the next ask for the
@@ -223,7 +217,6 @@ impl PeerSession {
             asked_ranges: AskedRanges::default(),
             served_slot: None,
             served_multipacket: HashMap::new(),
-            served_aich_request: None,
             served_sources: HashMap::new(),
             peer_misc_options: None,
             peer_misc_options2: None,

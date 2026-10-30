@@ -169,10 +169,18 @@ impl fmt::Display for RequesterEvent {
                 file_hash.to_hex_upper(),
                 recovery_data.len()
             ),
-            RequesterEvent::AichFileHashReceived { root } => {
+            RequesterEvent::AichRefused { file_hash } => {
                 write!(
                     f,
-                    "peer aich_file_hash_received root={}",
+                    "peer aich_refused file_hash={}",
+                    file_hash.to_hex_upper()
+                )
+            }
+            RequesterEvent::AichFileHashReceived { file_hash, root } => {
+                write!(
+                    f,
+                    "peer aich_file_hash_received file_hash={} root={}",
+                    file_hash.to_hex_upper(),
                     root.to_base32_upper()
                 )
             }

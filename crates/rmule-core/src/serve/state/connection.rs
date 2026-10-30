@@ -17,8 +17,7 @@ use crate::adapters::ServeInput;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_low_id_abuse};
 
-use super::transfer::answer_aich_recovery;
-use super::{AichAsk, ServeDecision, ServeState};
+use super::{ServeDecision, ServeState};
 
 impl ServeState {
     /// Answer a standalone name ask (`OP_REQUESTFILENAME`) as aMule's
@@ -205,29 +204,6 @@ impl ServeState {
             .collect()
     }
 
-    /// Answer an AICH master-hash ask from the file's tree, building it first
-    /// when it is not cached (ADR-0038). A Served Download answers nothing:
-    /// its tree is whole only once the file is (ADR-0113).
-    fn answer_aich_root(&self, peer: PeerEndpoint, file_hash: FileHash) -> Vec<ServeDecision> {
-        let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
-            return Vec::new(); // not shared whole
-        };
-        match self.aich_cache.get(&file_hash) {
-            Some(tree) => vec![ServeDecision::Send {
-                peer,
-                command: ServerCommand::AnswerAichFileHash {
-                    root: tree.master_root(),
-                },
-            }],
-            None => vec![ServeDecision::BuildAichTree {
-                peer,
-                path: entry.path.clone(),
-                file_size: entry.file_size,
-                ask: AichAsk::MasterRoot { file_hash },
-            }],
-        }
-    }
-
     /// Turn one connection's input into the decisions it warrants.
     /// `modifiers` carries the identified peers' current credit modifiers
     /// (read by the enactor from the shared ledger), used when a freed slot
@@ -250,6 +226,7 @@ impl ServeState {
                 // bookkeeping (the task removes its connection).
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
+                self.aich.forget_link(peer);
                 self.forget(peer);
                 self.sx_throttle.forget(peer);
                 Vec::new()
@@ -429,31 +406,9 @@ impl ServeState {
             ServerEvent::AichRequested {
                 file_hash,
                 part,
-                root: _,
-            } => {
-                // Not shared whole — a Served Download included, whose tree
-                // is whole only once the file is: let the requester fall back.
-                let Some(entry) = self.lookup(file_hash).and_then(|found| found.row()) else {
-                    return Vec::new();
-                };
-                // A cache hit answers pure; the first request round-trips one
-                // tree build, read a block at a time (ADR-0038). We answer with
-                // our own root + recovery data; the requester verifies it
-                // against the root it trusts.
-                match self.aich_cache.get(&file_hash) {
-                    Some(tree) => answer_aich_recovery(peer, file_hash, part, tree),
-                    None => vec![ServeDecision::BuildAichTree {
-                        peer,
-                        path: entry.path.clone(),
-                        file_size: entry.file_size,
-                        ask: AichAsk::Recovery { file_hash, part },
-                    }],
-                }
-            }
+                root,
+            } => self.answer_aich_recovery(peer, file_hash, part, root),
             ServerEvent::AichFileHashRequested { file_hash } => {
-                // Same lazily-built tree cache as the recovery path; we answer
-                // our master root so the peer can count it toward its
-                // trusted-set vote (ADR-0038).
                 self.answer_aich_root(peer, file_hash)
             }
             ServerEvent::SourcesRequested { file_hash } => {
@@ -547,6 +502,7 @@ impl ServeState {
                 Vec::new()
             }
             ConnectionEvent::Disconnected { .. } => {
+                self.aich.forget_link(peer);
                 self.dialed.remove(&peer);
                 if let Some(moved) = self.on_link_ended(now, peer, modifiers) {
                     return moved;

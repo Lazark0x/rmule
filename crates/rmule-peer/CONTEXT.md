@@ -142,8 +142,9 @@ The peer C2C packets that carry **AICH Hash Set** recovery data (`OP_AICHREQUEST
 `OP_AICHFILEHASHANS 0x9D`), all under `OP_EMULEPROT 0xC5`. Gated by the **Capability
 Block** AICH-version field and bidirectional like every transfer capability: a **Peer
 Session** both requests recovery for its own download and answers a peer's request for a
-file it shares. The session carries `recovery_data` as opaque bytes; the SHA-1 tree
-semantics live in `rmule-primitives`.
+file it shares. An `OP_AICHANSWER` carrying the file hash alone is a refusal: the peer has
+no recovery data for the ask (ADR-0038). The session carries `recovery_data` as opaque
+bytes; the SHA-1 tree semantics live in `rmule-primitives`.
 _Avoid_: AICH negotiation (that is the capability-version handshake in the hello), hash set request (that is the MD4 `OP_HASHSETREQUEST`)
 
 **Secure User Identification**:

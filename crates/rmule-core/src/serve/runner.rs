@@ -23,6 +23,7 @@ use crate::credit::SharedCreditStore;
 use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
+use crate::serve::aich_builder::{AichBuilder, AichLanded};
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
@@ -193,6 +194,11 @@ where
         // loop holds a sender, so the receiver never closes under it.
         let (dial_back_tx, mut dial_back_rx) = mpsc::channel::<DialBackOutcome>(16);
 
+        // Where an AICH build says it ended (ADR-0038). The builder holds a
+        // sender, so the receiver never closes under the loop.
+        let (aich_landed_tx, mut aich_landed_rx) = mpsc::channel::<AichLanded>(1);
+        let mut aich = AichBuilder::new(aich_landed_tx);
+
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
             credit: &credit,
@@ -227,6 +233,7 @@ where
                 &mut state,
                 &conns,
                 &mut serve_runtime,
+                &mut aich,
                 sinks,
             )
             .await;
@@ -277,6 +284,7 @@ where
                         &mut state,
                         &conns,
                         &mut serve_runtime,
+                        &mut aich,
                         sinks,
                     )
                     .await;
@@ -326,6 +334,23 @@ where
                         &mut state,
                         &conns,
                         &mut serve_runtime,
+                        &mut aich,
+                        sinks,
+                    )
+                    .await;
+                }
+                landed = aich_landed_rx.recv() => {
+                    let Some(AichLanded { file_hash, built }) = landed else { continue };
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities()).await;
+                    let mut decisions: VecDeque<ServeDecision> = state
+                        .on_aich_landed(Instant::now(), file_hash, built, &modifiers)
+                        .into();
+                    enact(
+                        &mut decisions,
+                        &mut state,
+                        &conns,
+                        &mut serve_runtime,
+                        &mut aich,
                         sinks,
                     )
                     .await;
@@ -373,6 +398,7 @@ where
                         &mut state,
                         &conns,
                         &mut serve_runtime,
+                        &mut aich,
                         sinks,
                     )
                     .await;
@@ -389,6 +415,7 @@ where
                         &mut state,
                         &conns,
                         &mut serve_runtime,
+                        &mut aich,
                         sinks,
                     )
                     .await;
@@ -405,6 +432,7 @@ where
                         &mut state,
                         &conns,
                         &mut serve_runtime,
+                        &mut aich,
                         sinks,
                     )
                     .await;
@@ -422,6 +450,7 @@ where
                             &mut state,
                             &conns,
                             &mut serve_runtime,
+                            &mut aich,
                             sinks,
                         )
                         .await;
@@ -476,8 +505,9 @@ struct ServeSinks<'a> {
 
 /// Carry out one `Vec<ServeDecision>` against the live runtime — the only
 /// async surface in the serve loop. Decisions drain in order; a `ReadRange`
-/// or a `BuildAichTree` feeds its follow-up decisions back onto the queue
-/// (the read round trip), so the loop stays flat — no recursion.
+/// feeds its follow-up decisions back onto the queue (the read round trip), so
+/// the loop stays flat — no recursion. A `BuildAichTree` is not waited for: it
+/// runs on and comes back as an input of its own (ADR-0038).
 ///
 /// This is also where upload byte accounting happens (ADR-0077): the sinks'
 /// `diagnostics` learns a peer's slot lifetime from the emitted grant/release
@@ -488,6 +518,7 @@ async fn enact<L: ServeRuntimeService>(
     state: &mut ServeState,
     conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
     serve_runtime: &mut L,
+    aich: &mut AichBuilder,
     sinks: ServeSinks<'_>,
 ) {
     let ServeSinks {
@@ -648,24 +679,11 @@ async fn enact<L: ServeRuntimeService>(
                 }
             },
             ServeDecision::BuildAichTree {
-                peer,
+                file_hash,
                 path,
                 file_size,
-                ask,
-            } => match ContentFileStore::aich_tree(&path, file_size).await {
-                Ok(tree) => decisions.extend(state.on_aich_tree(peer, ask, tree)),
-                Err(error) => {
-                    tracing::warn!(%error, ?ask, path = %path.display(), "serve read failed; the file is no longer offered");
-                    let modifiers =
-                        current_modifiers(credit, held_places, state.identities()).await;
-                    decisions.extend(state.on_read_failed(
-                        Instant::now(),
-                        peer,
-                        ask.file_hash(),
-                        &modifiers,
-                    ));
-                }
-            },
+            } => aich.start(file_hash, path, file_size),
+            ServeDecision::StopAichBuild => aich.stop(),
             ServeDecision::EmptyRange {
                 file_hash,
                 checked,

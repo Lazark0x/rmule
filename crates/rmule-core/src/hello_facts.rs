@@ -31,6 +31,10 @@ pub(crate) struct HelloFacts {
     pub(crate) udp_version: u8,
     /// Its extended-requests claim (`MiscOptions1`).
     pub(crate) extended_requests_version: u8,
+    /// Its data-compression claim (`MiscOptions1`).
+    pub(crate) data_compression_version: u8,
+    /// Its AICH claim (`MiscOptions1`).
+    pub(crate) aich_version: u8,
     /// Its crypt stance (`MiscOptions2`).
     pub(crate) crypt: CryptStance,
     /// The IPv6 it names (`CT_MOD_IP_V6`).
@@ -46,7 +50,8 @@ pub(crate) struct HelloFacts {
 impl HelloFacts {
     /// A hello naming `user_hash` and little else: a High ID on 4662 on no
     /// server, crypt-capable as aMule 2.3.3 advertises by default, claiming
-    /// extended requests as aMule 2.3.3 does, with no reask contact, no
+    /// extended requests and AICH as aMule 2.3.3 does, compression not at all,
+    /// with no reask contact, no
     /// IPv6, no buddy, nothing said about source exchange, and naming no
     /// client.
     pub(crate) fn of(user_hash: UserHash) -> Self {
@@ -58,6 +63,8 @@ impl HelloFacts {
             udp_port: 0,
             udp_version: 0,
             extended_requests_version: 2,
+            data_compression_version: 0,
+            aich_version: 1,
             crypt: CryptStance::new(true, true, false),
             ipv6: None,
             software: nameless_software(),
@@ -69,9 +76,13 @@ impl HelloFacts {
     /// The identity a session reads off a hello saying these facts.
     pub(crate) fn identity(self) -> PeerIdentity {
         let mut tags = vec![
-            MiscOptions1::from_bits(u32::from(self.extended_requests_version) << 8)
-                .with_udp_version(self.udp_version)
-                .to_tag(),
+            MiscOptions1::from_bits(
+                u32::from(self.extended_requests_version) << 8
+                    | u32::from(self.data_compression_version) << 20
+                    | u32::from(self.aich_version) << 29,
+            )
+            .with_udp_version(self.udp_version)
+            .to_tag(),
             MiscOptions2::from_stance(self.crypt).to_tag(),
         ];
         if self.udp_port != 0 {

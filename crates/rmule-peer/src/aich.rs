@@ -162,6 +162,41 @@ impl AichAnswer {
     }
 }
 
+/// `OP_AICHANSWER` carrying the file hash alone — the peer has no recovery data
+/// for the ask (aMule `DownloadClient.cpp:1691-1695`; ADR-0038). Nothing else
+/// about the ask is named: a link has one AICH ask out per file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AichRefused {
+    /// The file the ask was about.
+    pub file_hash: FileHash,
+}
+
+impl AichRefused {
+    /// Whether `packet`'s payload is this form of `OP_AICHANSWER`.
+    #[must_use]
+    pub fn is_form_of(packet: &Packet) -> bool {
+        packet.payload().len() == FileHash::BYTE_LEN
+    }
+
+    /// Read the refusal; its payload is the file hash and nothing else.
+    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
+        let mut reader = WireReader::new(packet.payload());
+        Ok(Self {
+            file_hash: reader.read_file_hash("file hash")?,
+        })
+    }
+
+    #[must_use]
+    /// Frame the refusal.
+    pub fn encode_packet(&self) -> Packet {
+        Packet::new(
+            PeerOpcode::AichAnswer.protocol(),
+            PeerOpcode::AichAnswer.as_u8(),
+            self.file_hash.as_bytes().to_vec(),
+        )
+    }
+}
+
 /// `OP_AICHFILEHASHREQ` — ask a peer for a file's AICH master hash, to collect
 /// trusted-set root proposals when the link carried no `h=` (ADR-0038). Payload
 /// is just `[file_hash 16]` (aMule `SendFileRequest`).

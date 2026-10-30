@@ -1,6 +1,6 @@
 //! Serving data out: part asks reading only unserved ranges, credit accruing on
-//! every served block, a failed read ending the file's offer with an honest
-//! answer, and the AICH hash tree built once then answered from the cache.
+//! every served block, and a failed read ending the file's offer with an
+//! honest answer.
 
 use super::*;
 use rmule_peer::{ServerCommand, ServerEvent};
@@ -171,20 +171,6 @@ fn a_failed_block_read_stops_serving_the_file_and_tells_its_peers() {
 }
 
 #[test]
-fn a_failed_aich_build_stops_serving_the_file_for_a_peer_holding_no_slot() {
-    let file_hash = hash(0x57);
-    let mut state = serving_state(1, vec![entry(file_hash, 2 * EMBLOCKSIZE, "a.bin")]);
-    let decisions = state.on_read_failed(Instant::now(), peer(7), file_hash, &no_modifiers());
-    assert_eq!(
-        decisions,
-        vec![
-            send(peer(7), ServerCommand::AnswerFileNotFound { file_hash }),
-            ServeDecision::ReadFailed(file_hash),
-        ],
-    );
-}
-
-#[test]
 fn a_file_that_leaves_the_offer_releases_the_slot_holding_it() {
     let (file_hash, kept) = (hash(0x58), hash(0x59));
     let mut state = serving_state(
@@ -212,176 +198,9 @@ fn a_file_that_leaves_the_offer_releases_the_slot_holding_it() {
     assert!(matches!(decisions.last(), Some(ServeDecision::Announce(files)) if files.len() == 1));
 }
 
-/// Converted from the inline serve-task AICH test (ADR-0038 serve side):
-/// an `OP_AICHREQUEST` for a shared file round-trips one tree build and
-/// answers recovery data that verifies against our master root — and the
-/// second request answers from the cache with no second build.
-#[test]
-fn aich_recovery_builds_the_tree_once_and_answers_from_the_cache() {
-    let file_size = 3 * EMBLOCKSIZE; // 3 AICH blocks, one part
-    let bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
-    let true_root = AichHashSet::from_bytes(&bytes).master_root();
-    let file_hash = hash(0x66);
-    let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
-    let t = Instant::now();
-    let p = peer(1);
-    let request = ServeInput::Server(ServerEvent::AichRequested {
-        file_hash,
-        part: 0,
-        root: true_root,
-    });
-
-    // Not shared: silent, the requester falls back.
-    assert_eq!(
-        state.on_conn_event(
-            t,
-            p,
-            ServeInput::Server(ServerEvent::AichRequested {
-                file_hash: hash(0x99),
-                part: 0,
-                root: true_root,
-            }),
-            &no_modifiers(),
-        ),
-        Vec::new(),
-    );
-
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![ServeDecision::BuildAichTree {
-            peer: p,
-            path: "/shared/shared.bin".into(),
-            file_size,
-            ask: AichAsk::Recovery { file_hash, part: 0 },
-        }],
-    );
-
-    let answered = state.on_aich_tree(
-        p,
-        AichAsk::Recovery { file_hash, part: 0 },
-        AichHashSet::from_bytes(&bytes),
-    );
-    let [
-        ServeDecision::Send {
-            command:
-                ServerCommand::AnswerAich {
-                    file_hash: answered_hash,
-                    part,
-                    root,
-                    recovery_data,
-                },
-            ..
-        },
-    ] = answered.as_slice()
-    else {
-        panic!("expected one AnswerAich, got {answered:?}");
-    };
-    assert_eq!(*answered_hash, file_hash);
-    assert_eq!(*part, 0);
-    assert_eq!(*root, true_root);
-    // Our served recovery data verifies against the true root and reports
-    // the on-disk part as intact.
-    let bad = AichHashSet::verify_part(file_size, 0, &bytes, recovery_data, true_root).unwrap();
-    assert!(
-        bad.is_empty(),
-        "served recovery data verifies the intact part"
-    );
-
-    // Cache hit: the same request answers directly, no second build.
-    let cached = state.on_conn_event(t, p, request, &no_modifiers());
-    assert!(
-        cached
-            .iter()
-            .all(|d| !matches!(d, ServeDecision::BuildAichTree { .. })),
-        "a cache hit must not re-read the file: {cached:?}"
-    );
-    assert!(matches!(
-        cached.as_slice(),
-        [ServeDecision::Send {
-            command: ServerCommand::AnswerAich { .. },
-            ..
-        }]
-    ));
-
-    // The master-root path shares the same cache.
-    assert_eq!(
-        state.on_conn_event(
-            t,
-            p,
-            ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash }),
-            &no_modifiers(),
-        ),
-        vec![send(
-            p,
-            ServerCommand::AnswerAichFileHash { root: true_root }
-        )],
-    );
-}
-
-#[test]
-fn aich_master_root_answers_share_the_cache() {
-    // Above one block: a single-block file has no AICH recovery data
-    // (aMule `create_part_recovery_data` returns `None`), so the shared
-    // cache could not answer the recovery request below.
-    let file_size = 2 * EMBLOCKSIZE;
-    let bytes: Vec<u8> = (0..file_size).map(|i| (i % 251) as u8).collect();
-    let true_root = AichHashSet::from_bytes(&bytes).master_root();
-    let file_hash = hash(0x77);
-    let mut state = serving_state(1, vec![entry(file_hash, file_size, "shared.bin")]);
-    let t = Instant::now();
-    let p = peer(1);
-    let request = ServeInput::Server(ServerEvent::AichFileHashRequested { file_hash });
-    let expected_read = ServeDecision::BuildAichTree {
-        peer: p,
-        path: "/shared/shared.bin".into(),
-        file_size,
-        ask: AichAsk::MasterRoot { file_hash },
-    };
-
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![expected_read.clone()],
-    );
-    // A second ask before the tree is built reads again.
-    assert_eq!(
-        state.on_conn_event(t, p, request.clone(), &no_modifiers()),
-        vec![expected_read],
-    );
-    assert_eq!(
-        state.on_aich_tree(
-            p,
-            AichAsk::MasterRoot { file_hash },
-            AichHashSet::from_bytes(&bytes)
-        ),
-        vec![send(
-            p,
-            ServerCommand::AnswerAichFileHash { root: true_root }
-        )],
-    );
-    // The recovery path shares the tree built for the master root.
-    let cached = state.on_conn_event(
-        t,
-        p,
-        ServeInput::Server(ServerEvent::AichRequested {
-            file_hash,
-            part: 0,
-            root: true_root,
-        }),
-        &no_modifiers(),
-    );
-    assert!(matches!(
-        cached.as_slice(),
-        [ServeDecision::Send {
-            command: ServerCommand::AnswerAich { .. },
-            ..
-        }]
-    ));
-}
-
 /// One ask queues three reads; the first fails and ends the offer. The reads
 /// still in flight land on a file rmule has just said it does not have, for a
-/// peer whose slot is gone: nothing is sent, no credit accrues, and a late
-/// AICH tree does not come back into the cache.
+/// peer whose slot is gone: nothing is sent and no credit accrues.
 #[test]
 fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
     let file_hash = hash(0x5A);
@@ -415,19 +234,6 @@ fn a_read_that_lands_after_the_offer_ended_sends_nothing() {
         state.on_read_result(p, block(100, 250), vec![0x5E; 150]),
         Vec::new()
     );
-    assert_eq!(
-        state.on_aich_tree(
-            p,
-            AichAsk::MasterRoot { file_hash },
-            AichHashSet::from_bytes(
-                &(0..2 * EMBLOCKSIZE)
-                    .map(|i| (i % 253) as u8)
-                    .collect::<Vec<_>>()
-            ),
-        ),
-        Vec::new(),
-    );
-    assert!(!state.aich_cache.contains_key(&file_hash));
 }
 
 /// A slot that ends for any reason ends the blocks queued under it, as aMule

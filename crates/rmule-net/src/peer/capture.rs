@@ -379,9 +379,14 @@ fn requester_toml(event: &RequesterEvent) -> String {
             file_hash.to_hex_upper(),
             recovery_data.len(),
         ),
-        RequesterEvent::AichFileHashReceived { root } => {
+        RequesterEvent::AichRefused { file_hash } => format!(
+            "type = \"AichRefused\"\nfile_hash = \"{}\"\n",
+            file_hash.to_hex_upper(),
+        ),
+        RequesterEvent::AichFileHashReceived { file_hash, root } => {
             format!(
-                "type = \"AichFileHashReceived\"\nroot = \"{}\"\n",
+                "type = \"AichFileHashReceived\"\nfile_hash = \"{}\"\nroot = \"{}\"\n",
+                file_hash.to_hex_upper(),
                 root.to_base32_upper()
             )
         }

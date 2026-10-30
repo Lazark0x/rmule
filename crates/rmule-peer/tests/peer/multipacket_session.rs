@@ -348,6 +348,7 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     // packet does not.
     let root = AichRootHash::from_bytes([0x77; AichRootHash::BYTE_LEN]);
     session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: fh,
         root,
     }));
     let late = drain(|| session.poll_output());
@@ -382,6 +383,7 @@ fn aich_only_bundle_flushes_once_its_answer_arrives() {
     assert!(writes(&request_out).is_empty());
 
     session.handle_command(PeerCommand::Server(ServerCommand::AnswerAichFileHash {
+        file_hash: fh,
         root,
     }));
     let out = drain(|| session.poll_output());

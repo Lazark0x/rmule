@@ -111,6 +111,10 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
             println!("root: {}", a.root.to_base32_upper());
             println!("recovery_len: {}", a.recovery_data.len());
         }
+        PeerPacket::AichRefused(a) => {
+            println!("kind: aich_refused");
+            println!("file_hash: {}", a.file_hash.to_hex_upper());
+        }
         PeerPacket::AichFileHashReq(r) => {
             println!("kind: aich_file_hash_req");
             println!("file_hash: {}", r.file_hash.to_hex_upper());

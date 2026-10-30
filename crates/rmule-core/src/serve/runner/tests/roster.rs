@@ -53,6 +53,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -74,6 +75,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -162,6 +164,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -178,6 +181,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -207,6 +211,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
         &mut state,
         &conns,
         &mut serve_runtime,
+        &mut no_builds(),
         sinks,
     )
     .await;
@@ -319,4 +324,9 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
         !peer_roster.knows(Ipv4Addr::from(waiter)),
         "the waiter's relation ended with the activity"
     );
+}
+
+/// A builder whose builds nothing here starts.
+fn no_builds() -> crate::serve::aich_builder::AichBuilder {
+    crate::serve::aich_builder::AichBuilder::new(mpsc::channel(1).0)
 }

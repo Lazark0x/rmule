@@ -348,6 +348,7 @@ impl PeerSession {
             // session owner bridges it to the Kad window guard.
             PeerPacket::SendingPart(_)
             | PeerPacket::AichAnswer(_)
+            | PeerPacket::AichRefused(_)
             | PeerPacket::AichFileHashAns(_)
             | PeerPacket::KadFirewallAck
             | PeerPacket::KadUdpFirewallRequest(_)

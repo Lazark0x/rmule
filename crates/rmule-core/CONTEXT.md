@@ -843,8 +843,9 @@ _Avoid_: sequential download, buffer
 The sans-I/O serving brain, the serve-side mirror of **Download State**: it owns every
 clock-free serve decision — probe/status/hash-set answers from a **Shared File
 Registry** snapshot and its copy of the **Served Downloads** (a registry row wins), slot
-admission via the **Upload Slot Queue** it contains, AICH
-tree building round-tripped through the enactor, credit recording, and **Secured
+admission via the **Upload Slot Queue** it contains, which AICH tree
+is built when and who is answered from it (one build out, away from the serve loop,
+ADR-0038), credit recording, and **Secured
 Identity** binding — and returns an ordered `Vec<ServeDecision>` that the `ServeTask`
 enacts (sockets, registry snapshot refreshes, ledger lock, `ContentFileStore` reads).
 Byte reads are fallible effects that round-trip through `on_read_result`, the

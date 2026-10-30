@@ -57,10 +57,18 @@ pub enum ServerCommand {
         /// The branch itself, built by core from the file's tree.
         recovery_data: Vec<u8>,
     },
+    /// Refuse an inbound `OP_AICHREQUEST`: `OP_AICHANSWER` with the file hash
+    /// alone, so the asker tries another source at once (ADR-0038).
+    RefuseAich {
+        /// The file the ask was about.
+        file_hash: FileHash,
+    },
     /// Answer an inbound `OP_AICHFILEHASHREQ` with our AICH
     /// master `root` for the file (`OP_AICHFILEHASHANS`, ADR-0038).
     AnswerAichFileHash {
-        /// Our master root for the connection's file — the wire carries no file hash here.
+        /// The file asked about: the answer may land long after the ask.
+        file_hash: FileHash,
+        /// Our master root for it.
         root: AichRootHash,
     },
     /// Grant the remote peer an upload slot for
@@ -167,9 +175,14 @@ impl PeerSession {
                     );
                 }
             }
-            ServerCommand::AnswerAichFileHash { root } => {
+            ServerCommand::RefuseAich { file_hash } => {
                 if self.require_identified() {
-                    self.answer_aich_file_hash(root);
+                    self.write_packet(crate::aich::AichRefused { file_hash }.encode_packet());
+                }
+            }
+            ServerCommand::AnswerAichFileHash { file_hash, root } => {
+                if self.require_identified() {
+                    self.answer_aich_file_hash(file_hash, root);
                 }
             }
             ServerCommand::GrantSlot { file_hash } => self.grant_slot(file_hash),

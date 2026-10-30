@@ -153,12 +153,20 @@ pub enum RequesterEvent {
         /// root it already trusts rather than the one quoted here.
         recovery_data: Vec<u8>,
     },
+    /// A peer refused our `OP_AICHREQUEST`: it has no recovery data for the
+    /// ask, so the part goes to its refetch (ADR-0038).
+    AichRefused {
+        /// The file the ask was about.
+        file_hash: FileHash,
+    },
     /// A peer answered our `OP_AICHFILEHASHREQ` with its AICH master `root` for
-    /// the requested file (ADR-0038). The runner counts it as a trusted-set root
-    /// proposal from this peer. The wire carries no file hash (the file is the
-    /// connection's requested file), so the worker tags it with its download.
+    /// `file_hash` (ADR-0038). The runner of that file counts it as a
+    /// trusted-set root proposal from this peer. It can land long after the
+    /// ask, once the peer's tree is built, so another file's run ignores it.
     AichFileHashReceived {
-        /// The master hash the peer proposes for this connection's file.
+        /// The file the wire names.
+        file_hash: FileHash,
+        /// The peer's master hash, a proposal rather than a fact.
         root: AichRootHash,
     },
     /// Surface-as-event (ADR-0068): an inbound file rating/comment

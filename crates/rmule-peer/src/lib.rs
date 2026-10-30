@@ -40,7 +40,9 @@ mod slot;
 mod software;
 mod source_exchange;
 
-pub use aich::{AichAnswer, AichDecodeError, AichFileHashAns, AichFileHashReq, AichRequest};
+pub use aich::{
+    AichAnswer, AichDecodeError, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest,
+};
 pub use buddy::{BuddyRelayDecodeError, Callback, ReaskCallbackTcp};
 pub use capability::{MiscOptions1, MiscOptions2, ModMiscOptions, UdpPortsAdvert};
 pub use compress::InflateFailed;

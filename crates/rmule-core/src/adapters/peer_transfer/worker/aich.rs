@@ -47,6 +47,7 @@ impl WorkerLink<'_> {
 
     /// What `event` does to the AICH ask out: the peer's answer for its part
     /// ends it, returned for the caller to forward, and the next ask leaves;
+    /// a refusal is the same with an empty answer;
     /// the link's end ends every ask held with an empty answer, sent here, so
     /// the download leaves their parts to their refetch.
     pub(super) async fn settle_aich(
@@ -67,6 +68,16 @@ impl WorkerLink<'_> {
                 Some(PeerWorkerEvent::AichAnswerReceived {
                     part,
                     recovery_data: recovery_data.clone(),
+                })
+            }
+            Some(PeerEvent::Requester(RequesterEvent::AichRefused { file_hash: refused }))
+                if *refused == file_hash =>
+            {
+                self.aich = None;
+                self.ask_next_aich(file_hash).await;
+                Some(PeerWorkerEvent::AichAnswerReceived {
+                    part,
+                    recovery_data: Vec::new(),
                 })
             }
             None | Some(PeerEvent::Connection(ConnectionEvent::Disconnected { .. })) => {

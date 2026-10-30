@@ -4,8 +4,9 @@
 //! part bytes meet the filesystem — every caller reaches it with a part that the
 //! hash set has already vouched for.
 
-use std::io::{Read, Seek};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::fs::{self, OpenOptions};
@@ -63,6 +64,21 @@ pub(crate) async fn on_pool<T: Send + 'static>(work: impl FnOnce() -> T + Send +
     }
 }
 
+/// A file read until a stop is raised, looked at before every read.
+struct UntilStopped {
+    file: std::fs::File,
+    stop: Arc<AtomicBool>,
+}
+
+impl Read for UntilStopped {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Err(io::Error::other("the build was told to stop"));
+        }
+        self.file.read(buf)
+    }
+}
+
 impl ContentFileStore {
     /// Write `bytes` into the `.part` file at absolute `offset`, creating the
     /// file and its parent directory if needed — for a part file written
@@ -107,12 +123,21 @@ impl ContentFileStore {
     /// The AICH tree of the first `file_size` bytes of the file at `path`
     /// (ADR-0038), read one block at a time on the blocking pool: however
     /// large the file, the build holds one block of it (ADR-0031). A file
-    /// that cannot be read, or holds fewer bytes, is an error.
-    pub(crate) async fn aich_tree(path: &Path, file_size: u64) -> Result<AichHashSet, CoreError> {
+    /// that cannot be read, or holds fewer bytes, is an error, and so is a
+    /// build `stop` was raised for, which reads no further block.
+    pub(crate) async fn aich_tree(
+        path: &Path,
+        file_size: u64,
+        stop: &Arc<AtomicBool>,
+    ) -> Result<AichHashSet, CoreError> {
         let path = path.to_path_buf();
-        on_pool(move || AichHashSet::from_reader(std::fs::File::open(path)?, file_size))
-            .await
-            .map_err(io_error)
+        let stop = Arc::clone(stop);
+        on_pool(move || {
+            let file = std::fs::File::open(path)?;
+            AichHashSet::from_reader(UntilStopped { file, stop }, file_size)
+        })
+        .await
+        .map_err(io_error)
     }
 
     /// The eD2k file hash of the first `file_size` bytes of the file at

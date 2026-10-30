@@ -25,9 +25,9 @@ use crate::{NoticeEvent, RequesterEvent, ServerEvent};
 /// `wants_name`/`wants_status` are the hard completion gate — real requests
 /// always carry `Name`, so this is the trigger that actually fires in
 /// practice. `wants_aich` is deliberately never part of that gate: core may
-/// legitimately never answer an AICH-root request (the hashset isn't
-/// complete), and ADR-0054 calls for silent omission in that case rather than
-/// an answer that never arrives. When `wants_name` and `wants_status` are both
+/// answer an AICH-root request long after, or never (the hashset is still being
+/// built, ADR-0038), and ADR-0054 calls for silent omission in that case rather
+/// than an answer the rest of the bundle waits for. When `wants_name` and `wants_status` are both
 /// false, AICH becomes the sole trigger (see
 /// [`PeerSession::try_flush_multipacket_answer`]); a bundle that asked for
 /// none of the three (Source subs only) never opens an entry at all.
@@ -68,11 +68,6 @@ impl PeerSession {
                     ..Default::default()
                 },
             );
-        }
-        if wants_aich {
-            // `OP_AICHFILEHASHANS` names no file: remember which one this
-            // bundle asked about, for `answer_aich_file_hash` to route.
-            self.served_aich_request = Some(req.file_hash);
         }
         let mut asks = Vec::with_capacity(req.items.len());
         for item in &req.items {
@@ -132,7 +127,7 @@ impl PeerSession {
                 }
                 AnswerItem::AichRoot(root) => {
                     self.core.push_event(PeerEvent::Requester(
-                        RequesterEvent::AichFileHashReceived { root },
+                        RequesterEvent::AichFileHashReceived { file_hash, root },
                     ));
                 }
             }

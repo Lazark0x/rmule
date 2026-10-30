@@ -733,6 +733,76 @@ async fn an_aich_ask_handed_mid_stream_leaves_at_once_and_its_answer_comes_back(
     assert_eq!(reported.last(), Some(&DRAINED));
 }
 
+/// A peer with no recovery data says so, and the ask ends there: the part goes
+/// to its refetch without its budget running out (ADR-0038). A root naming
+/// another file, late from an earlier ask on this link, counts for nothing here.
+#[tokio::test]
+async fn a_refused_aich_ask_ends_at_once_and_another_files_root_is_not_taken() {
+    let bytes = [0x5A; 512];
+    let file = rmule_testkit::file_link("refused.bin", &bytes);
+    let other = rmule_primitives::FileHash::from_bytes([0xE1; 16]);
+    let root = rmule_primitives::AichRootHash::from_bytes([0xA7; 20]);
+    let (events_tx, mut events) = mpsc::channel(8);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
+    let (event_tx, worker_events) = mpsc::channel(8);
+    let (worker_cmd_tx, mut worker_cmd_rx) = mpsc::channel(8);
+    worker_cmd_tx
+        .send(PeerWorkerCommand::RequestAich { part: 0, root })
+        .await
+        .unwrap();
+    for event in [
+        RequesterEvent::AichFileHashReceived {
+            file_hash: other,
+            root,
+        },
+        RequesterEvent::AichRefused { file_hash: other },
+        RequesterEvent::AichRefused {
+            file_hash: file.file_hash,
+        },
+        RequesterEvent::PartReceived {
+            file_hash: file.file_hash,
+            offset: 0,
+            bytes: bytes.to_vec(),
+        },
+    ] {
+        events_tx.send(PeerEvent::Requester(event)).await.unwrap();
+    }
+    let mut link = WorkerLink::new(
+        &mut events,
+        &cmd_tx,
+        &event_tx,
+        &mut worker_cmd_rx,
+        Duration::from_secs(3600),
+    );
+    let ended = streamed(
+        &mut link,
+        &mut Pipeline::new(),
+        &file,
+        &[block(0, 512)],
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(matches!(ended, Streamed::Next));
+    drop(link);
+    drop(cmd_tx);
+    while cmd_rx.recv().await.is_some() {}
+    drop(event_tx);
+    let reported = drained(worker_events).await;
+    assert_eq!(
+        reported.first(),
+        Some(&PeerWorkerEvent::AichAnswerReceived {
+            part: 0,
+            recovery_data: Vec::new(),
+        })
+    );
+    assert!(
+        !reported
+            .iter()
+            .any(|event| matches!(event, PeerWorkerEvent::AichFileHashReceived { .. })),
+        "{reported:?}"
+    );
+}
+
 /// The peer's `OP_OUTOFPARTREQS` while an AICH ask waits for its answer
 /// reaches the download at once: the slot is over, so the download frees the
 /// worker's blocks, rather than the ask's budget holding a dead slot.

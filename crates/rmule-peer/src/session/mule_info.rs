@@ -52,12 +52,20 @@ impl PeerSession {
         if reask.is_some() {
             self.peer_legacy_reask = reask;
         }
+        // Read before the capability block is taken: a hello that named one
+        // keeps it.
+        let compression = self
+            .peer_misc_options
+            .is_none()
+            .then(|| legacy.capabilities().data_compression_version());
         if self.peer_misc_options.is_none() {
             self.peer_misc_options = Some(legacy.capabilities());
         }
         let software = self.peer_software.software();
         self.revise_identity(IdentityChange::Software, |identity| {
-            identity.revise_software(software)
+            let compression_changed =
+                compression.is_some_and(|version| identity.revise_data_compression(version));
+            identity.revise_software(software) || compression_changed
         });
         if let Some((udp_port, udp_version)) = reask
             && !self.peer_hello_named_reask

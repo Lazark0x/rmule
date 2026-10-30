@@ -327,8 +327,12 @@ pub(super) async fn forward_shared(
                 .send(PeerWorkerEvent::SourcesReceived { sources })
                 .await;
         }
-        // No file guard: the 0x9D answer carries no file hash.
-        Some(PeerEvent::Requester(RequesterEvent::AichFileHashReceived { root })) => {
+        // A root can land long after its ask (ADR-0038): it counts for the
+        // file it names.
+        Some(PeerEvent::Requester(RequesterEvent::AichFileHashReceived {
+            file_hash: named,
+            root,
+        })) if named == file_hash => {
             let _ = event_tx
                 .send(PeerWorkerEvent::AichFileHashReceived { root })
                 .await;
