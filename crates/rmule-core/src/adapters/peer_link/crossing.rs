@@ -22,6 +22,10 @@
 //! lock: a dial claims its hello under the same lock, so no hello of ours can
 //! go out behind an answer. It cannot wait for the accept road's triage, which
 //! starts with the serve loop, after the server's port test was answered.
+//!
+//! Only a link from the address the dial went to can be that peer's own: a
+//! hello from anywhere else is a claim no socket backs, and meets no dial
+//! (ADR-0107, "What a link proves to take a dial").
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -214,9 +218,9 @@ impl Drop for CrossedDial {
 impl SharedPeerLinks {
     /// The hello of a link the peer opened from `remote`, proving `names`,
     /// meets rmule's dials, `own` being rmule's User Hash when known: held
-    /// when one has its hello out unanswered under a name, else the link is
-    /// filed, in the one step, and a dial whose hello has not gone out yields
-    /// to it.
+    /// when one to that address has its hello out unanswered under a name,
+    /// else the link is filed, in the one step, and such a dial whose hello
+    /// has not gone out yields to it.
     pub(in crate::adapters) fn meet(
         &self,
         remote: PeerEndpoint,
@@ -224,7 +228,7 @@ impl SharedPeerLinks {
         own: Option<UserHash>,
     ) -> Meeting {
         let mut book = self.book.lock().expect("peer links lock");
-        if let Some((filing, answered)) = book.crossing(&names) {
+        if let Some((filing, answered)) = book.crossing(remote, &names) {
             let peer = names.iter().find_map(|name| match name {
                 LinkName::User(hash) => Some(*hash),
                 _ => None,
@@ -253,12 +257,18 @@ impl SharedPeerLinks {
 }
 
 impl Book {
-    /// The dial with its hello out unanswered that one of `names` is filed
-    /// under, and where a hello held on it hears it settle.
-    fn crossing(&mut self, names: &[LinkName]) -> Option<(u64, watch::Receiver<bool>)> {
+    /// The dial to `remote`'s address with its hello out unanswered that one
+    /// of `names` is filed under, and where a hello held on it hears it
+    /// settle.
+    fn crossing(
+        &mut self,
+        remote: PeerEndpoint,
+        names: &[LinkName],
+    ) -> Option<(u64, watch::Receiver<bool>)> {
         let filing = names.iter().find_map(|name| {
-            let filing = self.links.get(name)?.filing;
-            self.unanswered.contains_key(&filing).then_some(filing)
+            let held = self.links.get(name)?;
+            (held.remote.ip() == remote.ip() && self.unanswered.contains_key(&held.filing))
+                .then_some(held.filing)
         })?;
         let dial = self.unanswered.get_mut(&filing)?;
         dial.crossed = true;

@@ -152,23 +152,27 @@ struct Filed {
 }
 
 impl Book {
-    /// Whether a live link from another address than `remote` holds the User
-    /// Hash `name`: it keeps it, as aMule's client stays on the socket it
-    /// holds and attaches no newcomer (`ClientList.cpp:384-398`, ADR-0107, "One
-    /// client on two addresses"). A dial not yet answered holds nothing, and
-    /// nor does one dead at the far end.
+    /// Whether the link holding `name` keeps it from a link from `remote`,
+    /// another address: a dial the far end has not settled keeps every name,
+    /// for a hello proves none (ADR-0107, "What a link proves to take a
+    /// dial"), and any other link its User Hash, as aMule's client stays on
+    /// the socket it holds and attaches no newcomer (`ClientList.cpp:384-398`,
+    /// "One client on two addresses"), unless it is dead at the far end.
     fn stands_elsewhere(&self, name: &LinkName, remote: PeerEndpoint, now: Instant) -> bool {
-        let (LinkName::User(_), Some(held)) = (name, self.links.get(name)) else {
+        let Some(held) = self.links.get(name) else {
             return false;
         };
-        held.remote.ip() != remote.ip()
-            && !self.yielding.contains_key(&held.filing)
-            && !self.unanswered.contains_key(&held.filing)
-            && self
-                .live
-                .get(&held.filing)
-                .and_then(|proven| proven.far_end.as_ref())
-                .is_none_or(|far_end| far_end.dead_at(now).is_none())
+        if held.remote.ip() == remote.ip() {
+            return false;
+        }
+        self.yielding.contains_key(&held.filing)
+            || self.unanswered.contains_key(&held.filing)
+            || (matches!(name, LinkName::User(_))
+                && self
+                    .live
+                    .get(&held.filing)
+                    .and_then(|proven| proven.far_end.as_ref())
+                    .is_none_or(|far_end| far_end.dead_at(now).is_none()))
     }
 }
 
@@ -389,11 +393,11 @@ impl SharedPeerLinks {
         let now = Instant::now();
         let mut took_from = Vec::new();
         for name in &names {
-            if let Some(held) = book.links.get(name) {
-                took_from.push(held.filing);
+            if book.stands_elsewhere(name, remote, now) {
+                continue;
             }
-            if !book.stands_elsewhere(name, remote, now) {
-                book.links.insert(*name, filed.clone());
+            if let Some(held) = book.links.insert(*name, filed.clone()) {
+                took_from.push(held.filing);
             }
         }
         let moving = book.overtake(&took_from, &filed, now);

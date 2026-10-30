@@ -3,7 +3,9 @@
 //! client, connecting or connected (`ClientTCPSocket.cpp:391`,
 //! `ClientList.cpp:400-403`). So until a dial has sent its hello — its
 //! connect, or its crypt handshake, still running — it yields to the peer's
-//! accepted link filed under one of its names: the dial closes, retiring
+//! accepted link from the address it dials, filed under one of its names (a
+//! hello from elsewhere proves none, ADR-0107, "What a link proves to take a
+//! dial"): the dial closes, retiring
 //! nobody, and the dialing download and its waiters move onto that link, as
 //! aMule's connecting client carries on over the socket the peer opened
 //! (`BaseClient.cpp:1692-1698`); a serve side's dial-back leaves its grant to

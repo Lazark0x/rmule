@@ -516,18 +516,64 @@ fn a_link_from_another_address_takes_no_user_hash_from_the_link_that_stands() {
     assert_eq!(found(&[hash]), Some(second));
 }
 
-/// A dial not yet answered holds nothing yet: the peer's own link from its
-/// other family still overtakes it under the hash (ADR-0107 invariant 7).
-#[test]
-fn a_dial_not_yet_answered_gives_its_hash_to_the_peers_link_from_another_address() {
+/// A hello proves no name, so one from anywhere but the address dialed takes
+/// nothing from a dial before its hello: it stays filed, and it passes the
+/// hash on at its end (ADR-0107, "What a link proves to take a dial").
+#[tokio::test]
+async fn a_link_from_another_address_does_not_overtake_a_dial_before_its_hello() {
     let links = SharedPeerLinks::default();
     let (dialed, came_in) = (v4([203, 0, 113, 3], 4662), v4([198, 51, 100, 9], 4662));
     let hash = LinkName::User(user(0x25));
-    let Reach::Dial(_dial) = links.reach(dialed, &[LinkName::Endpoint(dialed), hash]) else {
+    let Reach::Dial(mut dial) = links.reach(dialed, &[LinkName::Endpoint(dialed), hash]) else {
         panic!("nothing is linked yet: the look-up files a dial");
     };
 
     let (_link, _joins, _moving) = links.file(came_in, vec![LinkName::Endpoint(came_in), hash]);
 
+    let overtaken = tokio::time::timeout(std::time::Duration::from_millis(50), dial.overtaken());
+    assert!(overtaken.await.is_err(), "the dial is told nothing");
+    assert_eq!(links.find(&[hash]).map(|link| link.remote), Some(dialed));
+    drop(dial);
     assert_eq!(links.find(&[hash]).map(|link| link.remote), Some(came_in));
+}
+
+/// The sender of a hello from another address can hold its socket open past
+/// the answer all it likes: nothing waits on it, so the close bound never
+/// hands it the dial (ADR-0107, "What a link proves to take a dial").
+#[tokio::test]
+async fn a_hello_from_another_address_meets_no_dial_past_its_hello() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let hash = LinkName::User(user(0x26));
+    let (mut dial, _joins) = dial_past_its_hello(&links, at, &[LinkName::Endpoint(at), hash]);
+
+    let sender = v4([198, 51, 100, 9], 50_288);
+    let met = links.meet(sender, vec![LinkName::Endpoint(sender), hash], None);
+
+    assert!(
+        matches!(met, Meeting::Clear(_)),
+        "a hello from elsewhere is not held on the dial"
+    );
+    assert_eq!(links.find(&[hash]).map(|link| link.remote), Some(at));
+    assert!(matches!(dial.heard_answer().await, AnswerHeard::Stands));
+    assert_eq!(links.find(&[hash]).map(|link| link.remote), Some(at));
+}
+
+/// The address is the proof, the port no part of it: the peer's own connect
+/// comes from an ephemeral port and may name a listen port the source record
+/// does not.
+#[test]
+fn a_hello_from_the_address_dialed_is_held_whatever_its_port() {
+    let links = SharedPeerLinks::default();
+    let at = v4([203, 0, 113, 3], 4662);
+    let hash = LinkName::User(user(0x27));
+    let (_dial, _joins) = dial_past_its_hello(&links, at, &[LinkName::Endpoint(at), hash]);
+
+    let came_back = v4([203, 0, 113, 3], 50_288);
+    let elsewhere = LinkName::Endpoint(came_back.with_port(4711));
+
+    assert!(matches!(
+        links.meet(came_back, vec![elsewhere, hash], None),
+        Meeting::Crossed(_)
+    ));
 }
