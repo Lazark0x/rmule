@@ -1,0 +1,46 @@
+# One obfuscated client-UDP datagram written by emule-qt `73fff714` over IPv6,
+# captured on the IPv6 dialect bench during interop flow
+# `ipv6-dialect ipv6-udp-key`. `keyed_file_not_found.bin` is the datagram the
+# driver's socket received, byte for byte (`cmp` against the run's
+# `udpkey-emuleqt-keyed-capture/obfuscated_reply.bin`); nothing is fabricated
+# (ADR-0045).
+#
+# ## What this datagram is evidence FOR
+#
+# ADR-0087's 35-byte client-UDP key on the **inbound** side, off the dialect's
+# own author. rmule's `decrypt_datagram_client` opens it with the receiver's
+# user hash and the sender's IPv6 address as the socket reported it, and
+# recovers `OP_FILENOTFOUND` (`c5 92`). Until this run the row held only the
+# outbound half: emule-qt answered an unattributed reask in the clear.
+#
+# ## How it was drawn
+#
+# `UploadQueue.cpp` keys a file-not-found reply only to a client it holds
+# (`clientList->findByEndpoint_UDP`, then `shouldReceiveCryptUDPPackets()`,
+# which needs the crypt bit and a Kad version of at least 8). The driver said
+# hello over IPv6 first and held that link: its hello named the driver's UDP
+# port as both UDP ports, which is what sets the Kad version nibble, and
+# claimed the crypt layer. Its obfuscated `OP_REASKFILEPING` then named a file
+# emule-qt does not share.
+#
+# Tier: **`captured`**, one implementation. kno's fork refuses the row by design
+# (the flow's `amule-kno-does-not-decrypt-a-native-v6-datagram` claim), so
+# emule-qt stays this key's one IPv6 oracle.
+
+[provenance]
+counterparty = "ModderMule/emule-qt 73fff714, unmodified, image rmule/interop-emuleqt:local verified by its org.rmule.emuleqt.commit label"
+scenario     = "rmule-interop-harness ipv6-dialect ipv6-udp-key --skip-build --timeout 300"
+run          = "1793354374 — PASS, 8 of 8 claims held, harness 9f13e9dd (clean)"
+date         = "2026-10-30"
+stimulus     = "the driver's obfuscated OP_REASKFILEPING is rmule's own datagram and is never evidence (ADR-0045 point 2); it stays in the run archive"
+
+[topology]
+receiver = "driver 3fff:ed2:1::6 port 4672, user hash 42424242424242424242424242424242"
+sender   = "emule-qt 3fff:ed2:1::3 port 4672, user hash 3AB8D1047F0E532E3C01893988B36FDC"
+
+[frames.keyed_file_not_found]
+class     = "counterparty evidence"
+direction = "emule-qt -> driver, over IPv6"
+wire      = "0f ef 72 02 90 c0 de 78 88 90"
+layout    = "marker 0x0f; random key 0x72EF, little-endian at offset 1; RC4 body under MD5(<receiver hash 16><sender IPv6 16><0x5B><random key 2>)"
+plaintext = "c5 92"

@@ -7,6 +7,7 @@ mod fixture;
 
 // Wire codecs: the tag, packet, endpoint and text encodings every protocol
 // crate reads and writes.
+mod datagram_obfuscation_captured;
 mod endpoint_codec;
 mod opcode_macro;
 mod packet_fixtures;
