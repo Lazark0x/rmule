@@ -11,6 +11,7 @@ pub mod bench_doctor;
 pub mod docker;
 pub mod fake_public;
 pub mod fake_public_v6;
+pub mod fastclock;
 pub mod flow;
 pub mod kad_distance_design;
 pub mod kad_seed;

@@ -353,6 +353,7 @@ impl Docker {
     /// lifecycle flags, name, network, ip, capabilities, workdir, ports, volumes,
     /// env, then the image and its command.
     pub fn run_container(&self, container: RunContainer) -> DockerCommand {
+        let container = container.on_the_run_clock();
         let mut args = vec![OsString::from("run")];
 
         if container.detach {
@@ -570,6 +571,32 @@ pub struct RunContainer {
 }
 
 impl RunContainer {
+    /// This container as a fast-clock run takes it; at real speed, itself.
+    fn on_the_run_clock(mut self) -> Self {
+        let scale = crate::fastclock::scale();
+        if scale == 1 {
+            return self;
+        }
+        let image = self.image.to_string_lossy().into_owned();
+        if let Some(fast) = crate::fastclock::counterparty_image(&image) {
+            self.image = fast.into();
+            return self.env(crate::fastclock::SWITCH, scale.to_string());
+        }
+        let runs =
+            |test: &dyn Fn(&str) -> bool| self.args.iter().any(|arg| test(&arg.to_string_lossy()));
+        let rmule = image.contains("interop-rmule-tools")
+            || runs(&|arg| arg.ends_with("debug/rmule-tools"));
+        if !rmule || runs(&|arg| arg == "cargo") {
+            return self;
+        }
+        let (library, mount) = crate::fastclock::library_volume();
+        crate::fastclock::rmule_env()
+            .into_iter()
+            .fold(self.volume(library, mount), |container, (key, value)| {
+                container.env(key, value)
+            })
+    }
+
     /// The image the container starts from.
     pub fn image(&self) -> &OsStr {
         &self.image

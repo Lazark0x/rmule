@@ -41,6 +41,10 @@ struct Record {
     dirty: bool,
     /// How many paths it listed (the paths themselves are not recorded).
     dirty_paths: usize,
+    /// Set on a fast-clock run, which never fills a row; its image tags name
+    /// the stock images the run took the fast ones in place of.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    clock_scale: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     rmule_binary_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +129,7 @@ pub fn begin(run_dir: &Path) -> Result<()> {
                 .as_deref()
                 .is_some_and(|text| !text.trim().is_empty()),
             dirty_paths: status.as_deref().map_or(0, |text| text.lines().count()),
+            clock_scale: Some(crate::fastclock::scale()).filter(|scale| *scale > 1),
             ..Record::default()
         },
         expected_binary: None,
