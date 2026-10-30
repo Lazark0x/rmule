@@ -15,7 +15,8 @@
 //! ticket's, drawn in run `1793356626`, where rmule banned the peer's IPv4.
 //!
 //! What a claim reads is emule-qt's own tap: who opened each link, what rode
-//! it, and the copy rmule ended with.
+//! it, and the copy rmule ended with. emule-qt's own download of the asked file
+//! does not finish on this link: the absence claim says why.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -41,14 +42,14 @@ use crate::flow::peer::one_link::verdict::{part_of, requested};
 const ASKED_BYTES: u64 = 3 << 20;
 /// rmule's bounded run.
 const RMULE_SECS: u64 = 60;
-/// How long rmule's answer is waited for, inside its bounded run.
+/// How long the ride is waited for, inside rmule's bounded run.
 const ANSWER_WAIT: Duration = Duration::from_secs(40);
 /// rmule's container role.
 const RMULE_ROLE: &str = "v6asked";
 /// The line rmule prints when the core stands.
 const RMULE_READY: &str = "download";
-/// The line rmule prints when it grants the asker its slot.
-const ASK_ANSWERED: &str = "serve.upload_slot_granted";
+/// The line rmule prints when the download rides the link it found.
+const ASK_ANSWERED: &str = "download.link_shared";
 
 const OP_HELLO: u8 = 0x01;
 const OP_STARTUPLOADREQ: u8 = 0x54;
@@ -200,12 +201,6 @@ pub(super) fn drive(
         &qt_v4,
     );
     claims.push(Claim::about(
-        "rmule-answered-the-ask",
-        answered,
-        Evidence::RmuleOnly,
-        first_line(&log, ASK_ANSWERED).to_owned(),
-    ));
-    claims.push(Claim::about(
         "the-download-of-that-peer-completed-byte-equal",
         copy == shared,
         Evidence::Captured,
@@ -213,7 +208,7 @@ pub(super) fn drive(
             "{} bytes of {}; {}",
             copy.len(),
             shared.len(),
-            first_line(&log, "download.completed")
+            first_line(&log, "download.link_shared")
         ),
     ));
     Ok((claims, String::new()))
@@ -299,6 +294,7 @@ impl Links<'_> {
                 .flatten()
         };
         let slot_asks = on_link(true, &slot_ask, asked);
+        let other_asks = on_link(true, &slot_ask, held);
         let grants = streams()
             .filter(|stream| stream.source == self.rmule && stream.destination.port() == asker_port)
             .flat_map(|stream| stream.ed2k_frames())
@@ -341,13 +337,17 @@ impl Links<'_> {
                      frames of the shared file from rmule"
                 ),
             ),
-            Claim::about(
-                "rmule-answered-the-slot-ask-on-the-shared-link",
-                slot_asks > 0 && grants > 0,
-                Evidence::Captured,
+            Claim::absence(
+                "emuleqts-slot-ask-on-the-shared-link-names-the-file-rmule-asked-for",
+                slot_asks.try_into().unwrap_or(i64::MAX),
                 format!(
-                    "{slot_asks} slot asks from emule-qt for the shared file, {grants} grants \
-                     from rmule"
+                    "{slot_asks} slot asks for the shared file, {other_asks} for the held file, \
+                     {grants} grants. `sendStartupLoadReq` writes `m_reqUpFileId`, the file this \
+                     peer asked of emule-qt, not its own `m_reqFile` (`DownloadClient.cpp:319-320` \
+                     at `73fff714`), so its ask for the shared file never reaches the wire on a \
+                     link rmule also downloads on. rmule offers no file with no verified part \
+                     and answers such an ask nothing, as aMule does \
+                     (`ClientTCPSocket.cpp:606-618`)."
                 ),
             ),
             Claim::about(
