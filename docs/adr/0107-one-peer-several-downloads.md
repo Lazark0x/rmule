@@ -269,7 +269,7 @@ Invariants every transition keeps:
 | an IPv6 client's address is its socket's | `SetAddress(m_socket->GetPeerAddress())` (kno `BaseClient.cpp:812-813`) | on an IPv6 link the peer is a source at the link's address with its listen port (`PeerIdentity::source_coordinate`); the hello's IPv4 claim names nothing |
 | a client met inbound is dialed where its socket came from | `BaseClient.cpp:661`, `:678-680`, `:1620` | the link is filed under that address, the one its sighting names |
 | a second link from the same address and port replaces the first | the old socket is dropped (`ClientList.cpp:400-403`), and what it carried ends | not opened by a download; a newer accepted link takes the filing |
-| a second link under an identified, connected client's hash from elsewhere is a thief | the newcomer is banned, "Userhash invalid" (`ClientList.cpp:384-392`) | the serve side bans the newcomer's address and closes its link; a client identified is one whose Secure User Identification the credit ledger bound (ADR-0041) |
+| a second link under an identified, connected client's hash from elsewhere is a thief | the newcomer is banned, "Userhash invalid", at the `OP_HELLO` of a socket the peer opened (`ClientList.cpp:384-392`, `ClientTCPSocket.cpp:391`) | the serve side bans the newcomer's address and closes its link where both addresses are IPv4 and the peer opened the link; a client identified is one whose Secure User Identification the credit ledger bound (ADR-0041). Everywhere else, "One client on two addresses" below |
 | two queued clients under one hash | the unidentified one leaves the queue, and an unidentified asker gets no answer (`UploadQueue.cpp:432-458`) | at a slot ask, a waiter under the asker's hash on another link that is not identified leaves the wait list; an asker not identified is answered nothing and not queued |
 | a client promoted while unconnected is granted on whichever link its hellos finish first | `US_CONNECTING` answered at `ConnectionEstablished` (`BaseClient.cpp:1707-1716`; `ClientTCPSocket.cpp:328`, `:417`) | a pending dial-back grant (ADR-0057) moves with the waiter's place onto the link its hello came back on, and `OP_ACCEPTUPLOADREQ` goes on it at once; a hello that crosses the dial's is held until the dial settles, so the grant goes on the one link the far end kept (invariant 7) |
 | a Low-ID client marked for its next connection takes its slot there | `m_bAddNextConnect` (`UploadQueue.cpp:410-425`) | its slot ask on the link it came back on is granted, under the budget or one over it (ADR-0057) |
@@ -425,6 +425,57 @@ once per cycle and each polite ask takes one off, so no ban follows. A called wa
 ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once, and so
 does a Low-ID source a fill reaches by a callback road: its record has no address to wait at
 until the peer connects, and the connection that answers asks.
+
+### One client on two addresses
+
+aMule's rule rests on one premise: a client has one address, so the same hash from a second one
+while the first is connected is a second party. That holds for IPv4 alone. A dual-stack client
+holds an address in each family and may dial us on both, and an IPv6 host holds several addresses
+at once. Run `1793356626` shows the cost: emule-qt dialed over IPv6, then over IPv4 51 ms later,
+and rmule banned that client's own IPv4 for two hours at the hello. The references carry the
+premise unchanged. aMule's rule never meets two families. kno compares `CNetworkAddress`es and
+would ban the second family (`ClientList.cpp:483-494`, read, not run). emule-qt escapes it by
+accident, and only when the known client is on IPv6: `toNetworkUint32` is `0` there, so the state
+reads `IdBadGuy`, not `Identified` (`ClientList.cpp:120-122`, `Address.cpp:78-83`, read, not run).
+rmule parts from all three: **an address is proof of a second party only between two IPv4
+addresses.**
+
+**What proves two links one client.** Two links under one User Hash are one client when either
+holds:
+
+- **Both links proved the key** the ledger binds to that hash (ADR-0041). This proves it in any
+  family.
+- **The other link's own hello names this address, on the same listen port**, and the two are not
+  both IPv4: the High ID that link's hello claims is the IPv4 this link came from, or the
+  `CT_MOD_IP_V6` it carries is the IPv6 this one came from. TCP makes the address unforgeable, and
+  the words are those of the client already held.
+
+The newcomer's own hello proves nothing: a thief copies a claim as easily as a hash.
+
+| A same-hash link from a different address | Held link verified | Held link unverified |
+|---|---|---|
+| both IPv4 | **banned at its hello**, as aMule does. A link rmule dialed is no newcomer and is never banned: aMule's rule runs at the `OP_HELLO` of a socket the peer opened, and the hello answer on one it dialed does not reach it (`ClientTCPSocket.cpp:391`) | no ban; at a slot ask the ones not identified leave the wait list (`UploadQueue.cpp:432-458`) |
+| not both IPv4, proved one client | **the client's second link**: its hello, name and status asks are answered; its slot ask is answered with the rank the client holds, 1 while it holds a slot, and earns no second standing and no second slot | the same |
+| not both IPv4, not proved | **an unproved link**: no ban; its hello, name and status asks are answered as a stranger's are; its slot ask is answered nothing and earns no standing | the same, and nobody leaves the wait list |
+
+The standing stays on the link that earned it and keeps its file. Neither link is closed: which
+one lives is the far end's choice (invariant 7), and a far end holding two client objects reads a
+close as a dead source. When the standing's link ends, a slot moves to a proved second link, a
+pending dial-back grant is handed to one, and a place waits for the next link that asks, as a
+standing whose link has ended moves to any link. While the standing's link lives an unproved link
+inherits nothing, and a verified client's slot or dial-back grant never reaches one.
+
+**A ban is earned by proof, never by sight.** The first sight of a second address says nothing
+about who owns it. The rule reaches a ban in only two ways: both addresses are IPv4, or the
+newcomer's session proved a *different* key under the hash while the verified client is linked.
+One client holds one key, so an honest dual-stack client can meet neither. A failed signature is
+not that proof, since V2's signed bytes carry an address either side can have wrong, and it bans
+nobody. A real thief on another family or a second IPv6 address gets a hello answered and nothing
+else: no place, no slot, no bytes, no credit, and no eviction of the client it copied. If it proves
+its own key it is banned. If it shares the client's public IPv4 and listen port, the client's own
+naming passes it as a second link, where it reads a rank and holds nothing until the client's link
+ends. That is the cost taken: a thief behind the client's own address is missed, and an honest
+client is not banned.
 
 ### Citations in two trees
 

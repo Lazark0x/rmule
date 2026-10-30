@@ -136,6 +136,9 @@ claim). `IsUsableTagIdentity` already refuses a mapped address, so every 16-byte
   before the endpoint-keyed pool sees it; a Low-ID source keeps its half as its candidate's
   rung 0. emule-qt always dials the IPv4 of a High-ID source (`UpDownClient.cpp:88-89`,
   `:1623-1627`); both reach the same peer.
+- **A dual-stack client may link on both families.** Its second address is not a hash thief's:
+  ADR-0107, "One client on two addresses", says what proves the two links one client and what
+  each link gets.
 - **A failed first-family dial falls to the other family once.** A dial that ends short of a
   completed handshake (no route, refused, timed out, closed before the hello answer, or a
   worker that could not start) is retried once in the other family, if that family is
