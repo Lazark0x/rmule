@@ -276,7 +276,7 @@ async fn free_destination(row: &DownloadPaths) -> PathBuf {
     } else {
         row.final_path().with_file_name(row.name())
     };
-    on_pool(move || crate::free_name::first_free(&named, Path::exists)).await
+    on_pool(move || crate::free_name::first_free(&named, crate::free_name::stands_at)).await
 }
 
 /// Store `Completing` with `destination`, in one write, before it is used.

@@ -257,6 +257,31 @@ async fn a_taken_destination_completes_under_the_first_free_numbered_name() {
     assert_eq!(completed_at(&leg.events()), Some(numbered.as_path()));
 }
 
+/// A dangling link at the destination is something standing there: the
+/// exclusive rename refuses it, so the name that follows must not be it.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_dangling_link_at_the_destination_is_kept_and_the_move_numbers() {
+    let mut leg = finished(300_000, Arc::new(OsCompletionFs));
+    let named = leg.paths.final_path().to_path_buf();
+    std::os::unix::fs::symlink(named.with_file_name("gone"), &named).unwrap();
+    let numbered = named.with_file_name("film (1).mkv");
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let moved = async {
+        tokio::join!(
+            complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+            answer(&mut rx, true, |report| assert_eq!(report.path, numbered)),
+        )
+        .0
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), moved)
+        .await
+        .expect("the move takes a free name, it does not spin on a taken one")
+        .unwrap();
+    assert_eq!(std::fs::read(&numbered).unwrap(), leg.bytes);
+    assert!(named.symlink_metadata().unwrap().is_symlink());
+}
+
 /// The first rename finds a file another program wrote at its target after
 /// the move named it, as in the window between naming and landing; every
 /// rename is the system's exclusive one.

@@ -60,7 +60,10 @@ fn placed(dir: &Path, parts: &Path, name: &str) -> DownloadPaths {
 /// exists, keeping `name` as the Download Name the completion move numbers
 /// from.
 fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
-    let free = |paths: &DownloadPaths| !paths.final_path().exists() && !paths.part_path().exists();
+    let free = |paths: &DownloadPaths| {
+        !crate::free_name::stands_at(paths.final_path())
+            && !crate::free_name::stands_at(paths.part_path())
+    };
     let name = name.as_str();
     let plain = placed(dir, parts, name);
     if free(&plain) {
@@ -70,4 +73,28 @@ fn free_paths(dir: &Path, parts: &Path, name: &SafeFileName) -> DownloadPaths {
         .map(|n| placed(dir, parts, &crate::free_name::numbered(name, n)).named(name))
         .find(free)
         .expect("an unbounded range finds a free name")
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::symlink;
+
+    use rmule_primitives::{FileHash, SafeFileName};
+
+    use super::free_paths;
+
+    /// A dangling link stands at its name, at either path: the move's
+    /// exclusive rename would refuse it, so a placement passes it by.
+    #[test]
+    fn a_dangling_link_at_either_path_takes_the_next_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = SafeFileName::clean("film.mkv", &FileHash::from_bytes([1; FileHash::BYTE_LEN]));
+        symlink(dir.path().join("gone"), dir.path().join("film.mkv")).unwrap();
+        symlink(dir.path().join("gone"), dir.path().join("film (1).mkv.part")).unwrap();
+
+        let paths = free_paths(dir.path(), dir.path(), &name);
+
+        assert_eq!(paths.final_path(), dir.path().join("film (2).mkv"));
+        assert_eq!(paths.part_path(), dir.path().join("film (2).mkv.part"));
+    }
 }

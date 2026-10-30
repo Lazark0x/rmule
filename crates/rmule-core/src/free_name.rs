@@ -18,6 +18,12 @@ pub(crate) fn numbered(name: &str, n: u32) -> String {
     }
 }
 
+/// Whether anything stands at `path`, a dangling link included: the exclusive
+/// rename refuses a name a link holds, so no name it holds is free.
+pub(crate) fn stands_at(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
 /// `path` itself when `taken` says it is free, or the first numbered name
 /// beside it that `taken` leaves free. A path with no file name is answered
 /// as it is.

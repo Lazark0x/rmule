@@ -106,7 +106,7 @@ fn exclusive_or_checked(exclusive: io::Result<()>, from: &Path, to: &Path) -> Re
     match exclusive {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::Unsupported => {
-            if std::fs::symlink_metadata(to).is_ok() {
+            if crate::free_name::stands_at(to) {
                 return Err(Refusal::Taken);
             }
             std::fs::rename(from, to).map_err(|error| Refusal::of(&error))
