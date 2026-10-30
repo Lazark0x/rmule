@@ -7,19 +7,27 @@ use std::net::Ipv6Addr;
 
 use super::{PeerEvent, PeerSession, State};
 use crate::capability::{MiscOptions1, MiscOptions2, ModMiscOptions};
-use crate::hello::PeerHelloBody;
+use crate::hello::{HelloAnswer, PeerHelloBody};
 use crate::identity::PeerIdentity;
 use crate::{ConnectionEvent, IdentityChange};
 
 impl PeerSession {
-    /// Role-neutral identify step shared by the inbound `OP_HELLO` and
-    /// outbound `OP_HELLOANSWER` paths: project the peer's hello body to a
+    /// Role-neutral identify step of a link that is open at once, an
+    /// outbound `OP_HELLOANSWER`'s: project the peer's hello body to a
     /// `PeerIdentity`, enter the session, and emit `Identified`. The
     /// caller has already folded the hello into `peer_software`, on top of
     /// what an `OP_EMULEINFO` said before it — which only a dialed peer can
     /// send before its answer; the capabilities a legacy block named stand
     /// when the hello names none.
     pub(super) fn identify_peer(&mut self, body: &PeerHelloBody) {
+        let identity = self.read_identity(body);
+        self.enter_identified(identity);
+        self.link_opened();
+    }
+
+    /// What the peer's hello body says of it, kept with what the session
+    /// reads off the hello.
+    pub(super) fn read_identity(&mut self, body: &PeerHelloBody) -> PeerIdentity {
         let mut identity =
             PeerIdentity::from_hello_body(body).with_software(self.peer_software.software());
         self.peer_hello_named_reask = identity.client_udp_reask().is_some();
@@ -30,16 +38,41 @@ impl PeerSession {
         }
         self.peer_misc_options = MiscOptions1::from_tags(&body.tags).or(self.peer_misc_options);
         self.peer_misc_options2 = MiscOptions2::from_tags(&body.tags);
-        let identity = identity.with_source_exchange(self.source_exchange_support());
+        identity.with_source_exchange(self.source_exchange_support())
+    }
+
+    /// The peer is identified: enter the session and report it.
+    pub(super) fn enter_identified(&mut self, identity: PeerIdentity) {
         self.state = State::Identified;
         self.peer_identity = Some(identity.clone());
         self.core
             .push_event(PeerEvent::Connection(ConnectionEvent::Identified {
                 identity,
             }));
+    }
+
+    /// Both hellos are out: what waits for the peer to read ours.
+    pub(super) fn link_opened(&mut self) {
         self.maybe_start_secure_ident();
         // A move that came while the hellos crossed is owed now.
         self.announce_ipv6_change();
+    }
+
+    /// Write `OP_HELLOANSWER`, with the legacy info block a peer that wants
+    /// one reads first.
+    pub(super) fn answer_hello(&mut self) {
+        self.send_emule_info_if_legacy();
+        let body = self.hello_body_to_write();
+        self.write_packet(HelloAnswer::new(body).encode_packet());
+    }
+
+    /// The hello the gate held may be answered now; a no-op when none is
+    /// owed.
+    pub(super) fn answer_owed_hello(&mut self) {
+        if std::mem::take(&mut self.answer_owed) {
+            self.answer_hello();
+            self.link_opened();
+        }
     }
 
     /// Apply one revision to an identified peer's identity and, when it

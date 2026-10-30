@@ -21,6 +21,7 @@ use crate::capability::{
 };
 use crate::hello::PeerHelloBody;
 use crate::hello_tag::{CT_EMULE_VERSION, CT_MOD_VERSION, CT_NAME, CT_VERSION};
+use crate::identity::PeerIdentity;
 use crate::software::RMULE_MOD_VERSION;
 
 /// The Secure User Identification material the application supplies for one peer
@@ -35,6 +36,17 @@ pub struct SecureIdentConfig {
     pub key: Arc<SecureIdentKey>,
     /// This connection's challenge, injected so the session draws no randomness of its own.
     pub challenge: u32,
+}
+
+/// Whether an accepting session may answer a hello it just read (ADR-0107
+/// invariant 7): the node keeps its links, and decides in the step that reads
+/// the hello, so nothing it dials can overtake the answer. A session with no
+/// gate answers at once.
+pub trait HelloGate: Send + Sync + std::fmt::Debug {
+    /// Whether the hello `identity` read on the link from `peer` is answered
+    /// now. `false` leaves it owed until
+    /// [`ConnectionCommand::AnswerHello`](crate::ConnectionCommand::AnswerHello).
+    fn may_answer(&self, peer: rmule_primitives::PeerEndpoint, identity: &PeerIdentity) -> bool;
 }
 
 /// The `CT_EMULE_VERSION` value rmule advertises:

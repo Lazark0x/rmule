@@ -17,7 +17,6 @@ use super::{PeerEvent, PeerSession, State};
 use crate::capability::MiscOptions1;
 use crate::error::PeerPacketDecodeError;
 use crate::file_request::ExtendedRequests;
-use crate::hello::HelloAnswer;
 use crate::hello::HelloRefusal;
 use crate::opcode::PeerOpcode;
 use crate::packet::{DecodedPeerFrame, PeerPacket};
@@ -160,10 +159,19 @@ impl PeerSession {
                     // references' `ClearHelloProperties`).
                     self.peer_software = SoftwareEvidence::default();
                     self.peer_software.hello(hello.body(), hello.trailer());
-                    self.send_emule_info_if_legacy();
-                    let answer_body = self.hello_body_to_write();
-                    self.write_packet(HelloAnswer::new(answer_body).encode_packet());
-                    self.identify_peer(hello.body());
+                    let identity = self.read_identity(hello.body());
+                    let answer = self
+                        .hello_gate
+                        .as_ref()
+                        .is_none_or(|gate| gate.may_answer(self.peer, &identity));
+                    if answer {
+                        self.answer_hello();
+                        self.enter_identified(identity);
+                        self.link_opened();
+                    } else {
+                        self.answer_owed = true;
+                        self.enter_identified(identity);
+                    }
                 } else {
                     // Outbound dialer, or already past the handshake: an
                     // OP_HELLO is unexpected. Preserve as Unknown, stay open.

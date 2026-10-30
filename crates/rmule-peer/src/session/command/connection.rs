@@ -19,6 +19,10 @@ pub enum ConnectionCommand {
     /// new address itself, and one already written is followed by the
     /// announcement when the peer identifies.
     AnnounceIpv6Change(std::net::Ipv6Addr),
+    /// Answer the peer's hello, which a
+    /// [`HelloGate`](crate::HelloGate) held: the link opens now (ADR-0107
+    /// invariant 7). Nothing is owed otherwise, and nothing is sent.
+    AnswerHello,
     /// Take the Client ID a [`ConnectionEvent::ClientIdOffered`](crate::ConnectionEvent::ClientIdOffered)
     /// offered, on `server` when core knows the server it named. A Low ID
     /// without a known server, or a High ID that is not the link's own
@@ -35,12 +39,13 @@ impl PeerSession {
     pub(super) fn apply_connection(&mut self, command: ConnectionCommand) {
         match command {
             ConnectionCommand::Disconnect => self.close(PeerCloseReason::Local),
+            ConnectionCommand::AnswerHello => self.answer_owed_hello(),
             ConnectionCommand::TakeClientId { client_id, server } => {
                 self.take_client_id(client_id, server);
             }
             ConnectionCommand::AnnounceIpv6Change(address) => {
                 self.ipv6_advert = Some(address);
-                if matches!(self.state, State::Identified) {
+                if matches!(self.state, State::Identified) && !self.answer_owed {
                     self.announce_ipv6_change();
                 }
             }

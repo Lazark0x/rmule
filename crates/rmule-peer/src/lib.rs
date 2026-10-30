@@ -60,8 +60,8 @@ pub use file_request::{
     ReqFileNameAnswer, RequestFileName, SetReqFileId,
 };
 pub use handshake::{
-    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, PeerHandshakeContext, SecureIdentConfig,
-    ServingBuddyAdvert,
+    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, HelloGate, PeerHandshakeContext,
+    SecureIdentConfig, ServingBuddyAdvert,
 };
 pub use hash_set::{HashSetAnswer, HashSetRequest};
 pub use hello::{Hello, HelloAnswer, HelloRefusal, HelloRefusalCode, HelloTrailer, PeerHelloBody};

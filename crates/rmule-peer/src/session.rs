@@ -190,6 +190,12 @@ pub struct PeerSession {
     /// set via
     /// [`with_direct_udp_callback_advertisement`](Self::with_direct_udp_callback_advertisement).
     direct_udp_callback_advert: bool,
+    /// What says whether an accepted hello is answered as it is read, set
+    /// via [`with_hello_gate`](Self::with_hello_gate). `None` answers at once.
+    hello_gate: Option<std::sync::Arc<dyn crate::handshake::HelloGate>>,
+    /// The gate held the peer's hello: its answer, and everything that
+    /// follows the answer, wait for `AnswerHello` (ADR-0107 invariant 7).
+    answer_owed: bool,
     /// Diagnostic/capture-only override for the hello's advertised
     /// source-exchange nibble (ADR-0055 evidence), set via
     /// [`with_source_exchange_capture_override`](Self::with_source_exchange_capture_override).
@@ -233,6 +239,8 @@ impl PeerSession {
             ipv6_told: None,
             serving_buddy_advert: None,
             direct_udp_callback_advert: false,
+            hello_gate: None,
+            answer_owed: false,
             source_exchange_capture_override: None,
             extended_requests_capture_override: None,
         }
@@ -251,6 +259,14 @@ impl PeerSession {
     #[must_use]
     pub fn new_inbound(peer: PeerEndpoint, ctx: PeerHandshakeContext) -> Self {
         Self::with_state(peer, ctx, State::AwaitingHello)
+    }
+
+    /// Ask `gate` before answering the peer's hello (ADR-0107 invariant 7).
+    /// Chainable on `new_inbound`; a dialed session answers no hello.
+    #[must_use]
+    pub fn with_hello_gate(mut self, gate: std::sync::Arc<dyn crate::handshake::HelloGate>) -> Self {
+        self.hello_gate = Some(gate);
+        self
     }
 
     /// Enable Secure User Identification for this connection (ADR-0041): the

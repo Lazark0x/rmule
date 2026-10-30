@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmule_peer::{SecureIdentConfig, ServingBuddyAdvert, UdpPortsAdvert};
+use rmule_peer::{HelloGate, SecureIdentConfig, ServingBuddyAdvert, UdpPortsAdvert};
 use rmule_primitives::PeerCrypt;
 
 use crate::peer::obfuscation::ObfuscationConfig;
@@ -115,6 +115,10 @@ pub struct ConnectOptions {
     /// the address read then, as `AnnounceIpv6Change`; the session decides
     /// whether the peer is owed an `OP_CHANGE_CLIENT_IP` (ADR-0087).
     pub ipv6_follow: Option<Ipv6Follow>,
+    /// What decides, on an accepted link, whether the peer's hello is
+    /// answered as it is read (ADR-0107 invariant 7), or `None` to answer at
+    /// once. Unused on a dialed link, which answers no hello.
+    pub hello_gate: Option<Arc<dyn HelloGate>>,
 }
 
 /// What a live link follows our Advertised IPv6 by: a wake on every move of
@@ -166,6 +170,7 @@ impl Default for ConnectOptions {
             serving_buddy: None,
             direct_udp_callback: false,
             ipv6_follow: None,
+            hello_gate: None,
         }
     }
 }

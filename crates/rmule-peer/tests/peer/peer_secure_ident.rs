@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use crate::fixture::{CT_EMULE_MISCOPTIONS1, hello_body};
 use rmule_peer::{
-    ConnectionEvent, Hello, HelloAnswer, PeerEvent, PeerHandshakeContext, PeerHelloBody,
-    PeerOutput, PeerSession, PublicKeyPacket, SecIdentState, SecIdentStatePacket,
-    SecureIdentConfig, SecureIdentFailure, SignaturePacket,
+    ConnectionCommand, ConnectionEvent, Hello, HelloAnswer, HelloGate, PeerCommand, PeerEvent,
+    PeerHandshakeContext, PeerHelloBody, PeerIdentity, PeerOutput, PeerPacket, PeerSession,
+    PublicKeyPacket, SecIdentState, SecIdentStatePacket, SecureIdentConfig, SecureIdentFailure,
+    SignaturePacket,
 };
 use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kText, Packet, SecureIdentKey, SecureIdentPublicKey, Tag, TagName,
-    TagValue, UserHash,
+    ClientId, ClientIdentity, Ed2kText, Packet, PeerEndpoint, SecureIdentKey, SecureIdentPublicKey,
+    Tag, TagName, TagValue, UserHash,
 };
 use rmule_testkit::peer_session::peer;
 
@@ -613,6 +614,55 @@ fn an_unknown_v2_ip_kind_fails_non_terminally() {
 /// still `AwaitingHelloAnswer` when our first packets arrive, and its dispatch
 /// guard drops any SUI packet received before the hello exchange completes — a
 /// state packet queued first therefore deadlocks the whole exchange.
+/// A gate that holds every hello.
+#[derive(Debug)]
+struct HoldEvery;
+
+impl HelloGate for HoldEvery {
+    fn may_answer(&self, _peer: PeerEndpoint, _identity: &PeerIdentity) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_held_hello_says_nothing_until_it_is_answered_and_then_answers_before_the_challenge() {
+    // A dial of ours crosses this hello (ADR-0107 invariant 7): the far end
+    // must stay in `DS_CONNECTING`, so nothing at all may go out on the link,
+    // and the node must still learn who it is.
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let mut session = PeerSession::new_inbound(peer(), plain_ctx())
+        .with_secure_ident(config(&our_key, OUR_CHALLENGE))
+        .with_hello_gate(Arc::new(HoldEvery));
+    feed(
+        &mut session,
+        Hello::new(sui_answer_body(UserHash::from_bytes(
+            [0x55; UserHash::BYTE_LEN],
+        )))
+        .encode_packet(),
+    );
+    let (packets, events) = drain(&mut session);
+    assert!(packets.is_empty(), "nothing is said: {packets:?}");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Connection(ConnectionEvent::Identified { .. }))),
+        "the node reads who it is all the same"
+    );
+
+    let answer = PeerCommand::Connection(ConnectionCommand::AnswerHello);
+    session.handle_command(answer.clone());
+    let (packets, _) = drain(&mut session);
+    assert!(matches!(packets[0], PeerPacket::HelloAnswer(_)), "{packets:?}");
+    assert!(
+        packets.iter().skip(1).any(|packet| matches!(packet, PeerPacket::SecIdentState(_))),
+        "the challenge follows the answer: {packets:?}"
+    );
+
+    session.handle_command(answer);
+    let (packets, _) = drain(&mut session);
+    assert!(packets.is_empty(), "one hello, one answer: {packets:?}");
+}
+
 #[test]
 fn an_inbound_session_answers_the_hello_before_challenging_sui() {
     let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));

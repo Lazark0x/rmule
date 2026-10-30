@@ -300,6 +300,9 @@ impl Connection {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut session = PeerSession::new_inbound(peer, ctx);
+        if let Some(gate) = &options.hello_gate {
+            session = session.with_hello_gate(gate.clone());
+        }
         if let Some(config) = &options.secure_ident {
             session = session.with_secure_ident(config.clone());
         }
