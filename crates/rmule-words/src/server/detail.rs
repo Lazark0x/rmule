@@ -325,16 +325,16 @@ mod tests {
     #[test]
     fn unnamed_bits_are_said_by_position() {
         assert_eq!(
-            tcp_grant_words(ServerTcpFlags::from_bits(0x0000_A011)),
-            "compression, unicode, and bits 13 and 15, which no client names"
+            tcp_grant_words(ServerTcpFlags::from_bits(0x0000_2811)),
+            "compression, unicode, and bits 11 and 13, which no client names"
         );
         assert_eq!(
             udp_flag_words(ServerUdpFlags::from_bits(0x0000_0004)),
             "bit 2, which no client names"
         );
         assert_eq!(
-            tcp_grant_words(ServerTcpFlags::from_bits(0x8000_1804)),
-            "bits 2, 11, 12 and 31, which no client names"
+            tcp_grant_words(ServerTcpFlags::from_bits(0x8000_0804)),
+            "bits 2, 11 and 31, which no client names"
         );
     }
 

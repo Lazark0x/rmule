@@ -23,7 +23,7 @@ use crate::fixture::{dead_port, free_port, serving_started};
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, ServeCommand,
 };
-use rmule_ed2k::{IdChange, LoginRequest, Opcode, PeerCallback};
+use rmule_ed2k::{IdChange, LoginRequest, Opcode, PeerCallback, ServerTcpFlags};
 use rmule_net::peer::{ConnectOptions, Connection};
 use rmule_peer::PeerHandshakeContext;
 use rmule_primitives::{
@@ -227,6 +227,11 @@ async fn a_low_id_kad_open_downloader_never_asks_its_own_server_to_relay_a_callb
     let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let server = FakeEd2kServer::start().await;
+    server
+        .set_tcp_flags(Some(ServerTcpFlags::from_bits(
+            ServerTcpFlags::LOWID_HOLEPUNCH,
+        )))
+        .await;
     let server_addr = server.local_addr();
     let server_ep = ServerEndpoint::parse_host_port(&server_addr.to_string()).unwrap();
 
