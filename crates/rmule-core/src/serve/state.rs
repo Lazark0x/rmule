@@ -69,6 +69,14 @@ pub(super) enum ServeDecision {
     /// client still linked from elsewhere (ADR-0107; aMule bans it,
     /// "Userhash invalid", `ClientList.cpp:384-392`).
     Ban { peer: PeerEndpoint },
+    /// Send `block`'s `bytes` to `peer` as its link's task finds them: deflated
+    /// there, off the async runtime and off this loop, when that is smaller
+    /// (ADR-0031). The enactor counts them as sent like a plain `SendBlock`.
+    DeflateBlock {
+        peer: PeerEndpoint,
+        block: BlockRead,
+        bytes: Vec<u8>,
+    },
     /// Read `block` of the shared file at `path`, never longer than three
     /// blocks (ADR-0031). A fallible effect: the enactor feeds the bytes back
     /// through [`ServeState::on_read_result`] with this same `block`, and a

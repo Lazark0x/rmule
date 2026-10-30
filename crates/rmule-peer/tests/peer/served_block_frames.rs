@@ -53,7 +53,22 @@ fn serve(server: &mut PeerSession, file: FileHash, start: u64, bytes: &[u8]) -> 
         start,
         end: start + bytes.len() as u64,
         bytes: bytes.to_vec(),
-        compressible: true,
+    }));
+    drain(|| server.poll_output())
+}
+
+/// Every write `server` makes for the deflated block of `bytes` at `start`.
+fn serve_deflated(
+    server: &mut PeerSession,
+    file: FileHash,
+    start: u64,
+    bytes: &[u8],
+) -> Vec<PeerOutput> {
+    server.handle_command(PeerCommand::Server(ServerCommand::SendDeflatedBlock {
+        file_hash: file,
+        start,
+        end: start + bytes.len() as u64,
+        stream: rmule_peer::deflate_block(bytes).expect("the block shrinks"),
     }));
     drain(|| server.poll_output())
 }
@@ -139,7 +154,7 @@ fn a_compressed_block_goes_out_as_a_run_sharing_its_start_and_total() {
     let block = block_bytes();
     let mut server = serving(file, true);
 
-    let packets = decoded(&serve(&mut server, file, start, &block));
+    let packets = decoded(&serve_deflated(&mut server, file, start, &block));
 
     let chunks: Vec<_> = packets
         .iter()
@@ -201,7 +216,12 @@ fn a_requester_assembles_a_served_block_from_either_run() {
     for compresses in [false, true] {
         let file = file_hash(0xB4);
         let mut server = serving(file, compresses);
-        let wire: Vec<u8> = serve(&mut server, file, start, &block)
+        let sent = if compresses {
+            serve_deflated(&mut server, file, start, &block)
+        } else {
+            serve(&mut server, file, start, &block)
+        };
+        let wire: Vec<u8> = sent
             .iter()
             .filter_map(|o| match o {
                 PeerOutput::Write(frame) => Some(frame.iter().copied()),

@@ -94,8 +94,8 @@ async fn an_aich_root_ask_is_answered_from_the_tree_read_off_the_file() {
     let _ = serve.await;
 }
 
-/// One shared file for [`a_build_stuck_on_its_file_holds_no_other_peer_up`].
-fn shared(
+/// One shared file, named after `seed`.
+pub(super) fn shared(
     registry: &DurableSharedFileRegistry,
     seed: u8,
     size: u64,
@@ -116,41 +116,16 @@ fn shared(
     file_hash
 }
 
-/// The next thing the serve task says down one connection, or the test ends:
-/// the bound only fails a loop that never answers, nothing here waits it out.
-async fn said(rx: &mut mpsc::Receiver<ServeOutput>, what: &str) -> ServerCommand {
-    match timeout(Duration::from_secs(5), rx.recv()).await {
-        Ok(Some(ServeOutput::Server(command))) => command,
-        other => panic!("{what}, not {other:?}"),
-    }
-}
-
-/// The file behind the build is a pipe, so the build parks on its first read
-/// until the test writes, however fast this machine is. While it is parked the
-/// asker and another peer are answered and a slot serves a block; the bytes
-/// then land the tree, and the asker gets its root.
-#[cfg(unix)]
-#[tokio::test]
-async fn a_build_stuck_on_its_file_holds_no_other_peer_up() {
-    use std::io::Write as _;
-
-    let dir = tempfile::tempdir().unwrap();
-    let pipe = dir.path().join("slow.bin");
-    let mut pipe_end = crate::serve::aich_builder::parked_file(&pipe);
-    let slow_bytes: Vec<u8> = (0..2 * EMBLOCKSIZE + 5).map(|i| (i % 251) as u8).collect();
-    let ready_path = dir.path().join("ready.bin");
-    std::fs::write(&ready_path, vec![7u8; 4096]).unwrap();
-
-    let store = rmule_testkit::memory_store();
-    let registry = DurableSharedFileRegistry::new(store.clone());
-    let slow = shared(&registry, 0x41, slow_bytes.len() as u64, pipe);
-    let ready = shared(&registry, 0x42, 4096, ready_path);
-
+/// A serve task over `registry`, its share set announced.
+pub(super) async fn serving(
+    registry: DurableSharedFileRegistry,
+    store: Arc<rmule_store::Store>,
+) -> ServeRig {
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
     let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
     let (stop_tx, stop_rx) = watch::channel(false);
-    let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
-    let serve = tokio::spawn(
+    let (share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
+    let task = tokio::spawn(
         ServeTask {
             bans: Default::default(),
             registry: Arc::new(registry),
@@ -183,21 +158,81 @@ async fn a_build_stuck_on_its_file_holds_no_other_peer_up() {
         matches!(e, ServeEvent::FilesAnnounced { .. })
     })
     .await;
+    ServeRig {
+        accept_tx,
+        _events: evt_rx,
+        stop_tx,
+        _share_changed_tx: share_changed_tx,
+        task,
+    }
+}
+
+/// A serve task, and what keeps it running.
+pub(super) struct ServeRig {
+    accept_tx: mpsc::Sender<ServeConnection>,
+    _events: mpsc::Receiver<CoreEvent>,
+    stop_tx: watch::Sender<bool>,
+    _share_changed_tx: mpsc::Sender<()>,
+    task: tokio::task::JoinHandle<crate::serve::ServeOutcome<FakeServeRuntime>>,
+}
+
+impl ServeRig {
+    /// Accept a connection from `peer`: what it says, and what it is told.
+    pub(super) async fn link(
+        &self,
+        peer: PeerEndpoint,
+    ) -> (mpsc::Sender<ServeInput>, mpsc::Receiver<ServeOutput>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (conn_tx, conn_rx) = mpsc::channel(16);
+        self.accept_tx
+            .send(ServeConnection::new(peer, cmd_tx, conn_rx))
+            .await
+            .unwrap();
+        (conn_tx, cmd_rx)
+    }
+
+    pub(super) async fn stop(self) {
+        let _ = self.stop_tx.send(true);
+        let _ = self.task.await;
+    }
+}
+
+/// The next thing the serve task says down one connection, or the test ends:
+/// the bound only fails a loop that never answers, nothing here waits it out.
+pub(super) async fn said(rx: &mut mpsc::Receiver<ServeOutput>, what: &str) -> ServerCommand {
+    match timeout(Duration::from_secs(5), rx.recv()).await {
+        Ok(Some(ServeOutput::Server(command))) => command,
+        other => panic!("{what}, not {other:?}"),
+    }
+}
+
+/// The file behind the build is a pipe, so the build parks on its first read
+/// until the test writes, however fast this machine is. While it is parked the
+/// asker and another peer are answered and a slot serves a block; the bytes
+/// then land the tree, and the asker gets its root.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_build_stuck_on_its_file_holds_no_other_peer_up() {
+    use std::io::Write as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let pipe = dir.path().join("slow.bin");
+    let mut pipe_end = crate::serve::aich_builder::parked_file(&pipe);
+    let slow_bytes: Vec<u8> = (0..2 * EMBLOCKSIZE + 5).map(|i| (i % 251) as u8).collect();
+    let ready_path = dir.path().join("ready.bin");
+    std::fs::write(&ready_path, vec![7u8; 4096]).unwrap();
+
+    let store = rmule_testkit::memory_store();
+    let registry = DurableSharedFileRegistry::new(store.clone());
+    let slow = shared(&registry, 0x41, slow_bytes.len() as u64, pipe);
+    let ready = shared(&registry, 0x42, 4096, ready_path);
+
+    let rig = serving(registry, store).await;
 
     let asker = peer_at([198, 51, 100, 3], 4000);
-    let (asker_tx, mut asker_rx) = mpsc::channel(16);
-    let (asker_conn, asker_events) = mpsc::channel(16);
-    accept_tx
-        .send(ServeConnection::new(asker, asker_tx, asker_events))
-        .await
-        .unwrap();
+    let (asker_conn, mut asker_rx) = rig.link(asker).await;
     let other = peer_at([198, 51, 100, 4], 4000);
-    let (other_tx, mut other_rx) = mpsc::channel(16);
-    let (other_conn, other_events) = mpsc::channel(16);
-    accept_tx
-        .send(ServeConnection::new(other, other_tx, other_events))
-        .await
-        .unwrap();
+    let (other_conn, mut other_rx) = rig.link(other).await;
     let hello = HelloFacts::of(UserHash::from_bytes([0x0D; UserHash::BYTE_LEN]));
     asker_conn.send(hello.identified()).await.unwrap();
     let hello = HelloFacts::of(UserHash::from_bytes([0x0E; UserHash::BYTE_LEN]));
@@ -253,6 +288,5 @@ async fn a_build_stuck_on_its_file_holds_no_other_peer_up() {
         other => panic!("the file's AICH root, not {other:?}"),
     }
 
-    let _ = stop_tx.send(true);
-    let _ = serve.await;
+    rig.stop().await;
 }

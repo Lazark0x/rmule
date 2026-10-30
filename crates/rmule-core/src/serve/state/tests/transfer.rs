@@ -58,7 +58,6 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
                     start: 0,
                     end: 100,
                     bytes,
-                    compressible: true,
                 }
             ),
         ],
@@ -112,7 +111,6 @@ fn parts_requests_read_only_unserved_ranges_and_serve_blocks_with_credit() {
                 start: 0,
                 end: 100,
                 bytes: vec![0xEE_u8; 100],
-                compressible: true,
             }
         )],
     );
@@ -303,19 +301,28 @@ fn a_withdrawn_files_waiters_leaving_move_the_rest_up_at_once() {
 /// aMule never compresses an archive's block (`UploadClient.cpp:252`): core
 /// marks it plain by the name the file is offered under, and any other
 /// block may cross compressed (ADR-0031).
+/// A block goes to its deflate only when the file may be compressed and the
+/// peer inflates; no pass is spent otherwise (ADR-0031).
 #[test]
-fn an_archives_block_is_marked_plain_and_any_other_may_be_compressed() {
-    for (name, compressible) in [
-        ("backup.rar", false),
-        ("sources.tar.gz", false),
-        ("ubuntu.iso", true),
-        ("film.mkv", true),
-        ("README", true),
+fn only_a_block_a_peer_can_inflate_of_a_non_archive_goes_to_its_deflate() {
+    for (name, inflates, deflated) in [
+        ("backup.rar", 1, false),
+        ("sources.tar.gz", 1, false),
+        ("ubuntu.iso", 1, true),
+        ("film.mkv", 1, true),
+        ("README", 1, true),
+        ("README", 0, false),
     ] {
         let file_hash = hash(0x5E);
         let mut state = serving_state(1, vec![entry(file_hash, 512, name)]);
         let p = peer(5);
-        let _ = slot_request(&mut state, p, file_hash, Instant::now());
+        let t = Instant::now();
+        let hello = HelloFacts {
+            data_compression_version: inflates,
+            ..HelloFacts::of(user(0x05))
+        };
+        let _ = state.on_conn_event(t, p, hello.identified(), &no_modifiers());
+        let _ = slot_request(&mut state, p, file_hash, t);
         let block = BlockRead {
             file_hash,
             start: 0,
@@ -323,15 +330,10 @@ fn an_archives_block_is_marked_plain_and_any_other_may_be_compressed() {
         };
 
         let decisions = state.on_read_result(p, block, vec![0; 100]);
-        assert!(
-            matches!(
-                decisions.as_slice(),
-                [ServeDecision::Send {
-                    command: ServerCommand::SendBlock { compressible: marked, .. },
-                    ..
-                }] if *marked == compressible
-            ),
-            "{name}: {decisions:?}"
+        assert_eq!(
+            matches!(decisions.last(), Some(ServeDecision::DeflateBlock { .. })),
+            deflated,
+            "{name}, {inflates}: {decisions:?}"
         );
     }
 }

@@ -45,7 +45,7 @@ pub use aich::{
 };
 pub use buddy::{BuddyRelayDecodeError, Callback, ReaskCallbackTcp};
 pub use capability::{MiscOptions1, MiscOptions2, ModMiscOptions, UdpPortsAdvert};
-pub use compress::InflateFailed;
+pub use compress::{InflateFailed, deflate_block};
 pub use compressed_frame::{
     CompressedFrameSkipReason, PEER_COMPRESSED_FRAME_LIMIT, PEER_PACK_THRESHOLD,
 };

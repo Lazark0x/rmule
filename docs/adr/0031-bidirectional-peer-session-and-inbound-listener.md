@@ -45,9 +45,9 @@ scheduling is (ADR-0026).
   (ADR-0041); the serve activity re-ranks idle waiters every
   `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
 - Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
-  content store's `read_range`, and says whether the block may cross compressed. The
-  session compresses one only when core allows it, the peer advertised compression
-  and the result is smaller (below). The Server
+  content store's `read_range`, or with `ServerCommand::SendDeflatedBlock` when the
+  block's zlib stream is smaller, its file may be compressed and the peer inflates
+  (below). The Server
   Capability reports requests as `Server` events and obeys `Server` commands (answers,
   grant, queue rank, blocks), so the session stays sans-I/O and storage-free.
 - The serve activity speaks those groups directly: its input is a connection's

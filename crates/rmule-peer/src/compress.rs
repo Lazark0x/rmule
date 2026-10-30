@@ -66,7 +66,11 @@ pub(crate) fn inflate(compressed: &[u8], size_ceiling: usize) -> Result<Vec<u8>,
 /// that does not shrink — most media — costs a fifth of a full pass and is
 /// `None`; a block that does is deflated again at level 6, and the shorter
 /// stream is kept.
-pub(crate) fn deflate_smaller(plain: &[u8]) -> Option<Vec<u8>> {
+///
+/// CPU work of about 5 ms a block where it shrinks: never on an async worker
+/// (ADR-0031).
+#[must_use]
+pub fn deflate_block(plain: &[u8]) -> Option<Vec<u8>> {
     let fast = Some(deflate(plain, Compression::fast())).filter(|fast| fast.len() < plain.len())?;
     let full = deflate(plain, Compression::new(6));
     Some(if full.len() < fast.len() { full } else { fast })
@@ -89,7 +93,7 @@ mod tests {
     #[test]
     fn inflate_round_trips_zlib_compressed_bytes() {
         let plain = b"the quick brown fox ".repeat(50);
-        let stream = deflate_smaller(&plain).expect("repeated text shrinks");
+        let stream = deflate_block(&plain).expect("repeated text shrinks");
         assert_eq!(inflate(&stream, plain.len()).unwrap(), plain);
     }
 
@@ -108,10 +112,10 @@ mod tests {
             })
             .collect();
 
-        let stream = deflate_smaller(&text).expect("text shrinks");
+        let stream = deflate_block(&text).expect("text shrinks");
         assert!(stream.len() <= deflate(&text, Compression::new(6)).len());
         assert_eq!(inflate(&stream, text.len()).unwrap(), text);
-        assert_eq!(deflate_smaller(&noise), None);
+        assert_eq!(deflate_block(&noise), None);
     }
 
     #[test]
@@ -126,7 +130,7 @@ mod tests {
     fn inflate_rejects_output_over_ceiling() {
         let plain = vec![0u8; 10_000]; // compresses tiny, inflates past the cap
         assert_eq!(
-            inflate(&deflate_smaller(&plain).unwrap(), 4096),
+            inflate(&deflate_block(&plain).unwrap(), 4096),
             Err(InflateFailed::TooLarge { ceiling: 4096 })
         );
     }

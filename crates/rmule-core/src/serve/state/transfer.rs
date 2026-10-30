@@ -6,7 +6,7 @@
 //! that asked, and what a failed or refused read does: the file stops being
 //! offered at once.
 
-use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, ServerCommand};
+use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, PeerIdentity, ServerCommand};
 use rmule_primitives::{FileHash, PeerEndpoint};
 
 use std::collections::HashMap;
@@ -134,8 +134,9 @@ impl ServeState {
     /// A read lands after the state it was asked under may have moved on: a
     /// file no longer offered sends nothing, and a block goes only to a peer
     /// still holding a slot, as aMule drops a block ask from a client it is
-    /// not uploading to (`UploadClient.cpp:497-500`). An archive's block is
-    /// marked plain (`Found::compressible`).
+    /// not uploading to (`UploadClient.cpp:497-500`). A block goes to be
+    /// deflated unless it is an archive's (`Found::compressible`) or its peer
+    /// does not inflate (ADR-0031).
     pub(crate) fn on_read_result(
         &mut self,
         peer: PeerEndpoint,
@@ -153,23 +154,29 @@ impl ServeState {
         let compressible = self
             .lookup(file_hash)
             .is_some_and(|found| found.compressible());
+        let identity = self.identities.get(&peer);
         let mut decisions = Vec::new();
-        if let Some(identity) = self.identities.get(&peer) {
+        if let Some(identity) = identity {
             decisions.push(ServeDecision::RecordCredit {
                 user_hash: identity.user_hash(),
                 bytes: bytes.len() as u64,
             });
         }
-        decisions.push(ServeDecision::Send {
-            peer,
-            command: ServerCommand::SendBlock {
-                file_hash,
-                start,
-                end,
-                bytes,
-                compressible,
+        decisions.push(
+            if compressible && identity.is_some_and(PeerIdentity::inflates_parts) {
+                ServeDecision::DeflateBlock { peer, block, bytes }
+            } else {
+                ServeDecision::Send {
+                    peer,
+                    command: ServerCommand::SendBlock {
+                        file_hash,
+                        start,
+                        end,
+                        bytes,
+                    },
+                }
             },
-        });
+        );
         decisions
     }
 

@@ -24,6 +24,7 @@ use crate::held_places::{RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::aich_builder::{AichBuilder, AichLanded};
+use crate::serve::link_output::LinkOutput;
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
@@ -177,7 +178,7 @@ where
         // owner of `Upload`, so ending the relation whole ends only its own.
         let _upload_relations = RelationLease::new(peer_roster.clone(), PeerRelation::Upload);
         // Per-connection command senders, keyed by requester endpoint.
-        let mut conns: HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>> = HashMap::new();
+        let mut conns: HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>> = HashMap::new();
         // The sans-I/O serving brain (**Serve State**): it owns the share-set
         // snapshot, the upload slot queue, the served ranges, the peer
         // identities, and the AICH cache, and turns each input into an ordered
@@ -516,7 +517,7 @@ struct ServeSinks<'a> {
 async fn enact<L: ServeRuntimeService>(
     decisions: &mut VecDeque<ServeDecision>,
     state: &mut ServeState,
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
+    conns: &HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
     serve_runtime: &mut L,
     aich: &mut AichBuilder,
     sinks: ServeSinks<'_>,
@@ -545,13 +546,19 @@ async fn enact<L: ServeRuntimeService>(
                     } => Some((*file_hash, bytes.len() as u64)),
                     _ => None,
                 };
-                let delivered = send_conn(conns, peer, ServeOutput::Server(command)).await;
+                let delivered = send_conn(conns, peer, ServeOutput::Server(command).into()).await;
                 if delivered && let Some((file_hash, len)) = block {
                     diagnostics.add_sent_bytes(peer, file_hash, len);
                 }
             }
+            ServeDecision::DeflateBlock { peer, block, bytes } => {
+                let (file_hash, len) = (block.file_hash, bytes.len() as u64);
+                if send_conn(conns, peer, LinkOutput::Deflate { block, bytes }).await {
+                    diagnostics.add_sent_bytes(peer, file_hash, len);
+                }
+            }
             ServeDecision::Disconnect { peer } => {
-                send_conn(conns, peer, ServeOutput::Disconnect).await;
+                send_conn(conns, peer, ServeOutput::Disconnect.into()).await;
             }
             ServeDecision::Emit(event) => {
                 match event {
@@ -769,11 +776,11 @@ fn refresh_served(served: &ServedDownloads, seen: &mut u64, state: &mut ServeSta
 /// (dialed) requester identically to an accepted one.
 fn register_serve_connection(
     mut conn: ServeConnection,
-    conns: &mut HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
+    conns: &mut HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
     fact_tx: &mpsc::Sender<(PeerEndpoint, ServeInput)>,
 ) {
     let peer = conn.peer();
-    let (cmd_tx, mut cmd_rx) = mpsc::channel::<ServeOutput>(16);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel::<LinkOutput>(16);
     conns.insert(peer, cmd_tx);
     let fact_tx = fact_tx.clone();
     tokio::spawn(async move {
@@ -781,7 +788,9 @@ fn register_serve_connection(
             tokio::select! {
                 command = cmd_rx.recv() => {
                     let Some(command) = command else { break };
-                    if conn.send(command).await.is_err() { break; }
+                    // Awaited here, the link's own task: a block costs only
+                    // this link's next command (ADR-0031).
+                    if conn.send(command.ready().await).await.is_err() { break; }
                 }
                 event = conn.next_event() => {
                     let Some(event) = event else {
@@ -834,9 +843,9 @@ async fn recv_reask(
 /// `false` when the peer has no live connection or its task already ended
 /// (the command is dropped — its `Disconnected` will clean the peer up).
 async fn send_conn(
-    conns: &HashMap<PeerEndpoint, mpsc::Sender<ServeOutput>>,
+    conns: &HashMap<PeerEndpoint, mpsc::Sender<LinkOutput>>,
     peer: PeerEndpoint,
-    command: ServeOutput,
+    command: LinkOutput,
 ) -> bool {
     match conns.get(&peer) {
         Some(tx) => tx.send(command).await.is_ok(),

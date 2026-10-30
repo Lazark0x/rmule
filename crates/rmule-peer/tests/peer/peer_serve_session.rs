@@ -232,7 +232,6 @@ fn inbound_cancel_transfer_after_grant_emits_transfer_cancelled_and_clears_serve
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-        compressible: true,
     }));
     let after = drain(|| s.poll_output());
     assert!(after.iter().any(|o| matches!(
@@ -355,7 +354,6 @@ fn send_block_after_grant_frames_sending_part() {
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-        compressible: true,
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::SendingPart(sp) => {
@@ -368,7 +366,7 @@ fn send_block_after_grant_frames_sending_part() {
 }
 
 #[test]
-fn serve_compresses_block_for_a_compression_capable_peer() {
+fn a_deflated_block_is_framed_as_compressed_parts() {
     let mut s = inbound_session_with_compression();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
     s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
@@ -377,12 +375,11 @@ fn serve_compresses_block_for_a_compression_capable_peer() {
     let _ = drain(|| s.poll_output());
 
     let plain: Vec<u8> = b"compressible block ".repeat(40);
-    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
+    s.handle_command(PeerCommand::Server(ServerCommand::SendDeflatedBlock {
         file_hash: fh,
         start: 0,
         end: plain.len() as u64,
-        bytes: plain.clone(),
-        compressible: true,
+        stream: rmule_peer::deflate_block(&plain).expect("repeated text shrinks"),
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::CompressedPart(cp) => {
@@ -405,55 +402,6 @@ fn serve_compresses_block_for_a_compression_capable_peer() {
 }
 
 #[test]
-fn a_block_core_marks_plain_goes_plain_to_a_peer_that_advertised_compression() {
-    // An archive's block (ADR-0031): aMule never compresses one
-    // (`UploadClient.cpp:252`), however well it would shrink.
-    let mut s = inbound_session_with_compression();
-    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
-        file_hash: fh,
-    }));
-    let _ = drain(|| s.poll_output());
-
-    let plain: Vec<u8> = b"compressible block ".repeat(40);
-    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
-        file_hash: fh,
-        start: 0,
-        end: plain.len() as u64,
-        bytes: plain.clone(),
-        compressible: false,
-    }));
-    match decode_last_write(&drain(|| s.poll_output())) {
-        PeerPacket::SendingPart(part) => assert_eq!(part.data, plain),
-        other => panic!("expected SendingPart, got {other:?}"),
-    }
-}
-
-#[test]
-fn serve_sends_raw_when_compression_does_not_shrink() {
-    // A 4-byte block: zlib overhead makes the compressed form larger, so the
-    // raw OP_SENDINGPART wins (compress-only-if-smaller).
-    let mut s = inbound_session_with_compression();
-    let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
-    s.handle_command(PeerCommand::Server(ServerCommand::GrantSlot {
-        file_hash: fh,
-    }));
-    let _ = drain(|| s.poll_output());
-
-    s.handle_command(PeerCommand::Server(ServerCommand::SendBlock {
-        file_hash: fh,
-        start: 0,
-        end: 4,
-        bytes: vec![1, 2, 3, 4],
-        compressible: true,
-    }));
-    assert!(matches!(
-        decode_last_write(&drain(|| s.poll_output())),
-        PeerPacket::SendingPart(_)
-    ));
-}
-
-#[test]
 fn send_block_without_grant_is_command_rejected() {
     let mut s = inbound_session();
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
@@ -462,7 +410,6 @@ fn send_block_without_grant_is_command_rejected() {
         start: 0,
         end: 4,
         bytes: vec![1, 2, 3, 4],
-        compressible: true,
     }));
     let outputs = drain(|| s.poll_output());
     assert!(outputs.iter().any(|o| matches!(
@@ -580,7 +527,6 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
         start: 0,
         end: 4,
         bytes: vec![9, 9, 9, 9],
-        compressible: true,
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::SendingPart(sp) => {
