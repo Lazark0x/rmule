@@ -327,6 +327,63 @@ async fn a_file_that_comes_to_stand_at_the_destination_is_kept_and_the_move_numb
     );
 }
 
+/// The Served Download's final path is the name the row stores, before the
+/// rename, so a read that finds the part file gone tries the name the bytes
+/// are landing under.
+#[tokio::test]
+async fn the_served_download_names_every_destination_the_move_stores() {
+    use crate::served_downloads::ServedDownloads;
+
+    /// Records what the cell names at each rename, as a read would find it.
+    struct Named {
+        cell: ServedDownloads,
+        hash: rmule_primitives::FileHash,
+        named: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+        inner: CameToStand,
+    }
+    impl CompletionFs for Named {
+        fn rename_exclusive(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
+            let served = self.cell.served(self.hash).unwrap().final_path;
+            self.named.lock().unwrap().push((served, to.to_path_buf()));
+            self.inner.rename_exclusive(from, to)
+        }
+
+        fn remove(&self, path: &Path) -> Result<(), Refusal> {
+            OsCompletionFs.remove(path)
+        }
+    }
+
+    let len = ED2K_PART_SIZE + 5_000;
+    let cell = ServedDownloads::default();
+    let probe = finished(len, Arc::new(OsCompletionFs));
+    let hash = probe.file.file_hash;
+    drop(probe);
+    let fs = Arc::new(Named {
+        cell: cell.clone(),
+        hash,
+        named: std::sync::Mutex::default(),
+        inner: CameToStand {
+            renames: AtomicUsize::new(0),
+        },
+    });
+    let mut leg = finished(len, Arc::clone(&fs) as Arc<dyn CompletionFs>);
+    let record = leg.runner.rt.store.load_download(leg.id).unwrap();
+    let set = leg.file.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    assert!(cell.install(&record, &set));
+    leg.runner.served = cell.hand_to_run(hash, leg.runner.run);
+    let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
+    let (result, ()) = tokio::join!(
+        complete(&leg.runner, leg.id, &leg.file, Vec::new()),
+        answer(&mut rx, true, |_| {}),
+    );
+    result.unwrap();
+    let named = fs.named.lock().unwrap();
+    assert_eq!(named.len(), 2, "the name taken, then the numbered one");
+    for (served, destination) in named.iter() {
+        assert_eq!(served, destination);
+    }
+}
+
 /// A move whose stored destination a past move numbered, that name taken
 /// since: the next free name counts from the Download Name, as aMule's
 /// does, never on from the number.

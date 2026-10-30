@@ -71,6 +71,15 @@ impl RunLease {
         })
     }
 
+    /// The completion move stored `path` as its destination (ADR-0115): the
+    /// entry names it from here, so a read that finds the part file renamed
+    /// away tries the name the bytes landed under.
+    pub(crate) fn record_destination(&self, path: &std::path::Path) -> bool {
+        self.cell.write(self, |entry| {
+            entry.served.final_path = path.to_path_buf();
+        })
+    }
+
     /// The finished file is in place at `path`, the destination the
     /// completion move chose (ADR-0115), `identity` the file that holds the
     /// bytes now: the entry is read from there, still under the download's

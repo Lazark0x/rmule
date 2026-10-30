@@ -278,7 +278,8 @@ async fn free_destination(row: &DownloadPaths) -> PathBuf {
     on_pool(move || crate::free_name::first_free(&named, crate::free_name::stands_at)).await
 }
 
-/// Store `Completing` with `destination`, in one write, before it is used.
+/// Store `Completing` with `destination`, in one write, before it is used,
+/// and name it in the Served Download.
 fn store_destination<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -291,7 +292,9 @@ fn store_destination<S, P>(
         .map_err(|error| {
             tracing::warn!(%error, "the completion's destination could not be stored");
             DownloadFailure::StoreFailed
-        })
+        })?;
+    served::destination_stored(runner, destination);
+    Ok(())
 }
 
 /// Steps 3 to 5: rename the part file onto `destination`, wait while a

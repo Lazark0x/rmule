@@ -81,6 +81,14 @@ pub(super) fn rule_range_of<S, P>(
     rule_range(runner, download_id, &state.resolved().hashes);
 }
 
+/// The completion move stored `path` as its destination, which may be a
+/// numbered name: the entry names it before the rename.
+pub(super) fn destination_stored<S, P>(runner: &RunnerContext<S, P>, path: &Path) {
+    if let Some(lease) = &runner.served {
+        lease.record_destination(path);
+    }
+}
+
 /// The finished file is in place at `path`, the destination the completion
 /// move chose: the bytes are read from it now, with its identity — a rename
 /// keeps the part file's key, a copy has its own — and the range is every
