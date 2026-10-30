@@ -1,0 +1,333 @@
+//! `ipv6-asker`: a dual-stack emule-qt asks rmule for a file over IPv6 while
+//! rmule holds that same peer as a source of another file (ADR-0107).
+//!
+//! rmule runs one `Core`, sharing the asked file and downloading the file
+//! emule-qt shares, whose link names emule-qt's `[v6]:4662`. Its own dial there
+//! is held at the SYN, so emule-qt's ask lands first; the hold lifts once rmule
+//! has answered it, so a dial rmule still wanted would reach the tap. emule-qt
+//! is logged in over IPv4, so its hello claims an IPv4 High ID on an IPv6 link.
+//!
+//! What a claim reads is emule-qt's own tap: who opened each link, what rode
+//! it, and the copy rmule ended with.
+
+use std::net::SocketAddr;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+
+use crate::docker::RunContainer;
+use crate::flow::bench::{Bench, run_checked};
+use crate::flow::gate::wait_for_container_log;
+use crate::flow::identity::parse_ed2k_file_hash;
+use crate::flow::nat::dialect::bench::{
+    DriverEnv, HOST_DRIVER, HOST_ED2KSRV, HOST_EMULEQT, Ipv6DialectOptions, Stage, body_log,
+    container_name, out, start_detached_driver_with_env, wait_for_exit,
+};
+use crate::flow::nat::dialect::legs::RMULE_USER_HASH;
+use crate::flow::nat::dialect::verdict::{Claim, Evidence};
+use crate::flow::nat::dialect::{BODY_PEER_TCP_PORT, ED2KSRV_TCP_PORT};
+use crate::flow::nat::synthetic::write_hashed;
+use crate::flow::pcap::{TcpCapture, records, tcp_capture};
+
+/// The file rmule shares and emule-qt asks for.
+const ASKED_BYTES: u64 = 3 << 20;
+/// rmule's bounded run.
+const RMULE_SECS: u64 = 150;
+/// rmule's container role.
+const RMULE_ROLE: &str = "v6asked";
+/// The line rmule prints when the core stands.
+const RMULE_READY: &str = "download";
+/// The line rmule prints when it grants the asker its slot.
+const ASK_ANSWERED: &str = "serve.upload_slot_granted";
+
+const OP_HELLO: u8 = 0x01;
+const OP_REQUESTFILENAME: u8 = 0x58;
+const OP_SENDINGPART: u8 = 0x46;
+
+/// `link` naming `[v6]:port` as an IPv6 source (ADR-0089 §6.2).
+fn with_v6_source(link: &str, v6: &str, port: u16) -> Result<String> {
+    let prefix = link
+        .strip_suffix("|/")
+        .with_context(|| format!("{link} is no canonical file link"))?;
+    Ok(format!("{prefix}|s6=[{v6}]:{port}|/"))
+}
+
+/// The hold's `ip6tables` rule on rmule's dial of `v6`.
+fn dial_hold(action: &str, v6: &str) -> Vec<String> {
+    [
+        action,
+        "OUTPUT",
+        "-p",
+        "tcp",
+        "-d",
+        v6,
+        "--dport",
+        &BODY_PEER_TCP_PORT.to_string(),
+        "--syn",
+        "-j",
+        "DROP",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Drive the flow and return its claims.
+///
+/// # Errors
+/// If a body cannot start or the tap cannot be read.
+pub(super) fn drive(
+    bench: &mut Bench,
+    options: &Ipv6DialectOptions<'_>,
+    stage: &Stage,
+) -> Result<(Vec<Claim>, String)> {
+    let held_by_qt = stage.shared.as_ref().context("emule-qt shares a file")?;
+    let qt_v6 = stage.v6(HOST_EMULEQT).to_owned();
+    let qt_v4 = stage.v4(HOST_EMULEQT).to_owned();
+    let rmule_v6 = stage.v6(HOST_DRIVER).to_owned();
+    let dir = stage.leg_dir.join("asked");
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let asked = write_hashed(&dir, ASKED_BYTES)?;
+
+    let args = [
+        "ed2k",
+        "download",
+        "start",
+        "--data-dir",
+        &out("store"),
+        "--server",
+        &format!("{}:{ED2KSRV_TCP_PORT}", stage.v4(HOST_ED2KSRV)),
+        "--file",
+        &with_v6_source(&held_by_qt.link, &qt_v6, BODY_PEER_TCP_PORT)?,
+        "--out",
+        &out("dl/from-emuleqt.bin"),
+        "--serve",
+        "--share",
+        &out("asked/shared.bin"),
+        "--linger",
+        "--stamp-events",
+        "--max-seconds",
+        &RMULE_SECS.to_string(),
+        "--user-hash",
+        RMULE_USER_HASH,
+    ]
+    .map(str::to_owned);
+    let env = DriverEnv {
+        name: "RMULE_HOLD_DIAL6",
+        value: format!("{qt_v6} {BODY_PEER_TCP_PORT}"),
+    };
+    let (rmule, _) = start_detached_driver_with_env(
+        bench,
+        options,
+        stage,
+        RMULE_ROLE,
+        HOST_DRIVER,
+        &args,
+        RMULE_READY,
+        Some(env),
+    )?;
+
+    let qt = container_name(options.layout, "v6qt")?;
+    let said = run_checked(
+        bench.docker.exec(
+            qt,
+            [
+                "emulecored",
+                "--config",
+                "/config",
+                "--port",
+                "4712",
+                "--add-link",
+                &with_v6_source(&asked.link, &rmule_v6, BODY_PEER_TCP_PORT)?,
+            ]
+            .map(std::ffi::OsString::from)
+            .to_vec(),
+        ),
+        "add the asked file to emule-qt",
+    )?;
+    std::fs::write(stage.leg_dir.join("emuleqt-add.log"), said).context("keep the add answer")?;
+
+    let answered = wait_for_container_log(
+        &bench.docker,
+        &rmule,
+        ASK_ANSWERED,
+        Duration::from_secs(options.timeout_secs),
+    )
+    .is_ok();
+    run_checked(
+        bench.docker.run_container(
+            dial_hold("-D", &qt_v6).into_iter().fold(
+                RunContainer::new(options.rmule_tools_image)
+                    .network(format!("container:{rmule}"))
+                    .cap_add("NET_ADMIN")
+                    .entrypoint("ip6tables")
+                    .remove_after_exit(),
+                RunContainer::arg,
+            ),
+        ),
+        "lift the hold on rmule's dial",
+    )?;
+    wait_for_exit(bench, &rmule)?;
+    let log = body_log(bench, stage, &rmule, "rmule")?;
+
+    let capture = tcp_capture(&records(&stage.leg_dir.join("tap-wan.pcap"))?)?;
+    let qt_address: std::net::IpAddr = qt_v6.parse().context("emule-qt's IPv6")?;
+    let rmule_address: std::net::IpAddr = rmule_v6.parse().context("rmule's IPv6")?;
+    let links = Links {
+        capture: &capture,
+        qt: SocketAddr::new(qt_address, BODY_PEER_TCP_PORT),
+        rmule: SocketAddr::new(rmule_address, BODY_PEER_TCP_PORT),
+    };
+    let copy = std::fs::read(stage.leg_dir.join("dl/from-emuleqt.bin")).unwrap_or_default();
+    let shared = std::fs::read(&held_by_qt.path).context("read emule-qt's file")?;
+    let mut claims = links.claims(
+        &parse_ed2k_file_hash(&asked.link)?,
+        &parse_ed2k_file_hash(&held_by_qt.link)?,
+        &qt_v4,
+    );
+    claims.push(Claim::about(
+        "rmule-answered-the-ask",
+        answered,
+        Evidence::RmuleOnly,
+        first_line(&log, ASK_ANSWERED).to_owned(),
+    ));
+    claims.push(Claim::about(
+        "the-download-of-that-peer-completed-byte-equal",
+        copy == shared,
+        Evidence::Captured,
+        format!(
+            "{} bytes of {}; {}",
+            copy.len(),
+            shared.len(),
+            first_line(&log, "download.completed")
+        ),
+    ));
+    Ok((claims, String::new()))
+}
+
+/// The first line of `log` holding `marker`, or nothing.
+fn first_line<'a>(log: &'a str, marker: &str) -> &'a str {
+    log.lines()
+        .find(|line| line.contains(marker))
+        .unwrap_or_default()
+}
+
+/// The tap's view of the two peers.
+struct Links<'a> {
+    capture: &'a TcpCapture,
+    qt: SocketAddr,
+    rmule: SocketAddr,
+}
+
+impl Links<'_> {
+    /// How many dials `source` made at `port` on `host`, retransmissions
+    /// folded by the dial's own source port.
+    fn dials(&self, source: std::net::IpAddr, host: std::net::IpAddr) -> Vec<u16> {
+        let mut ports: Vec<u16> = self
+            .capture
+            .opens
+            .iter()
+            .filter(|open| open.source.ip() == source && open.destination.ip() == host)
+            .map(|open| open.source.port())
+            .collect();
+        ports.sort_unstable();
+        ports.dedup();
+        ports
+    }
+
+    fn claims(&self, asked: &[u8; 16], held: &[u8; 16], qt_v4: &str) -> Vec<Claim> {
+        let qt_ip = self.qt.ip();
+        let rmule_ip = self.rmule.ip();
+        let qt_dials = self.dials(qt_ip, rmule_ip);
+        let rmule_dials = self.dials(rmule_ip, qt_ip);
+
+        let streams = || self.capture.streams.iter();
+        let asker_stream = streams().find(|stream| {
+            stream.source.ip() == qt_ip
+                && stream.destination == self.rmule
+                && stream
+                    .ed2k_frames()
+                    .first()
+                    .is_some_and(|frame| frame.opcode == OP_HELLO)
+        });
+        let asker_port = asker_stream.map_or(0, |stream| stream.source.port());
+        let on_link = |to_rmule: bool, opcode: u8, hash: &[u8; 16]| {
+            streams()
+                .filter(|stream| {
+                    let (qt_end, rmule_end) = if to_rmule {
+                        (stream.source, stream.destination)
+                    } else {
+                        (stream.destination, stream.source)
+                    };
+                    qt_end.ip() == qt_ip && qt_end.port() == asker_port && rmule_end == self.rmule
+                })
+                .flat_map(|stream| stream.ed2k_frames())
+                .filter(|frame| {
+                    frame.opcode == opcode
+                        && frame
+                            .bytes
+                            .get(6..22)
+                            .is_some_and(|got| got == hash.as_slice())
+                })
+                .count()
+        };
+        // `<hash size 1><hash 16><client id 4>` after the opcode.
+        let claimed_id = asker_stream
+            .and_then(|stream| stream.ed2k_frames().into_iter().next())
+            .and_then(|hello| hello.bytes.get(23..27).map(<[u8]>::to_vec))
+            .map_or_else(String::new, |id| {
+                format!("{}.{}.{}.{}", id[0], id[1], id[2], id[3])
+            });
+
+        let ask_frames = on_link(true, OP_REQUESTFILENAME, asked);
+        let our_asks = on_link(false, OP_REQUESTFILENAME, held);
+        let their_parts = on_link(true, OP_SENDINGPART, held);
+        let our_parts = on_link(false, OP_SENDINGPART, asked);
+        let v4_links = self
+            .capture
+            .opens
+            .iter()
+            .filter(|open| {
+                open.destination.port() == BODY_PEER_TCP_PORT
+                    && open.destination.ip().to_string() == qt_v4
+            })
+            .map(|open| open.source)
+            .collect::<std::collections::BTreeSet<_>>();
+        vec![
+            Claim::about(
+                "emuleqt-asked-rmule-over-ipv6",
+                !qt_dials.is_empty() && ask_frames > 0,
+                Evidence::Captured,
+                format!(
+                    "emule-qt dialed [{rmule_ip}]:{} from ports {qt_dials:?}; {ask_frames} name \
+                     asks for the shared file on the link from port {asker_port}",
+                    self.rmule.port()
+                ),
+            ),
+            Claim::about(
+                "the-hello-claimed-a-high-id-the-link-does-not-carry",
+                claimed_id == qt_v4,
+                Evidence::Captured,
+                format!("emule-qt's hello on the IPv6 link claims client id {claimed_id}"),
+            ),
+            Claim::about(
+                "the-download-rode-the-askers-link",
+                our_asks > 0 && their_parts > 0,
+                Evidence::Captured,
+                format!(
+                    "on the link emule-qt opened: {our_asks} name asks from rmule for the held \
+                     file, {their_parts} part frames of it from emule-qt, {our_parts} part \
+                     frames of the shared file from rmule"
+                ),
+            ),
+            Claim::about(
+                "one-link-one-client",
+                rmule_dials.is_empty() && qt_dials.len() == 1 && v4_links.is_empty(),
+                Evidence::Captured,
+                format!(
+                    "over IPv6 rmule dialed from ports {rmule_dials:?}, emule-qt from \
+                     {qt_dials:?}; dials at emule-qt's IPv4 listener: {v4_links:?}"
+                ),
+            ),
+        ]
+    }
+}

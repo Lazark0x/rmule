@@ -37,6 +37,9 @@
 #                                 server's High-ID probe and one peer's
 #                                 dial-back reach the listener, and no Kad
 #                                 contact can acknowledge its TCP check
+#   RMULE_HOLD_DIAL6              `<address> <port>`: drop this node's own SYNs
+#                                 at that IPv6 listener, so a dial waits until
+#                                 a flow lifts the rule (`ipv6-asker`)
 set -eu
 
 if [ -n "${RMULE_FORCE_LOW_ID_TCP_PORT:-}" ]; then
@@ -47,6 +50,11 @@ if [ -n "${RMULE_FORCE_LOW_ID_TCP_PORT:-}" ]; then
     done
     iptables -A INPUT -p tcp --dport "$RMULE_FORCE_LOW_ID_TCP_PORT" -j DROP
     echo "rmule-tools-low-id-firewall-installed port=$RMULE_FORCE_LOW_ID_TCP_PORT"
+fi
+
+if [ -n "${RMULE_HOLD_DIAL6:-}" ]; then
+    ip6tables -A OUTPUT -p tcp -d "${RMULE_HOLD_DIAL6% *}" --dport "${RMULE_HOLD_DIAL6#* }" --syn -j DROP
+    echo "rmule-tools-dial-held target=$RMULE_HOLD_DIAL6"
 fi
 
 if [ -n "${RMULE_DEFAULT_ROUTE_VIA:-}" ]; then

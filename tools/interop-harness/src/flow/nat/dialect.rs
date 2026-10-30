@@ -32,6 +32,7 @@ mod ext_sx_kno;
 mod hello_surface;
 mod kad_tags;
 pub(crate) mod legs;
+mod v6_asker;
 pub(crate) mod verdict;
 
 use anyhow::Result;
@@ -68,6 +69,8 @@ pub enum Ipv6Flow {
     ServerSentinel,
     /// The 35-byte client-UDP key decrypts a v6 datagram both ways.
     UdpKey,
+    /// emule-qt asks rmule over IPv6 while rmule holds it as a source.
+    Asker,
     /// Not a dialect row: the three client bodies, each dialled by rmule, dialling
     /// rmule, serving it and served by it, with rmule meeting rmule beside them.
     /// It borrows this bench because the bench already holds them.
@@ -76,7 +79,7 @@ pub enum Ipv6Flow {
 
 impl Ipv6Flow {
     /// Every flow, in the order ADR-0092 lists them.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::HelloTags,
         Self::ExtSx,
         Self::ExtSxKno,
@@ -87,6 +90,7 @@ impl Ipv6Flow {
         Self::KadTags,
         Self::ServerSentinel,
         Self::UdpKey,
+        Self::Asker,
         Self::HelloSurface,
     ];
 
@@ -104,6 +108,7 @@ impl Ipv6Flow {
             Self::KadTags => "ipv6-kad-tags",
             Self::ServerSentinel => "ipv6-server-sentinel",
             Self::UdpKey => "ipv6-udp-key",
+            Self::Asker => "ipv6-asker",
             Self::HelloSurface => "peer-hello-surface",
         }
     }
@@ -147,6 +152,7 @@ impl Ipv6Flow {
                 | Self::ExtSx
                 | Self::ExtSxEmit
                 | Self::DownloadRung0
+                | Self::Asker
                 | Self::KadTags
                 | Self::UdpKey
                 | Self::HelloSurface
@@ -172,6 +178,7 @@ impl Ipv6Flow {
                 | Self::KadTags
                 | Self::ExtSxEmit
                 | Self::DownloadRung0
+                | Self::Asker
                 | Self::ExtSxCore
                 | Self::HelloSurface
         )

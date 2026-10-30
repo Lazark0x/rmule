@@ -405,7 +405,7 @@ fn start_bodies(
     if flow == Ipv6Flow::ExtSxEmit {
         return super::ext_sx_emit::start(bench, options, stage, suffix, timeout).map(Some);
     }
-    if flow == Ipv6Flow::DownloadRung0 {
+    if matches!(flow, Ipv6Flow::DownloadRung0 | Ipv6Flow::Asker) {
         return super::download_rung0::start(bench, options, stage, suffix, timeout).map(Some);
     }
     if flow == Ipv6Flow::ExtSxCore {
@@ -650,6 +650,27 @@ pub(crate) fn start_detached_driver(
     args: &[String],
     marker: &str,
 ) -> Result<(String, bool)> {
+    start_detached_driver_with_env(bench, options, stage, role, host, args, marker, None)
+}
+
+/// One environment variable a detached driver's entrypoint reads.
+pub(crate) struct DriverEnv {
+    pub(crate) name: &'static str,
+    pub(crate) value: String,
+}
+
+/// [`start_detached_driver`] with one variable set for its entrypoint.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_detached_driver_with_env(
+    bench: &mut Bench,
+    options: &Ipv6DialectOptions<'_>,
+    stage: &Stage,
+    role: &str,
+    host: usize,
+    args: &[String],
+    marker: &str,
+    env: Option<DriverEnv>,
+) -> Result<(String, bool)> {
     let name = container_name(options.layout, role)?;
     let mut container = RunContainer::new(options.rmule_tools_image)
         .detach()
@@ -659,6 +680,9 @@ pub(crate) fn start_detached_driver(
         .ip6(stage.v6(host))
         .cap_add("NET_ADMIN")
         .volume(&stage.leg_dir, "/out");
+    if let Some(env) = env {
+        container = container.env(env.name, env.value);
+    }
     for arg in args {
         container = container.arg(arg.clone());
     }
