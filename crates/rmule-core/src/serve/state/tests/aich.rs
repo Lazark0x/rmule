@@ -262,7 +262,7 @@ fn a_leaving_file_stops_its_build_which_holds_the_one_place_until_it_lands() {
     let decisions =
         state.on_share_set(vec![entry(staying, SIZE, "shared.bin")], t, &no_modifiers());
     assert_eq!(decisions[0], ServeDecision::StopAichBuild);
-    assert!(state.aich.leave(leaving) == false, "told once");
+    assert!(!state.aich.leave(leaving), "told once");
     assert_eq!(ask(&mut state, t, peer(1), root_ask(staying)), []);
 
     // A build told to stop counts for nothing, even one that finished first.
