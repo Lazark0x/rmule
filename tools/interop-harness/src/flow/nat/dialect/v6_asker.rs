@@ -202,7 +202,7 @@ pub(super) fn drive(
     );
     claims.push(Claim::about(
         "the-download-of-that-peer-completed-byte-equal",
-        copy == shared,
+        ridden && copy == shared,
         Evidence::Captured,
         format!(
             "{} bytes of {}; {}",
@@ -311,7 +311,7 @@ impl Links<'_> {
             .map(|open| open.source)
             .collect::<std::collections::BTreeSet<_>>();
         let v4_file_frames = streams()
-            .filter(|stream| at_v4_listener(stream.source) || at_v4_listener(stream.destination))
+            .filter(|stream| at_v4_listener(stream.destination))
             .flat_map(|stream| stream.ed2k_frames())
             .filter(|frame| {
                 [asked, held]
@@ -366,7 +366,7 @@ impl Links<'_> {
                 format!(
                     "over IPv6 rmule dialed from ports {rmule_dials:?}, emule-qt from \
                      {qt_dials:?}; rmule's held dials at emule-qt's IPv4 listener that landed \
-                     after the lift: {v4_links:?}, carrying {v4_file_frames} file frames"
+                     after the lift: {v4_links:?}, with {v4_file_frames} file frames from rmule on them"
                 ),
             ),
         ]
