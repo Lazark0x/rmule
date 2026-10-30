@@ -165,6 +165,7 @@ pub const fn source_wait_words(reason: SourceWait) -> &'static str {
     match reason {
         SourceWait::Asking => "waiting for sources",
         SourceWait::KadAlone => "asking Kad; no server session for more sources",
+        SourceWait::OnStanding => "every source holds a place in a queue; waiting for a turn",
         SourceWait::NoSession => {
             "no source left to try; waiting for a server session or Kad: connect to a server, or enable Kad"
         }

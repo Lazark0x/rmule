@@ -10,7 +10,7 @@ use std::time::Instant;
 use rmule_peer::peer_udp::requester::{self, HeardReply, IgnoredReply};
 use rmule_primitives::PeerEndpoint;
 
-use super::{Decision, DownloadState, WorkerOpening};
+use super::{Decision, DownloadFailure, DownloadState, WorkerOpening};
 use crate::adapters::advertises_complete;
 use crate::client_udp::ClientUdpSend;
 use crate::download::source_book::{Answer, Reask, ReaskGates};
@@ -219,7 +219,13 @@ impl DownloadState {
                 }
             }
         };
-        vec![Decision::Emit(event)]
+        let mut out = vec![Decision::Emit(event)];
+        // A source let go may have been the last a parked run waited on:
+        // ADR-0026's terminal condition, as every other refill states it.
+        if self.out_of_sources() {
+            out.push(Decision::Fail(DownloadFailure::NoUsableSources));
+        }
+        out
     }
 
     /// The event for a reply from `from` that changed nothing, for `reason`.

@@ -50,7 +50,8 @@ publishes sets, not orders.
 - **A waiting row names what it waits on.** The core hands a starved run's wait as a
   code, `SourceWait`, again whenever it changes: a server session up (`Asking`) reads
   *Waiting*; no session with Kad running (`KadAlone`) reads *Asking Kad*; no session and
-  Kad off (`NoSession`) reads *No network*, because the global sweep asks only with a
+  Kad off (`NoSession`) reads *No network*, every source parked on its queue standing
+  (`OnStanding`) reads *Waiting*, because the global sweep asks only with a
   session (ADR-0051). The Sources pane, the details' waiting row and the status bar say
   the same sentence; all three stay in aMule's waiting rank.
 - **Rows re-order live and the cursor follows its row.** Freezing the order during a

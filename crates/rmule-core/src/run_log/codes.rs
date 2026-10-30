@@ -53,6 +53,7 @@ pub(super) const fn source_wait(reason: SourceWait) -> &'static str {
         SourceWait::Asking => "asking",
         SourceWait::KadAlone => "kad_alone",
         SourceWait::NoSession => "no_session",
+        SourceWait::OnStanding => "on_standing",
     }
 }
 

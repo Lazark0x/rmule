@@ -585,6 +585,10 @@ pub enum SourceWait {
     /// No server session and Kad off: every source it held was tried and
     /// nothing asks for more until a session comes up or Kad starts.
     NoSession,
+    /// Every source it holds is parked on its queue standing: nothing is
+    /// spent, and each is reasked on its own clock until one grants a turn or
+    /// the file lets it go.
+    OnStanding,
 }
 
 /// What a restart of a failed download did (ADR-0094, "Restart"). The operator

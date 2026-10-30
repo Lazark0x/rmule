@@ -430,6 +430,20 @@ fn a_queue_full_reply_keeps_the_source_and_refreshes_the_clock() {
     ));
 }
 
+/// The last source a parked run waited on is let go by a `0x92`: with nothing
+/// left the run ends `NoUsableSources` rather than sitting silent.
+#[test]
+fn a_file_not_found_reply_for_the_last_source_ends_the_run() {
+    let mut state = standing();
+    let dropped = state.on_reask_reply(t0(), contact(peer(1)), &file_not_found_datagram());
+    assert!(
+        dropped
+            .iter()
+            .any(|d| matches!(d, Decision::Fail(DownloadFailure::NoUsableSources))),
+        "the run sat silent: {dropped:?}"
+    );
+}
+
 /// A `0x92` spends the source for this download, as aMule dead-lists it
 /// (ADR-0090): its record leaves the book, nothing is reasked, and a sighting
 /// of it — at its endpoint or by the User Hash its hello named — is refused
@@ -439,7 +453,7 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
     let mut state = standing();
     let dropped = state.on_reask_reply(t0(), contact(peer(1)), &file_not_found_datagram());
     assert!(matches!(
-        the_event(&dropped),
+        the_event(&dropped[..1]),
         DownloadEvent::SourceReaskDropped { peer: p, .. } if *p == peer(1)
     ));
     assert_eq!(state.known_sources(), 0);

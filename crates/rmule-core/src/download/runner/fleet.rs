@@ -367,7 +367,17 @@ where
             None if ctx.state.out_of_sources() => {
                 return Err(DownloadFailure::NoUsableSources);
             }
-            None => {}
+            None => {
+                send_download_event(
+                    evt_tx,
+                    DownloadEvent::WaitingForSources {
+                        download_id,
+                        reason: SourceWait::OnStanding,
+                    },
+                )
+                .await;
+                told_wait = Some(SourceWait::OnStanding);
+            }
         }
     }
 
@@ -671,7 +681,7 @@ async fn retell_wait<S, P>(
     if !ctx.command_channels.is_empty() || ctx.state.has_pending_callbacks() {
         return None;
     }
-    let reason = source_wait(discovery, lookup_owed)?;
+    let reason = source_wait(discovery, lookup_owed).unwrap_or(SourceWait::OnStanding);
     if reason != told {
         send_download_event(
             ctx.evt_tx,

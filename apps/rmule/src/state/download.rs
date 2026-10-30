@@ -364,7 +364,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         } => {
             let status = match reason {
                 SourceWait::NoSession => DownloadStatus::NoConnection,
-                SourceWait::Asking | SourceWait::KadAlone => DownloadStatus::Waiting,
+                SourceWait::Asking | SourceWait::KadAlone | SourceWait::OnStanding => DownloadStatus::Waiting,
             };
             let changed = set_status(state, download_id, status);
             let row = row_mut(state, download_id);
