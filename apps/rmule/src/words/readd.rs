@@ -11,14 +11,18 @@ use crate::state::KnownFileMark;
 /// the mark is about, in the mark's own colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tone {
+    /// Drawn in the text colour.
     Plain,
+    /// Drawn in the mark's colour.
     Subject,
 }
 
 /// One line of the confirm, before it is wrapped to the modal's width.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Said {
+    /// How the line is drawn.
     pub tone: Tone,
+    /// What it says.
     pub text: String,
 }
 
