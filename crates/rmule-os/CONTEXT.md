@@ -16,6 +16,10 @@ _Avoid_: sparse mode, sparse support
 Freeing a byte range of a file without changing its length: `fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)` on Linux, `fcntl(F_PUNCHHOLE)` on macOS, `FSCTL_SET_ZERO_DATA` on Windows. The range reads back as zeros. The caller aligns it; a filesystem that cannot punch answers with an error, never a panic.
 _Avoid_: trim, deallocate, hole punching
 
+**Exclusive rename**:
+`rename_exclusive`: a file moved onto a path with the call itself refusing when something stands there, so no check-then-rename gap can overwrite a file rmule did not write. `renameat` with the no-replace flag through `rustix` on Linux and macOS, `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows. A filesystem that refuses the flag answers `Unsupported` and a destination that exists answers `AlreadyExists`, both with the files untouched; the completion move lands every file with it (ADR-0115).
+_Avoid_: safe rename, no-clobber move
+
 **Default app lookup**:
 Which app the system opens a file-name extension with: on macOS the LaunchServices default for the extension's type, for any role, as the bundle's path; on Windows the executable of the extension's `open` verb, with the Unknown type ignored so a type with no app answers none. The extension is the caller's to read from a name; what to start the app on is the TUI's (ADR-0114). Linux has no such call: the freedesktop files are read by the TUI.
 _Avoid_: file association, open-with, handler

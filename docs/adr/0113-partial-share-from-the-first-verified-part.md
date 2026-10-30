@@ -15,7 +15,7 @@ a source (`ClientTCPSocket.cpp:449-455`, `:1094-1096`); only the slot ask needs 
 rmule offers only Shared File Registry rows (ADR-0031): the serve snapshot is the offered rows
 (`serve/runner.rs:586`), and a download joins the registry when it completes
 (`registry.rs:128`). Yet the download already tells its peers which parts it holds
-(`DownloadState::our_part_status`, `download/state.rs:607`), so the same node says "parts 0 and 7"
+(`DownloadState::our_part_status`, `download/state.rs:687`), so the same node says "parts 0 and 7"
 in its name ask and "no such file" when that peer asks back.
 
 The registry is the shared directories' (ADR-0101): the scan rules every row under its directory,
@@ -41,7 +41,7 @@ the file's one registry row, from the record, without reading the file.**
 
 | Set | Key | Holds | Writer | Lifetime |
 | --- | --- | --- | --- | --- |
-| **Served Downloads** | file hash | size, name, the part and final paths and which holds the bytes now, the part hash set once whole, the **Verified Range**, the **Part File Identity**, the source-exchange pool, an inbox for sightings | one at a time, by a lease: the run while it runs, then ADR-0115's completion move; the core actor while the download is queued or paused | from the row being queued, active, completing or paused to its cancel or failure; at completion, until the actor has written the registry row |
+| **Served Downloads** | file hash | size, name, the part and final paths and which holds the bytes now, the part hash set once whole, the **Verified Range**, the **Part File Identity** (taken from the file's handle when a run takes the lease, again when the run lets go at pause, once more at the completion move's swap onto the destination, and by the Offer Check after a restart), the source-exchange pool, an inbox for sightings | one at a time, by a lease: the run while it runs, then ADR-0115's completion move; the core actor while the download is queued or paused | from the row being queued, active, completing or paused to its cancel or failure; at completion, until the actor has written the registry row |
 | **Held back** | file hash | — | the core actor | while the download's destination lies under a refused entry (ADR-0101) |
 
 1. **Membership** is the download rows that are queued, active, completing (ADR-0115) or paused and
@@ -51,7 +51,7 @@ the file's one registry row, from the record, without reading the file.**
    the entry and two downloads never share one. A file of one part has no part hash set and its
    part verifies only at completion; it is shared by completion alone.
 2. **The Verified Range** is the parts whose recorded part hash (`VerifiedPartRecord`,
-   `durable.rs:165`) equals the whole set's hash at that index — the only bytes the serve side reads
+   `durable.rs:262`) equals the whole set's hash at that index — the only bytes the serve side reads
    from a part file. The run writes it in the arm that hands a persist result to the download brain,
    before any decision that result returns is enacted, so no name ask, reask or status rmule sends
    names a part the serve side lacks. A part written while no set was held is checked by its recorded
@@ -61,7 +61,7 @@ the file's one registry row, from the record, without reading the file.**
    after a restart. Whenever the download is offered, the status it advertises and its Verified Range
    are one set, spelt by one function (`PartBitmap::downloader`, `rmule-peer/src/file.rs:118`).
 3. **Offered** while the Verified Range holds a part, the set is whole
-   (`PartHashSet::expected_hash_count`, `rmule-primitives/src/hash.rs:347`; from the link or a peer's
+   (`PartHashSet::expected_hash_count`, `rmule-primitives/src/hash.rs:388`; from the link or a peer's
    proven set) and the file is not held back. No threshold and no knob. When the registry offers the
    same content whole, the whole row is served and announced, and the Partial Share is not.
 4. **Pause keeps the offer, as aMule's does.** Waiters and slot holders keep their standing. Cancel
@@ -78,7 +78,7 @@ the file's one registry row, from the record, without reading the file.**
 
 - **Its owner is the core actor.** At pause the run ends and hands its lease back to the actor with
   the Part File Identity read from its Held Part File handle as it lets go: the file key
-  (`FileKey::of_open`, `file_key.rs:50`, `:89` — device and inode on Unix, volume serial number and
+  (`FileKey::of_open`, `file_key.rs:43`, `:73` — device and inode on Unix, volume serial number and
   file index on Windows), the length and the modification time. From then on the actor writes the
   entry: it holds it back or releases it, empties it, ends it at cancel, and hands the lease to the
   run a Resume starts. Serve State answers its probes and serves its parts exactly as for a running
@@ -89,8 +89,8 @@ the file's one registry row, from the record, without reading the file.**
 - **After a restart: the Offer Check.** A queued or paused download is not offered at attach. It is a
   Served Download with an empty Verified Range — probes answered, nothing held — until the actor's
   **Offer Check** has re-read every recorded part and hashed it against its record: Resume's own check
-  (`DownloadRepository::revalidate`, `store/download.rs:546`; `revalidate_verified_parts`,
-  `content.rs:163`), with Resume's effect. A part that no longer holds loses its record and is said
+  (`DownloadRepository::revalidate`, `store/download.rs:618`; `revalidate_verified_parts`,
+  `content.rs:238`), with Resume's effect. A part that no longer holds loses its record and is said
   (`DamagedPartsDropped`); a part file gone or unreadable leaves the download paused and unoffered,
   and its Resume says why. The check records the identity from the handle it read through; the parts
   that held become the Verified Range, and the download is offered if rule 3 holds. It runs on the
@@ -182,7 +182,7 @@ the file's one registry row, from the record, without reading the file.**
 
 - The actor writes the row as `ShareSource::CompletedDownload` at the final path the completion move
   chose, with the record's hash, size and whole set and the final file's modification time
-  (`SharedFileEntry::from_completed_download`, `registry.rs:67`) — nothing is read. A destination
+  (`SharedFileEntry::from_completed_download`, `registry.rs:76`) — nothing is read. A destination
   under a refused entry is written withheld (`registry.rs:163-167`). Through that step the hash is in
   the share set as one or the other, so no waiter or slot holder hears that the file left.
 - The scan then trusts the row on its path, size and time. ADR-0115 keeps a completing download's
@@ -195,7 +195,7 @@ the file's one registry row, from the record, without reading the file.**
 ### Announce and Kad
 
 - **The announce** lists the offered rows and the Partial Shares; a Partial Share is
-  `FileCompleteness::Incomplete` (`rmule-ed2k/src/offer_files.rs:36`), which a server granting
+  `FileCompleteness::Incomplete` (`rmule-ed2k/src/offer_files.rs:40`), which a server granting
   `SRV_TCPFLG_COMPRESSION` reads as `0xFCFCFCFC:0xFCFC` beside `0xFBFBFBFB:0xFBFB` for a whole file;
   any other server gets our ID and port while it is High (`offer_files.rs:296-314`,
   `KnownFile.cpp:1097-1115`). The Announce Policy withholds Partial Shares with every other share

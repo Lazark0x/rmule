@@ -154,6 +154,14 @@ would falsify the Config-A verdict) — diagnostics are retained, nothing forced
 Known runtime note: the capture sidecar (source-lookup flow) needs
 `NET_RAW`/`NET_ADMIN`; Docker is the verified runtime.
 
+## Fast clock (`AMULE_CLOCK_SCALE`)
+
+Setting `AMULE_CLOCK_SCALE=<n>` puts aMule, ed2k-server and rmule on one
+sped-up clock (`src/fastclock.rs`), so a long wait can be debugged in minutes.
+A row counts only from a run at real speed: aMule's timers, Lugdunum (which
+stays on the real clock) and the kernel's do not scale together, so a verdict
+read off a fast-clock run proves nothing and never fills a matrix row.
+
 ## Runtime
 
 Use `--container-runtime <BIN>` to select a Docker-compatible CLI. The default is `docker`.
