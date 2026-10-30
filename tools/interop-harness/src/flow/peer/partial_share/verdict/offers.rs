@@ -21,8 +21,10 @@ fn marker(row: &OfferedRow) -> (u32, u16) {
     (row.client_id, row.port)
 }
 
-/// rmule's announce lists the partial with the incomplete marker and the
-/// whole file beside it with the complete one, both in one `OP_OFFERFILES`.
+/// rmule's offers list the partial with the incomplete marker and the whole
+/// file with the complete one. Offers are incremental (ADR-0099): the two may
+/// ride one `OP_OFFERFILES` or two, and the whole file only has to have been
+/// told while the partial was on offer.
 pub(super) fn sentinels(run: &Run<'_>) -> Claim {
     const NAME: &str = "the-announce-marks-the-partial-incomplete-beside-a-whole-file";
     let Some(flags) = run.flags else {
@@ -75,13 +77,15 @@ pub(super) fn sentinels(run: &Run<'_>) -> Claim {
         }
     }
     let beside = run.whole_hash.map(|whole| {
-        partial.iter().any(|(_, rows)| {
-            rows.iter()
-                .any(|row| row.hash == whole && marker(row) == COMPLETE)
+        run.offers.iter().any(|(at, rows)| {
+            *at < completed
+                && rows
+                    .iter()
+                    .any(|row| row.hash == whole && marker(row) == COMPLETE)
         })
     });
     if beside == Some(false) {
-        failures.push("no announce lists the whole file as complete beside the partial".to_owned());
+        failures.push("no offer told the whole file as complete beside the partial".to_owned());
     }
     Claim::judged(
         NAME,

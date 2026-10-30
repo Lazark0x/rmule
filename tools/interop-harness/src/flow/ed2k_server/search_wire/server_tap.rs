@@ -133,6 +133,45 @@ pub(crate) fn offered_origins(pcap: &Path, sharer: Ipv4Addr) -> Result<Vec<(f64,
         .collect())
 }
 
+/// What `client`'s session drew at its opening.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Opening {
+    /// Its login carried `offerfiles_v`.
+    pub(crate) asked_pace: bool,
+    /// Its `OP_GETSERVERLIST` frames.
+    pub(crate) list_asks: usize,
+    /// `OP_SERVERIDENT` frames the server sent it.
+    pub(crate) idents: usize,
+    /// Of those, frames carrying `offerfiles_batch_max`.
+    pub(crate) adverts: usize,
+}
+
+/// Read `client`'s [`Opening`] off the tap.
+///
+/// # Errors
+/// If the pcap cannot be read.
+pub(crate) fn opening(pcap: &Path, client: Ipv4Addr) -> Result<Opening> {
+    const OP_LOGINREQUEST: u8 = 0x01;
+    const OP_GETSERVERLIST: u8 = 0x14;
+    const OP_SERVERIDENT: u8 = 0x41;
+    let holds = |payload: &[u8], word: &[u8]| payload.windows(word.len()).any(|at| at == word);
+    let records = pcap::records(pcap)?;
+    let mut seen = Opening::default();
+    for frame in frames(&records)? {
+        let Body::Tcp { opcode, payload } = &frame.body else {
+            continue;
+        };
+        if *frame.source.ip() == client {
+            seen.asked_pace |= *opcode == OP_LOGINREQUEST && holds(payload, b"offerfiles_v");
+            seen.list_asks += usize::from(*opcode == OP_GETSERVERLIST);
+        } else if *frame.destination.ip() == client && *opcode == OP_SERVERIDENT {
+            seen.idents += 1;
+            seen.adverts += usize::from(holds(payload, b"offerfiles_batch_max"));
+        }
+    }
+    Ok(seen)
+}
+
 /// One file of an `OP_OFFERFILES`: its hash, and the ID and port it carried.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OfferedRow {

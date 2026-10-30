@@ -350,11 +350,14 @@ pub(super) fn pause(run: &Run<'_>) -> Claim {
     if ranks.contains(&0) {
         failures.push("a reask after the pause was answered with rank 0".to_owned());
     }
-    let offered = run.offers.iter().any(|(at, rows)| {
-        *at > paused && *at < end && rows.iter().any(|row| lists_partial(run, row))
-    });
+    // A pause changes nothing a server was told, and offers are incremental
+    // (ADR-0099): the partial stays announced from its one offer.
+    let offered = run
+        .offers
+        .iter()
+        .any(|(at, rows)| *at < end && rows.iter().any(|row| lists_partial(run, row)));
     if !offered {
-        failures.push("no OP_OFFERFILES after the pause lists the partial".to_owned());
+        failures.push("no OP_OFFERFILES before the end lists the partial".to_owned());
     }
     Claim::judged(
         NAME,

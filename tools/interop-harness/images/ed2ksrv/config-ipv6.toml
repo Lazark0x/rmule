@@ -35,6 +35,9 @@ hard_limit_files = 4000
 max_clients_per_ip = 10
 max_string_size = 250
 ping_delay_seconds = 300
+# OFFERFILES v1 at its default batch and interval, for the publishing leg of
+# `ed2ksrv-server-surface`. It holds only a client that asks.
+offerfiles_v1 = true
 
 [content_filter]
 hash_blocklists = []

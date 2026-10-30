@@ -17,6 +17,7 @@
 //!   never High ID. The leg measures that on the server's tap and records a
 //!   **Documented Absence** (ADR-0045), so a later pin that starts writing them
 //!   fails this row instead of passing unnoticed.
+//! - **A real core publishing, and a hash searched over UDP** ([`offer_legs`]).
 
 use std::fs;
 use std::path::Path;
@@ -39,6 +40,8 @@ use crate::flow::nat::claims::{Claim, DriverRow, Evidence, label};
 use crate::flow::pcap::{Ed2kFrame, TcpStream, records, tcp_capture};
 use crate::flow::wire_filter::OP_EDONKEYPROT;
 
+mod offer_legs;
+
 /// The flow's name and its verdict file's stem.
 pub(crate) const FLOW: &str = "ed2ksrv-server-surface";
 /// Where the flow's artifacts sit under the run dir.
@@ -53,7 +56,7 @@ const SEALED_REPLY: &str = "status_res_0x97_crypt.bin";
 /// The file the source offers.
 const FILE_HASH: &str = "A1B2C3D4E5F60718293A4B5C6D7E8F90";
 /// How long the source stays logged in; the two asks run inside it.
-const SOURCE_WINDOW_SECS: u64 = 45;
+const SOURCE_WINDOW_SECS: u64 = 90;
 /// How long each asker reads.
 const ASK_WINDOW_SECS: u64 = 8;
 
@@ -61,6 +64,7 @@ const CRYPT_IP: &str = "203.0.113.50";
 const SOURCE_IP: &str = "203.0.113.51";
 const CAPABLE_IP: &str = "203.0.113.52";
 const LEGACY_IP: &str = "203.0.113.53";
+const HASH_IP: &str = "203.0.113.55";
 /// RFC 9637 addresses: `is_publishable_ipv6` publishes them, no route needed.
 const SOURCE_V6: &str = "3fff:ed2:1::51";
 const CAPABLE_V6: &str = "3fff:ed2:1::52";
@@ -267,6 +271,8 @@ fn drive(
         args.extend(["--file-hash", FILE_HASH]);
         run_to_exit(bench, image, &format!("{ed2ksrv}-{name}"), ip, root, &args)?;
     }
+    offer_legs::drive_hash_search(bench, image, ed2ksrv, HASH_IP, root, FILE_HASH)?;
+    offer_legs::drive_offer(bench, image, ed2ksrv, root)?;
     run_checked(
         bench.docker.wait(source.clone()),
         "wait for the offering client",
@@ -337,6 +343,8 @@ pub(crate) struct Rows {
     pub(crate) server_list_frames: usize,
     /// Of those, frames with bytes past their IPv4 records.
     pub(crate) server_list_v6_tails: usize,
+    /// The publishing core's and the hash search's legs.
+    pub(crate) offers: offer_legs::OfferRows,
 }
 
 /// The verdict file.
@@ -382,7 +390,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             .iter()
             .filter(move |frame| (frame.protocol, frame.opcode) == (OP_EDONKEYPROT, opcode))
     };
+    let offers = offer_legs::read_rows(&root.join(SERVER_PCAP), &root, FILE_HASH)?;
     let rows = Rows {
+        offers,
         crypt_pong,
         capable_tcp_flags: capable.int("tcp_flags_bits"),
         capable_sentinels: capable.int("sentinel_count"),
@@ -398,7 +408,8 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         .list("ipv6_sources")
         .iter()
         .any(|source| source.contains(SOURCE_V6));
-    let claims = claims(&rows, sources_named);
+    let mut claims = claims(&rows, sources_named);
+    claims.extend(offer_legs::claims(&rows.offers));
     let pin = fs::read_to_string(root.join("ed2ksrv-pin.txt")).unwrap_or_default();
     let (verdict, detail) = label(&claims);
     let text = toml::to_string_pretty(&Verdict {
