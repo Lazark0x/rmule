@@ -166,7 +166,7 @@ pub(super) fn drive(
     )?;
     std::fs::write(stage.leg_dir.join("emuleqt-add.log"), said).context("keep the add answer")?;
 
-    let answered = wait_for_container_log(&bench.docker, &rmule, ASK_ANSWERED, ANSWER_WAIT).is_ok();
+    let ridden = wait_for_container_log(&bench.docker, &rmule, ASK_ANSWERED, ANSWER_WAIT).is_ok();
     for (table, target) in [("ip6tables", &qt_v6), ("iptables", &qt_v4)] {
         run_checked(
             bench.docker.run_container(
@@ -300,16 +300,25 @@ impl Links<'_> {
             .flat_map(|stream| stream.ed2k_frames())
             .filter(|frame| frame.opcode == OP_ACCEPTUPLOADREQ)
             .count();
+        let at_v4_listener = |address: SocketAddr| {
+            address.port() == BODY_PEER_TCP_PORT && address.ip().to_string() == qt_v4
+        };
         let v4_links = self
             .capture
             .opens
             .iter()
-            .filter(|open| {
-                open.destination.port() == BODY_PEER_TCP_PORT
-                    && open.destination.ip().to_string() == qt_v4
-            })
+            .filter(|open| at_v4_listener(open.destination))
             .map(|open| open.source)
             .collect::<std::collections::BTreeSet<_>>();
+        let v4_file_frames = streams()
+            .filter(|stream| at_v4_listener(stream.source) || at_v4_listener(stream.destination))
+            .flat_map(|stream| stream.ed2k_frames())
+            .filter(|frame| {
+                [asked, held]
+                    .iter()
+                    .any(|hash| [requested(frame), part_of(frame)].contains(&Some(**hash)))
+            })
+            .count();
         vec![
             Claim::about(
                 "emuleqt-asked-rmule-over-ipv6",
@@ -352,11 +361,12 @@ impl Links<'_> {
             ),
             Claim::about(
                 "one-link-one-client",
-                rmule_dials.is_empty() && qt_dials.len() == 1 && v4_links.is_empty(),
+                rmule_dials.is_empty() && qt_dials.len() == 1 && v4_file_frames == 0,
                 Evidence::Captured,
                 format!(
                     "over IPv6 rmule dialed from ports {rmule_dials:?}, emule-qt from \
-                     {qt_dials:?}; dials at emule-qt's IPv4 listener: {v4_links:?}"
+                     {qt_dials:?}; rmule's held dials at emule-qt's IPv4 listener that landed \
+                     after the lift: {v4_links:?}, carrying {v4_file_frames} file frames"
                 ),
             ),
         ]
