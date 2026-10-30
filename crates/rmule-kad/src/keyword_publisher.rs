@@ -35,16 +35,13 @@
 //! classifies**. Media tags are omitted, byte-identical to aMule publishing with
 //! unverified metadata.
 //!
-//! ADR-0062 states the publisher emits FILETYPE "always" (the "always-four").
-//! Capture recipe 2 (aMule publishes → rmule stores) **refutes** that:
-//! aMule's genuine `0x43` for an unclassifiable file (`rmulekadkeyword.dat`)
+//! ADR-0062 counts three or four tags. Capture recipe 2 (aMule publishes →
+//! rmule stores) shows when: aMule's genuine `0x43` for an unclassifiable file
+//! (`rmulekadkeyword.dat`)
 //! carries exactly **three** tags — FILENAME, FILESIZE, SOURCES, no FILETYPE
 //! (`SharedFileList`'s `GetFileTypeString` returns empty, and aMule appends the
 //! tag only for a non-empty type). rmule mirrors aMule: [`KadSharedFile::file_type`]
-//! `= None` emits three tags, `= Some` emits four. ADR-0062's
-//! claim of four tags always is superseded here — flagged for the ADR text (this module does not
-//! edit
-//! the ADR).
+//! `= None` emits three tags, `= Some` emits four.
 //!
 //! The FILENAME/FILESIZE split is capture-independent (rmule's own storer types
 //! them). The SOURCES/FILETYPE tag *bytes* — including SOURCES' integer-width
