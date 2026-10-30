@@ -26,6 +26,8 @@ use crate::flow::nat::synthetic::write_hashed;
 const LARGE_BYTES: u64 = (4 << 30) + (1 << 20);
 /// The one range the slot holder asks for.
 const OVERSIZED_RANGE: &str = "0-4294967296";
+/// The second peer's ask: one block.
+const ONE_BLOCK_RANGE: &str = "0-184320";
 /// rmule's container role and its bounded run.
 const RMULE_ROLE: &str = "oversized";
 const RMULE_SECS: u64 = 900;
@@ -148,19 +150,15 @@ pub(super) fn drive(
     );
     holder.extend(["--range".to_owned(), OVERSIZED_RANGE.to_owned()]);
     let holder_ran = run_driver(bench, options, stage, "holder", &holder);
-    let control_ran = run_driver(
-        bench,
-        options,
-        stage,
+    let mut control = capture_args(
+        &small.link,
+        &peer,
         "control",
-        &capture_args(
-            &small.link,
-            &peer,
-            "control",
-            "62626262626262626262626262626262",
-            CONTROL_SECS,
-        ),
+        "62626262626262626262626262626262",
+        CONTROL_SECS,
     );
+    control.extend(["--range".to_owned(), ONE_BLOCK_RANGE.to_owned()]);
+    let control_ran = run_driver(bench, options, stage, "control", &control);
     let still_up = crate::flow::bench::run_checked(
         bench.docker.inspect_state(rmule.clone()),
         "ask whether rmule still runs",
@@ -181,8 +179,7 @@ pub(super) fn drive(
     let released = log.lines().find(|line| {
         line.contains("serve.upload_slot_released") && line.contains(&format!("peer={holder_peer}"))
     });
-    let control_parts =
-        control_log.matches("PartReceived").count() + control_log.matches("part_received").count();
+    let control_answered = control_log.contains("transfer range_answered");
     let claims = vec![
         Claim::about(
             "rmule-refused-the-range-with-no-read",
@@ -204,12 +201,13 @@ pub(super) fn drive(
         ),
         Claim::about(
             "rmule-kept-serving-others",
-            control_ran.is_ok() && control_parts > 0,
+            control_ran.is_ok() && control_answered,
             Evidence::RmuleOnly,
             format!(
-                "the second peer read {control_parts} part events; holder driver {holder_ran:?}; \
-                 the holder's last line: {}",
-                holder_log.lines().last().unwrap_or_default()
+                "the second peer's one block answered: {control_answered}; {}; holder driver \
+                 {holder_ran:?}; {}",
+                line_of(&control_log, "transfer range_answered"),
+                line_of(&holder_log, "range_unanswered")
             ),
         ),
     ];
