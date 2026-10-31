@@ -355,8 +355,9 @@ async fn a_peer_session_runs_unchanged_inside_a_tunnel() {
     assert_eq!(seen_by_b, hash(0xAA), "the responder identified the dialer");
 
     // And the datagrams that carried it were NAT-T frames: a KEY frame first
-    // (the opening `ST_SYN` asserted our hash), then obfuscated transport
-    // frames, none of which leads with a whitelisted protocol byte.
+    // (the opening `ST_SYN` asserted our hash), then transport frames the
+    // accepting side keeps plain, because nothing has told its registry who
+    // the endpoint is (ADR-0091, security rule 11).
     let wire = net.wire();
     assert!(
         wire.iter()
@@ -365,12 +366,26 @@ async fn a_peer_session_runs_unchanged_inside_a_tunnel() {
     );
     assert!(
         wire.iter()
-            .any(|(_, _, bytes)| !is_udp_plaintext_marker(bytes[0])),
-        "once each side learned a key, transport frames went out obfuscated"
+            .all(|(_, _, bytes)| is_udp_plaintext_marker(bytes[0])),
+        "no frame goes out obfuscated before the hello is reported"
     );
 
-    initiator.shutdown().await.expect("shutdown");
+    // The triage reports the hello it read: from here the key it landed with
+    // keys the accepting side's frames, and the dialer's dual path opens them.
+    net.b
+        .sender()
+        .registry()
+        .lock()
+        .expect("registry")
+        .identified(net.a_at, hash(0xAA), Instant::now());
     responder.shutdown().await.expect("shutdown");
+    initiator.shutdown().await.expect("shutdown");
+    assert!(
+        net.wire()
+            .iter()
+            .any(|(_, _, bytes)| !is_udp_plaintext_marker(bytes[0])),
+        "once the hello named the endpoint, transport frames went out obfuscated"
+    );
 }
 
 /// The same tunnel carries an obfuscated eD2k stream: `CryptStream` is generic
@@ -911,7 +926,7 @@ async fn a_stranger_key_or_caps_leaves_no_row_and_draws_no_answer() {
     net.b
         .on_datagram(stranger, &NattFrame::Key(hash(0x66)).encode(), &nobody, now)
         .await;
-    assert_eq!(net.b.sender().key_for(stranger, now), None);
+    assert_eq!(net.b.sender().send_key(stranger, now), None);
 
     net.b
         .on_datagram(stranger, &null_caps(), &nobody, now)

@@ -218,12 +218,25 @@ impl TunnelRegistry {
         self.keys.learn(peer, hash, held, now)
     }
 
-    /// The hash to obfuscate a send to `peer` under, if any. A live tunnel
-    /// keeps its key whatever its age (ADR-0091, security rule 11).
+    /// The hash `peer`'s KEY frames state, if any. A live tunnel keeps its key
+    /// whatever its age (ADR-0091, security rule 11).
     #[must_use]
     pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
         let held = self.slot(peer) == Some(TunnelSlot::Held);
         self.keys.key_for(peer, held, now)
+    }
+
+    /// The hash to obfuscate a send to `peer` under, if any: its key, once the
+    /// endpoint stops spending the **Unidentified Allowance**. Until a hello
+    /// names it, a KEY is only what somebody claimed (ADR-0091, security rule
+    /// 11).
+    #[must_use]
+    pub fn send_key(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+        let unidentified = self
+            .slots
+            .get(&peer)
+            .is_some_and(|entry| entry.unidentified);
+        self.key_for(peer, now).filter(|_| !unidentified)
     }
 
     /// Record that we are dialing `peer`, so the answer to our own opening

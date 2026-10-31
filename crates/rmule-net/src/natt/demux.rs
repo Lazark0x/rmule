@@ -97,8 +97,8 @@ pub enum NattDisposition {
     /// A CAPS frame whose sender hash contradicts what this endpoint asserted
     /// in its **Key Frame**. Dropped.
     CapsContradictsKey,
-    /// A KEY frame; the endpoint's hash is now known and the next transport
-    /// frame to it goes out obfuscated.
+    /// A KEY frame; the endpoint's hash is now known, and transport frames to
+    /// it go out obfuscated once nothing charges it as unidentified.
     KeyLearned(UserHash),
     /// A KEY frame naming a hash other than the live one, from an endpoint
     /// that holds a tunnel, or other than the endpoint's name, key or no key
@@ -238,7 +238,7 @@ impl<S: NattDatagramSink> NattDemux<S> {
             tracing::debug!(%peer, "NAT-T key frame contradicts the held tunnel's key; dropped");
             return NattDisposition::KeyContradictsTunnel;
         }
-        tracing::debug!(%peer, "NAT-T key frame adopted; transport frames now obfuscated");
+        tracing::debug!(%peer, "NAT-T key frame adopted");
         NattDisposition::KeyLearned(hash)
     }
 

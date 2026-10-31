@@ -431,6 +431,43 @@ fn a_named_endpoint_refuses_a_forged_first_key_until_its_slot_goes() {
     assert!(registry.learn_key(peer, forged, now));
 }
 
+/// A KEY on an accepted slot keys no send until a hello names the endpoint,
+/// whatever it claimed: a forged first frame cannot put our sends under a key
+/// the dialer cannot open, and the hello's hash keys from there (ADR-0091,
+/// security rule 11).
+#[test]
+fn an_accepted_slot_keys_no_send_until_its_hello() {
+    let now = Instant::now();
+    let mut registry = TunnelRegistry::new();
+    let peer = endpoint(1);
+    let (forged, hello) = (
+        UserHash::from_bytes([0x99; UserHash::BYTE_LEN]),
+        UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
+    );
+    assert_ne!(registry.admit(peer, true, expected, now), Admission::Drop);
+    assert!(registry.learn_key(peer, forged, now));
+    assert_eq!(registry.send_key(peer, now), None, "the opening slot");
+    registry.held(peer, now);
+    assert_eq!(registry.send_key(peer, now), None, "the accepted Tunnel");
+
+    registry.identified(peer, hello, now);
+
+    assert_eq!(registry.send_key(peer, now), Some(hello));
+}
+
+/// Our own dial needs no hello to key its sends: it knows who it aimed at.
+#[test]
+fn a_dialed_slot_keys_sends_from_the_key_it_was_given() {
+    let now = Instant::now();
+    let mut registry = TunnelRegistry::new();
+    let peer = endpoint(1);
+    let real = UserHash::from_bytes([0x11; UserHash::BYTE_LEN]);
+    registry.dialing(peer, now);
+    registry.name(peer, real, now);
+    assert!(registry.learn_key(peer, real, now));
+    assert_eq!(registry.send_key(peer, now), Some(real));
+}
+
 /// An inbound slot that a hello named keeps its name while it is held.
 #[test]
 fn a_hello_names_what_it_identifies() {

@@ -149,8 +149,8 @@ impl<S> std::fmt::Debug for NattSender<S> {
 
 impl<S: NattDatagramSink> NattSender<S> {
     /// Build the send path over `sink`. `crypt` armed ⇒ transport frames are
-    /// obfuscated once a KEY frame has supplied the endpoint's hash, and rmule
-    /// asserts its own hash in return.
+    /// obfuscated once a KEY frame has supplied the endpoint's hash and the
+    /// endpoint is no stranger, and rmule asserts its own hash in return.
     pub fn new(sink: S, crypt: Option<Box<dyn NattCrypt>>) -> Self {
         Self {
             sink,
@@ -175,11 +175,11 @@ impl<S: NattDatagramSink> NattSender<S> {
     /// The hash a send to `peer` would obfuscate under, if any — the
     /// observable the KEY-interplay tests read.
     #[must_use]
-    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+    pub fn send_key(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
         self.registry
             .lock()
             .expect("the NAT-T tunnel registry is never poisoned")
-            .key_for(peer, now)
+            .send_key(peer, now)
     }
 
     /// The local address, for logging.
@@ -325,7 +325,7 @@ impl<S: NattDatagramSink> NattSender<S> {
                 .lock()
                 .expect("the NAT-T tunnel registry is never poisoned");
             let claimed = opens && registry.keys.claim_key_frame(peer, now);
-            (claimed, registry.key_for(peer, now))
+            (claimed, registry.send_key(peer, now))
         };
         let key_frame = claimed.then(|| NattFrame::Key(crypt.own_user_hash()).encode());
         let obfuscated = peer_hash.and_then(|peer_hash| {
