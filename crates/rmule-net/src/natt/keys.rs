@@ -5,9 +5,11 @@
 //! **10-minute learned-hash TTL** bounds how long a stale `(ip, port) → user
 //! hash` mapping can key a send — after a NAT rebinds, that endpoint may be
 //! somebody else — so it does not run under a live tunnel, whose endpoint has
-//! gone on answering and whose peer sends no second KEY frame. The **10-second per-endpoint send window** bounds what a
-//! stranger can make us emit: a flood of forged `ST_SYN` frames costs one KEY
-//! frame per ten seconds per source, not one per packet.
+//! gone on answering and whose peer sends no second KEY frame. The **10-second
+//! per-endpoint send window** bounds how often our own opening packets assert
+//! our hash: a uTP `ST_SYN` we send and any QUIC long header, so a flood of
+//! forged QUIC openers costs one KEY frame per ten seconds per source, and an
+//! inbound `ST_SYN` costs none.
 //!
 //! Explicit time throughout — the caller reads the clock, so the whole table
 //! is testable without sleeping.
@@ -28,8 +30,9 @@ use rmule_primitives::{PeerEndpoint, UserHash};
 pub const LEARNED_HASH_TTL: Duration = Duration::from_secs(600);
 
 /// Minimum interval between two KEY frames to the same endpoint. The trigger
-/// is a uTP `ST_SYN` or a QUIC long header, both of which a stranger can send
-/// at will, so this window is the rate limit on our own emission.
+/// is an opening packet we send: our uTP `ST_SYN`, or a QUIC long header, which
+/// a responder sends too and a stranger can draw at will, so this window is the
+/// rate limit on our own emission.
 pub const KEY_FRAME_INTERVAL: Duration = Duration::from_secs(10);
 
 /// One endpoint's key state.

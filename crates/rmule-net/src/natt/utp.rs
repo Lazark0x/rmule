@@ -315,7 +315,7 @@ mod tests {
     }
 
     /// Garbage is not an opener. If it were, a malformed datagram from any
-    /// forged source would create a registry entry and a KEY frame.
+    /// forged source would create a registry entry and an `ST_STATE`.
     #[test]
     fn an_unparsable_packet_is_not_an_opener() {
         assert!(!is_utp_syn(&[]));

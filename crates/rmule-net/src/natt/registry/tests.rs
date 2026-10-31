@@ -302,10 +302,11 @@ fn an_accepted_tunnel_keeps_its_charge() {
     };
     assert_eq!(admit(100), Admission::Drop, "the allowance is spent");
 
-    registry
-        .lock()
-        .expect("registry")
-        .identified(at(1, 1), UserHash::from_bytes([0x11; 16]), Instant::now());
+    registry.lock().expect("registry").identified(
+        at(1, 1),
+        UserHash::from_bytes([0x11; 16]),
+        Instant::now(),
+    );
     assert_eq!(admit(101), Admission::Opened, "a hello gave one back");
 
     tunnels.pop();

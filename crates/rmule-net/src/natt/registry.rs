@@ -29,7 +29,8 @@
 //! # Who may open a slot (ADR-0091, security rule 10)
 //!
 //! An opening packet is a stranger's to forge, and admitting one costs an
-//! `ST_STATE` and a KEY frame sent to its claimed source. So an opening packet
+//! `ST_STATE` sent to its claimed source, or a KEY frame and a QUIC handshake
+//! under the same window for a QUIC long header. So an opening packet
 //! opens a slot only when the caller says its source IP is **expected** — the
 //! core's Punch Expectations and Peer Roster answer that, asked only when a
 //! packet would actually open a slot — and only while the **Unidentified

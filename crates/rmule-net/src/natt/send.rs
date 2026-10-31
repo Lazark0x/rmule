@@ -202,9 +202,11 @@ impl<S: NattDatagramSink> NattSender<S> {
 
     /// Send one transport payload (uTP or QUIC) to `peer`, awaiting the socket.
     ///
-    /// `opens` marks an opening payload — a uTP `ST_SYN` or a QUIC long header
-    /// — which is where a KEY frame is due, because that is the first moment
-    /// the peer could need our hash and the last moment before data flows.
+    /// `opens` marks an opening payload — our own uTP `ST_SYN` or a QUIC long
+    /// header, a responder's included — which is where a KEY frame is due,
+    /// because that is the first moment the peer could need our hash and the
+    /// last moment before data flows. The `ST_STATE` that answers an inbound
+    /// `ST_SYN` opens nothing, so an accepted uTP Tunnel asserts no hash.
     ///
     /// # Errors
     /// Whatever the socket returned. A KEY frame that fails to send is *not*
