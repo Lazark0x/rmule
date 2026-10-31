@@ -43,21 +43,28 @@ impl SourceBook {
     /// (ADR-0116): the High-ID lane's first record, else the first Low-ID
     /// candidate the admission rule admits — the connected server's lane before
     /// the global one, a skipped candidate keeping its place. The record moves
-    /// to Dialing or CallbackPending here.
+    /// to Dialing or CallbackPending here. A pooled record is read against the
+    /// **Spent Names** at its turn: a peer another run spent is dead here too,
+    /// so its record leaves, as stock's `RemoveSource` takes a dead client off
+    /// every file (`DownloadQueue.cpp:763-785`, ADR-0090).
     pub(crate) fn next_dial(
         &mut self,
         capability: &CallbackCapability,
         dial: DialPosition,
     ) -> Option<NextDial> {
-        if let Some(id) = self.lanes.pop_front(Lane::HighId) {
+        while let Some(id) = self.lanes.pop_front(Lane::HighId) {
+            let Some(endpoint) = self.first_unspent(id) else {
+                self.remove(id);
+                continue;
+            };
             let record = self.records.get_mut(&id)?;
-            let endpoint = *record.endpoints.first()?;
             record.stage = Stage::Dialing(Live {
                 road: DialRoad::HighId,
                 endpoint,
             });
             return Some(NextDial::Worker(endpoint));
         }
+        self.drop_spent_candidates();
         let (lane, id, route) = [Lane::LowIdConnected, Lane::LowIdGlobal]
             .into_iter()
             .find_map(|lane| {
@@ -80,6 +87,41 @@ impl SourceBook {
             LowIdRoute::Road(road) => {
                 record.stage = Stage::CallbackPending(PendingRoad::opened(road));
                 Some(NextDial::Callback { candidate, road })
+            }
+        }
+    }
+
+    /// The endpoint the record `id` is dialed at: its first one no run spent,
+    /// which it then leads with.
+    fn first_unspent(&mut self, id: RecordId) -> Option<PeerEndpoint> {
+        let record = self.records.get(&id)?;
+        let first = record
+            .endpoints
+            .iter()
+            .copied()
+            .find(|&endpoint| !self.blocks.is_spent(endpoint))?;
+        let record = self.records.get_mut(&id)?;
+        record.endpoints.retain(|&held| held != first);
+        record.endpoints.insert(0, first);
+        Some(first)
+    }
+
+    /// Every Low-ID candidate a run spent the key of leaves its lane.
+    fn drop_spent_candidates(&mut self) {
+        for lane in [Lane::LowIdConnected, Lane::LowIdGlobal] {
+            let spent: Vec<RecordId> = self
+                .lanes
+                .iter(lane)
+                .filter(|id| {
+                    self.records
+                        .get(id)
+                        .and_then(|record| record.candidate)
+                        .is_some_and(|candidate| self.blocks.is_spent(AskName::LowId(candidate.key())))
+                })
+                .collect();
+            for id in spent {
+                self.lanes.remove(lane, id);
+                self.remove(id);
             }
         }
     }

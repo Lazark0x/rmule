@@ -157,6 +157,28 @@ fn a_new_run_of_any_file_keeps_a_dead_peer_spent() {
     assert_eq!(sighted_at(&mut run, t0() + MINUTE * 30), vec![peer(1)]);
 }
 
+/// A peer another run spent is dead for this run's pool too
+/// (`BaseClient.cpp:1291-1292`): the record it pooled before the death goes
+/// at its turn, and nothing dials it.
+#[test]
+fn a_pooled_record_another_run_spent_is_not_dialed() {
+    let names = SpentNames::shared();
+    let mut pooled = run_of(&names, 2);
+    let _ = pooled.start(t0());
+    let sighted = plain_sightings(&[peer(2), peer(1)]);
+    let taken = take_at(&mut pooled, t0(), Channel::Server, sighted);
+    assert_eq!(spawned(&taken.decisions), vec![peer(2)]);
+
+    let mut dying = run_of(&names, 1);
+    let _ = dying.start(t0());
+    assert_eq!(sighted_at(&mut dying, t0()), vec![peer(1)]);
+    let _ = dying.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+
+    let backfill = pooled.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
+    assert!(spawned(&backfill).is_empty(), "{backfill:?}");
+    assert_eq!(pooled.known_sources(), 0);
+}
+
 /// A peer that lacks one file is spent for that file alone, 45 minutes
 /// (`ClientTCPSocket.cpp:549`), across a run's end.
 #[test]
