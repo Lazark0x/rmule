@@ -42,6 +42,10 @@ pub(super) struct SuiState {
     our_signature_sent: bool,
     /// We have already verified the peer and emitted `IdentityVerified`.
     verified: bool,
+    /// A signature was judged on this link: one is all it gets, a failed one
+    /// included, as a verify costs an RSA operation per packet
+    /// (`BaseClient.cpp:2638`, `:2670`).
+    judged: bool,
 }
 
 impl PeerSession {
@@ -224,7 +228,7 @@ impl PeerSession {
     /// signature folds in the address its kind byte names — an IP
     /// mismatch (or an unknown kind) simply fails, non-terminally.
     fn try_verify_peer(&mut self) {
-        if self.sui.verified {
+        if self.sui.verified || self.sui.judged {
             return;
         }
         let verified = {
@@ -242,6 +246,7 @@ impl PeerSession {
                     Some(ip) => Some((ip, kind)),
                     None => {
                         // Unknown kind: no defined input to verify against.
+                        self.sui.judged = true;
                         self.emit_sui_failed(SecureIdentFailure::BadSignature);
                         return;
                     }
@@ -257,6 +262,7 @@ impl PeerSession {
             }
             peer_key.verify(&verify_input, signature)
         };
+        self.sui.judged = true;
         if verified {
             self.sui.verified = true;
             let public_key = self

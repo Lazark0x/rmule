@@ -861,6 +861,46 @@ fn a_forged_peer_signature_fails_non_terminally() {
     // stayed open — the peer simply keeps unsecured credit.
 }
 
+/// aMule takes one signature per address, a failed one included
+/// (`BaseClient.cpp:2638`, `:2670`), or each packet costs an RSA verify: the
+/// peer's own good signature after a forged one is not read either.
+#[test]
+fn a_failed_signature_spends_the_links_one_verify() {
+    let our_key = Arc::new(SecureIdentKey::generate().expect("our key"));
+    let peer_key = SecureIdentKey::generate().expect("peer key");
+    let peer_user_hash = UserHash::from_bytes([0x57; UserHash::BYTE_LEN]);
+    let (mut session, _sig) = drive_to_our_signature(&our_key, &peer_key, peer_user_hash);
+
+    let mut signed = our_key.public_key_der();
+    signed.extend_from_slice(&OUR_CHALLENGE.to_le_bytes());
+    let forged = SecureIdentKey::generate().expect("impostor").sign(&signed);
+    let good = peer_key.sign(&signed);
+
+    feed(
+        &mut session,
+        SignaturePacket {
+            signature: forged,
+            ip_kind: None,
+        }
+        .encode_packet(),
+    );
+    let _ = drain(&mut session);
+    feed(
+        &mut session,
+        SignaturePacket {
+            signature: good,
+            ip_kind: None,
+        }
+        .encode_packet(),
+    );
+    let (_, events) = drain(&mut session);
+
+    assert!(
+        events.is_empty(),
+        "the second signature is dropped unread: {events:?}"
+    );
+}
+
 /// A native-IPv6 session signs **V1** even against a V2-only peer (ADR-0087).
 /// V2's signed message ends in a 4-byte `ChallengeIP`, and signed bytes must
 /// match exactly — a 16-byte variant is not a skippable widening but its own
