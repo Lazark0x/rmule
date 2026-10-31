@@ -192,6 +192,26 @@ pub const fn waiting_for_sources(reason: SourceWait) -> Sentence {
     Sentence::fixed(source_wait_words(reason))
 }
 
+/// Why a worker slot ended, as short as the Sources pane's Phase cell wants
+/// it. [`retirement_words`] is the sentence.
+const fn retired_cell(reason: PeerRetirementReason) -> &'static str {
+    match reason {
+        PeerRetirementReason::PeerDisconnected => "disconnected",
+        PeerRetirementReason::SlotTimeout => "queue timed out",
+        PeerRetirementReason::PartVerificationFailed => "bad part",
+        PeerRetirementReason::VerificationAuthorityMismatch => "bad hashes",
+        PeerRetirementReason::CryptIncompatible => "crypt mismatch",
+        PeerRetirementReason::Distrusted => "distrusted",
+        PeerRetirementReason::SameSource => "same source",
+        PeerRetirementReason::OurOwnNode => "this node",
+        PeerRetirementReason::NoNeededParts => "no parts",
+        PeerRetirementReason::NoFreePart => "parts taken",
+        PeerRetirementReason::FileNotFound => "no file",
+        PeerRetirementReason::Queued => "on its queue",
+        PeerRetirementReason::LinkEnded => "asks later",
+    }
+}
+
 /// What a worker slot is doing, as the Sources pane's Phase cell says it:
 /// the dial, the file asked, its place in the uploader's queue, the part it
 /// fetches, and its end (ADR-0028).
@@ -206,7 +226,7 @@ pub fn phase_words(phase: &WorkerPhase) -> String {
         WorkerPhase::RequestingPart { part_index } => format!("req p{part_index}"),
         WorkerPhase::ReceivingPart { part_index, .. } => format!("recv p{part_index}"),
         WorkerPhase::VerifyingPart { part_index } => format!("verify p{part_index}"),
-        WorkerPhase::Retired { .. } => "retired".to_string(),
+        WorkerPhase::Retired { reason } => retired_cell(*reason).to_string(),
         WorkerPhase::ShutDown => "shutdown".to_string(),
     }
 }
