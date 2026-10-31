@@ -738,10 +738,9 @@ fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
             Evidence::RmuleOnly,
             format!(
                 "the requester's burst at the target crossed its WAN tap as \
-                 {obfuscated_from_requester} obfuscated datagrams of {PUNCH_BURST_DATAGRAMS}; \
-                 byte 29 of the `0x61` is what told it. The {plain_from_requester} plain `0xA1` \
-                 beside them are the tunnel's path keepalive, which the row cannot tell \
-                 from a burst by count",
+                 {obfuscated_from_requester} obfuscated datagrams against a burst of \
+                 {PUNCH_BURST_DATAGRAMS}, any past the burst being the tunnel's path keepalive, \
+                 and {plain_from_requester} plain `0xA1`; byte 29 of the `0x61` is what told it",
             ),
         ));
     }
