@@ -18,6 +18,7 @@ mod clients_met_restart;
 mod connect_on_operators_word;
 mod connect_search_race;
 mod core_service;
+mod no_reader;
 mod core_settings;
 mod fake_ed2k_server_probe;
 mod fake_orchestration;
