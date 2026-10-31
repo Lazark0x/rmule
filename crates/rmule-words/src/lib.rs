@@ -35,6 +35,16 @@ pub mod software;
 pub mod store;
 pub mod units;
 
+/// `text` on one line, as a terminal may show it: nothing a stranger wrote into
+/// a name reaches a sink as a control or a reordering character. Every CLI line
+/// passes here; a file name, a server name and a peer's words all do.
+#[must_use]
+pub fn plain(text: &str) -> String {
+    text.chars()
+        .filter(|&c| !rmule_primitives::is_unprintable(c))
+        .collect()
+}
+
 /// A sentence the operator reads — a Networks log line, the status bar's
 /// note, a flash. Its field is private, and its constructors are called
 /// only in a words module (see the crate docs).
@@ -92,5 +102,16 @@ impl PartialEq<str> for Sentence {
 impl PartialEq<&str> for Sentence {
     fn eq(&self, other: &&str) -> bool {
         self.0 == *other
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn plain_leaves_nothing_that_acts_on_a_terminal() {
+        assert_eq!(
+            super::plain("a\x1b[2Jb\u{9b}31m\u{202e}c\nd"),
+            "a[2Jb31mcd"
+        );
     }
 }

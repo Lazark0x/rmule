@@ -24,7 +24,9 @@ use crate::{Ed2kFileLink, FileHash};
 /// Cleaned the way aMule's `DoCleanup` cleans the name of a completed file
 /// (`src/libs/common/Path.cpp:112-145`, called with spaces kept from
 /// `ThreadTasks.cpp:444`): every `/` and every character below U+0020 is
-/// dropped, and so are `" * < > ? | \ :`. aMule drops that second set only
+/// dropped, and so are `" * < > ? | \ :`. DEL, the C1 controls and the bidi
+/// format characters go too, past aMule: the name is local, and a reordered
+/// name shows a false extension. aMule drops that second set only
 /// on a file system that cannot hold them; rmule drops it on every one, so a
 /// name never carries the other platform's separator or a drive prefix.
 /// Trailing dots and spaces are dropped next. A name that cleans to nothing
@@ -116,7 +118,19 @@ fn shortened(name: &str) -> String {
 }
 
 fn is_dropped(c: char) -> bool {
-    c < ' ' || matches!(c, '/' | '\\' | '"' | '*' | '<' | '>' | '?' | '|' | ':')
+    is_unprintable(c) || matches!(c, '/' | '\\' | '"' | '*' | '<' | '>' | '?' | '|' | ':')
+}
+
+/// Whether `c`, in text a counterparty wrote, would act on what shows it rather
+/// than read as text: every control, C1 and DEL with C0, and the format
+/// characters that reorder a line.
+#[must_use]
+pub fn is_unprintable(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+        )
 }
 
 /// The names Windows opens as a device rather than a file, with or without
@@ -201,6 +215,14 @@ mod tests {
     #[test]
     fn nul_and_control_characters_are_dropped_and_spaces_kept() {
         assert_eq!(joined("a\0b\tc d.avi"), Path::new("/dl/abc d.avi"));
+    }
+
+    /// A stored name reaches `ls`, Finder and every terminal: a right-to-left
+    /// override shows `gpj.exe` as `exe.jpg`, a C1 CSI can drive a terminal.
+    #[test]
+    fn delete_c1_controls_and_bidi_overrides_are_dropped() {
+        assert_eq!(cleaned("a\u{7f}b\u{9b}c\u{202e}gpj.exe"), "abcgpj.exe");
+        assert_eq!(cleaned("\u{2066}a\u{2069}\u{200f}\u{61c}b.bin"), "ab.bin");
     }
 
     #[test]

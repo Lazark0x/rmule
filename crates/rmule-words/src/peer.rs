@@ -4,14 +4,11 @@
 use rmule_core::{HelloRefusal, HelloRefusalCode};
 use rmule_primitives::Ed2kText;
 
-use super::Sentence;
+use super::{Sentence, plain};
 
-/// Text the peer supplied, on one line: control characters dropped.
+/// Text the peer supplied, as a terminal may show it.
 fn peer_text(text: &Ed2kText) -> String {
-    text.to_display_string()
-        .chars()
-        .filter(|c| !c.is_control())
-        .collect()
+    plain(&text.to_display_string())
 }
 
 /// Who sent the refused hello, by what it said of itself.

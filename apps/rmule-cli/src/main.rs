@@ -6,8 +6,11 @@
 //! The Kad node runner is the one long-lived command and lives in [`kad`].
 
 #![warn(missing_docs)]
+#![deny(clippy::print_stdout, clippy::print_stderr)]
 
+use std::fmt;
 use std::path::PathBuf;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -27,7 +30,30 @@ use rmule_words::download::{
 };
 use rmule_words::reach::{client_udp_bind_failed, half_bound as half_bound_words};
 
+/// Write one line to stdout through [`say_line`], the sink's one sanitiser.
+macro_rules! say {
+    ($($line:tt)*) => { $crate::say_line(format_args!($($line)*)) };
+}
+
+/// [`say!`] on stderr.
+macro_rules! say_err {
+    ($($line:tt)*) => { $crate::say_err_line(format_args!($($line)*)) };
+}
+
 mod kad;
+
+/// The one stdout sink: a server's, a peer's or a link's words reach the
+/// terminal as text. The crate denies a bare `println!`.
+#[allow(clippy::print_stdout)]
+fn say_line(line: fmt::Arguments<'_>) {
+    println!("{}", rmule_words::plain(&line.to_string()));
+}
+
+/// The one stderr sink, as [`say_line`].
+#[allow(clippy::print_stderr)]
+fn say_err_line(line: fmt::Arguments<'_>) {
+    eprintln!("{}", rmule_words::plain(&line.to_string()));
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "rmule-cli", about = "rmule headless client")]
@@ -157,11 +183,11 @@ fn install_run_log(
             // The thread ends with the run when nothing failed.
             std::thread::spawn(move || {
                 if let Ok(failure) = failures.recv() {
-                    eprintln!("{}", no_run_log(failure));
+                    say_err!("{}", no_run_log(failure));
                 }
             });
         }
-        Err(failure) => eprintln!("{}", no_run_log(failure)),
+        Err(failure) => say_err!("{}", no_run_log(failure)),
     }
     Ok(level)
 }
@@ -192,8 +218,20 @@ fn resolve_data_dir(flag: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
     let _log_drained = run_log::DrainAtExit;
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        // An error can carry a link's or a directory's words, so it leaves
+        // through the sink too rather than as `main`'s `Debug` return.
+        Err(error) => {
+            say_err!("Error: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(cli.data_dir.as_deref())?;
 
@@ -208,9 +246,9 @@ async fn main() -> Result<()> {
                     .iter()
                     .map(|b| format!("{b:02x}"))
                     .collect();
-                println!("user_hash {hex}");
-                println!("nickname  {}", id.nickname().to_display_string());
-                println!("tcp_port  {}", id.tcp_port());
+                say!("user_hash {hex}");
+                say!("nickname  {}", id.nickname().to_display_string());
+                say!("tcp_port  {}", id.tcp_port());
             }
         },
         Command::Server { command } => match command {
@@ -220,7 +258,7 @@ async fn main() -> Result<()> {
                 let store = open_config_store(&data_dir)?;
                 let (host, port) = (server.host().to_owned(), server.port());
                 store.merge_server(ManagedServer::listed(server))?;
-                println!("added {host}:{port}");
+                say!("added {host}:{port}");
             }
             ServerCommand::List => {
                 let store = open_config_store(&data_dir)?;
@@ -228,7 +266,7 @@ async fn main() -> Result<()> {
                     // The whole managed row (ADR-0080), not just the endpoint:
                     // a name the list learned from server.met, the operator's
                     // priority and static pin, and the failure tally.
-                    println!(
+                    say!(
                         "{}:{} name=\"{}\" priority={} static={} failed={}",
                         server.endpoint.host(),
                         server.endpoint.port(),
@@ -262,13 +300,13 @@ async fn main() -> Result<()> {
                         }
                         other => other.into(),
                     })?;
-                println!("{}", rmule_words::scan::download_dir_line(Some(&dir)));
+                say!("{}", rmule_words::scan::download_dir_line(Some(&dir)));
             }
             ConfigCommand::SetTempDir { path: None, .. } => {
                 CoreSettingsHandle::open(open_store(&data_dir)?)
                     .share_guards(share_guards(&data_dir))
                     .set(Setting::TempDir(None))?;
-                println!(
+                say!(
                     "{}",
                     rmule_words::scan::temp_dir_line(
                         &CoreSettings::default_temp_dir(&data_dir),
@@ -292,17 +330,17 @@ async fn main() -> Result<()> {
                         }
                         other => other.into(),
                     })?;
-                println!("{}", rmule_words::scan::temp_dir_line(&dir, false));
+                say!("{}", rmule_words::scan::temp_dir_line(&dir, false));
             }
             ConfigCommand::Show => {
                 let settings = CoreSettingsHandle::open(open_store(&data_dir)?).read()?;
-                println!(
+                say!(
                     "{}",
                     rmule_words::scan::download_dir_line(settings.download_dir.as_deref())
                 );
                 match &settings.temp_dir {
-                    Some(dir) => println!("{}", rmule_words::scan::temp_dir_line(dir, false)),
-                    None => println!(
+                    Some(dir) => say!("{}", rmule_words::scan::temp_dir_line(dir, false)),
+                    None => say!(
                         "{}",
                         rmule_words::scan::temp_dir_line(
                             &CoreSettings::default_temp_dir(&data_dir),
@@ -353,7 +391,7 @@ async fn main() -> Result<()> {
 async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> Result<()> {
     let read = Ed2kLink::read(link_str).with_context(|| format!("parse ed2k link {link_str}"))?;
     if let Some(sentence) = skipped_sentence(&read.skipped_fields) {
-        println!("{sentence}");
+        say!("{sentence}");
     }
     let file = match read.link {
         Ed2kLink::File(file) => file,
@@ -378,7 +416,7 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
         (None, 0) => anyhow::bail!(
             "no server configured and the link names no source; run `rmule-cli server add <host:port>`"
         ),
-        (None, count) => println!(
+        (None, count) => say!(
             "no server configured; starting from the {count} source{} the link names",
             if count == 1 { "" } else { "s" }
         ),
@@ -448,7 +486,7 @@ async fn drive_add(
                 download_id: id, ..
             }) => {
                 download_id = Some(id);
-                println!("queued id={}", id.as_u64());
+                say!("queued id={}", id.as_u64());
             }
             CoreEvent::CommandRejected { reason } => {
                 anyhow::bail!("{}", rmule_words::app::cli_command_rejected(&reason));
@@ -457,7 +495,7 @@ async fn drive_add(
                 download_id: id,
                 final_path,
             }) => {
-                println!("{}", completed_line(id, &final_path));
+                say!("{}", completed_line(id, &final_path));
                 return Ok(());
             }
             CoreEvent::Download(DownloadEvent::DownloadFailed { reason, .. }) => {
@@ -494,12 +532,12 @@ async fn drive_add(
             // begins (ADR-0115): a copy across disks or a held file can take
             // a while, and the one-shot run says why it has not ended.
             CoreEvent::Download(DownloadEvent::Completing { step, to, .. }) => {
-                println!("{}", completing_line(step, &to));
+                say!("{}", completing_line(step, &to));
             }
             // The run's disk holds no holes (ADR-0111): the download goes on,
             // and this edge is the only place the CLI hears of it.
             CoreEvent::Download(DownloadEvent::HoleLessDestination { directory, .. }) => {
-                println!(
+                say!(
                     "{}",
                     hole_less_destination(&download_label(download_id), &directory)
                 );
@@ -514,7 +552,7 @@ async fn drive_add(
                 if !matches!(stop, VolumeStop::OutOfSpace { .. }) {
                     anyhow::bail!("{line}");
                 }
-                println!("{line}");
+                say!("{line}");
             }
             // The one client-UDP socket never bound at core start (ADR-0057):
             // non-fatal to this download (it runs over the
@@ -522,18 +560,18 @@ async fn drive_add(
             // are off for the rest of the process, so it is worth a line
             // even though nothing here ever sends `EnableKad`.
             CoreEvent::ClientUdpBindFailed { port, kind } => {
-                println!("{}", client_udp_bind_failed(port, kind));
+                say!("{}", client_udp_bind_failed(port, kind));
             }
             // Half of the same story: the pair came up, but
             // without a family it selected, so some of what rides it is off
             // for the rest of the process. Worth a line for the same reason
             // the total failure is.
             CoreEvent::SocketBoundWithoutFamily { half_bound } => {
-                println!("{}", half_bound_words(&half_bound));
+                say!("{}", half_bound_words(&half_bound));
             }
             // The download still finishes there; only the sharing is off.
             CoreEvent::Scan(ScanEvent::DownloadDirectoryRefused { dir, reason }) => {
-                println!(
+                say!(
                     "{}",
                     rmule_words::app::cli_download_dir_not_shared(&dir, &reason)
                 );
@@ -568,7 +606,7 @@ fn add_core(
         .peer_connections
         .within_descriptors(rmule_os::descriptors::raise_descriptor_limit());
     if let Some(lowered) = lowered {
-        eprintln!("{}", rmule_words::download::ceiling_lowered(lowered));
+        say_err!("{}", rmule_words::download::ceiling_lowered(lowered));
     }
     let config = CoreConfig {
         peer_connections,

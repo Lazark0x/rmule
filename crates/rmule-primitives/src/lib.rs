@@ -49,7 +49,7 @@ pub use datagram_obfuscation::{
 pub use endpoint::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint};
 pub use error::{PrimitiveError, Result};
 pub use file_class::Ed2kFileClass;
-pub use file_name::{SafeFileName, fold_as_a_volume};
+pub use file_name::{SafeFileName, fold_as_a_volume, is_unprintable};
 pub use hash::{
     AichRootHash, ED2K_PART_SIZE, FileHash, FileHashSummary, MAX_ED2K_FILE_SIZE, PartHash,
     PartHashSet, ServerHash, UserHash, ed2k_status_part_count, kad_wire_id, part_count,
