@@ -25,7 +25,7 @@ The operator's one action on a failed download (ADR-0094, "Restart"): `ResumeDow
 _Avoid_: start over (not an action of its own), retry, re-add (the Failed mark's confirm sends the same Restart)
 
 **Quit**:
-`Core::shutdown`, or every `Core` handle dropped: every **Activity**'s stop in dependency order, each within a bound — search, download (aborted, its store row left as the operator last set it, so attach starts a running one again and leaves a paused one paused), serve, Kad, then the port-mapping runtime's release pass, awaited — before the credit flush (ADR-0093). A front end issues no stop of its own before it: `Core::quit` hands back the rest of the event stream, where each step that runs is announced as a `CoreEvent::Quitting` — what the TUI's status bar names.
+`Core::shutdown`, or every `Core` handle dropped: every **Activity**'s stop in dependency order, each within a bound — search, download (aborted, its store row left as the operator last set it, so attach starts a running one again and leaves a paused one paused), serve, Kad, the server session's hang-up, awaited to its socket's close, then the port-mapping runtime's release pass, awaited — before the credit flush (ADR-0093). A front end issues no stop of its own before it: `Core::quit` hands back the rest of the event stream, where each step that runs is announced as a `CoreEvent::Quitting` — what the TUI's status bar names.
 _Avoid_: exit, teardown
 
 **Core Settings**:

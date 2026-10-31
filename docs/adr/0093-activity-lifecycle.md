@@ -66,13 +66,16 @@ Consequences of the ledger, stated as rules:
 ### Quit order
 
 Every directory scan, then the Registry Check, then search, then download, then serve, then
-Kad, then the server-UDP front, then port mapping, then the credit checkpoint. Searches and
-downloads consume the server session and the Kad source channel, so they stop first. Serve
-closes the listener and Kad's retire clears the advert half every later hello would read. Port
-mapping comes last among the network activities because it releases the ports those sockets
-held, as aMule deletes its UPnP mappings only after closing the listen socket
-(`amule.cpp:1407-1423`); no retire depends on another being alive, so the order between serve
-and Kad does not matter. `Core::quit` owns quit, and no front end sends a stop before it. Each
+Kad, then the server-UDP front, then the server session, then port mapping, then the credit
+checkpoint. Searches and downloads consume the server session and the Kad source channel, so
+they stop first. Serve closes the listener and Kad's retire clears the advert half every later
+hello would read. The server session is hung up by Quit itself, its socket closed before the
+step ends, and is not left to the process's exit: the server hears the end before the ports go,
+as aMule calls `serverconnect->Disconnect()` in `ShutDown` before anything is saved
+(`amule.cpp:1412-1414`). Port mapping comes last among the network activities because it
+releases the ports those sockets held, as aMule deletes its UPnP mappings only after closing the
+listen socket and the server connection (`amule.cpp:1407-1423`); no retire depends on another
+being alive, so the order between serve and Kad does not matter. `Core::quit` owns quit, and no front end sends a stop before it. Each
 step with something to stop is announced as `CoreEvent::Quitting { step }` before it runs, so a
 front end shows quit's progress from the quit itself. `Core::shutdown` stops every activity and
 awaits the mapping runtime's release pass. A quit aborts the download task, so its diagnostics
