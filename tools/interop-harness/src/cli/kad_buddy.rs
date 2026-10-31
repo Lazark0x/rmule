@@ -212,6 +212,13 @@ pub(crate) struct KadCoreBuddyArgs {
     /// than `SEARCHTOLERANCE` from it.
     #[arg(long)]
     pub(crate) publish_source: bool,
+    /// Stand the aMule open on both ports and seed its routing zone with rmule
+    /// and the helpers: `--publish-source` then draws a High-ID publish. Needs
+    /// `--helpers 1` or more: a placed member binds no peer TCP, and the
+    /// firewall check needs two dial-backs from the two contacts the `/24`
+    /// bin admits.
+    #[arg(long)]
+    pub(crate) publisher_open: bool,
     /// Placed `rmule-tools kad join-node` contacts added to the swarm so the
     /// firewalled counterparty's extern-port probe has more than one contact to
     /// ping.
@@ -420,6 +427,7 @@ pub(crate) fn kad_core_buddy(args: KadCoreBuddyArgs) -> Result<()> {
         block_udp: args.core.block_udp,
         assume_open: !args.core.live_reachability,
         publish_source: args.publish_source,
+        publisher_open: args.publisher_open,
         mesh_members: args.mesh_members,
         rmule_tools_image: &args.rmule_tools_image,
         kad_crypt: args.kad_crypt,

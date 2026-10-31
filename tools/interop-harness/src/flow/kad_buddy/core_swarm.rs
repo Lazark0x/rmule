@@ -48,6 +48,9 @@ pub(crate) struct CoreSwarmInputs<'a> {
     pub(crate) kad_udp_port_base: u16,
     pub(crate) helper_count: usize,
     pub(crate) mesh_members: usize,
+    /// The counterparty is an open High-ID publisher: see
+    /// [`CoreSwarm::storer_seed`].
+    pub(crate) publisher_open: bool,
     /// The last member's Kad ID when `--publish-source` pins it to the file key.
     pub(crate) near_file_kad_id: Option<[u8; 16]>,
     pub(crate) names: &'a KadMeshNames,
@@ -57,7 +60,10 @@ pub(crate) struct CoreSwarmInputs<'a> {
 /// Flow M's swarm, before any container starts.
 pub(crate) struct CoreSwarm {
     /// The firewalled aMule's routing-zone seed: rmule, then the members.
-    /// Never a helper.
+    /// Never a helper, unless the publisher is open: its TCP verdict needs two
+    /// `OP_KAD_FWTCPCHECK_ACK`s from the contacts its table holds, the one-`/24`
+    /// bin holds two (`RoutingBin.cpp:91`), and a member binds no peer-TCP
+    /// port, so the seed reads rmule, the helpers, then the members.
     pub(crate) storer_seed: Vec<KadContact>,
     /// `(ipv4, udp_port, kad_id_hex)` per placed `join-node` member.
     pub(crate) members: Vec<(String, u16, String)>,
@@ -73,6 +79,9 @@ pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm>
              fill them the first helper it learns takes one, which disqualifies it as a UDP \
              firewall helper (UDPFirewallTester.cpp QueryNextClient)"
         );
+    }
+    if inputs.publisher_open && inputs.helper_count == 0 {
+        bail!("--publisher-open needs --helpers >= 1: a placed member binds no peer TCP");
     }
     // rmule: the advertised TCP port is the SERVE LISTENER's, which is what
     // the buddy dial must land on.
@@ -133,6 +142,18 @@ pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm>
             routing_zone_seed: true,
             seed_contacts: vec![rmule],
         });
+        if inputs.publisher_open {
+            storer_seed.insert(
+                1 + helper_index,
+                KadContact {
+                    kad_id,
+                    ipv4: ip,
+                    udp_port,
+                    tcp_port: KAD_TCP_PORT,
+                    version: KAD_CONTACT_VERSION,
+                },
+            );
+        }
     }
     Ok(CoreSwarm {
         storer_seed,
@@ -158,12 +179,21 @@ mod tests {
     }
 
     fn plan(helper_count: usize, mesh_members: usize) -> Result<CoreSwarm> {
+        plan_for(helper_count, mesh_members, false)
+    }
+
+    fn plan_for(
+        helper_count: usize,
+        mesh_members: usize,
+        publisher_open: bool,
+    ) -> Result<CoreSwarm> {
         let names = names();
         plan_core_swarm(&CoreSwarmInputs {
             rmule_ip: [203, 0, 113, 3],
             kad_udp_port_base: 4670,
             helper_count,
             mesh_members,
+            publisher_open,
             near_file_kad_id: None,
             names: &names,
             helper_incoming: Path::new("/tmp/helper-incoming"),
@@ -186,6 +216,16 @@ mod tests {
             assert_eq!(helper.seed_contacts[0].ipv4, [203, 0, 113, 3]);
             assert_eq!(helper.seed_contacts[0].kad_id, KAD_CORE_BUDDY_RMULE_KAD_ID);
         }
+    }
+
+    /// The bin's two slots go to whoever the seed names first, and only a
+    /// contact with a peer-TCP port can ack an open publisher's firewall check.
+    #[test]
+    fn an_open_publishers_seed_names_two_contacts_that_can_dial_it_first() {
+        let swarm = plan_for(2, 3, true).unwrap();
+        let seeded: Vec<[u8; 4]> = swarm.storer_seed.iter().map(|c| c.ipv4).collect();
+        assert_eq!(seeded[..2], [[203, 0, 113, 3], swarm.helpers[0].ip]);
+        assert_eq!(seeded.len(), 6);
     }
 
     /// With rmule alone in the seed, the first helper the aMule learns takes

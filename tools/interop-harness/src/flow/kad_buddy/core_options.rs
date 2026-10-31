@@ -84,6 +84,9 @@ pub struct KadCoreBuddyOptions<'a> {
     /// none; the two targets are different points in the keyspace and need two
     /// different nodes.
     pub publish_source: bool,
+    /// The aMule stands open on both ports and its routing zone holds rmule
+    /// and the helpers, whose dial-backs settle its TCP verdict open.
+    pub publisher_open: bool,
     /// Placed `rmule-tools kad join-node` members added to the swarm as extra
     /// **routing contacts** for the counterparty.
     ///

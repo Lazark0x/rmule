@@ -218,6 +218,9 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
             crate::flow::kad_buddy::buddy_reask::AMULE_MAX_UPLOAD_KIB
         ));
     }
+    if options.publisher_open {
+        amule_env.extend(["AMULE_KAD_BLOCK_TCP=0", "AMULE_KAD_BLOCK_UDP=0"].map(str::to_owned));
+    }
     amule_env.extend(base.amule_env.iter().cloned());
 
     let capture_opts = KadCaptureOptions {
@@ -263,6 +266,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         kad_udp_port_base: base.kad_udp_port_base,
         helper_count: options.helper_count,
         mesh_members: options.mesh_members,
+        publisher_open: options.publisher_open,
         near_file_kad_id,
         names: &names,
         helper_incoming: &helper_incoming,
