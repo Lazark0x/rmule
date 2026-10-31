@@ -258,7 +258,7 @@ Invariants:
 The responder's expectation lives 120 s where eMuleAI's lives 30 s, because the requester
 re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 
-### Security (the nine corrections, all adopted, and two of rmule's own)
+### Security (the nine corrections, all adopted, and three of rmule's own)
 
 1. **Observed source > public claimed hint > hint as lookup key.** A claim is adopted only when
    the observed source is unusable and the claim is public. Arm 3 resolves nothing in core,
@@ -291,12 +291,37 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
     — eMuleAI answers a buddy callback with a uTP dial (`ListenSocket.cpp:2480-2494`) and a
     Low-ID callback names no address for the dialer. eMuleAI gates the same way, on its
     expected-peer table with an IP-only fallback (`eMuleAI/UtpSocket.cpp:683-1040`). An IPv6 source is never
-    expected: the dialect names IPv4 only and core adopts no IPv6 tunnel. `Opening` slots are
-    capped at 4 per IP and 64 per node, so a flood spoofing one expected address cannot crowd
-    out another, and they age out on the front's one-second tick rather than on every admit.
-11. **A held endpoint keeps its key.** A KEY frame whose hash differs from the live learned
-    one is refused while the endpoint holds a Tunnel. A NAT rebinding moves the endpoint, never
-    the hash at one endpoint, so only a spoof loses anything.
+    expected: the dialect names IPv4 only and core adopts no IPv6 tunnel.
+
+    **One bound answers for what an unidentified source may cost the front: the Unidentified
+    Allowance**, 4 endpoints per IP and 64 per node, held in the Tunnel Registry. An endpoint is
+    unidentified from the first frame that would leave state, an opening packet, a KEY frame or
+    a CAPS frame addressed to us, and that frame passes the same gate: an unexpected IP or a
+    spent allowance drops it before any table, unanswered. The charge is not an `Opening` slot's
+    alone. `librqbit-utp` hands a stream over at the `ST_SYN`, so a slot that turned `Held` at
+    the accept has proved nothing and keeps its charge. A charge ends at the hello of the Tunnel
+    on that endpoint, at `OPENING_TTL` for a slot that raised none, or when the unidentified
+    Tunnel drops, which the 40 s hello wait bounds. The endpoint's key row and CAPS Negotiation
+    row leave with the charge, so those tables hold at most 64 rows an unidentified source made,
+    and the registry owns all three under one lock so no local cap can drift from it. Rows age
+    on the front's one-second tick, never per frame. A CAPS answer is also due once per endpoint
+    per 10 s, the KEY frame's window, because an admitted endpoint is still a claimed address.
+    Our own dial and a Tunnel whose hello read spend no allowance. What the bound leaves open: a
+    standing Dial-Back Claim lets 64 spoofed addresses hold the allowance through one hello
+    wait, so inbound strangers wait that long while identified Tunnels and our own dials are
+    untouched.
+11. **A held endpoint keeps its key.** The learned key of an endpoint that holds a Tunnel does
+    not age: the peer's KEY only follows its opener, so nothing would ever restate it, and the
+    10-minute TTL bounds a mapping nothing is riding. A KEY frame whose hash differs from it is
+    refused. A NAT rebinding moves the endpoint, never the hash at one endpoint, so only a spoof
+    loses anything.
+12. **A Tunnel names nobody until its hello does.** An accepted Tunnel exists at the `ST_SYN`,
+    so an address, however lone its pending peer, attributes nothing: a forged opener or a CGNAT
+    neighbour must not end a traversal. The attempt, its dials, its holds and the expectation
+    stand until the hello, whose hash and endpoint the serve triage reports to the front for
+    every accepted Tunnel, whichever road then takes it. That one report ends the charge and the
+    attempt of the peer the hello named, so a dial-back lands as before. A Tunnel that closes
+    unidentified leaves the expectation and the holds as it found them.
 
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint
