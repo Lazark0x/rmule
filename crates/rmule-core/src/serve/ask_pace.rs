@@ -2,9 +2,9 @@
 //! one owner of how fast each client asks a serving node for something that
 //! costs it. An ask under [`MIN_ASK_GAP`] after the last adds three, a later
 //! one takes one off, and a client reaching [`BAN_SCORE`] is an offender
-//! (`UploadClient.cpp:656-683`). Explicit time and bounded memory: an entry
-//! unheard for [`FORGET_AFTER`] goes, as a client object ages out of stock's
-//! list, and a full table lets its oldest go first.
+//! (`UploadClient.cpp:656-683`). Explicit time and bounded memory: a score
+//! unheard for [`FORGET_AFTER`] is gone at its next ask, as a client object
+//! ages out of stock's list, and a full table lets its oldest go first.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -50,7 +50,8 @@ pub(in crate::serve) struct AskPace {
 impl AskPace {
     /// One ask of `key`'s `user_hash` at `now`; `true` when it leaves the
     /// client at the score that bans. A client's first ask starts its clock
-    /// and scores nothing.
+    /// and scores nothing, and one unheard for [`FORGET_AFTER`] asks its
+    /// first again.
     pub(in crate::serve) fn ask(
         &mut self,
         now: Instant,
@@ -58,6 +59,13 @@ impl AskPace {
         user_hash: UserHash,
     ) -> bool {
         let asker = (key, user_hash);
+        let aged = self
+            .askers
+            .get(&asker)
+            .is_some_and(|pace| now.saturating_duration_since(pace.last_ask) >= FORGET_AFTER);
+        if aged {
+            self.askers.remove(&asker);
+        }
         if !self.askers.contains_key(&asker) {
             self.make_room(now);
         }
@@ -158,6 +166,21 @@ mod tests {
             for n in 0..4 {
                 assert!(!pace.ask(t + Duration::from_secs(n), scope(1), client(byte)));
             }
+        }
+    }
+
+    /// A client unheard past the age starts over at its next ask, however
+    /// empty the table: its object went, and the score with it.
+    #[test]
+    fn a_score_ages_out_in_a_table_with_room() {
+        let mut pace = AskPace::default();
+        let t = Instant::now();
+        for n in 0..4 {
+            pace.ask(t + Duration::from_secs(n), scope(1), client(1));
+        }
+        let back = t + Duration::from_secs(3) + FORGET_AFTER;
+        for n in 0..4 {
+            assert!(!pace.ask(back + Duration::from_secs(n), scope(1), client(1)));
         }
     }
 
