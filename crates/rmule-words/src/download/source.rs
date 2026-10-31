@@ -87,6 +87,9 @@ pub const fn retirement_words(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::LinkEnded => {
             "the connection it was waiting on closed; we ask it again later"
         }
+        PeerRetirementReason::OnPeersClock => {
+            "we asked it too recently; we ask again when it counts as polite"
+        }
     }
 }
 
@@ -209,6 +212,7 @@ const fn retired_cell(reason: PeerRetirementReason) -> &'static str {
         PeerRetirementReason::FileNotFound => "no file",
         PeerRetirementReason::Queued => "on its queue",
         PeerRetirementReason::LinkEnded => "asks later",
+        PeerRetirementReason::OnPeersClock => "asks later",
     }
 }
 

@@ -43,8 +43,14 @@ fn only_an_ask_that_went_out_holds_the_peer_off() {
     let _ = via_exchange(&mut state, peer(1), Vec::new());
     let next = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
     assert_eq!(spawn_wants(&next, peer(2)), Some(true));
-    let _ = take(&mut state, Channel::Server, plain_sightings(&[peer(1)]));
-    let again = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
+    let spaced = t0() + MIN_REQUEST_TIME;
+    let _ = take_at(
+        &mut state,
+        spaced,
+        Channel::Server,
+        plain_sightings(&[peer(1)]),
+    );
+    let again = state.on_worker_event(spaced, peer(2), PeerWorkerEvent::Disconnected);
     assert_eq!(
         spawn_wants(&again, peer(1)),
         Some(true),
@@ -53,17 +59,19 @@ fn only_an_ask_that_went_out_holds_the_peer_off() {
 
     // Asked and answered: the next connection to it carries no ask, while a
     // stranger's does.
-    let _ = probed(&mut state, t0(), peer(1));
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SourcesAsked);
+    let _ = probed(&mut state, spaced, peer(1));
+    let _ = state.on_worker_event(spaced, peer(1), PeerWorkerEvent::SourcesAsked);
     let _ = via_exchange(&mut state, peer(1), Vec::new());
-    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
-    let held = take(
+    let _ = state.on_worker_event(spaced, peer(1), PeerWorkerEvent::Disconnected);
+    let later = spaced + MIN_REQUEST_TIME;
+    let held = take_at(
         &mut state,
+        later,
         Channel::Server,
         plain_sightings(&[peer(1), peer(3)]),
     );
     assert_eq!(spawn_wants(&held.decisions, peer(1)), Some(false));
-    let next = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    let next = state.on_worker_event(later, peer(1), PeerWorkerEvent::Disconnected);
     assert_eq!(
         spawn_wants(&next, peer(3)),
         Some(true),

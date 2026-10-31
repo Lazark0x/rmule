@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::download::queue_standings::{QueueStandings, SharedQueueStandings, StandingSeat};
+use crate::download::queue_standings::{
+    MIN_REQUEST_TIME, QueueStandings, SharedQueueStandings, StandingSeat,
+};
 use crate::download::source_book::{NO_NEEDED_PARTS_PURGE_SPACING, SOURCE_PURGE_AT};
 use crate::download::state::sightings::SOURCE_LIMIT;
 use crate::service::SourcePurgeReason;
@@ -25,7 +27,11 @@ fn seated(standings: &SharedQueueStandings, id: u64, pool: &[PeerEndpoint]) -> D
         CALLBACK_TIMEOUT,
         crate::download::connection_budget::BudgetSeat::ceiling(1),
     )
-    .with_standings(StandingSeat::new(Arc::clone(standings), download));
+    .with_standings(StandingSeat::new(
+        Arc::clone(standings),
+        download,
+        FileHash::from_bytes([id as u8; 16]),
+    ));
     take(&mut state, Channel::Server, plain_sightings(pool));
     state.hold_standings();
     state
@@ -287,10 +293,11 @@ fn asks_for_callback(decisions: &[Decision]) -> bool {
     })
 }
 
-/// The giver's place ended inside the peer's clock: a fill may ride a link
-/// that stands, as aMule's next file asks over the socket a transfer ended on
-/// (`UploadQueue.cpp:486-493`), and may not dial. The worker finds no link and
-/// is handed back, and the record asks a period after the peer's last ask.
+/// The giver's place ended inside the peer's reask clock: past
+/// `MIN_REQUEST_TIME` a fill may ride a link that stands, as aMule's next file
+/// asks over the socket a transfer ended on (`UploadQueue.cpp:486-493`), and
+/// may not dial. The worker finds no link, and the record asks a period after
+/// the peer's last ask. No link ended, and the Run Log says so.
 #[test]
 fn a_lane_record_after_the_givers_place_ended_rides_a_link_or_waits_its_clock() {
     let standings = QueueStandings::shared();
@@ -301,7 +308,8 @@ fn a_lane_record_after_the_givers_place_ended_rides_a_link_or_waits_its_clock() 
     let mut taker = seated(&standings, 2, &[peer(1)]);
     drop(giver);
 
-    let started = taker.start(t0() + Duration::from_secs(60));
+    let past_the_score = t0() + MIN_REQUEST_TIME;
+    let started = taker.start(past_the_score);
     assert!(
         started.iter().any(|decision| matches!(
             decision,
@@ -309,12 +317,18 @@ fn a_lane_record_after_the_givers_place_ended_rides_a_link_or_waits_its_clock() 
         )),
         "{started:?}"
     );
-    let handed_back = taker.on_worker_event(
-        t0() + Duration::from_secs(60),
-        peer(1),
-        PeerWorkerEvent::HandedBack,
+    let no_link = taker.on_worker_event(past_the_score, peer(1), PeerWorkerEvent::NoLinkToRide);
+    assert!(spawned(&no_link).is_empty(), "{no_link:?}");
+    assert!(
+        no_link.iter().any(|decision| matches!(
+            decision,
+            Decision::Emit(DownloadEvent::PeerRetired {
+                reason: PeerRetirementReason::OnPeersClock,
+                ..
+            })
+        )),
+        "{no_link:?}"
     );
-    assert!(spawned(&handed_back).is_empty(), "{handed_back:?}");
     taker.hold_standings();
 
     assert_eq!(taker.next_wake(), Some(t0() + FILE_REASK_TIME));

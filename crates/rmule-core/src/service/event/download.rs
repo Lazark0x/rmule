@@ -250,6 +250,15 @@ pub enum DownloadEvent {
         /// the reask cycle refreshes it.
         rank: Option<u16>,
     },
+    /// A source a past run of this download found holding no part it lacks is
+    /// spared (ADR-0107 invariant 15): it stands as such, and the peer is
+    /// asked nothing until twice the reask period past that ask.
+    SourceSpared {
+        /// The download holding the source.
+        download_id: DownloadId,
+        /// The source it spared.
+        peer: rmule_primitives::PeerEndpoint,
+    },
     /// A source this download would have dialed already queues another of our
     /// downloads: it waits on that download's place in the peer's queue — the
     /// peer's **Queue Standing** (ADR-0107) — and asks the peer nothing until

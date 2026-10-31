@@ -609,7 +609,7 @@ impl DownloadState {
             free_slots: BTreeSet::new(),
             budget,
             budget_wake: None,
-            standings: StandingSeat::alone(download_id),
+            standings: StandingSeat::alone(download_id, file_hash),
             callback_slots: HashMap::new(),
             callback_capability: posture.callback_capability,
             dial: posture.dial,

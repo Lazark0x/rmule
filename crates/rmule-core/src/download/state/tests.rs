@@ -31,6 +31,7 @@ use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Informant, Ipv4Endpoint, Source
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 
 use crate::adapters::PeerWorkerEvent;
+use crate::download::queue_standings::MIN_REQUEST_TIME;
 use crate::download::source_book::{CLIENT_LIST_CLEANUP, FILE_REASK_TIME};
 use crate::download::state::candidates::TRAVERSAL_SLOT_BOUND;
 use crate::hello_facts::HelloFacts;
@@ -217,13 +218,23 @@ fn take(
     channel: Channel,
     sightings: impl IntoIterator<Item = SourceSighting>,
 ) -> Taken {
+    take_at(state, t0(), channel, sightings)
+}
+
+/// [`take`] at `now`.
+fn take_at(
+    state: &mut DownloadState,
+    now: Instant,
+    channel: Channel,
+    sightings: impl IntoIterator<Item = SourceSighting>,
+) -> Taken {
     let filter = crate::ip_filter::IpFilter::default();
     let gate = Gate {
         filter: &filter,
         dial: state.dial,
         own: Default::default(),
     };
-    state.on_sightings(t0(), channel, sightings, &gate)
+    state.on_sightings(now, channel, sightings, &gate)
 }
 
 fn via_kad(state: &mut DownloadState, rows: Vec<SourceSighting>) -> Vec<Decision> {

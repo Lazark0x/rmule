@@ -163,6 +163,7 @@ impl DownloadState {
                 self.release(now, peer, PeerRetirementReason::PeerDisconnected, &mut out);
             }
             PeerWorkerEvent::HandedBack => self.handed_back(now, peer, &mut out),
+            PeerWorkerEvent::NoLinkToRide => self.on_peers_clock(now, peer, &mut out),
             PeerWorkerEvent::CryptIncompatible => {
                 // The dial was refused before any socket. aMule
                 // deletes the client outright (`CheckContactPreconditions`,
@@ -256,7 +257,7 @@ impl DownloadState {
             return;
         }
         if self.scheduler.lacks_any_of(parts) {
-            self.ask_on_probe(peer, out);
+            self.ask_on_probe(now, peer, out);
         } else {
             self.retire(now, peer, PeerRetirementReason::NoNeededParts, out);
         }

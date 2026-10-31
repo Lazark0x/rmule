@@ -412,4 +412,8 @@ pub enum PeerRetirementReason {
     /// the reask, as aMule keeps the client for its other file. Alive, so
     /// not spent.
     LinkEnded,
+    /// This worker may ask the peer nothing now: the peer's last ask is too
+    /// recent, or no link stood to ride (ADR-0107 invariant 14). The source
+    /// waits on that clock. Alive, so not spent.
+    OnPeersClock,
 }

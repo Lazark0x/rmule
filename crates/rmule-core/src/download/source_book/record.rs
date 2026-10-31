@@ -164,6 +164,9 @@ pub(super) struct Record {
     /// Standing** (ADR-0107). It outlives the standing, so a holder out on its
     /// TCP full ask still outranks the downloads waiting on it.
     pub(super) last_ask: Option<Instant>,
+    /// Whether its TCP full ask is out after a ping of its own went
+    /// unanswered (ADR-0107 invariant 14).
+    pub(super) after_ping: bool,
     /// The endpoint it was restored at from a **Source Seed** (ADR-0109).
     pub(super) seed: Option<PeerEndpoint>,
     /// What the download's source asks stamped on this peer (ADR-0108).
@@ -183,6 +186,7 @@ impl Record {
             candidate: None,
             standing: None,
             last_ask: None,
+            after_ping: false,
             seed: None,
             asks: AskFacts::default(),
             advertised: None,

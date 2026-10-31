@@ -289,6 +289,7 @@ where
     .with_standings(crate::download::queue_standings::StandingSeat::new(
         std::sync::Arc::clone(&runner.rt.queue_standings),
         download_id,
+        file.file_hash,
     ));
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.

@@ -45,7 +45,7 @@ use super::SourceBook;
 use super::asks::AskName;
 use super::purge::PurgeKind;
 use super::record::{Lane, Live, RecordId, Stage};
-use crate::download::queue_standings::{Role, StandingSeat};
+use crate::download::queue_standings::{MIN_REQUEST_TIME, Role, StandingSeat};
 
 /// aMule `FILEREASKTIME` (`Constants.h`): 1,300,000 ms — the source-reask
 /// period, ≈ 21.7 minutes, and the spent endpoints' period (ADR-0090).
@@ -102,6 +102,13 @@ pub(crate) const fn reask_period(reachable: bool) -> Duration {
     } else {
         LOW_ID_REASK_TIME
     }
+}
+
+/// The period of a source holding no part we need: twice the base, whatever
+/// our reach, as it asks for parts and not for a slot (stock 2.3.3
+/// `PartFile.cpp:1439-1440`).
+pub(crate) fn no_needed_parts_period() -> Duration {
+    FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
 }
 
 /// What a worker's identity says a queue standing it earns carries past it
@@ -175,14 +182,22 @@ pub(super) struct Standing {
     /// Whether its Source Handover is reported: the giver's record has
     /// waited on another download since (ADR-0090).
     handed_over: bool,
+    /// Past `last_reask`, when a **spaced** record's first ask falls due: it
+    /// has no place at the peer (ADR-0107 invariant 16).
+    first_ask_after: Option<Duration>,
 }
 
 impl Standing {
     /// Whether it is a place a source-exchange answer may name: not
-    /// queue-full (`IsRemoteQueueFull`), and not holding nothing we need
-    /// (`DS_NONEEDEDPARTS` is no queue state).
+    /// queue-full (`IsRemoteQueueFull`), not holding nothing we need
+    /// (`DS_NONEEDEDPARTS` is no queue state), and a place at all.
     pub(super) const fn names_a_place(&self) -> bool {
-        !self.queue_full && !self.no_needed_parts
+        !self.queue_full && !self.no_needed_parts && self.first_ask_after.is_none()
+    }
+
+    /// Whether it stands at the peer: a spaced record holds no place there.
+    pub(super) const fn queued(&self) -> bool {
+        self.first_ask_after.is_none()
     }
 
     /// The peer-UDP crypt target the identity it queued under stated.
@@ -222,12 +237,22 @@ impl Standing {
             no_needed_parts: false,
             role: Role::Waits { asked_at },
             handed_over: false,
+            first_ask_after: None,
         }
     }
 
-    /// The same standing reading `role`.
+    /// The same standing reading `role`: one returning to a place stands for
+    /// what that place held, and a spaced one for no place at all.
     pub(super) const fn in_role(mut self, role: Role) -> Self {
         self.role = role;
+        match role {
+            Role::Returns {
+                no_needed_parts, ..
+            } => self.no_needed_parts = no_needed_parts,
+            Role::Spaced { asked_at: Some(_) } => self.first_ask_after = Some(MIN_REQUEST_TIME),
+            Role::Spaced { asked_at: None } => self.first_ask_after = Some(Duration::ZERO),
+            _ => {}
+        }
         self
     }
 
@@ -260,10 +285,16 @@ impl Standing {
         self.role = role;
         match role {
             Role::Holds => true,
-            Role::Inherits { asked_at } | Role::Takes { asked_at } => {
+            Role::Inherits { asked_at }
+            | Role::Takes { asked_at }
+            | Role::Returns { asked_at, .. }
+            | Role::Spaced {
+                asked_at: Some(asked_at),
+            } => {
                 self.last_reask = self.last_reask.max(asked_at);
                 true
             }
+            Role::Spaced { asked_at: None } => true,
             Role::Waits { asked_at } => {
                 if let Some(asked_at) = asked_at {
                     self.last_reask = self.last_reask.max(asked_at);
@@ -290,10 +321,10 @@ impl Standing {
     /// twice the base for a no-needed-parts source, which asks for parts, not
     /// a slot (ADR-0116).
     fn period(&self, reachable: bool) -> Duration {
-        if self.no_needed_parts {
-            FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
-        } else {
-            reask_period(reachable)
+        match self.first_ask_after {
+            Some(first_ask) => first_ask,
+            None if self.no_needed_parts => no_needed_parts_period(),
+            None => reask_period(reachable),
         }
     }
 
@@ -459,6 +490,7 @@ impl SourceBook {
         let held = record.standing;
         let no_needed_parts = held.is_some_and(|standing| standing.no_needed_parts);
         record.last_ask = Some(now);
+        record.after_ping = false;
         let (contact, crypt) = match stated {
             Some(stated) => (stated.contact, Some(stated.crypt)),
             None => (None, None),
@@ -474,6 +506,7 @@ impl SourceBook {
             no_needed_parts,
             role: Role::Holds,
             handed_over: false,
+            first_ask_after: None,
         });
     }
 
@@ -521,8 +554,9 @@ impl SourceBook {
     /// neither our reachability nor a source ask holding that road
     /// (`DownloadClient.cpp:1297-1318`). A ping the moving gates held is
     /// looked at again [`REASK_RECHECK`] later. Only the download holding the
-    /// peer's Queue Standing re-asks it, each ping and TCP full ask stamped on
-    /// the peer in `standings` (ADR-0107 invariants 12-14).
+    /// peer's Queue Standing re-asks it, each ping stamped on the peer in
+    /// `standings`, and each TCP full ask when its slot ask leaves
+    /// (ADR-0107 invariants 12-14).
     pub(crate) fn sweep(
         &mut self,
         now: Instant,
@@ -565,7 +599,6 @@ impl SourceBook {
             let elapsed = now.saturating_duration_since(standing.last_reask);
             if elapsed >= period {
                 self.full_ask(id, at, now);
-                standings.stamp(&names, now);
                 due.push(at.map_or(Reask::RoadDue, |peer| Reask::FullAsk { peer }));
                 continue;
             }
@@ -591,7 +624,7 @@ impl SourceBook {
                 (true, _) if !sx_due => {
                     standing.udp_pending = true;
                     standing.recheck_at = None;
-                    standings.stamp(&names, now);
+                    standings.pinged(&names, now);
                     due.push(Reask::Ping {
                         peer,
                         contact,
@@ -601,7 +634,7 @@ impl SourceBook {
                 (false, Some(buddy)) => {
                     standing.udp_pending = true;
                     standing.recheck_at = None;
-                    standings.stamp(&names, now);
+                    standings.pinged(&names, now);
                     due.push(Reask::ThroughBuddy {
                         peer,
                         contact,
@@ -761,6 +794,7 @@ impl SourceBook {
             return;
         };
         let stated = record.standing.and_then(|standing| standing.stated_crypt());
+        record.after_ping = record.standing.is_some_and(|standing| standing.udp_pending);
         record.standing = None;
         record.last_ask = Some(now);
         if let (Some(peer), Some(stated)) = (peer, stated) {

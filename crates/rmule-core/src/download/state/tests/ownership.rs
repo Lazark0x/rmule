@@ -135,7 +135,12 @@ fn a_peer_that_served_bad_data_is_not_redialled_and_a_clean_one_is() {
     let _ = probed(&mut state, t0(), clean);
     let _ = state.on_worker_event(t0(), clean, PeerWorkerEvent::Disconnected);
 
-    assert_eq!(sight_hashed(&mut state, &both), vec![clean]);
+    assert!(sight_hashed(&mut state, &both).is_empty());
+    assert_eq!(
+        spawned(&state.on_tick(t0() + MIN_REQUEST_TIME)),
+        vec![clean],
+        "it is asked once the peer's clock lets it"
+    );
 }
 
 /// A distrusted peer reached through a record that named no hash — here at an

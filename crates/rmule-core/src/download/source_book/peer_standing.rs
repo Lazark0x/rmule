@@ -16,8 +16,10 @@ use crate::download::queue_standings::{Place, Role};
 /// The peer's last ask, as `role` knows it.
 const fn asked_at(role: Role) -> Option<Instant> {
     match role {
-        Role::Waits { asked_at } => asked_at,
-        Role::Takes { asked_at } | Role::Inherits { asked_at } => Some(asked_at),
+        Role::Takes { asked_at } | Role::Inherits { asked_at } | Role::Returns { asked_at, .. } => {
+            Some(asked_at)
+        }
+        Role::Waits { asked_at } | Role::Spaced { asked_at } => asked_at,
         Role::Holds => None,
     }
 }
@@ -37,6 +39,7 @@ impl SourceBook {
                 .standing
                 .is_none_or(|standing| standing.needs_parts()),
             pooled,
+            after_ping: record.after_ping,
         })
     }
 
@@ -69,6 +72,7 @@ impl SourceBook {
             asked: record.last_ask,
             needs_parts: true,
             pooled: true,
+            after_ping: record.after_ping,
         }
     }
 
@@ -113,20 +117,15 @@ impl SourceBook {
         true
     }
 
-    /// The worker at `endpoint` waited on a link that ended before its turn
-    /// (ADR-0107 invariant 9): its record stands on the peer's standing as a
-    /// fill's parked record does — no rank, no contact, its clock at
-    /// `asked_at`, the peer's last ask, or `now` — unless it holds one.
-    pub(crate) fn handed_back(
-        &mut self,
-        endpoint: PeerEndpoint,
-        asked_at: Option<Instant>,
-        now: Instant,
-    ) {
+    /// The worker at `endpoint` may not ask: the link it waited on ended before
+    /// its turn (ADR-0107 invariant 9), none stands to ride, or the peer's
+    /// clock runs (invariant 14). Its record stands aside as a fill's parked
+    /// record does, in `role`, unless it holds a standing.
+    pub(crate) fn stand_aside(&mut self, endpoint: PeerEndpoint, role: Role, now: Instant) {
         if let Some(record) = self.live_record_mut(endpoint)
             && record.standing.is_none()
         {
-            record.standing = Some(Standing::waiting(asked_at, now));
+            record.standing = Some(Standing::waiting(asked_at(role), now).in_role(role));
         }
     }
 

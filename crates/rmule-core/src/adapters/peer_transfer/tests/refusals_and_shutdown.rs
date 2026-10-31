@@ -460,7 +460,7 @@ async fn a_worker_held_to_a_link_with_none_standing_dials_nothing() {
         timeout(Duration::from_secs(5), worker.next_event())
             .await
             .expect("the worker says so at once"),
-        Some(PeerWorkerEvent::HandedBack)
+        Some(PeerWorkerEvent::NoLinkToRide)
     );
     assert!(
         timeout(Duration::from_millis(200), source.accept())

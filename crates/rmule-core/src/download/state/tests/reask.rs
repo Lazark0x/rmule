@@ -14,6 +14,7 @@ use crate::download::source_book::{
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
+mod ask_clock;
 mod buddy;
 mod dial_back;
 mod exchange_pool;
@@ -488,9 +489,18 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
             .is_empty(),
         "one turn later it is still spent"
     );
-    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
+    let later = t0() + FILE_REASK_TIME * 2;
+    let _ = state.on_tick(later);
     assert_eq!(
-        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions),
+        spawned(
+            &take_at(
+                &mut state,
+                later,
+                Channel::Server,
+                plain_sightings(&[peer(1)])
+            )
+            .decisions
+        ),
         vec![peer(1)],
         "two turns later it is a source again"
     );

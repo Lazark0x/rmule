@@ -95,8 +95,16 @@ impl DownloadState {
     /// invariant 3), since a `0x51` unanswered on a link the uploader ranks
     /// costs that link at aMule's 40 s silent-link close.
     /// A worker opened on a grant its link carries takes it instead, asking
-    /// nothing the uploader would score (ADR-0107).
-    pub(super) fn ask_on_probe(&mut self, peer: PeerEndpoint, out: &mut Vec<Decision>) {
+    /// nothing the uploader would score (ADR-0107). Any other ask reads the
+    /// peer's clock, a rider's and a first ask's alike: inside it nothing
+    /// leaves and the worker goes (invariant 14), and an ask that does leave
+    /// stamps the peer there and then.
+    pub(super) fn ask_on_probe(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
         if self.slot_asks.by_worker.contains_key(&peer) {
             return;
         }
@@ -106,9 +114,20 @@ impl DownloadState {
                 peer,
                 command: PeerWorkerCommand::TakeGrant,
             });
-        } else {
-            self.ask_slot(peer, out);
+            return;
         }
+        let place = self.sources.dial_place(peer);
+        if place
+            .as_ref()
+            .is_some_and(|place| self.standings.clock_holds(place, now))
+        {
+            self.on_peers_clock(now, peer, out);
+            return;
+        }
+        if let Some(place) = place {
+            self.standings.asked(&place.names, now);
+        }
+        self.ask_slot(peer, out);
     }
 
     /// `peer`'s worker opened on a grant its uploader gave unasked: until it

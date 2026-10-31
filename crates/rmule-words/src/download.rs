@@ -247,6 +247,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             "peer {} already queues us for another download; this one waits on that place and asks nothing",
             address(*peer)
         ),
+        D::SourceSpared { peer, .. } => format!(
+            "peer {} was asked too recently; this download keeps its spacing and asks when that has passed",
+            address(*peer)
+        ),
         D::SourceRoadHeld { low_id, server, .. } => format!(
             "{} waits on its queue place; no callback goes out until its next ask falls due",
             low_id_source_words(*low_id, *server)

@@ -54,7 +54,9 @@ pub(crate) use self::road::Deadline;
 #[cfg(test)]
 pub(crate) use self::run_tier::CLIENT_LIST_CLEANUP;
 use self::run_tier::RunTier;
-pub(crate) use self::standing::{Answer, Reask, ReaskGates, UDP_REASK_LEAD, reask_period};
+pub(crate) use self::standing::{
+    Answer, Reask, ReaskGates, UDP_REASK_LEAD, no_needed_parts_period, reask_period,
+};
 #[cfg(test)]
 pub(crate) use self::standing::{
     FILE_REASK_TIME, LOW_ID_REASK_TIME, NO_NEEDED_PARTS_MULTIPLIER, REASK_RECHECK,
@@ -359,8 +361,9 @@ impl SourceBook {
     /// The book's sources by **Source Activity** (ADR-0116): every dial,
     /// callback in flight and worker `granted` does not name is asking, but a
     /// worker ranked without a grant, holding its link, is queued, as every
-    /// RemoteQueued record is, those holding no part we lack counted again
-    /// apart; every worker `granted` names is transferring.
+    /// RemoteQueued record is but a spaced one, which holds no place and is
+    /// counted asking; those holding no part we lack are counted again apart;
+    /// every worker `granted` names is transferring.
     pub(crate) fn activity(
         &self,
         granted: impl Fn(PeerEndpoint) -> bool,
@@ -368,6 +371,11 @@ impl SourceBook {
         let mut activity = crate::diagnostics::SourceActivity::default();
         for record in self.records.values() {
             let tally = match &record.stage {
+                Stage::RemoteQueued(_) | Stage::RoadHeld
+                    if record.standing.is_some_and(|standing| !standing.queued()) =>
+                {
+                    &mut activity.asking
+                }
                 Stage::RemoteQueued(_) | Stage::RoadHeld => &mut activity.queued,
                 Stage::Worker(live, _) if granted(live.endpoint) => &mut activity.transferring,
                 Stage::Worker(..) if record.standing.is_some_and(|standing| standing.ranked()) => {

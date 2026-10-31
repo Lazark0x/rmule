@@ -5,6 +5,8 @@ use std::net::Ipv4Addr;
 
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
 
+use crate::download::source_book::FILE_REASK_TIME;
+
 use super::*;
 
 fn peer() -> AskName {
@@ -20,6 +22,7 @@ fn place(asked: Option<Instant>, needs_parts: bool) -> Place {
         asked,
         needs_parts,
         pooled: false,
+        after_ping: false,
     }
 }
 
@@ -32,7 +35,83 @@ fn pooled() -> Place {
 }
 
 fn seat(standings: &SharedQueueStandings, id: u64) -> StandingSeat {
-    StandingSeat::new(Arc::clone(standings), DownloadId::from_u64(id))
+    StandingSeat::new(
+        Arc::clone(standings),
+        DownloadId::from_u64(id),
+        FileHash::from_bytes([id as u8; 16]),
+    )
+}
+
+/// A left place goes the moment the file's next run leaves another: a peer
+/// that came to hold parts is not held back by what it once lacked.
+#[test]
+fn a_later_run_replaces_what_the_file_left() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    run.publish(vec![place(Some(t0), false)]);
+    drop(run);
+    let run = seat(&standings, 1);
+    assert_eq!(
+        run.role(&pooled()),
+        Role::Returns {
+            asked_at: t0,
+            no_needed_parts: true
+        }
+    );
+    let later = t0 + Duration::from_secs(1);
+    run.publish(vec![place(Some(later), true)]);
+    drop(run);
+    assert_eq!(
+        seat(&standings, 1).role(&pooled()),
+        Role::Returns {
+            asked_at: later,
+            no_needed_parts: false
+        }
+    );
+}
+
+/// A file left under one id returns under a new one: a re-add is the same
+/// file (ADR-0107 invariant 15).
+#[test]
+fn a_re_add_under_a_new_id_returns_to_the_files_place() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let file = FileHash::from_bytes([7; 16]);
+    let seat_of = |id| StandingSeat::new(Arc::clone(&standings), DownloadId::from_u64(id), file);
+    let run = seat_of(1);
+    run.publish(vec![place(Some(t0), true)]);
+    drop(run);
+    assert_eq!(
+        seat_of(2).role(&pooled()),
+        Role::Returns {
+            asked_at: t0,
+            no_needed_parts: false
+        }
+    );
+}
+
+/// A place with no ask of its own is no place left: a run's waiter or its
+/// slot holder, whose place went at the grant, leaves nothing.
+#[test]
+fn a_run_with_no_asked_place_leaves_only_the_clock() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    run.publish(vec![place(Some(t0), true)]);
+    run.publish(Vec::new());
+    drop(run);
+    let resumed = seat(&standings, 1);
+    assert_eq!(resumed.role(&pooled()), Role::Holds);
+    let inside = t0 + MIN_REQUEST_TIME - Duration::from_secs(1);
+    assert_eq!(
+        resumed.fill_gate(&pooled(), inside, FILE_REASK_TIME),
+        FillGate::Parks(Role::Spaced { asked_at: Some(t0) })
+    );
+    assert_eq!(
+        resumed.fill_gate(&pooled(), t0 + MIN_REQUEST_TIME, FILE_REASK_TIME),
+        FillGate::Open
+    );
 }
 
 /// The peer's entry names the file the last slot ask asked for, so that
@@ -103,7 +182,7 @@ fn the_peer_clock_outlives_the_holder_that_stamped_it() {
     let waiter = seat(&standings, 2);
     holder.publish(vec![place(Some(t0), true)]);
     waiter.publish(vec![place(None, true)]);
-    holder.stamp(&[peer()], full_ask);
+    holder.asked(&[peer()], full_ask);
     drop(holder);
     assert_eq!(
         waiter.role(&place(None, true)),

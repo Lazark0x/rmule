@@ -128,7 +128,7 @@ impl DownloadRoad {
                 Some(onto) => onto,
                 None if on_a_link => {
                     let Some(link) = deps.peer_links.find(&names) else {
-                        let _ = event_tx.send(PeerWorkerEvent::HandedBack).await;
+                        let _ = event_tx.send(PeerWorkerEvent::NoLinkToRide).await;
                         return;
                     };
                     Onto { link, behind: None }

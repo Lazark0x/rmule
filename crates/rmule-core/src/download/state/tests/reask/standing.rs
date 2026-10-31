@@ -8,7 +8,9 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::download::queue_standings::{QueueStandings, SharedQueueStandings, StandingSeat};
+use crate::download::queue_standings::{
+    MIN_REQUEST_TIME, QueueStandings, SharedQueueStandings, StandingSeat,
+};
 
 /// Download `id` over `pool`, sighted from a server and seated in `standings`,
 /// not yet started.
@@ -27,7 +29,11 @@ fn seated(
         CALLBACK_TIMEOUT,
         crate::download::connection_budget::BudgetSeat::ceiling(pool.len()),
     )
-    .with_standings(StandingSeat::new(Arc::clone(standings), download));
+    .with_standings(StandingSeat::new(
+        Arc::clone(standings),
+        download,
+        FileHash::from_bytes([id as u8; 16]),
+    ));
     take(&mut state, Channel::Server, plain_sightings(pool));
     state
 }
@@ -91,7 +97,7 @@ fn two_standing(posture: SourcingPosture) -> [Vec<(Instant, Road)>; 2] {
     let _ = second.start(t0());
     queue_and_hang_up_at(&mut first, peer(1), udp, 5, t0());
     first.hold_standings();
-    let later = t0() + Duration::from_secs(10);
+    let later = t0() + MIN_REQUEST_TIME;
     queue_and_hang_up_at(&mut second, peer(1), udp, 7, later);
     second.hold_standings();
     let until = later + FILE_REASK_TIME * 3 + Duration::from_secs(60);
@@ -273,10 +279,10 @@ fn a_waiter_handed_back_by_a_failed_link_stands_on_the_riders_standing() {
     let standings = QueueStandings::shared();
     let mut rider = seated(&standings, 1, &[peer(1)], live_posture());
     let _ = rider.start(t0());
-    let _ = connect(&mut rider, t0(), peer(1));
-    rider.hold_standings();
     let mut waiter = seated(&standings, 2, &[peer(1)], live_posture());
     assert_eq!(spawned(&waiter.start(t0())), [peer(1)]);
+    let _ = connect(&mut rider, t0(), peer(1));
+    rider.hold_standings();
     let _ = waiter.on_worker_event(
         t0(),
         peer(1),
@@ -318,5 +324,92 @@ fn a_waiter_handed_back_by_a_failed_link_stands_on_the_riders_standing() {
     assert!(
         !pinged(&asked).is_empty() || !asked_by_tcp(&asked).is_empty(),
         "the rider's standing asks: {asked:?}"
+    );
+}
+
+/// `peer(1)`'s worker connects at `at` and states it holds nothing the file
+/// lacks; the step's places are published, as the runner does.
+fn holding_nothing(state: &mut DownloadState, at: Instant) {
+    let _ = state.on_worker_event(at, peer(1), PeerWorkerEvent::Connected);
+    let identity = reaskable(SOURCE).identity();
+    let _ = state.on_worker_event(at, peer(1), PeerWorkerEvent::Identity(identity));
+    let nothing = PeerWorkerEvent::PartsAdvertised {
+        parts: Some(PartBitmap::decode(1, &[0]).expect("one part")),
+        complete: false,
+    };
+    let _ = state.on_worker_event(at, peer(1), nothing);
+    state.hold_standings();
+}
+
+/// A Resume is a new run of the same download: the source its last run found
+/// holding nothing the file lacks is not dialed again inside twice the
+/// period of that ask (stock 2.3.3 `PartFile.cpp:1439-1440`; `PauseFile`
+/// resets only a transferring source's clock, `PartFile.cpp:2429-2443`), and
+/// it is at twice the period, by TCP.
+#[test]
+fn a_resume_keeps_the_spacing_of_a_source_holding_nothing_we_lack() {
+    let standings = QueueStandings::shared();
+    let asked = t0();
+    let mut paused = seated(&standings, 1, &[peer(1)], live_posture());
+    let _ = paused.start(asked);
+    holding_nothing(&mut paused, asked);
+    drop(paused);
+
+    let resumed_at = asked + Duration::from_secs(4);
+    let mut resumed = seated(&standings, 1, &[peer(1)], live_posture());
+    let started = resumed.start(resumed_at);
+    resumed.hold_standings();
+    assert!(
+        spawned(&started).is_empty(),
+        "dialed {:?} after the Resume",
+        resumed_at - asked
+    );
+    assert_eq!(resumed.source_activity().queued, 1);
+
+    let spacing = FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER;
+    let before = resumed.on_tick(asked + spacing - Duration::from_secs(1));
+    assert!(
+        pinged(&before).is_empty() && asked_by_tcp(&before).is_empty(),
+        "{before:?}"
+    );
+    assert_eq!(
+        asked_by_tcp(&resumed.on_tick(asked + spacing)),
+        vec![peer(1)]
+    );
+}
+
+/// The spacing dates from the ask, so a Resume past it dials at once.
+#[test]
+fn a_resume_past_the_spacing_dials_at_once() {
+    let standings = QueueStandings::shared();
+    let asked = t0();
+    let mut paused = seated(&standings, 1, &[peer(1)], live_posture());
+    let _ = paused.start(asked);
+    holding_nothing(&mut paused, asked);
+    drop(paused);
+
+    let mut resumed = seated(&standings, 1, &[peer(1)], live_posture());
+    let late = asked + FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER;
+    assert_eq!(spawned(&resumed.start(late)), vec![peer(1)]);
+}
+
+/// The spacing is this file's: another download of the peer is not held back
+/// by what the peer lacks for the first.
+#[test]
+fn a_spared_ask_is_the_downloads_own() {
+    let standings = QueueStandings::shared();
+    let asked = t0();
+    let mut paused = seated(&standings, 1, &[peer(1)], live_posture());
+    let _ = paused.start(asked);
+    holding_nothing(&mut paused, asked);
+    drop(paused);
+
+    let mut other = seated(&standings, 2, &[peer(1)], live_posture());
+    let started = other.start(asked + Duration::from_secs(4));
+    assert!(
+        !started
+            .iter()
+            .any(|d| matches!(d, Decision::Emit(DownloadEvent::SourceSpared { .. }))),
+        "{started:?}"
     );
 }

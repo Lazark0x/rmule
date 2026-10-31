@@ -72,9 +72,18 @@ fn a_queued_source_whose_full_ask_meets_no_file_is_never_asked_again() {
             .is_empty(),
         "a sighting of it is refused one turn on"
     );
-    let _ = state.on_tick(t0() + FILE_REASK_TIME * 3);
+    let later = t0() + FILE_REASK_TIME * 3;
+    let _ = state.on_tick(later);
     assert_eq!(
-        spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions),
+        spawned(
+            &take_at(
+                &mut state,
+                later,
+                Channel::Server,
+                plain_sightings(&[peer(1)])
+            )
+            .decisions
+        ),
         vec![peer(1)],
         "two turns on it is a source again"
     );

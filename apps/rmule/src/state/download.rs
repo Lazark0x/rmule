@@ -380,6 +380,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::PeerQueued { .. }
         | E::PeerSlotTimeout { .. }
         | E::SourceRemoteQueued { .. }
+        | E::SourceSpared { .. }
         | E::SourceWaitsOnStanding { .. }
         | E::SourceRoadHeld { .. }
         | E::SourceHandedOver { .. }

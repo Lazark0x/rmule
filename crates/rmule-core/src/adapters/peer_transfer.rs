@@ -257,6 +257,9 @@ pub enum PeerWorkerEvent {
     /// keeps the source standing on the peer's queue for the reask
     /// (ADR-0107 invariant 9).
     HandedBack,
+    /// A worker that could only ride a link found none: terminal, nothing was
+    /// dialed, and core keeps the source on the peer's clock (ADR-0090).
+    NoLinkToRide,
     /// The dial ended before the peer's hello, for `cause`. Not terminal on
     /// its own: [`Self::Disconnected`] or [`Self::CryptIncompatible`] follows
     /// at once, and this only names why.

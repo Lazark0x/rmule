@@ -199,6 +199,9 @@ impl DownloadEvent {
                     None => record.code("rank", "unknown"),
                 }
             }
+            D::SourceSpared { download_id, peer } => Record::new("download.source_spared")
+                .count("id", download_id.as_u64())
+                .peer_address("peer", peer),
             D::SourceWaitsOnStanding { download_id, peer } => {
                 Record::new("download.source_waits_on_standing")
                     .count("id", download_id.as_u64())

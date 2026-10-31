@@ -28,7 +28,9 @@ impl DownloadState {
     /// on-retirement backfill (ADR-0030) and a TCP full ask. A record whose
     /// peer stands in another download's **Queue Standing**, or that takes the
     /// peer from a download needing nothing of it, is not dialed: it waits on
-    /// that standing (ADR-0107, ADR-0090).
+    /// that standing (ADR-0107, ADR-0090); nor is one inside the peer's clock,
+    /// or returning to a place a past run of its file left there (ADR-0107
+    /// invariants 14-16).
     pub(super) fn fill(&mut self, now: Instant, out: &mut Vec<Decision>) {
         while self
             .sources
@@ -84,7 +86,7 @@ impl DownloadState {
             return FillGate::Open;
         };
         let period = reask_period(self.callback_capability.reachable());
-        match (self.standings.role(&place).fill_gate(now, period), dial) {
+        match (self.standings.fill_gate(&place, now, period), dial) {
             (FillGate::OnALink(role), NextDial::Callback { candidate, road })
                 if *road != LowIdRoad::Callback || self.relayed_elsewhere(candidate).is_some() =>
             {
@@ -151,9 +153,12 @@ impl DownloadState {
                 if !self.sources.wait_on_standing(*peer, role, now) {
                     return false;
                 }
-                out.push(Decision::Emit(DownloadEvent::SourceWaitsOnStanding {
-                    download_id: self.download_id,
-                    peer: *peer,
+                let (download_id, peer) = (self.download_id, *peer);
+                let spared = matches!(role, Role::Returns { .. } | Role::Spaced { .. });
+                out.push(Decision::Emit(if spared {
+                    DownloadEvent::SourceSpared { download_id, peer }
+                } else {
+                    DownloadEvent::SourceWaitsOnStanding { download_id, peer }
                 }));
                 true
             }
@@ -190,7 +195,7 @@ impl DownloadState {
             self.free_slots.insert(slot.as_usize());
         }
         if let Some(place) = self.sources.road_place(key) {
-            let role = self.standings.role(&place);
+            let role = self.standings.standing_aside(&place);
             self.hold_road(key, role, now, &mut out);
         }
         self.fill(now, &mut out);
@@ -209,16 +214,29 @@ impl DownloadState {
         peer: PeerEndpoint,
         out: &mut Vec<Decision>,
     ) {
-        let asked_at =
-            self.sources
-                .dial_place(peer)
-                .and_then(|place| match self.standings.role(&place) {
-                    Role::Holds => None,
-                    Role::Inherits { asked_at } | Role::Takes { asked_at } => Some(asked_at),
-                    Role::Waits { asked_at } => asked_at,
-                });
-        self.sources.handed_back(peer, asked_at, now);
+        self.stand_aside(now, peer);
         self.retire(now, peer, PeerRetirementReason::LinkEnded, out);
+    }
+
+    /// `peer`'s worker may ask nothing now: no link stands to ride, or the
+    /// peer's clock runs (ADR-0107 invariant 14). No link ended.
+    pub(super) fn on_peers_clock(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        out: &mut Vec<Decision>,
+    ) {
+        self.stand_aside(now, peer);
+        self.retire(now, peer, PeerRetirementReason::OnPeersClock, out);
+    }
+
+    /// `peer`'s record stands aside as what the peer's standing makes it:
+    /// never as queued with no place there (ADR-0107 invariant 16).
+    fn stand_aside(&mut self, now: Instant, peer: PeerEndpoint) {
+        if let Some(place) = self.sources.dial_place(peer) {
+            let role = self.standings.standing_aside(&place);
+            self.sources.stand_aside(peer, role, now);
+        }
     }
 
     /// Put a worker on `peer` in `slot`: register it as connecting and have
@@ -375,7 +393,8 @@ impl DownloadState {
                 PeerRetirementReason::PeerDisconnected
                 | PeerRetirementReason::SlotTimeout
                 | PeerRetirementReason::Queued
-                | PeerRetirementReason::LinkEnded => {}
+                | PeerRetirementReason::LinkEnded
+                | PeerRetirementReason::OnPeersClock => {}
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
                 PeerRetirementReason::NoFreePart => self.sources.on_queue(peer, now),
                 _ => self.sources.end_standing(peer),
@@ -393,6 +412,7 @@ impl DownloadState {
                         PeerRetirementReason::CryptIncompatible
                             | PeerRetirementReason::Distrusted
                             | PeerRetirementReason::LinkEnded
+                            | PeerRetirementReason::OnPeersClock
                     );
                 // A source that said it lacks the file, or proved to be this
                 // node, is spent under every name its record holds, whichever
@@ -408,7 +428,10 @@ impl DownloadState {
                 // A source with nothing we need waits unranked: its
                 // retirement says why, and no queue rank is reported.
                 if end == Some(WorkerEnd::Release(Release::RemoteQueued))
-                    && reason != PeerRetirementReason::NoNeededParts
+                    && !matches!(
+                        reason,
+                        PeerRetirementReason::NoNeededParts | PeerRetirementReason::OnPeersClock
+                    )
                 {
                     out.push(Decision::Emit(DownloadEvent::SourceRemoteQueued {
                         download_id: self.download_id,

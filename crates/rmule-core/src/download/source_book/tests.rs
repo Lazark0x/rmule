@@ -509,5 +509,8 @@ fn an_ipv6_only_source_needs_an_ipv6_of_our_own() {
 /// A seat in a registry no other download shares: the book's own standing
 /// is always the holder.
 fn alone() -> StandingSeat {
-    StandingSeat::alone(crate::service::DownloadId::from_u64(0))
+    StandingSeat::alone(
+        crate::service::DownloadId::from_u64(0),
+        rmule_primitives::FileHash::from_bytes([1; 16]),
+    )
 }
