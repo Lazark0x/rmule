@@ -361,8 +361,7 @@ impl DurableSharedFileRegistry {
     /// [`CoreError::Repository`] when the store read fails.
     pub(crate) fn identities(&self) -> Result<HashMap<FileHash, FileIdentity>, CoreError> {
         self.store.read(|txn| {
-            Ok(SHARED_FILES
-                .iter(txn)?
+            Ok(crate::store::readable(&SHARED_FILES, txn)?
                 .into_iter()
                 .filter_map(|(key, row)| Some((FileHash::from_bytes(key), row.identity?)))
                 .collect())
@@ -526,8 +525,7 @@ impl SharedFileRegistry for DurableSharedFileRegistry {
             // One range per row, all on the transaction that read the rows, so
             // the serve side can seed its snapshot from here and answer a
             // hash-set probe out of it rather than with a second trip.
-            SHARED_FILES
-                .iter(txn)?
+            crate::store::readable(&SHARED_FILES, txn)?
                 .into_iter()
                 .map(|(key, row)| {
                     Ok(row.into_entry(FileHash::from_bytes(key), part_hashes_of(txn, key)?))
@@ -584,6 +582,47 @@ fn part_hashes_of(txn: &impl Readable, key: FileKey) -> Result<Vec<PartHash>, Co
         .into_iter()
         .map(|(_, hash)| hash.0)
         .collect())
+}
+
+#[cfg(test)]
+mod pinned {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+    use crate::store::assert_pinned;
+
+    #[test]
+    fn a_shared_file_and_every_source_keep_their_bytes() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let row = SharedFile {
+            file_size: 300,
+            path: "/s/a.bin".into(),
+            name: "a.bin".into(),
+            source: ShareSource::CompletedDownload,
+            modified: Some(at),
+            identity: Some(FileIdentity {
+                device: 1,
+                inode: 2,
+                born: at,
+            }),
+        };
+        assert_pinned(
+            &row,
+            "ac02082f732f612e62696e05612e62696e01018094ebdc03000101028094ebdc0300",
+        );
+        assert_pinned(&ShareSource::Explicit, "00");
+        assert_pinned(&ShareSource::CompletedDownload, "01");
+        assert_pinned(&ShareSource::DownloadDirectory, "02");
+    }
+
+    #[test]
+    fn the_directory_answers_and_a_part_hash_keep_their_bytes() {
+        assert_pinned(&DirectoryAnswers(vec![("/s".into(), true)]), "01022f7301");
+        assert_pinned(
+            &SharedFilePartHash(PartHash::from_bytes([9; 16])),
+            &"09".repeat(16),
+        );
+    }
 }
 
 #[cfg(test)]

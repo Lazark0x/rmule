@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// handle, re-exported so a front-end can hold the `Arc` it hands each seam
 /// without depending on the engine crate.
 pub use rmule_store::Store as DurableStore;
-use rmule_store::{Ladder, Store, StoreError, UpgradeStep};
+use rmule_store::{Indexed, Ladder, OwnedKey, Readable, Record, Store, StoreError, UpgradeStep};
 pub use rmule_store::{OpenRefusal, Opening, OpeningWatch, Schema};
 
 use crate::CoreError;
@@ -104,6 +104,34 @@ pub(crate) const UPGRADE_FROM_V14: UpgradeStep = UpgradeStep {
         app_config::grow_from_v14(txn)
     },
 };
+
+/// Every `(key, record)` of `table` that reads, ascending by key. A row that
+/// will not decode costs that row and a line in the Run Log, not the table
+/// (ADR-0083): what a read of a whole seam goes through. A rung does not: it
+/// refuses what it cannot carry, and the copy before the climb holds it.
+///
+/// # Errors
+/// An engine error.
+pub(crate) fn readable<K, T>(
+    table: &Indexed<K, T>,
+    txn: &impl Readable,
+) -> Result<Vec<(K, T)>, StoreError>
+where
+    K: OwnedKey,
+    T: Record,
+{
+    Ok(table
+        .rows(txn)?
+        .into_iter()
+        .filter_map(|(key, row)| {
+            row.inspect_err(|error| {
+                tracing::warn!(record = T::NAME, %error, "a row could not be read");
+            })
+            .ok()
+            .map(|row| (key, row))
+        })
+        .collect())
+}
 
 /// Every table the durable seams own, merged for the one `Store::open`.
 /// A seam whose tables are missing here would fail its first read, so this is
@@ -194,6 +222,17 @@ impl From<StoreError> for CoreError {
     fn from(error: StoreError) -> Self {
         CoreError::Repository(error.to_string())
     }
+}
+
+/// Pin a live record's bytes: postcard is positional and the engine compares
+/// only the tag, so a reordered field or an inserted variant keeps the tag and
+/// misreads the operator's store. A pin that moved is a rung owed, never a
+/// number to update (ADR-0083).
+#[cfg(test)]
+pub(crate) fn assert_pinned<T: serde::Serialize>(record: &T, hex: &str) {
+    let bytes = postcard::to_allocvec(record).unwrap();
+    let found: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    assert_eq!(found, hex, "this record's stored bytes moved");
 }
 
 #[cfg(test)]

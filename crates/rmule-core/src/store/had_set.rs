@@ -101,8 +101,7 @@ impl DurableHadSet {
     /// [`CoreError::Repository`] when the store read fails.
     pub fn list(&self) -> Result<Vec<HadFile>, CoreError> {
         self.store.read(|txn| {
-            Ok(HAD_FILES
-                .iter(txn)?
+            Ok(crate::store::readable(&HAD_FILES, txn)?
                 .into_iter()
                 .map(|(key, row)| HadFile {
                     identity: Ed2kIdentity::new(FileHash::from_bytes(key), row.file_size),
@@ -238,5 +237,15 @@ mod tests {
         registry.share(film.clone()).unwrap();
         assert!(registry.gone(film.file_hash, &film.path).unwrap());
         assert_eq!(had(&registry).len(), 1);
+    }
+
+    #[test]
+    fn a_had_row_keeps_its_bytes() {
+        let row = super::HadRow {
+            file_size: 300,
+            name: "a.bin".into(),
+            found_gone: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000),
+        };
+        crate::store::assert_pinned(&row, "ac0205612e62696e8094ebdc0300");
     }
 }

@@ -193,7 +193,7 @@ impl DurableCreditStore {
     /// store this time is gone from this run and tried at the next.
     #[must_use]
     pub fn opened_at(store: Arc<Store>, now: u64) -> Self {
-        let rows: Result<_, StoreError> = store.read(|txn| PEER_CREDIT.iter(txn));
+        let rows: Result<_, StoreError> = store.read(|txn| super::readable(&PEER_CREDIT, txn));
         let rows = rows
             .inspect_err(|error| {
                 tracing::warn!(%error, "credit ring unreadable; peers start unknown this run");
@@ -402,7 +402,10 @@ impl CreditStore for DurableCreditStore {
 
     fn snapshot(&self) -> Result<Vec<PeerCredit>, CoreError> {
         self.ring.persist(unix_now())?;
-        let rows = self.ring.store.read(|txn| PEER_CREDIT.iter(txn))?;
+        let rows = self
+            .ring
+            .store
+            .read::<_, CoreError>(|txn| Ok(super::readable(&PEER_CREDIT, txn)?))?;
         Ok(rows
             .into_iter()
             .map(|(key, row)| PeerCredit {
@@ -415,5 +418,59 @@ impl CreditStore for DurableCreditStore {
                 last_seen: row.last_seen,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod pinned {
+    use super::*;
+    use crate::store::{assert_pinned, open_durable_store_in_memory};
+
+    #[test]
+    fn a_peer_credit_row_keeps_its_bytes() {
+        let row = PeerCreditRow {
+            uploaded: 1,
+            downloaded: 300,
+            public_key: Some(vec![0xAB, 0xCD]),
+            last_seen: 1_000_000_000,
+        };
+        assert_pinned(&row, "01ac020102abcd8094ebdc03");
+    }
+
+    /// One flipped row costs that peer's standing, not the whole ring's.
+    #[test]
+    fn one_row_that_will_not_decode_leaves_the_rest_of_the_ring() {
+        use rmule_store::redb::Value;
+        use rmule_store::{Packed, TableDefinition};
+
+        let store = open_durable_store_in_memory().unwrap();
+        let row = PeerCreditRow {
+            uploaded: 5,
+            last_seen: 2_000,
+            ..PeerCreditRow::default()
+        };
+        store
+            .write(|txn| {
+                PEER_CREDIT.set(txn, &[1; UserHash::BYTE_LEN], &row)?;
+                let table = TableDefinition::<[u8; UserHash::BYTE_LEN], Packed<PeerCreditRow>>::new(
+                    "peer_credit",
+                );
+                let mut table = txn.open_table(table).map_err(StoreError::from)?;
+                let bad = <Packed<PeerCreditRow> as Value>::from_bytes(&[0xFF; 3]);
+                table
+                    .insert([2; UserHash::BYTE_LEN], bad)
+                    .map_err(StoreError::from)?;
+                Ok::<_, StoreError>(())
+            })
+            .unwrap();
+
+        let credit = DurableCreditStore::opened_at(store, 2_000);
+        assert_eq!(
+            credit
+                .totals(UserHash::from_bytes([1; UserHash::BYTE_LEN]))
+                .unwrap()
+                .uploaded,
+            5
+        );
     }
 }

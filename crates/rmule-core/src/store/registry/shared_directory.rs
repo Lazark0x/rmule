@@ -97,7 +97,7 @@ impl DurableSharedFileRegistry {
     /// [`CoreError::Repository`] when the store read fails.
     pub(crate) fn shared_directories(&self) -> Result<Vec<PathBuf>, CoreError> {
         self.store.read(|txn| {
-            let mut dirs = SHARED_DIRECTORIES.iter(txn)?;
+            let mut dirs = crate::store::readable(&SHARED_DIRECTORIES, txn)?;
             dirs.sort_by(|a, b| a.1.added.cmp(&b.1.added).then_with(|| a.0.cmp(&b.0)));
             Ok(dirs
                 .into_iter()
@@ -166,7 +166,7 @@ impl DurableSharedFileRegistry {
                 spare_copy::forget_at(txn, &spare.path)?;
             }
             let mut rulings = Vec::new();
-            for (content, row) in SHARED_FILES.iter(txn)? {
+            for (content, row) in crate::store::readable(&SHARED_FILES, txn)? {
                 if !under(&row.path) {
                     continue;
                 }
@@ -247,8 +247,7 @@ fn set_aside_spare(
 }
 
 fn list(txn: &impl Readable) -> Result<Vec<SetAside>, CoreError> {
-    Ok(SET_ASIDE
-        .iter(txn)?
+    Ok(crate::store::readable(&SET_ASIDE, txn)?
         .into_iter()
         .map(|(path, row)| {
             let path = PathBuf::from(path);
@@ -276,3 +275,32 @@ fn utf8(dir: &Path) -> Result<String, CoreError> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pinned {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::*;
+    use crate::store::assert_pinned;
+
+    #[test]
+    fn a_shared_directory_and_a_set_aside_row_keep_their_bytes() {
+        let at = UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        assert_pinned(&SharedDirectory { added: at }, "8094ebdc0300");
+        let row = SetAsideRow {
+            file_hash: FileHash::from_bytes([7; 16]),
+            size: 300,
+            modified: at,
+            identity: None,
+            part_hashes: vec![PartHash::from_bytes([9; 16])],
+        };
+        assert_pinned(
+            &row,
+            &format!(
+                "{}ac028094ebdc030000{}",
+                "07".repeat(16),
+                "01".to_owned() + &"09".repeat(16)
+            ),
+        );
+    }
+}

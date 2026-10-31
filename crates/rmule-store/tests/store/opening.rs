@@ -226,3 +226,23 @@ fn one_row_that_will_not_decode_costs_that_row() {
     assert!(matches!(rows[1].1, Err(StoreError::Decode { .. })));
     assert_eq!(rows[2].1.as_ref().unwrap(), &Strict { flag: false });
 }
+
+#[test]
+fn a_stop_is_handed_on_once() {
+    let full = Arc::new(AtomicBool::new(false));
+    let disk = FillingDisk {
+        memory: InMemoryBackend::new(),
+        full: Arc::clone(&full),
+    };
+    let store = Store::open_backend(disk, &schema_v1(), &V1).unwrap();
+    assert!(!store.stop_to_tell());
+    full.store(true, Ordering::Relaxed);
+    store
+        .write(|txn| DOWNLOADS.insert(txn, &1, &download(1)))
+        .unwrap_err();
+    store
+        .write(|txn| DOWNLOADS.insert(txn, &2, &download(2)))
+        .unwrap_err();
+    assert!(store.stop_to_tell());
+    assert!(!store.stop_to_tell());
+}

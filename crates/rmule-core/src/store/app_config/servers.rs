@@ -257,10 +257,12 @@ fn row_by_standard(
     txn: &impl Readable,
     standard: &ServerEndpoint,
 ) -> Result<Option<(u64, ServerRecord)>, StoreError> {
-    Ok(SERVERS.iter(txn)?.into_iter().find(|(_, record)| {
-        let listed = ManagedServer::from(record.clone());
-        &listed.standard_endpoint() == standard
-    }))
+    Ok(crate::store::readable(&SERVERS, txn)?
+        .into_iter()
+        .find(|(_, record)| {
+            let listed = ManagedServer::from(record.clone());
+            &listed.standard_endpoint() == standard
+        }))
 }
 
 impl DurableAppConfig {
@@ -287,7 +289,7 @@ impl ServerListStore for DurableAppConfig {
     fn servers(&self) -> Result<Vec<ManagedServer>, CoreError> {
         let rows = self
             .store
-            .read::<_, CoreError>(|txn| Ok(SERVERS.iter(txn)?))?;
+            .read::<_, CoreError>(|txn| Ok(crate::store::readable(&SERVERS, txn)?))?;
         Ok(rows
             .into_iter()
             .map(|(_, record)| ManagedServer::from(record))

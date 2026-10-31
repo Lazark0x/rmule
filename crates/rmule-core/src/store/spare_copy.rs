@@ -94,8 +94,7 @@ pub(super) fn forget_content(txn: &WriteTransaction, key: &FileKey) -> Result<()
 
 /// Every recorded spare.
 pub(super) fn list(txn: &impl Readable) -> Result<Vec<SpareCopy>, StoreError> {
-    Ok(SPARES
-        .iter(txn)?
+    Ok(crate::store::readable(&SPARES, txn)?
         .into_iter()
         .map(|(path, row)| SpareCopy {
             path: PathBuf::from(path),
@@ -268,5 +267,24 @@ mod tests {
         );
         assert!(registry.identities().unwrap().is_empty());
         assert!(registry.spares().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_spare_row_keeps_its_bytes() {
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        let row = super::SpareRow {
+            file_hash: FileHash::from_bytes([7; 16]),
+            size: 300,
+            modified: at,
+            identity: Some(FileIdentity {
+                device: 1,
+                inode: 2,
+                born: at,
+            }),
+        };
+        crate::store::assert_pinned(
+            &row,
+            "07070707070707070707070707070707ac028094ebdc03000101028094ebdc0300",
+        );
     }
 }

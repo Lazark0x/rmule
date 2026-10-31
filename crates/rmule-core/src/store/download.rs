@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmule_primitives::{AichRootHash, Ed2kFileLink, PartHash, ServerEndpoint, UserHash};
-use rmule_store::{Readable, Store};
+use rmule_store::{Readable, Store, StoreError};
 
-use super::Schema;
+use super::{Schema, readable};
 use crate::content::{Revalidation, revalidate_verified_parts};
 use crate::file_history::Ed2kIdentity;
 use crate::storage::{DownloadRepository, ResolvedAuthority, resolve_hash_authority};
@@ -475,7 +475,7 @@ fn read_row(txn: &impl Readable, id: DownloadId) -> Result<DownloadRow, CoreErro
 #[cfg(test)]
 pub(crate) fn write_undecodable_row(store: &Store, key: u64) {
     use rmule_store::redb::Value;
-    use rmule_store::{Packed, StoreError, TableDefinition};
+    use rmule_store::{Packed, TableDefinition};
 
     let table = TableDefinition::<u64, Packed<DownloadRow>>::new("download");
     let bad = <Packed<DownloadRow> as Value>::from_bytes(&[0xFF]);
@@ -488,23 +488,12 @@ pub(crate) fn write_undecodable_row(store: &Store, key: u64) {
         .unwrap();
 }
 
-/// Every row that reads, in ascending id order. One that does not decode
-/// costs that row and a line in the Run Log, and [`unreadable_rows`] counts
-/// it for the operator (ADR-0083).
+/// Every row that reads, in ascending id order; [`unreadable_rows`] counts
+/// the rest for the operator.
 ///
 /// [`unreadable_rows`]: DurableDownloadRepository::unreadable_rows
-fn readable_rows(txn: &impl Readable) -> Result<Vec<(u64, DownloadRow)>, CoreError> {
-    Ok(DOWNLOADS
-        .rows(txn)?
-        .into_iter()
-        .filter_map(|(key, row)| match row {
-            Ok(row) => Some((key, row)),
-            Err(error) => {
-                tracing::warn!(key, %error, "a download's row could not be read");
-                None
-            }
-        })
-        .collect())
+fn readable_rows(txn: &impl Readable) -> Result<Vec<(u64, DownloadRow)>, StoreError> {
+    readable(&DOWNLOADS, txn)
 }
 
 /// Refuse a child write whose parent is gone, without decoding the parent.

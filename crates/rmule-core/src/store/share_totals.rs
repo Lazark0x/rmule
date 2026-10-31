@@ -83,8 +83,7 @@ impl DurableShareTotals {
     /// [`CoreError::Repository`] when the store read fails.
     pub fn load(&self) -> Result<BTreeMap<FileHash, ShareTotals>, CoreError> {
         self.store.read(|txn| {
-            Ok(SHARE_TOTALS
-                .iter(txn)?
+            Ok(crate::store::readable(&SHARE_TOTALS, txn)?
                 .into_iter()
                 .map(|(key, row)| {
                     let totals = ShareTotals {
@@ -129,6 +128,16 @@ mod tests {
     use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
     use crate::store::registry::DurableSharedFileRegistry;
     use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
+
+    #[test]
+    fn a_totals_row_keeps_its_bytes() {
+        let row = TotalsRow {
+            requests: 1,
+            accepted: 2,
+            transferred: 300,
+        };
+        crate::store::assert_pinned(&row, "0102ac02");
+    }
 
     fn totals(requests: u64, accepted: u64, transferred: u64) -> ShareTotals {
         ShareTotals {
