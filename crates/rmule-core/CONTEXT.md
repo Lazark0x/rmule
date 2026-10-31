@@ -209,8 +209,12 @@ The level "a live eD2k session holds a High ID" — the server dialled our TCP p
 _Avoid_: High-ID (unqualified, that is any peer's id class), server reachability (that is the server's own)
 
 **Accept Gates**:
-What every inbound peer connection meets before the serve loop sees it, in this order: the **IP Filter**, the **Ban Store** (ADR-0064), then the **Test Connection** carve-out, which is answered there and goes no further (ADR-0046). They run on the producer's side of the serve accept channel — the accept pump for a TCP accept, the admit seam for a Tunnel or a callback dial-back — so the channel holds only peers the serve loop will triage, and the loop's accept is a bare receive its `select!` may cancel without losing one. A refused peer is closed on a task of its own.
-_Avoid_: accept filter (the IP filter is one gate of three), admission (that is the listener's byte-0 decision)
+What every inbound peer connection meets before the serve loop sees it, in this order: the **IP Filter**, the **Ban Store** (ADR-0064), the **Test Connection** carve-out, which is answered there and goes no further (ADR-0046), then the **Accept Limit**. They run on the producer's side of the serve accept channel — the accept pump for a TCP accept, the admit seam for a Tunnel or a callback dial-back — so the channel holds only peers the serve loop will triage, and the loop's accept is a bare receive its `select!` may cancel without losing one. A refused peer is closed on a task of its own.
+_Avoid_: accept filter (the IP filter is one gate of four), admission (that is the listener's byte-0 decision)
+
+**Accept Limit**:
+The last of the **Accept Gates**: past the Connection Ceiling, counted over every live link and dial, or past 50 accepts in five seconds, the listener refuses a peer before anything reads it. A login's port test goes past it (ADR-0031).
+_Avoid_: Dial Window (that paces our own dials), connection budget (that is the downloads')
 
 **Test Connection**:
 A plain dial under `ObfuscationPolicy::Required` from an address in the **Awaited Testers** — a server's High-ID port test or a Kad helper's firewall-check connect-back (ADR-0046). Admitted where the byte-0 discrimination decides (`Admitted::TestConnection`), it meets the **Accept Gates** and is handled there, in the accept pump: it is answered its hello, has an `OP_KAD_FWTCPCHECK_ACK` counted, and is closed by its first request to be served; it never reaches the inbound triage. aMule and eMule accept the same dials but then serve them as any peer.
