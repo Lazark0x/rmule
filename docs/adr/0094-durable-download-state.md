@@ -86,13 +86,36 @@ verified part is written, before finalize, when it leaves a wait, and every seco
 handle's length with the end of the highest recorded part (one `stat` and one `fstat`); a removed
 file's handle stays writable on macOS and Linux, so an error is never the signal.
 
-- **Gone or replaced:** the run stops writing, reports `PartFileLost` (`Gone`, `Replaced`) with
-  the parts and bytes to fetch again, drops the verified-part records, and fails with
-  `PartFileMissing`. It does not recreate the file: the delete was the operator's.
+- **Gone or replaced:** the file's last name was removed (the handle reads no link left), or
+  another file stands at the path. The run stops writing, reports `PartFileLost` (`Gone`,
+  `Replaced`) with the parts and bytes to fetch again, drops the verified-part records, and fails
+  with `PartFileMissing`. It does not recreate the file: the delete was the operator's.
+- **Path absent, file whole:** the path names nothing while the handle reads a file with a link
+  left: a parent directory renamed, a volume lazily unmounted, the file moved away. Nothing
+  proves a byte lost, so nothing is dropped: the run takes a Volume Stop (below), and
+  revalidation decides at the next hold.
 - **Truncated:** the parts past the end are dropped (`PartFileLost`, `Truncated`) and the run goes
   on fetching them.
 - **A whole-file hash failing at finalize** re-checks every recorded part, drops those that fail,
   and goes on; when no part can be named, every recorded part is dropped.
+
+**A volume's refusal is a Volume Stop.** A local write failure is nobody's fault on the network.
+A write the volume refuses, whatever the error (a nearly full exFAT volume answers `EINVAL` as well
+as `ENOSPC`, and a volume forced away `EIO`), reaches no verdict: no ban, no distrust, no refetch of
+the part. Before each write the run reads the free space beside the part file and holds it to
+aMule's floor, one part and `MinFreeDiskSpace`'s default of 1 MiB for the bytes of the write
+(`PartFile.cpp:2485-2510`, checked at each flush, `:2983`). Below the floor, on a refused write, or
+on an absent path with the file whole, the run sends its workers `OP_CANCELTRANSFER`, lets the
+handle go, stores `Paused` and says why (`VolumeStopped`, then `DownloadPaused`), as aMule's
+`PauseFile(true)` does. The assembled part goes with the run: bytes never recorded are fetched
+again. Verified parts stay. aMule's `PS_ERROR` on a failed flush asks the operator to act; a pause
+does the same and carries the sentence.
+
+A stop for free space resumes itself: the core reads the free space beside each such download once
+a minute (`DISKSPACERECHECKTIME`, `DownloadQueue.cpp:1229`) and resumes it at the floor. Any other
+Volume Stop waits for the operator, since no reading says the fault has passed. The wait is the
+actor's and memory only: after a restart the row is a plain `Paused`, as aMule's `m_insufficient`
+is not stored. An operator's Pause of a waiting download ends the wait.
 
 Who may touch a live part file: only its run's held handle writes it; completion moves the run's
 own `.part` after the run releases its handle — a rename, or across volumes a copy to a
@@ -131,3 +154,7 @@ download after one confirm.
   difference was; what is on disk decides.
 - **Recreating a part file deleted under a run.** Rejected: it hid the operator's delete and wrote
   holes over verified parts.
+- **A write failure as a failed part.** Rejected: the refetch loop has no cap, and a part's sole
+  writer reads as proven, so a full disk banned an innocent peer's address across the node.
+- **Failing the download on a Volume Stop.** Rejected: a full disk is routine and passes, and a
+  `Failed` row's Restart while the volume is away would discard what it holds.

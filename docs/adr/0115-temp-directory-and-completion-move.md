@@ -36,10 +36,30 @@ different volumes. The part file is deleted only after the finished file is in p
   part file beside its final path, as before.
 - **Placement.** `place_download` chooses both paths at once: the final path in the download
   directory and the part path `<temp dir>/<final file name>.part`, under one free-name rule — the
-  numbered `stem (n).ext` is taken until neither the final path nor the part path exists. Both are
-  stored on the row, with the **Download Name**: the name the command gave, before any number.
-  Changing either setting moves nothing: running, paused and recovered downloads keep the paths
-  their rows hold.
+  numbered `stem (n).ext` is taken until neither the final path nor the part path exists and no
+  live row holds either. Both are stored on the row, with the **Download Name**: the name the
+  command gave, before any number. Changing either setting moves nothing: running, paused and
+  recovered downloads keep the paths their rows hold.
+- **One file per folded name.** A part path is derived from a peer's name, so two rows can spell
+  one file: exFAT, APFS by default and NTFS fold case, and APFS and exFAT fold normalisation
+  (measured on exFAT: `Film` is `film`, `Я` is `я`, NFC is NFD, `ß` and `ı` stay themselves). Rows
+  are compared as the strictest volume folds, by each path's NFC form lowered character by
+  character, wherever the volume is: a fold a case-sensitive volume does not make costs a number,
+  never a file. A file on disk is compared by the volume itself.
+- **A refused start looks at the disk.** Refused as `DownloadPathConflict` when a `.part` already
+  stands at the part path or a live row holds either path, folded. Whatever a run opens with no
+  part recorded, and any file longer than the download, is cut to the download's size when the
+  run holds it: no byte past the size lands (aMule corrects this at each flush,
+  `PartFile.cpp:3027-3030`).
+- **A name fits every file made from it.** `SafeFileName` keeps at most 230 bytes, the extension
+  kept and the stem shortened on a character boundary, so `<name> (n).part`, the Hole Probe's
+  `.<name>.part.holeprobe` and the Completion Copy's `.<name> (n).completing` all fit the
+  strictest limit, 255 bytes (ext4), which also bounds exFAT's and NTFS's 255 UTF-16 units. Stock
+  never builds a `.part` from the name, and fails only at completion past 255
+  (`PartFile.cpp:279`, `ThreadTasks.cpp:444`).
+- **Four gibibytes on FAT.** A file over `OLD_MAX_FILE_SIZE` is refused at the start when the
+  Temp Directory or the download directory lies on FAT, as aMule does
+  (`DownloadQueue.cpp:242-251`): the file could never finish there.
 - **Refused at the set**, nothing stored, as `SettingRefusal::TempDirRefused(DirectoryRefusal)`:
   the download directory itself; a directory inside any shared directory, the download directory
   included, or holding one; the home directory itself; a filesystem root or mount point; a path not
@@ -102,7 +122,9 @@ last decision; Download State holds no clock and takes no part.
    `FileExists` loop does (`ThreadTasks.cpp:455-469`). A filesystem that refuses the exclusive flag
    itself (an SMB or exFAT volume on macOS, a Linux filesystem without `RENAME_NOREPLACE`) answers
    `Unsupported`, and for that volume the run checks the destination and renames, the window open
-   there alone.
+   there alone. Before the rename the run `fsync`s the file, and after it the destination's
+   directory where the platform allows it, as step 5 does: `Completed` never stands over bytes
+   the disk has not taken, and nothing rechecks a `Completed` file.
 4. **In use.** When the OS refuses the rename because another program holds the file (Windows
    `ERROR_SHARING_VIOLATION` 32 or `ERROR_LOCK_VIOLATION` 33), the download stays `Completing`
    with the step `WaitingForRelease`, and the run retries on a backoff of 1 s doubling to 30 s,

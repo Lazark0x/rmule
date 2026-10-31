@@ -788,6 +788,10 @@ _Avoid_: storage backend, file manager
 The one handle a download's run holds on its `.part` file from its first act to finalize (ADR-0094, "The run holds its part file"). Every verified part is written through it, never by path. Before each part, at finalize, and each second while the run waits (for a connection, or for sources with nothing in flight) the run compares the path's device and inode (on Windows its volume serial number and file index) with the handle's, and the handle's length with the recorded parts' end, and reports what it found — `Gone`, `Replaced` or `Truncated` — as `PartFileLost`, with what it cost — or, when the store cannot say which parts were lost, with no count, and the download fails as a store failure. The part file is the operator's to delete; rmule never recreates it behind them. It carries the sparse flag on Windows; each write punches its **Extension Gap** and reads **Allocated Bytes** (ADR-0111).
 _Avoid_: part file lock (nothing is locked), reopen
 
+**Volume Stop**:
+A run ending itself because its volume, not a peer, cannot go on (ADR-0094, "A volume's refusal is a Volume Stop"): free space beside the part file under the floor of one part, a write the volume refused, or a path that names nothing while the **Held Part File** still reads a linked file. It reaches no verdict: no ban, no distrust, no refetch. The download is stored `Paused` and told as `DownloadEvent::VolumeStopped`; verified parts stay. A stop for free space resumes itself when the space returns, read once a minute.
+_Avoid_: disk error, insufficient (stock's word for one of the three)
+
 **Sparse Part File**:
 A download's `.part` under ADR-0111: positional, never pre-sized, holding only hash-verified bytes. Where the **Hole Verdict** is `HoldsHoles` it occupies only the bytes written plus slack. Its length is the end of the highest part written.
 _Avoid_: temp file, preallocated file
