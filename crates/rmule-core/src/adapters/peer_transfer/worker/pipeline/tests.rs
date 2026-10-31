@@ -119,7 +119,7 @@ fn the_depth_never_passes_twenty_four() {
     let t0 = Instant::now();
     let mut pipeline = handing(0, 100 * BLOCK);
     pipeline.next_request(t0);
-    let first = t0 + Duration::from_secs(1);
+    let first = t0 + Duration::from_secs(10);
     pipeline.arrived(first, 0, 1);
     pipeline.arrived(first + Duration::from_secs(1), 1, 100 * 1024 * 1024);
     assert_eq!(pipeline.depth(), 24);
@@ -249,4 +249,22 @@ fn an_out_of_part_reqs_forgets_what_the_link_asked() {
         pipeline.next_request(t0),
         Some(vec![(0, BLOCK), (BLOCK, 2 * BLOCK), (2 * BLOCK, 3 * BLOCK)])
     );
+}
+
+/// A repeated chunk is no progress: counted by bytes it would retire the ask
+/// with half the block missing, and the block would stay claimed with nothing
+/// asked until the worker ends. Only the new bytes count.
+#[test]
+fn a_repeated_chunk_neither_retires_the_ask_nor_counts_as_delivery() {
+    let t0 = Instant::now();
+    let mut pipeline = handing(0, BLOCK);
+    assert_eq!(pipeline.next_request(t0), Some(vec![(0, BLOCK)]));
+    let half = BLOCK / 2;
+
+    assert!(pipeline.arrived(t0, 0, half));
+    assert!(!pipeline.arrived(t0, 0, half), "nothing new");
+    assert!(!pipeline.drained(), "the ask stands");
+
+    assert!(pipeline.arrived(t0, half / 2, BLOCK - half / 2), "part new");
+    assert!(pipeline.drained());
 }

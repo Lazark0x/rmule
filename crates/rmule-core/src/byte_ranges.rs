@@ -10,6 +10,11 @@ use std::collections::BTreeMap;
 pub(crate) struct ByteRanges(BTreeMap<u64, u64>);
 
 impl ByteRanges {
+    /// Whether the set holds no byte.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Add `start..end`, answering the pieces of it the set did not hold
     /// before, in order.
     pub(crate) fn insert(&mut self, start: u64, end: u64) -> Vec<(u64, u64)> {

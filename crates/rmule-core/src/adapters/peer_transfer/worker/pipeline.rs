@@ -11,6 +11,7 @@ use rmule_peer::{AskedRanges, EMBLOCKSIZE};
 use rmule_primitives::ED2K_PART_SIZE;
 
 use crate::BlockPlan;
+use crate::byte_ranges::ByteRanges;
 use crate::delivery_rate::DeliveryRate;
 
 /// aMule's `STANDARD_BLOCKS_REQUEST` (stock 2.3.3 `updownclient.h:102`): the
@@ -20,11 +21,12 @@ pub(super) const RANGES_PER_REQUEST: usize = 3;
 const MAX_DEPTH: usize = 24;
 
 /// One block asked of the uploader and not yet wholly arrived.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct Asked {
     start: u64,
     end: u64,
-    received: u64,
+    /// The bytes of the block that arrived: a stranger's repeat adds none.
+    arrived: ByteRanges,
     asked_at: Instant,
 }
 
@@ -151,7 +153,7 @@ impl Pipeline {
             self.asked.push_back(Asked {
                 start,
                 end,
-                received: 0,
+                arrived: ByteRanges::default(),
                 asked_at: now,
             });
             match self.runs.front_mut() {
@@ -180,32 +182,36 @@ impl Pipeline {
     }
 
     /// Credit `len` bytes at `offset` that arrived at `now` to the blocks they
-    /// fall in. Answers whether they fall in an asked block: only those go on
-    /// to the download.
+    /// fall in. Answers whether any are new bytes of an asked block: only those
+    /// go on to the download and count as progress, so a repeated chunk can
+    /// neither retire an ask nor hold the slot.
     pub(super) fn arrived(&mut self, now: Instant, offset: u64, len: u64) -> bool {
         let chunk_end = offset.saturating_add(len);
-        let mut asked_for = false;
+        let mut fresh = 0;
         for asked in &mut self.asked {
-            let overlap = chunk_end
-                .min(asked.end)
-                .saturating_sub(offset.max(asked.start));
-            if overlap == 0 {
+            let (start, end) = (offset.max(asked.start), chunk_end.min(asked.end));
+            if start >= end {
                 continue;
             }
-            if asked.received == 0 && offset <= asked.start {
+            if asked.arrived.is_empty() && offset <= asked.start {
                 let rtt = now.saturating_duration_since(asked.asked_at);
                 self.min_rtt = Some(self.min_rtt.map_or(rtt, |least| least.min(rtt)));
             }
-            asked.received += overlap;
-            asked_for = true;
+            fresh += asked
+                .arrived
+                .insert(start, end)
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<u64>();
         }
         self.asked
-            .retain(|asked| asked.received < asked.end - asked.start);
-        if asked_for {
-            self.flowing = true;
+            .retain(|asked| !asked.arrived.covers(asked.start, asked.end));
+        if fresh == 0 {
+            return false;
         }
-        self.rate.record(now, len);
-        asked_for
+        self.flowing = true;
+        self.rate.record(now, fresh);
+        true
     }
 
     /// The block asked at `offset` will never arrive whole: the session could

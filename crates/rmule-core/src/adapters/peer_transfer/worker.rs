@@ -573,21 +573,23 @@ async fn stream_blocks(
                 offset,
                 bytes,
             }) if received == file_hash => {
-                // Data progress: extend the no-progress budget and forward
-                // the bytes of an asked block to core, which merges them into
-                // the part's Arrived Ranges.
+                // New bytes of an asked block are the progress: they extend
+                // the no-progress budget and go on to core, which merges them
+                // into the part's Arrived Ranges.
                 let now = Instant::now();
+                if !pipeline.arrived(now.into_std(), offset, bytes.len() as u64) {
+                    continue;
+                }
                 progress_deadline = now + slot_wait_timeout;
                 let part_index = u32::try_from(offset / ED2K_PART_SIZE).unwrap_or(u32::MAX);
-                if pipeline.arrived(now.into_std(), offset, bytes.len() as u64)
-                    && event_tx
-                        .send(PeerWorkerEvent::BlockReceived {
-                            part_index,
-                            offset,
-                            bytes,
-                        })
-                        .await
-                        .is_err()
+                if event_tx
+                    .send(PeerWorkerEvent::BlockReceived {
+                        part_index,
+                        offset,
+                        bytes,
+                    })
+                    .await
+                    .is_err()
                 {
                     return Streamed::WindDown;
                 }

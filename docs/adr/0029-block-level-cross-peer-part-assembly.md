@@ -64,7 +64,10 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
     uploader drops a request from a client outside its upload slots
     (`UploadClient.cpp:497-501`).
   - **Arrivals are credited by offset** to the asked block they fall in. Bytes inside no
-    asked block are dropped.
+    asked block are dropped, and so are bytes the block already holds: a block is asked
+    until each of its bytes has arrived, and only new bytes extend the no-progress budget
+    or count toward the Delivery Rate, so an uploader repeating a chunk neither retires
+    an ask nor holds its slot.
   - **A lost block is freed.** A compressed block the session cannot use will not arrive
     in this slot: it failed to inflate, or the session refused it because its declared
     size or the count of blocks mid-accumulation passed a ceiling. A stock uploader drops
