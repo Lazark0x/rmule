@@ -11,6 +11,7 @@ use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
+use rmule_primitives::UserHash;
 use rmule_testkit::{FakeEd2kServer, FakePeer, PeerScript, ServePolicy, SlotPolicy, file_link};
 use tokio::time::timeout;
 
@@ -35,7 +36,10 @@ async fn core_download_completes_through_queue_ranking() {
         serve: ServePolicy::Nothing,
         ..PeerScript::serving(file_hash, bytes.clone())
     });
-    let granting_task = granting.spawn(PeerScript::serving(file_hash, bytes));
+    let granting_task = granting.spawn(PeerScript {
+        hello_user_hash: UserHash::from_bytes([0xCD; UserHash::BYTE_LEN]),
+        ..PeerScript::serving(file_hash, bytes)
+    });
 
     let out = tempfile::tempdir().unwrap();
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())

@@ -9,6 +9,7 @@ use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent};
+use rmule_primitives::UserHash;
 use rmule_testkit::{FakeEd2kServer, FakePeer, PeerScript, ServePolicy, SlotPolicy, file_link};
 use tokio::time::timeout;
 
@@ -100,7 +101,10 @@ async fn core_single_part_completes_through_the_grant_while_another_peer_queues_
         serve: ServePolicy::Nothing,
         ..PeerScript::serving(file_hash, bytes.clone())
     });
-    let fast_task = fast.spawn(PeerScript::serving(file_hash, bytes));
+    let fast_task = fast.spawn(PeerScript {
+        hello_user_hash: UserHash::from_bytes([0xCD; UserHash::BYTE_LEN]),
+        ..PeerScript::serving(file_hash, bytes)
+    });
 
     let config = CoreConfig {
         peer_connections: rmule_core::PeerConnections {
@@ -193,7 +197,10 @@ async fn core_finishes_a_part_from_a_second_peer_after_the_first_drops_mid_part(
         serve: ServePolicy::FirstBlockThenClose,
         ..PeerScript::serving(file_hash, bytes.clone())
     });
-    let finish_task = finishing.spawn(PeerScript::serving(file_hash, bytes.clone()));
+    let finish_task = finishing.spawn(PeerScript {
+        hello_user_hash: UserHash::from_bytes([0xCD; UserHash::BYTE_LEN]),
+        ..PeerScript::serving(file_hash, bytes.clone())
+    });
 
     let config = CoreConfig {
         peer_connections: rmule_core::PeerConnections {

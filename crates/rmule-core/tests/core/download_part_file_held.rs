@@ -270,6 +270,12 @@ async fn a_part_file_cut_short_under_the_run_keeps_going_and_completes() {
 #[tokio::test]
 async fn a_finished_file_with_a_lost_part_is_repaired_not_condemned() {
     let mut leg = Leg::waiting_with_part_zero().await;
+    // Finalize's repair is a new run. The peer that served part 1 stands spared
+    // past the peer's clock (`Constants.h:67`, `UploadClient.cpp:795-825`), as
+    // stock leaves a source that held nothing it lacked to its next reask, so
+    // the repair comes from a source the server names at the run's next ask.
+    let repairing = ServingCore::spawn(0x78, "held.bin", &leg.bytes).await;
+    leg.server.set_later_sources(vec![repairing.source()]).await;
     // Part 0's bytes change in place — same file, same length — so only the
     // whole file's hash at finalize can tell.
     {

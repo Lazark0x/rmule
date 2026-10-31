@@ -67,6 +67,9 @@ struct Shared {
     /// Back-Connect Probe (every client gets High-ID) and answer
     /// `OP_GETSOURCES` with this list instead of the Low-ID registry.
     scripted_sources: Option<Vec<PeerSource>>,
+    /// What replaces `scripted_sources` once the next `OP_GETSOURCES` has
+    /// been answered, when a test scripts a source appearing between two asks.
+    later_sources: Option<Vec<PeerSource>>,
     /// Scripted `OP_SEARCHREQUEST` answer (empty result set by default).
     search_results: Vec<SearchResult>,
     /// Scripted delay between receiving `OP_LOGINREQUEST` and answering
@@ -256,6 +259,12 @@ impl FakeEd2kServer {
             "set_sources is a scripted-mode seam; start with start_scripted()"
         );
         state.scripted_sources = Some(sources);
+    }
+
+    /// Answer the next `OP_GETSOURCES` as scripted, and every one after it
+    /// with `sources` (scripted mode only).
+    pub async fn set_later_sources(&self, sources: Vec<PeerSource>) {
+        self.shared.lock().await.later_sources = Some(sources);
     }
 
     /// Record every later `OP_SEARCHREQUEST` without answering it (`true`),
@@ -660,11 +669,15 @@ where
                 continue;
             };
             let sources = {
-                let state = shared.lock().await;
-                state
+                let mut state = shared.lock().await;
+                let sources = state
                     .scripted_sources
                     .clone()
-                    .unwrap_or_else(|| state.sources.clone())
+                    .unwrap_or_else(|| state.sources.clone());
+                if let Some(later) = state.later_sources.take() {
+                    state.scripted_sources = Some(later);
+                }
+                sources
             };
             if let Ok(found) = FoundSources::new(requested_hash(&request), sources) {
                 let _ = wtx.send(found.encode_packet().encode()).await;

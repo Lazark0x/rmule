@@ -90,8 +90,9 @@ async fn attach_runs_what_quit_left_running_and_leaves_paused_paused() {
         .build();
     let running = start(&mut core, two_part_link("running.bin", 0xA1)).await;
     part_assigned(&mut core, running).await;
+    // The same two peers: the second file waits on the first's standing and
+    // asks nothing (`DownloadClient.cpp:496-507`), and is paused as it waits.
     let paused = start(&mut core, two_part_link("paused.bin", 0xB2)).await;
-    part_assigned(&mut core, paused).await;
     pause(&mut core, paused).await;
     core.shutdown().await;
 

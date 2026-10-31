@@ -114,7 +114,9 @@ pub struct PeerScript {
     /// how it answers one.
     pub multipacket: MultiPacketPolicy,
     /// The user hash this peer's `HelloAnswer` advertises — the identity a
-    /// credit or ban assertion keys on.
+    /// credit or ban assertion keys on. Two scripts left on the default are
+    /// one client to the downloader, whose one ask clock binds them both: a
+    /// test's second client names its own (ADR-0107 invariant 14).
     pub hello_user_hash: UserHash,
     /// The nickname this peer's `HelloAnswer` advertises.
     pub hello_nickname: String,
