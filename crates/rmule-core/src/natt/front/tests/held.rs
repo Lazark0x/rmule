@@ -292,3 +292,81 @@ async fn an_unidentified_tunnels_close_keeps_the_expectation() {
 
     assert!(harness.front.expectations.expects(forged.ip, early));
 }
+
+/// A dial in flight toward `target`, and the Tunnel it "raised" from `from`,
+/// just risen: whatever answered at that address has said nothing yet.
+async fn dialed_tunnel(harness: &mut Harness, target: UserHash, from: Ipv4Endpoint) -> Instant {
+    let due = held_toward(harness, target, at(9, 31999)).await;
+    harness.front.release_held(due).await;
+    assert!(harness.front.dials.in_flight(target));
+    let Risen::Accepted { tunnel } = accepted_from(harness, from, due).await else {
+        unreachable!("the fixture raises an accepted stream");
+    };
+    let risen = Risen::Dialed {
+        tunnel,
+        peer: target,
+    };
+    harness.front.on_risen(risen, due).await;
+    due
+}
+
+/// A rise proves only that something answered: the attempt stands, its dial
+/// stays in flight, and a hello naming somebody else gives the dial back so
+/// the claim behind it keeps an attempt that ends on its own budget
+/// (ADR-0091, security rule 12).
+#[tokio::test]
+async fn a_dialed_tunnel_naming_somebody_else_leaves_the_attempt_dialing() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let stranger = at(9, 40000);
+    let due = dialed_tunnel(&mut harness, target, stranger).await;
+    assert!(harness.front.attempts.contains(&target), "no hello yet");
+    assert!(harness.front.dials.in_flight(target), "no second opener");
+
+    let named = Risen::TunnelIdentified {
+        at: PeerEndpoint::V4(stranger),
+        peer: hash(0x77),
+    };
+    harness.front.on_risen(named, due).await;
+
+    assert!(harness.front.attempts.contains(&target));
+    assert!(harness.front.dials.holds(target), "the schedule stands");
+    assert!(
+        !harness.front.dials.in_flight(target),
+        "and the cadence may dial again"
+    );
+}
+
+/// A dialed Tunnel that closes before any hello spends only that dial.
+#[tokio::test]
+async fn a_dialed_tunnel_closing_unnamed_gives_its_dial_back() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let silent = at(9, 40000);
+    let due = dialed_tunnel(&mut harness, target, silent).await;
+
+    let closed = Risen::Closed { at: silent };
+    harness.front.on_risen(closed, due).await;
+
+    assert!(harness.front.attempts.contains(&target));
+    assert!(harness.front.dials.holds(target));
+    assert!(!harness.front.dials.in_flight(target));
+}
+
+/// The hello that names the dialed peer is what ends the attempt.
+#[tokio::test]
+async fn a_dialed_tunnels_own_hello_ends_its_attempt() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let answered = at(9, 40000);
+    let due = dialed_tunnel(&mut harness, target, answered).await;
+
+    let named = Risen::TunnelIdentified {
+        at: PeerEndpoint::V4(answered),
+        peer: target,
+    };
+    harness.front.on_risen(named, due).await;
+
+    assert!(!harness.front.attempts.contains(&target));
+    assert!(!harness.front.dials.holds(target));
+}

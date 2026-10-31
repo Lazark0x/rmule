@@ -310,12 +310,11 @@ async fn an_unclaimed_connection_takes_the_serve_road() {
     );
 }
 
-/// An accepted Tunnel has no claim to land on, so without its own report the
-/// front would never hear whom it named: the hello is reported with the
-/// endpoint it read on (ADR-0091, security rule 12). A stream this node aimed
-/// has nothing to report.
+/// A Tunnel may have no claim to land on, so without its own report the front
+/// would never hear whom it named: the hello is reported with the endpoint it
+/// read on, whichever direction raised it (ADR-0091, security rule 12).
 #[tokio::test]
-async fn an_accepted_tunnels_hello_reports_its_endpoint_to_the_front() {
+async fn a_tunnels_hello_reports_its_endpoint_to_the_front() {
     let awaited = AwaitedInbound::default();
     let (risen, mut reported) = crate::natt::front::NattRisenSender::test_pair();
     awaited.install_risen(risen);
@@ -329,11 +328,14 @@ async fn an_accepted_tunnels_hello_reports_its_endpoint_to_the_front() {
     };
 
     let (mut serve, admit) = serving().await;
-    let _dialed = punched_path_toward(&admit, hash(0xCD), hash(0xCD)).await;
+    let _dialed = punched_path_toward(&admit, hash(0xCD), hash(0xEF)).await;
     assert!(first_serve_event(&mut serve).await.is_some());
     assert!(
-        reported.try_recv().is_err(),
-        "a dialed path reports nothing"
+        matches!(
+            reported.try_recv(),
+            Ok(ReportedToFront::TunnelIdentified(_, named)) if named == hash(0xEF)
+        ),
+        "a dialed Tunnel is named by its hello, not by what it was aimed at"
     );
 
     let (mut serve, admit) = serving().await;

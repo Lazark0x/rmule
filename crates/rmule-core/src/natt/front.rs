@@ -268,8 +268,8 @@ enum Risen {
     /// downstream, once something reads the hello, through the same sender
     /// [`path_guard::PunchedPathGuard`] closes with.
     Identified { peer: UserHash },
-    /// The hello of a Tunnel a peer opened named `peer` at `at`: the first
-    /// thing that names anybody on it (ADR-0091, security rule 12).
+    /// The hello of a Tunnel, either direction, named `peer` at `at`: the
+    /// first thing that names anybody on it (ADR-0091, security rule 12).
     TunnelIdentified { at: PeerEndpoint, peer: UserHash },
     /// The download that claimed `peer` let go — its slot lapsed, or the
     /// callback beside the punch landed first — so the attempt has no
@@ -296,7 +296,7 @@ impl NattRisenSender {
         let _ = self.0.try_send(Risen::Identified { peer });
     }
 
-    /// An accepted Tunnel's hello named `peer` at `at`. `try_send` for the
+    /// A Tunnel's hello named `peer` at `at`. `try_send` for the
     /// reason [`Self::identified`] gives; a lost report leaves the endpoint
     /// spending the Unidentified Allowance until its Tunnel ends.
     pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, peer: UserHash) {

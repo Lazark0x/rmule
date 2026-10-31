@@ -113,7 +113,8 @@ pub(crate) enum InboundOrigin {
     /// A Tunnel a peer opened. It names nobody until its hello does, and that
     /// hello is reported back to the front (ADR-0091, security rule 12).
     AcceptedTunnel,
-    /// A Tunnel this node dialed toward the named User Hash.
+    /// A Tunnel this node dialed toward the named User Hash, which is what it
+    /// was aimed at and no more: its hello is reported the same way.
     DialedTunnel(UserHash),
 }
 

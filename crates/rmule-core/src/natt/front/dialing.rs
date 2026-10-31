@@ -162,8 +162,8 @@ impl DialSchedule {
         })
     }
 
-    /// One dial ended without a tunnel. The attempt continues on the cadence
-    /// unless its budget is spent.
+    /// One dial ended without a tunnel, or its Tunnel without naming `peer`.
+    /// The attempt continues on the cadence unless its budget is spent.
     pub(super) fn settled(&mut self, peer: UserHash, now: Instant) -> Option<DialOrder> {
         let dial = self.dials.get_mut(&peer)?;
         dial.in_flight = false;
@@ -201,8 +201,9 @@ impl DialSchedule {
         orders
     }
 
-    /// A tunnel rose toward `peer`: the attempt is over. Returns how many dials
-    /// it spent.
+    /// A hello named `peer` on a Tunnel: the attempt is over. Returns how many
+    /// dials it spent. A dial that raised a Tunnel stays in flight until then
+    /// (ADR-0091, security rule 12).
     pub(super) fn risen(&mut self, peer: UserHash) -> Option<u32> {
         self.dials.remove(&peer).map(|dial| dial.dials)
     }

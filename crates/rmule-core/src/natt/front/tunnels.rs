@@ -35,6 +35,7 @@ use super::expectations::Attribution;
 use super::identity::os_punch_jitter;
 use super::path_guard::PunchedPathGuard;
 use super::{AttemptRetirement, NattFront, Risen};
+use crate::natt::paths::ClosedPath;
 
 impl<S: NattDatagramSink> NattFront<S> {
     /// A trigger asks for a Tunnel toward `at` for `peer`: an introduction, a
@@ -145,30 +146,24 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// A dial or an accept settled.
     pub(super) async fn on_risen(&mut self, outcome: Risen, now: Instant) {
         match outcome {
-            Risen::Dialed { tunnel, peer } => {
-                if let Some(dials) = self.dials.risen(peer) {
-                    self.wiring.diagnostics.record_natt_attempt_dials(dials);
-                }
-                self.adopt(tunnel, Some(peer), now);
-            }
+            Risen::Dialed { tunnel, peer } => self.adopt(tunnel, Some(peer), now),
             Risen::Accepted { tunnel } => {
                 if let Some(at) = tunnel.peer().as_v4() {
                     self.note_unattributed(at);
                 }
                 self.adopt(tunnel, None, now);
             }
-            Risen::DialSettled { peer } => {
-                if let Some(order) = self.dials.settled(peer, now) {
-                    self.enact_dial(order, now).await;
-                }
-            }
+            Risen::DialSettled { peer } => self.dial_settled(peer, now).await,
             Risen::Closed { at } => {
-                let unidentified = self.paths.on_path_closed(at);
+                let closed = self.paths.on_path_closed(at);
                 self.release_prediction_route(at);
                 // Nobody was ever named on this path, so what is pending
                 // behind its address is still pending: a forged opener must
                 // not turn the real peer's away (ADR-0091, security rule 12).
-                if unidentified {
+                if let ClosedPath::Unnamed { aimed } = closed {
+                    if let Some(peer) = aimed {
+                        self.dial_settled(peer, now).await;
+                    }
                     return;
                 }
                 // The observed address outranks a hint's port: the NAT may have
@@ -194,19 +189,32 @@ impl<S: NattDatagramSink> NattFront<S> {
                     .lock()
                     .expect("the NAT-T tunnel registry is never poisoned")
                     .identified(at);
-                if let Some(path) = at.as_v4() {
-                    self.paths.identified(path);
+                let aimed = at.as_v4().and_then(|path| self.paths.identified(path));
+                if let Some(dials) = self.dials.risen(peer) {
+                    self.wiring.diagnostics.record_natt_attempt_dials(dials);
                 }
                 // Before `identified`: that ends the attempt, and an attempt's
                 // end closes its Fans outright, where a Tunnel keeps the one
                 // it rides.
                 self.end_prediction(&peer, true);
                 self.identified(peer);
+                // Our dial reached somebody else: its target is still to find.
+                if let Some(aimed) = aimed.filter(|aimed| *aimed != peer) {
+                    self.dial_settled(aimed, now).await;
+                }
             }
             Risen::Abandoned { peer } => {
                 self.requester.abandon(&peer, now);
                 self.end_attempt(&peer);
             }
+        }
+    }
+
+    /// One dial toward `peer` is over without naming them: the schedule goes
+    /// on, or says the budget is spent.
+    async fn dial_settled(&mut self, peer: UserHash, now: Instant) {
+        if let Some(order) = self.dials.settled(peer, now) {
+            self.enact_dial(order, now).await;
         }
     }
 
@@ -236,8 +244,9 @@ impl<S: NattDatagramSink> NattFront<S> {
         self.end_attempt(&peer);
     }
 
-    /// A Tunnel rose: close the attempt it settles, hold its path open, and
-    /// hand it to the serve pipeline as the inbound source it is.
+    /// A Tunnel rose: hold its path open and hand it to the serve pipeline as
+    /// the inbound source it is. Neither direction ends anything: only its
+    /// hello names a peer (ADR-0091, security rule 12).
     ///
     /// Everything here touches the ledgers, so it runs on the front's own
     /// loop; the hand-off itself does not, because it awaits a consumer the
@@ -246,22 +255,15 @@ impl<S: NattDatagramSink> NattFront<S> {
         let at = tunnel.peer();
         let transport = tunnel.transport();
         let role = tunnel.role();
-        // A dialed Tunnel is the attempt's whole purpose: it ends here, with
-        // nothing reported to a claimant. The claim is spent downstream by
-        // the adoption the hello confirms (ADR-0091). An accepted one ends
-        // nothing until that hello.
-        if let Some(peer) = peer {
-            // Before `identified`: that ends the attempt, and an attempt's end
-            // closes its Fans outright, where a Tunnel keeps the one it rides.
-            self.end_prediction(&peer, true);
-            self.identified(peer);
-        }
         self.wiring.diagnostics.record_natt_tunnel(transport, role);
         let Some(path) = at.as_v4() else {
             // Every punch this front aims is IPv4 (the coordinators are), so a
             // tunnel from anywhere else was never one of ours to hold.
             // Dropping it here closes it and frees its registry slot.
             tracing::debug!(%at, "a NAT-T tunnel rose on a path no punch opened; closed");
+            if let Some(peer) = peer {
+                self.dials.skipped(peer);
+            }
             return;
         };
         let pin = self.paths.on_path_open(
@@ -270,10 +272,8 @@ impl<S: NattDatagramSink> NattFront<S> {
             self.granted_external_port(),
             now,
         );
-        if peer.is_some() {
-            self.paths.identified(path);
-        } else if pin.is_some() {
-            self.paths.accepted(path);
+        if peer.is_some() || pin.is_some() {
+            self.paths.unnamed(path, peer);
         }
         if let Some(pin) = pin {
             self.wiring.peer_pin.request(pin);

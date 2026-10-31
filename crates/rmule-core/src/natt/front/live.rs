@@ -753,6 +753,10 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
 
+    // The hello that ends the attempt, as the triage reports it for any
+    // Tunnel (ADR-0091, security rule 12).
+    a.claims.tunnel_identified(dialed.conn.peer_endpoint(), b_hash);
+
     let after_adoption = a.diagnostics.snapshot().session;
     assert_eq!(
         after_adoption.natt_dials_total, 1,
@@ -763,11 +767,11 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
         "one tunnel: the real one that just rose"
     );
 
-    // Past the hold's own deadline, and then some: if it survived adoption,
+    // Past the hold's own deadline, and then some: if it survived the hello,
     // its burst has fired at the fake address and a second dial toward it has
-    // spawned (`dials.arm` sees no in-flight entry left behind by the risen
-    // Tunnel — `DialSchedule::risen` removed it — so a second dial is a fresh
-    // one, not a refusal).
+    // spawned (`dials.arm` sees no in-flight entry left behind by the hello
+    // — `DialSchedule::risen` removed it — so a second dial is a fresh one,
+    // not a refusal).
     tokio::time::sleep(Duration::from_millis(900)).await;
     let after_wait = a.diagnostics.snapshot().session;
     assert_eq!(

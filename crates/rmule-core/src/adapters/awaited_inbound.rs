@@ -252,7 +252,7 @@ impl AwaitedInbound {
         verdict
     }
 
-    /// An accepted Tunnel's hello named `hello` at `at`: the front's
+    /// A Tunnel's hello named `hello` at `at`: the front's
     /// `identified` report for a Tunnel no download may have claimed
     /// (ADR-0091, security rule 12).
     pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, hello: UserHash) {

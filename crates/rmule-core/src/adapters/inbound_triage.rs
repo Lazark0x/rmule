@@ -151,9 +151,9 @@ pub(crate) async fn triage_inbound_connection(
         }
     };
 
-    // The hello is the first thing that names anybody on an accepted Tunnel
-    // (ADR-0091, security rule 12), whichever road below then takes it.
-    if origin == InboundOrigin::AcceptedTunnel {
+    // The hello is the first thing that names anybody on a Tunnel (ADR-0091,
+    // security rule 12), whichever road below then takes it.
+    if origin != InboundOrigin::Socket {
         awaited.tunnel_identified(remote, identity.user_hash());
     }
 
