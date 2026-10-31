@@ -25,7 +25,11 @@ use crate::service::DownloadId;
 pub(super) struct WorkerId(pub(super) u64);
 
 /// A worker's fact on the shared stream: which incarnation, at which endpoint.
-pub(super) type WorkerFact = (WorkerId, PeerEndpoint, PeerWorkerEvent);
+///
+/// `None` is the worker's stream ending, which the forwarder says for every
+/// worker, whichever way out its task took: a drain counts it, so a stop waits
+/// for no worker that is already gone, and the brain never reads it.
+pub(super) type WorkerFact = (WorkerId, PeerEndpoint, Option<PeerWorkerEvent>);
 
 /// The live command channel + diagnostics slot for one spawned worker.
 pub(super) struct WorkerCommandChannel {
@@ -153,28 +157,18 @@ where
                 )
                 .await
         };
-        let mut worker = started.map_err(|_| ())?;
+        let worker = started.map_err(|_| ())?;
         self.runner
             .rt
             .diagnostics
             .attach_worker(download_id, slot, peer);
         let id = command_channels.register(peer, slot, worker.command_sender());
-        let fact_tx = self.fact_tx.clone();
         let worker_span = tracing::info_span!(
             "peer_worker",
             worker_slot = slot.as_usize(),
             peer = %peer,
         );
-        tokio::spawn(
-            async move {
-                while let Some(event) = worker.next_event().await {
-                    if fact_tx.send((id, peer, event)).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            .instrument(worker_span),
-        );
+        tokio::spawn(forward_facts(worker, id, peer, self.fact_tx.clone()).instrument(worker_span));
         Ok(())
     }
 
@@ -192,7 +186,7 @@ where
         download_id: DownloadId,
         peer: PeerEndpoint,
         slot: crate::diagnostics::WorkerSlot,
-        mut worker: PeerWorker,
+        worker: PeerWorker,
         command_channels: &mut WorkerChannels,
     ) {
         self.runner
@@ -200,23 +194,29 @@ where
             .diagnostics
             .attach_worker(download_id, slot, peer);
         let id = command_channels.register(peer, slot, worker.command_sender());
-        let fact_tx = self.fact_tx.clone();
         let worker_span = tracing::info_span!(
             "peer_worker",
             worker_slot = slot.as_usize(),
             peer = %peer,
         );
-        tokio::spawn(
-            async move {
-                while let Some(event) = worker.next_event().await {
-                    if fact_tx.send((id, peer, event)).await.is_err() {
-                        break;
-                    }
-                }
-            }
-            .instrument(worker_span),
-        );
+        tokio::spawn(forward_facts(worker, id, peer, self.fact_tx.clone()).instrument(worker_span));
     }
+}
+
+/// Carry `worker`'s events onto the run's shared stream, then say its stream
+/// ended.
+async fn forward_facts(
+    mut worker: PeerWorker,
+    id: WorkerId,
+    peer: PeerEndpoint,
+    fact_tx: mpsc::Sender<WorkerFact>,
+) {
+    while let Some(event) = worker.next_event().await {
+        if fact_tx.send((id, peer, Some(event))).await.is_err() {
+            return;
+        }
+    }
+    let _ = fact_tx.send((id, peer, None)).await;
 }
 
 #[cfg(test)]
@@ -257,5 +257,27 @@ mod tests {
             "the ended worker got nothing more"
         );
         assert!(!channels.is_live(ended) && channels.is_live(live));
+    }
+
+    /// A worker let go mid-dial ends its task with no terminal fact. Its
+    /// forwarder still says so, which is what spares a stop its full cap.
+    #[tokio::test]
+    async fn a_worker_stream_ended_with_no_terminal_fact_is_still_said() {
+        let peer = PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
+            [10, 0, 0, 1].into(),
+            4662,
+        ));
+        let (command_tx, _command_rx) = mpsc::channel(1);
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let (fact_tx, mut fact_rx) = mpsc::channel(1);
+        tokio::spawn(forward_facts(
+            PeerWorker::new(peer, command_tx, event_rx),
+            WorkerId(1),
+            peer,
+            fact_tx,
+        ));
+        drop(event_tx);
+
+        assert_eq!(fact_rx.recv().await, Some((WorkerId(1), peer, None)));
     }
 }

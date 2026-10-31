@@ -459,39 +459,6 @@ where
                         None => dialed_serve_rx = None,
                     }
                 }
-                fact = fact_rx.recv(), if share_set_known => {
-                    let Some((peer, event)) = fact else { continue };
-                    let closing = event.is_disconnect() || event == ServeInput::Readopted;
-                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
-                    // Our own position, read fresh from the session's
-                    // self-facts. A synchronous cell read, not a round
-                    // trip: it must be current at the decision, because a
-                    // login that just made us High-ID must stop the guard
-                    // refusing on the very next ask.
-                    state.on_self_position(self_position(own_identity.as_ref()));
-                    // The downloads' Verified Ranges likewise: a part a run
-                    // just verified is answered for on this very input.
-                    refresh_served(&served, &mut served_seen, &mut state);
-                    state.on_asker(asker_at(peer.ip(), &bans, &peer_roster).await);
-                    let mut decisions: VecDeque<ServeDecision> = state
-                        .on_conn_event(Instant::now(), peer, event, &modifiers)
-                        .into();
-                    enact(
-                        &mut decisions,
-                        &mut state,
-                        &links,
-                        &mut serve_runtime,
-                        &mut aich,
-                        sinks,
-                    )
-                    .await;
-                    if closing {
-                        links.remove(&peer);
-                        accepted_next.link_left(peer);
-                        dialed_next.link_left(peer);
-                        dial_backs_next.link_left(peer);
-                    }
-                }
                 _ = rerank_tick.tick() => {
                     let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     let now = Instant::now();
@@ -550,6 +517,42 @@ where
                     // The front closed (core shutdown); stop polling it.
                     None => reask_rx = None,
                 },
+                // Last of all: at full upload this queue is never empty, and
+                // every arm above fires rarely or follows from a fact, so
+                // nothing above can starve it and it starves nothing.
+                fact = fact_rx.recv(), if share_set_known => {
+                    let Some((peer, event)) = fact else { continue };
+                    let closing = event.is_disconnect() || event == ServeInput::Readopted;
+                    let modifiers = current_modifiers(&credit, &held_places, state.identities());
+                    // Our own position, read fresh from the session's
+                    // self-facts. A synchronous cell read, not a round
+                    // trip: it must be current at the decision, because a
+                    // login that just made us High-ID must stop the guard
+                    // refusing on the very next ask.
+                    state.on_self_position(self_position(own_identity.as_ref()));
+                    // The downloads' Verified Ranges likewise: a part a run
+                    // just verified is answered for on this very input.
+                    refresh_served(&served, &mut served_seen, &mut state);
+                    state.on_asker(asker_at(peer.ip(), &bans, &peer_roster).await);
+                    let mut decisions: VecDeque<ServeDecision> = state
+                        .on_conn_event(Instant::now(), peer, event, &modifiers)
+                        .into();
+                    enact(
+                        &mut decisions,
+                        &mut state,
+                        &links,
+                        &mut serve_runtime,
+                        &mut aich,
+                        sinks,
+                    )
+                    .await;
+                    if closing {
+                        links.remove(&peer);
+                        accepted_next.link_left(peer);
+                        dialed_next.link_left(peer);
+                        dial_backs_next.link_left(peer);
+                    }
+                }
             }
         }
         // Release before handing the adapter back, and await it: the accept

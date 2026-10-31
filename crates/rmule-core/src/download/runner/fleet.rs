@@ -544,13 +544,6 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
-            recv = ctx.fact_rx.recv() => match recv {
-                Some(item) => item,
-                // `fact_tx` is held for the whole run so a backfilled worker
-                // can join the stream, so this is reached only if every worker
-                // stream has closed with the download still incomplete.
-                None => return Err(DownloadFailure::NoUsableSources),
-            },
             () = reach_generation.changed() => {
                 // **Self Reach** moved (ADR-0060) — a listener
                 // bind or clear included: the brain's capability
@@ -597,6 +590,18 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
+            // Last of all: under full transfer this queue is never empty, and
+            // every arm above fires rarely, so nothing above can starve it
+            // and it starves nothing.
+            recv = ctx.fact_rx.recv() => match recv {
+                Some((worker, peer, Some(event))) => (worker, peer, event),
+                // Only a stop's drain counts a stream's end.
+                Some((_, _, None)) => continue,
+                // `fact_tx` is held for the whole run so a backfilled worker
+                // can join the stream, so this is reached only if every worker
+                // stream has closed with the download still incomplete.
+                None => return Err(DownloadFailure::NoUsableSources),
+            },
         };
         // Download byte accounting (ADR-0077) at the wire boundary: every
         // block a worker delivered counts, before the brain decides whether it

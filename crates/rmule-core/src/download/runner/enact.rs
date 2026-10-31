@@ -617,9 +617,9 @@ where
 }
 
 /// Wait for every worker just told to shut down — the `live` incarnations —
-/// to report its terminal `Disconnected` fact, capped by
-/// `WORKER_SHUTDOWN_TIMEOUT` for one that never does; a released worker's late
-/// fact counts for nothing. `fact_rx` cannot close here to end the wait on its
+/// to report its terminal `Disconnected` fact or the end of its stream, capped
+/// by `WORKER_SHUTDOWN_TIMEOUT` for one wedged past both; a released worker's
+/// late fact counts for nothing. `fact_rx` cannot close here to end the wait on its
 /// own: `WorkerPool` keeps its own `fact_tx` clone alive for the run's whole
 /// lifetime so a worker backfilled after this point can still join the stream
 /// (ADR-0030), and that clone outlives this drain — it only drops with `ctx`
@@ -640,7 +640,7 @@ async fn await_worker_shutdown(
                 Some((
                     worker,
                     _,
-                    PeerWorkerEvent::Disconnected | PeerWorkerEvent::CryptIncompatible,
+                    None | Some(PeerWorkerEvent::Disconnected | PeerWorkerEvent::CryptIncompatible),
                 )) => {
                     still_shutting_down.remove(&worker);
                 }
