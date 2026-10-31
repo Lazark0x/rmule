@@ -19,7 +19,7 @@ fn probes_in(commands: &[MappingCommand]) -> Vec<MappingProtocol> {
     commands
         .iter()
         .filter_map(|command| match command {
-            MappingCommand::Probe { protocol } => Some(*protocol),
+            MappingCommand::Probe { protocol, .. } => Some(*protocol),
             _ => None,
         })
         .collect()

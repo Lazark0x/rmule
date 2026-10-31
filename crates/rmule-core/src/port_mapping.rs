@@ -243,6 +243,18 @@ impl fmt::Display for MappingStatus {
     }
 }
 
+/// Which probe round asked. A set change can open a round while the last one's
+/// probes are still out, and only this tells their answers from the new ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ProbeRound(u64);
+
+impl ProbeRound {
+    /// The round after this one.
+    const fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 /// What the sans-I/O [`PortMapper`] asks its runtime to do. The runtime turns
 /// each into one [`MappingBackend`](rmule_net::portmap::MappingBackend) call —
 /// except the last, which reaches the Kad node instead.
@@ -252,6 +264,8 @@ pub(crate) enum MappingCommand {
     Probe {
         /// The protocol to ask.
         protocol: MappingProtocol,
+        /// The round asking, echoed on the answer.
+        round: ProbeRound,
     },
     /// Request one mapping, or renew one by suggesting the granted port.
     Map {
@@ -291,6 +305,8 @@ pub(crate) enum MappingResult {
     Probed {
         /// Which protocol answered.
         protocol: MappingProtocol,
+        /// The round that asked.
+        round: ProbeRound,
         /// The families it can map through this gateway, and its epoch
         /// verdict — or why it cannot.
         outcome: Result<ProbeAnswer, MappingError>,

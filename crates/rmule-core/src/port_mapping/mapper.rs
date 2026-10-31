@@ -45,7 +45,7 @@ use super::renewal::{
 };
 use super::{
     DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics, MappingGrade, MappingLease,
-    MappingResult, MappingStatus, PortMappingConfig,
+    MappingResult, MappingStatus, PortMappingConfig, ProbeRound,
 };
 
 mod end;
@@ -160,6 +160,8 @@ pub(crate) struct PortMapper {
     /// what a re-race must strictly beat, and what tells a fresh lead-family
     /// `Exact` (which earns a recheck) from one already held.
     installed: Option<Standing>,
+    /// The open (or last) probe round; an answer naming any other is stale.
+    pub(super) round: ProbeRound,
     /// Whether the open (or last) probe round tried the learned method alone.
     /// A short round's non-Exact winner is re-raced at once: the other
     /// protocols were never asked.
@@ -200,6 +202,7 @@ impl PortMapper {
             readd_succeeded: false,
             next_readd_at: None,
             installed: None,
+            round: ProbeRound::default(),
             short_round: false,
             rerace_at: None,
             reracing: None,
@@ -305,7 +308,11 @@ impl PortMapper {
     /// Take one answer from the runtime.
     pub(crate) fn on_result(&mut self, result: MappingResult, now: Instant) {
         match result {
-            MappingResult::Probed { protocol, outcome } => self.on_probe(protocol, &outcome, now),
+            MappingResult::Probed {
+                protocol,
+                round,
+                outcome,
+            } => self.on_probe(protocol, round, &outcome, now),
             MappingResult::Mapped {
                 protocol,
                 mapping,

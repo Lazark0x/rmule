@@ -37,7 +37,7 @@ use crate::address_learning::SharedAddressLearning;
 use crate::diagnostics::DiagnosticsState;
 use crate::port_mapping::{
     BACKEND_DEADLINE, DesiredMapping, GrantAnswer, MappingCommand, MappingDiagnostics,
-    MappingResult, PortMapper, PortMappingConfig, PortMappingMode, ProbeAnswer,
+    MappingResult, PortMapper, PortMappingConfig, PortMappingMode, ProbeAnswer, ProbeRound,
 };
 use crate::reachability::SharedSelfReach;
 
@@ -437,7 +437,7 @@ impl Runtime {
 
     fn enact(&mut self, command: MappingCommand, results: &mpsc::Sender<MappingResult>) {
         match command {
-            MappingCommand::Probe { protocol } => self.probe(protocol, results),
+            MappingCommand::Probe { protocol, round } => self.probe(protocol, round, results),
             MappingCommand::Map {
                 protocol,
                 mapping,
@@ -533,12 +533,18 @@ impl Runtime {
 
     /// Ask one protocol, on every gateway it could speak to, and merge the
     /// answers into the one report the mapper expects.
-    fn probe(&mut self, protocol: MappingProtocol, results: &mpsc::Sender<MappingResult>) {
+    fn probe(
+        &mut self,
+        protocol: MappingProtocol,
+        round: ProbeRound,
+        results: &mpsc::Sender<MappingResult>,
+    ) {
         self.routes = self.gateways.gateways();
         let Some(backend) = self.backend(protocol) else {
             self.mapper.on_result(
                 MappingResult::Probed {
                     protocol,
+                    round,
                     outcome: Err(MappingError::Unsupported(protocol)),
                 },
                 Instant::now(),
@@ -582,7 +588,11 @@ impl Runtime {
                 })
             };
             let _ = results
-                .send(MappingResult::Probed { protocol, outcome })
+                .send(MappingResult::Probed {
+                    protocol,
+                    round,
+                    outcome,
+                })
                 .await;
         });
     }

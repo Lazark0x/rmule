@@ -34,6 +34,7 @@ fn reset_probe(mapper: &mut PortMapper, protocol: MappingProtocol, now: Instant)
     mapper.on_result(
         MappingResult::Probed {
             protocol,
+            round: mapper.round,
             outcome: Ok(ProbeAnswer {
                 families: vec![AddressFamily::V4],
                 epoch_reset: true,
