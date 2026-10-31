@@ -587,6 +587,13 @@ A record still in a lane, published under its **Ask Names** beside the places in
 Standings**, so a download holding a peer it has not reached yet can take a **Source Handover**. It
 outranks only a place holding no part we lack (ADR-0090).
 
+**Ask Score**:
+A peer's `m_Aggressiveness` as rmule computes it on the **Queue Standings**' clock: an ask under
+590 s past the last adds 3, a later one takes 1 off, and 10 bans at the uploader. A **Link Rider**
+may ask inside the clock while that leaves the score at 9 or under; no other road spends it
+(ADR-0107 invariant 17).
+_Avoid_: penalty, ban count
+
 **Queue Standing**:
 rmule's one place in a remote uploader's queue, per peer across the **Download Set**, as aMule's
 uploader holds one queue entry per client and re-targets it between files (`SetUploadFileID`).

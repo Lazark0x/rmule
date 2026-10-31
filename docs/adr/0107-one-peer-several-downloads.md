@@ -357,8 +357,8 @@ takes the grant as its own: no file request and no slot ask go first. aMule's do
 neither on an uploader's dial-back while it waits on queue (`BaseClient.cpp:1692-1706`) and
 answers `OP_ACCEPTUPLOADREQ` with its block requests (`ClientTCPSocket.cpp:635-644`); a slot ask
 there is scored like any other (`CheckForAggressive`, `UploadClient.cpp:795-825`, from
-`ClientTCPSocket.cpp:601`), 3 points for a slot already held, and a hand-over that follows asks
-again. The worker's blocks come off the Advertised Parts its record last heard — the probe before
+`ClientTCPSocket.cpp:601`), 3 points off the peer's Ask Score for a slot already held, spent for
+nothing, and a hand-over that follows asks again. The worker's blocks come off the Advertised Parts its record last heard — the probe before
 its hang-up, or a reask answer's status — as aMule's come off the part status its client kept;
 a record that heard none is probed first, a file request aMule does not score, and handed its
 blocks at the answer (ADR-0112). The uploader serves the file each block request names
@@ -388,7 +388,12 @@ for another file re-targets the entry (`SetUploadFileID`, `ClientTCPSocket.cpp:4
 `:613`). A UDP reask is answered only for the file the entry holds (`ClientUDPSocket.cpp:196-228`).
 Every slot ask and every reask, answered or not, is scored (`CheckForAggressive`,
 `UploadClient.cpp:795-825`, called at `ClientTCPSocket.cpp:601` and `ClientUDPSocket.cpp:194`):
-one under `MIN_REQUESTTIME` (590 s) after the last adds 3, a polite one takes 1 off, and 10 bans.
+one under `MIN_REQUESTTIME` (590 s) after the last adds 3, a polite one takes 1 off, and 10 bans
+while the client is not downloading from the scorer. The score is a client's on 2.3.3, 3.1.0
+(`UploadClient.cpp:656-683`) and kno (`UploadClient.cpp:691-720`), whichever file it asked for;
+3.1.0 and kno score `OP_AICHREQUEST` too (3.1.0 `ClientTCPSocket.cpp:1768`, kno `:1702`). eMule
+keeps one per requested file (eMuleAI `UploadClient.cpp:1042-1048`), so a client's score is the
+stricter read of the two.
 aMule's downloader asks a client for one file and reasks it on the client's one clock
 (`m_dwLastAskedTime`, `DownloadClient.cpp:156`, `:1225`). Two downloads each keeping a place of
 their own and reasking on their own clocks net about 2 points a cycle: a ban in about four. rmule
@@ -396,7 +401,7 @@ holds aMule's shape as a **Queue Standing**: one per peer across the Download Se
 
 | Set | Key | Owner | Lifetime |
 |---|---|---|---|
-| **Queue Standings** | each Ask Name (ADR-0108) of a record holding a standing: the endpoint it stands at and the User Hash its record knows; per name, a **stamp** — the peer's last ask and the download whose slot ask it last read | the core, shared by the Download Set; each run republishes its places after every step and stamps each ping and TCP full ask its sweep sends | a place: from its record earning a standing (a slot ask, ADR-0057) to the standing's end; a Pooled Place, the same names of a record still in a lane (ADR-0090): while it waits there; a stamp: until no place carries its name and two reask periods have passed |
+| **Queue Standings** | each Ask Name (ADR-0108) of a record holding a standing: the endpoint it stands at and the User Hash its record knows; per name, a **stamp** — the peer's last ask, its **Ask Score** and the download whose slot ask it last read | the core, shared by the Download Set; each run republishes its places after every step and stamps each ping and TCP full ask its sweep sends | a place: from its record earning a standing (a slot ask, ADR-0057) to the standing's end; a Pooled Place, the same names of a record still in a lane (ADR-0090): while it waits there; a stamp: until no place carries its name and two reask periods have passed, or one hour for a stamp with a score, the uploader's queue purge (`MAX_PURGEQUEUETIME`, `UploadQueue.cpp:86`) |
 
 Invariants every transition keeps:
 
@@ -418,7 +423,8 @@ Invariants every transition keeps:
     inside `MIN_REQUESTTIME`, 590 s, past the last stamp (`Constants.h:67`, scored at
     `ClientTCPSocket.cpp:601`, `ClientUDPSocket.cpp:194`, 3.1.0 `ClientTCPSocket.cpp:1768`): a fill
     parks the record, and a worker holding the peer's answer sends no slot ask and leaves its
-    record standing on the clock, retired `on_peers_clock`. A stamp binds the download that made
+    record standing on the clock, retired `on_peers_clock`. A Link Rider alone may ask inside the
+    clock, by invariant 17. A stamp binds the download that made
     it as it binds every other. A grant taken asks nothing and reads no clock. A download the
     standing passes to pings nothing — the peer holds the other file — and its TCP full ask falls
     due a period after the last stamp, never sooner. A waiter's own clock follows the stamps, so it
@@ -430,7 +436,9 @@ Invariants every transition keeps:
     dated at that ask, as stock's Pause keeps `DS_ONQUEUE` and `DS_NONEEDEDPARTS` with their clocks
     (`PartFile.cpp:2429-2443`), and its TCP full ask falls due a period after it, twice that for a
     source holding no part we need (`PartFile.cpp:1439-1440`). A later ask naming another file
-    re-targeted the peer's entry, and the place is gone.
+    re-targeted the peer's entry, and the place is gone. A Resume and a re-add are never riders:
+    their asks read the plain clock, whatever room the Ask Score holds, since nothing stands to be
+    lost by waiting.
 16. **A source with no place at the peer is not queued.** A slot holder we told
     `OP_CANCELTRANSFER` left the uploader's lists (`UploadQueue.cpp:527-542`), and a record that
     never asked never joined them. Stock clears such a client's clock and asks it at once
@@ -438,6 +446,19 @@ Invariants every transition keeps:
     the first instant nothing scores: the record stands **spaced**, counted as asking, naming no
     place, and its TCP full ask falls due 590 s past the last stamp, or at the next sweep with no
     stamp. So no source a stop left without a place waits a period for it.
+17. **The Ask Score is a budget a Link Rider spends, and nobody else.** The Queue Standings keep
+    each peer's score as stock computes it, on the stamps' clock: the first ask scores nothing, an
+    ask under 590 s past the last stamp adds 3, a later one takes 1 off down to 0
+    (`UploadClient.cpp:795-825`). A worker seated on a link it did not dial may ask inside the clock
+    when that leaves the score at 9 or under, the ban line less a margin: at most three fast asks
+    before a polite one. Past that it sends no slot ask and stands on the clock, retired
+    `on_peers_clock`, as invariant 14 has it. The rider has a link to lose: it stands now, the
+    uploader grants the switch at once, and its end costs a dial a reask away. Every other road
+    waits, since waiting costs it nothing. No ask of ours goes past 9: the one other ask allowed
+    inside the clock, the TCP fallback to a ping left unanswered, reads the ping's stamp when the
+    score has no room for it. A recovery ask stamps the clock and takes nothing off, since 2.3.3
+    does not score it. An unanswered ping counts as polite, a point low if it was lost, but its TCP
+    fallback then counts as fast, so the pair reads high.
 
 What each clock survives. The stamps, the left places and the spent names live in the core's one
 registry, in `Instant`s, bounded by a window past the newest stamp:
@@ -445,6 +466,7 @@ registry, in `Instant`s, bounded by a window past the newest stamp:
 | | Pause, Resume | Cancel, re-add of one hash | Run restart | Process restart |
 |---|---|---|---|---|
 | the peer's last ask | kept | kept (stock clears it, and pays +3) | kept | lost, as stock's client objects |
+| the peer's Ask Score | kept | kept | kept | lost, though the uploader's stays |
 | a left place | kept | kept, keyed by the file | kept | lost |
 | spent names | kept | kept | kept | lost |
 
@@ -458,6 +480,7 @@ registry, in `Instant`s, bounded by a window past the newest stamp:
 | another file of a queued client waits on the client | `AddRequestForAnotherFile` (`DownloadClient.cpp:496-507`) | a pooled record of a peer standing elsewhere waits on that standing and is not dialed |
 | a source holding nothing we need, or not the file, swaps to an A4AF file | `PartFile.cpp:1423-1426`, `ClientTCPSocket.cpp:555-561`, `PartFile.cpp:2203-2206` | a holder holding no part we need yields to a waiter, or a download holding the peer in a lane, that may need one (a **Source Handover**, ADR-0090); a holder whose standing ends — a `0x92`, the TCP no-file answer, a purge, a failed road, its run's stop, pause or end — leaves it to the next waiter |
 | a swapped client asks by TCP on the client's clock | `SwapToAnotherFile` leaves `DS_NONE` (`DownloadClient.cpp:1499`), which only the TCP ask serves, at the last ask plus `FILEREASKTIME` (`PartFile.cpp:1472-1483`) | the new holder's first re-ask is the TCP full ask, a period after the standing's last stamp |
+| a swapped client sends nothing on its link until that ask | the swap writes no packet (`DownloadClient.cpp:1411-1520`), and its link ends at 40 s idle | a departure: a Link Rider asks at once while the Ask Score has room (invariant 17), one link for both files |
 | a promoted client takes the grant for its requested file | `OP_ACCEPTUPLOADREQ` names no file; `DS_ONQUEUE` becomes `DS_DOWNLOADING` for `m_reqfile` (`ClientTCPSocket.cpp:635-645`) | an unasked grant goes to the holder's Awaited Grant first |
 | the A4AF files take the socket after the transfer | `SwapToAnotherFile` over the client's one socket, granted at once while it uploads (`UploadQueue.cpp:486-493`) | a grant on the standing calls every waiter to the holder's link |
 
@@ -475,9 +498,12 @@ its record's worker on the holder's link at once, unadmitted by the Connection B
 (ADR-0116), and waits there as a Link Rider. When the holder's worker ends, the swap rule hands the
 link to the oldest waiter: after a silent release its ask is granted at once
 (`UploadQueue.cpp:486-493`), after a cancel it is admitted afresh, and a rank makes it the holder.
-That ask reads the peer's clock like any other (invariant 14): inside it the rider sends none, and
-its record waits for the reask, as stock's swap does (`DownloadClient.cpp:1498`,
-`PartFile.cpp:1472-1483`).
+That ask reads the peer's clock, and a rider may ask inside it while the Ask Score has room
+(invariant 17). Past that it sends none and its record waits for the reask, which is where stock's
+own swap always waits: `SwapToAnotherFile` sends nothing on the link and leaves `DS_NONE`
+(`DownloadClient.cpp:1498`), whose ask is due a `FILEREASKTIME` past the last
+(`PartFile.cpp:1472-1483`), by then on a new link. rmule rides instead: a peer with two of our files
+would otherwise cost 21 minutes and a second link for 3 points it has room for.
 The grant after a silent release keeps the slot, and with it what the uploader remembers of the
 client: `AddReqBlock` drops a requested block whose start and end equal one in its done list or
 its pending queue, comparing offsets alone, not the file (stock 2.3.3 `UploadClient.cpp:503-521`,
