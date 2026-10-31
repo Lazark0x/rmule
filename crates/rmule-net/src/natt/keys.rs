@@ -4,7 +4,8 @@
 //! Two timers, both eMuleAI's, and each bounds a different exposure. The
 //! **10-minute learned-hash TTL** bounds how long a stale `(ip, port) → user
 //! hash` mapping can key a send — after a NAT rebinds, that endpoint may be
-//! somebody else. The **10-second per-endpoint send window** bounds what a
+//! somebody else — so it does not run under a live tunnel, whose endpoint has
+//! gone on answering and whose peer sends no second KEY frame. The **10-second per-endpoint send window** bounds what a
 //! stranger can make us emit: a flood of forged `ST_SYN` frames costs one KEY
 //! frame per ten seconds per source, not one per packet.
 //!
@@ -68,7 +69,11 @@ impl NattKeyTable {
     /// rebinding moves the endpoint, never the hash at one, so the only frame
     /// this refuses is one that would re-key a live tunnel to a stranger.
     pub fn learn(&mut self, peer: PeerEndpoint, hash: UserHash, held: bool, now: Instant) -> bool {
-        if held && self.key_for(peer, now).is_some_and(|known| known != hash) {
+        if held
+            && self
+                .key_for(peer, held, now)
+                .is_some_and(|known| known != hash)
+        {
             return false;
         }
         self.entries.entry(peer).or_insert(EMPTY).learned = Some((hash, now));
@@ -77,13 +82,13 @@ impl NattKeyTable {
 
     /// The hash to obfuscate a send to `peer` under, or `None` — plaintext
     /// then, which is the honest state for an endpoint that has never asserted
-    /// one.
+    /// one. A `held` endpoint's key does not age (ADR-0091, security rule 11).
     #[must_use]
-    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+    pub fn key_for(&self, peer: PeerEndpoint, held: bool, now: Instant) -> Option<UserHash> {
         self.entries
             .get(&peer)
             .and_then(|entry| entry.learned)
-            .filter(|(_, at)| now.duration_since(*at) < LEARNED_HASH_TTL)
+            .filter(|(_, at)| held || now.duration_since(*at) < LEARNED_HASH_TTL)
             .map(|(hash, _)| hash)
     }
 
@@ -120,16 +125,17 @@ impl NattKeyTable {
 
     /// Drop entries no longer doing anything: the learned hash has expired and
     /// the send window has too, so the row would be recreated identically on
-    /// the next datagram. The caller runs this on its own coarse tick.
-    pub fn prune(&mut self, now: Instant) {
-        self.entries.retain(|_, entry| {
+    /// the next datagram. A `held` endpoint's row stays whatever its age. The
+    /// caller runs this on its own coarse tick.
+    pub fn prune(&mut self, now: Instant, held: impl Fn(PeerEndpoint) -> bool) {
+        self.entries.retain(|peer, entry| {
             let hash_live = entry
                 .learned
                 .is_some_and(|(_, at)| now.duration_since(at) < LEARNED_HASH_TTL);
             let window_live = entry
                 .asserted_at
                 .is_some_and(|at| now.duration_since(at) < KEY_FRAME_INTERVAL);
-            hash_live || window_live
+            hash_live || window_live || held(*peer)
         });
     }
 
@@ -175,17 +181,21 @@ mod tests {
     fn a_learned_hash_keys_sends_for_ten_minutes_then_stops() {
         let now = Instant::now();
         let mut table = NattKeyTable::new();
-        assert_eq!(table.key_for(endpoint(1), now), None);
+        assert_eq!(table.key_for(endpoint(1), false, now), None);
         table.learn(endpoint(1), hash(0x42), false, now);
-        assert_eq!(table.key_for(endpoint(1), now), Some(hash(0x42)));
+        assert_eq!(table.key_for(endpoint(1), false, now), Some(hash(0x42)));
         assert_eq!(
             table.key_for(
                 endpoint(1),
+                false,
                 now + LEARNED_HASH_TTL - Duration::from_millis(1)
             ),
             Some(hash(0x42))
         );
-        assert_eq!(table.key_for(endpoint(1), now + LEARNED_HASH_TTL), None);
+        assert_eq!(
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
+            None
+        );
     }
 
     /// A hash is learned per endpoint, never per address: the same host on a
@@ -196,8 +206,8 @@ mod tests {
         let mut table = NattKeyTable::new();
         table.learn(endpoint(1), hash(1), false, now);
         table.learn(endpoint(2), hash(2), false, now);
-        assert_eq!(table.key_for(endpoint(1), now), Some(hash(1)));
-        assert_eq!(table.key_for(endpoint(2), now), Some(hash(2)));
+        assert_eq!(table.key_for(endpoint(1), false, now), Some(hash(1)));
+        assert_eq!(table.key_for(endpoint(2), false, now), Some(hash(2)));
     }
 
     /// While the endpoint holds a tunnel its key is fixed: a KEY frame naming
@@ -210,12 +220,33 @@ mod tests {
         assert!(table.learn(endpoint(1), hash(1), true, now));
         let later = now + Duration::from_secs(500);
         assert!(!table.learn(endpoint(1), hash(9), true, later));
-        assert_eq!(table.key_for(endpoint(1), later), Some(hash(1)));
+        assert_eq!(table.key_for(endpoint(1), false, later), Some(hash(1)));
         assert!(table.learn(endpoint(1), hash(1), true, later));
         assert_eq!(
-            table.key_for(endpoint(1), now + LEARNED_HASH_TTL),
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
             Some(hash(1)),
             "the restatement refreshed the window"
+        );
+    }
+
+    /// The peer's KEY only follows its opener, so nothing restates a live
+    /// tunnel's key: it neither lapses under the tunnel, which would leave
+    /// sends in plaintext and the gate open, nor yields to a forgery then.
+    #[test]
+    fn a_held_key_does_not_expire_under_its_tunnel() {
+        let now = Instant::now();
+        let mut table = NattKeyTable::new();
+        table.learn(endpoint(1), hash(1), true, now);
+        let later = now + LEARNED_HASH_TTL * 2;
+        assert!(!table.learn(endpoint(1), hash(9), true, later));
+        assert_eq!(table.key_for(endpoint(1), true, later), Some(hash(1)));
+        table.prune(later, |_| true);
+        assert_eq!(table.len(), 1, "the tick leaves a held row alone");
+
+        assert_eq!(
+            table.key_for(endpoint(1), false, later),
+            None,
+            "with the tunnel gone the window applies again"
         );
     }
 
@@ -228,9 +259,9 @@ mod tests {
         table.learn(endpoint(1), hash(1), false, now);
         let later = now + Duration::from_secs(500);
         table.learn(endpoint(1), hash(9), false, later);
-        assert_eq!(table.key_for(endpoint(1), later), Some(hash(9)));
+        assert_eq!(table.key_for(endpoint(1), false, later), Some(hash(9)));
         assert_eq!(
-            table.key_for(endpoint(1), now + LEARNED_HASH_TTL),
+            table.key_for(endpoint(1), false, now + LEARNED_HASH_TTL),
             Some(hash(9)),
             "the fresh learn moved the expiry, it did not inherit the old one"
         );
@@ -270,7 +301,7 @@ mod tests {
         table.learn(endpoint(1), hash(1), false, now);
         assert_eq!(table.len(), 1);
         table.learn(endpoint(2), hash(2), false, now + LEARNED_HASH_TTL);
-        table.prune(now + LEARNED_HASH_TTL);
+        table.prune(now + LEARNED_HASH_TTL, |_| false);
         assert_eq!(table.len(), 1, "endpoint 1 aged out on the prune");
         assert!(!table.is_empty());
     }
@@ -287,7 +318,7 @@ mod tests {
         }
         assert_eq!(table.len(), 200);
         assert!(table.claim_key_frame(endpoint(201), now + KEY_FRAME_INTERVAL));
-        table.prune(now + KEY_FRAME_INTERVAL);
+        table.prune(now + KEY_FRAME_INTERVAL, |_| false);
         assert_eq!(table.len(), 1, "only the fresh claim is left");
     }
 

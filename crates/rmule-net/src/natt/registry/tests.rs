@@ -5,6 +5,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use rmule_primitives::Ipv4Endpoint;
 
 use super::*;
+use crate::natt::keys::LEARNED_HASH_TTL;
 
 fn endpoint(last: u8) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, last), 4672))
@@ -371,4 +372,32 @@ fn an_identified_endpoints_rows_outlive_its_charge() {
         registry.lock().expect("registry").key_for(peer, now),
         Some(hash)
     );
+}
+
+/// Ten minutes into a tunnel its sends still key under the hash it rose with,
+/// a forged KEY still loses, and the tick has not swept the row out.
+#[test]
+fn a_live_tunnels_key_outlasts_the_learned_window() {
+    let now = Instant::now();
+    let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
+    let peer = endpoint(1);
+    let genuine = UserHash::from_bytes([0x66; UserHash::BYTE_LEN]);
+    let forged = UserHash::from_bytes([0x99; UserHash::BYTE_LEN]);
+    registry
+        .lock()
+        .expect("registry")
+        .learn_key(peer, genuine, now);
+    let tunnel = DialingSlot::open(&registry, peer).held();
+
+    let later = now + LEARNED_HASH_TTL * 3;
+    let mut held = registry.lock().expect("registry");
+    held.prune(later);
+    assert_eq!(held.key_for(peer, later), Some(genuine));
+    assert!(!held.learn_key(peer, forged, later));
+    assert_eq!(held.key_for(peer, later), Some(genuine));
+    drop(held);
+
+    drop(tunnel);
+    let held = registry.lock().expect("registry");
+    assert_eq!(held.key_for(peer, later), None, "the window applies again");
 }
