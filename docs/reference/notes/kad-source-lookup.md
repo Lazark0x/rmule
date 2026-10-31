@@ -450,7 +450,7 @@ Two harness findings made the capture possible (both recorded in the fixture's
 
 Reproduce: `cargo run -p rmule-interop-harness -- kad-distance-ordering-capture` (builds
 the mesh, fires the stimulus, auto-decodes the winning hypothesis to
-`distance-verdict.txt`).
+`distance-ordering-verdict.toml`).
 
 ## 2026-07-07 The `0x3B` wall FELL: genuine source result captured (ADR-0043)
 
@@ -504,7 +504,7 @@ an 8 s timer until it sees the `0x4B` (success-only opcodes never NAK), which co
   unrecognized `0x02` name and still projects the direct source (regression-guarded).
 
 Reproduce: `cargo run -p rmule-interop-harness -- kad-source-capture` (builds the mesh,
-publishes + searches from the rmule stimulus node, writes `kad-source-capture-verdict.txt`
+publishes + searches from the rmule stimulus node, writes `kad-source-capture-verdict.toml`
 and the captured `0x3B` bytes for promotion).
 
 ## The firewalled publisher's own `0x44` (capture, 2026-09-22)
