@@ -53,9 +53,20 @@ weak key rather than strengthening it.
 - **Credit binding.** The first successful SUI binds the peer's ledger row to its public
   key (a Secured Identity) through the store's atomic `bind_public_key`, which answers
   `Adopted`, `AlreadyBound` or `Mismatch`. A later peer presenting the same User Hash with
-  a different key is denied the secured credit and never overwrites it (eMule's
-  `IS_IDFAILED`). Peers without SUI still accrue unsecured credit and are never gated out;
-  unsecured credit is first-come and spoofable by design, which is the reason SUI exists.
+  a different key never overwrites it (eMule's `IS_IDFAILED`). A first key adopted over a
+  row with bytes received resets both totals to one, because the prover has not shown it
+  earned them (`ClientCredits.cpp:235-241`). Peers without SUI still accrue unsecured credit
+  and are never gated out; unsecured credit is first-come and spoofable by design, which is
+  the reason SUI exists.
+- **Credit needs the proof the row asks for.** A row holding a key pays out, and accrues,
+  only at the address its key was proved from this run; everywhere else its modifier is 1,
+  and a client at another address of that family, once the key is proved, ranks at 0 as
+  stock's bad guy (`ClientCredits.cpp:68-131`, `:258-268`, `UploadClient.cpp:97`). The
+  proof sits in the ledger's memory, one address a family (ADR-0107), so the serve task and
+  the download runner read one gate and the link only reports. It rides out a link's end
+  and a serve restart, and a process restart owes it again. A row with no key is
+  `IS_NOTAVAILABLE`: open to all, a failed signature included, since whoever fails can as
+  well not sign.
 - **One verification per link, bound by the link.** The exchange runs once per link,
   whoever dialed it: an accepted link, one a download dialed, one the serve side dialed
   back, or an adopted callback. aMule keeps one identification state per client, on the

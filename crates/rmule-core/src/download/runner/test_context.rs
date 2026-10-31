@@ -112,6 +112,7 @@ pub(in crate::download) fn runner_context<S, P>(
         ),
         download_reach_tx,
         peer_roster: crate::peer_roster::SharedPeerRoster::default(),
+        bans: crate::ban_store::SharedBanStore::default(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
         completion_fs: Arc::new(crate::download::OsCompletionFs),
         copy_turn: Arc::new(tokio::sync::Semaphore::new(1)),

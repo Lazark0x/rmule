@@ -214,14 +214,24 @@ impl ServeState {
 
     /// `peer`'s link bound the key its session proved `user_hash` holds
     /// (ADR-0041): the client on it is identified while its hello carries
-    /// that hash.
-    pub(in crate::serve) fn on_identity_bound(&mut self, peer: PeerEndpoint, user_hash: UserHash) {
+    /// that hash. The place it proved from is tracked: another hash there is
+    /// a change ([`on_hash_seen`](super::ServeState::on_hash_seen)).
+    pub(in crate::serve) fn on_identity_bound(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        user_hash: UserHash,
+    ) {
         let carries = self
             .identities
             .get(&peer)
             .is_some_and(|identity| identity.user_hash() == user_hash);
         if carries {
             self.identified.insert(peer);
+            if let Some(identity) = self.identities.get(&peer) {
+                self.hashes
+                    .note(now, peer.ip(), identity.tcp_port(), user_hash);
+            }
         }
     }
 

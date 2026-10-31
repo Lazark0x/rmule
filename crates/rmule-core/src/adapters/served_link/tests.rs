@@ -307,6 +307,24 @@ async fn a_link_the_peer_pulls_on_stays_when_its_download_lets_go_and_takes_the_
     linked.rode_the_link(file.file_hash).await;
 }
 
+/// Forty silent seconds either way and the link says so to the serve side
+/// (`ClientTCPSocket.cpp:201-229`): the bound a hello'd stranger never met.
+#[tokio::test]
+async fn a_link_silent_past_stocks_bound_says_so() {
+    let mut linked = Linked::up().await;
+    // Its hello read, the asker's own clock stands down.
+    linked.pulls().await;
+    tokio::time::pause();
+    tokio::time::advance(rmule_net::peer::PEER_SOCKET_TIMEOUT).await;
+
+    while let Some(input) = linked.served.next_event().await {
+        if input == ServeInput::LinkSilent {
+            return;
+        }
+    }
+    panic!("the link ended without saying it fell silent");
+}
+
 /// A link the peer never asked anything over closes when its download lets
 /// go: nothing else holds it (ADR-0107 invariant 9).
 #[tokio::test]

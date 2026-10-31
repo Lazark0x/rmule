@@ -14,6 +14,9 @@ use crate::source_exchange::ServedSourcesVersion;
 /// What we answer the peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerCommand {
+    /// The upload session on this link is over and the peer waits again:
+    /// clears the served slot and frames `OP_OUTOFPARTREQS`.
+    EndUploadSession,
     /// Answer an inbound `RequestFileName` (the peer
     /// asked the file's name). Core looks the file up in the Shared File
     /// Registry and supplies the name, or sends `AnswerFileNotFound`.
@@ -198,6 +201,7 @@ impl PeerSession {
                 }
             }
             ServerCommand::GrantSlot { file_hash } => self.grant_slot(file_hash),
+            ServerCommand::EndUploadSession => self.end_upload_session(),
             ServerCommand::SetQueueRank { rank } => self.set_queue_rank(rank),
             ServerCommand::SendBlock {
                 file_hash,

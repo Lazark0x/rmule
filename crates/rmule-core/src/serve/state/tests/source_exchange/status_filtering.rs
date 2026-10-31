@@ -118,7 +118,7 @@ fn a_waiters_udp_reask_restates_the_parts_its_source_answer_is_filtered_by() {
     .encode_udp();
     assert!(matches!(
         state
-            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping)
+            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping, &no_modifiers())
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }],
     ));

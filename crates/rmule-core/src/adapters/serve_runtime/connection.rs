@@ -45,6 +45,9 @@ pub enum ServeInput {
         /// The User Hash the proof was made under.
         user_hash: UserHash,
     },
+    /// Nothing moved on this link either way for stock's 40 s, and no download
+    /// or buddy slot holds it (ADR-0031).
+    LinkSilent,
     /// The peer's hello on this link was held: a dial of ours to it has its
     /// hello out unanswered (ADR-0107 invariant 7).
     CrossedHelloHeld,

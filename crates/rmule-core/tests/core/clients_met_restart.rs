@@ -21,13 +21,13 @@ fn hash(seed: u8) -> UserHash {
 /// additive, so a zeroed ring reconstructs the persisted totals exactly.
 fn reseed(store: &mut impl CreditStore, records: &[CreditRecord]) {
     for record in records {
+        if let Some(der) = record.public_key() {
+            store.bind_public_key(record.key, der).unwrap();
+        }
         store.record_upload(record.key, record.uploaded).unwrap();
         store
             .record_download(record.key, record.downloaded)
             .unwrap();
-        if let Some(der) = record.public_key() {
-            store.bind_public_key(record.key, der).unwrap();
-        }
     }
 }
 
@@ -39,11 +39,11 @@ fn credit_ring_survives_a_clients_met_save_and_load_cycle() {
     // A live ring: two peers with byte history, one with a bound SUI key. Peer
     // `0xB2`'s upload exceeds 4 GiB so the persisted u64 exercises its high word.
     let ring = DurableCreditStore::new(rmule_testkit::memory_store());
+    let der = vec![0x7Au8; 59];
+    ring.bind_public_key(hash(0xA1), &der).unwrap();
     ring.record_upload(hash(0xA1), 10 * 1024 * 1024).unwrap();
     ring.record_download(hash(0xA1), 3 * 1024 * 1024).unwrap();
     ring.record_upload(hash(0xB2), (6u64 << 32) + 42).unwrap();
-    let der = vec![0x7Au8; 59];
-    ring.bind_public_key(hash(0xA1), &der).unwrap();
 
     // Persist → forget → reload → reseed a brand-new ring.
     save_clients_met(dir.path(), &ring.snapshot().unwrap(), now).unwrap();
@@ -111,10 +111,10 @@ async fn the_daemon_lifecycle_seeds_and_flushes_the_credit_ring() {
     let now = 2_000_000_000u32;
 
     let prior = DurableCreditStore::new(rmule_testkit::memory_store());
-    prior.record_upload(hash(0xA1), 4096).unwrap();
-    prior.record_download(hash(0xA1), 8192).unwrap();
     let der = vec![0x7Au8; 59];
     prior.bind_public_key(hash(0xA1), &der).unwrap();
+    prior.record_upload(hash(0xA1), 4096).unwrap();
+    prior.record_download(hash(0xA1), 8192).unwrap();
     save_clients_met(dir.path(), &prior.snapshot().unwrap(), now).unwrap();
 
     let core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())

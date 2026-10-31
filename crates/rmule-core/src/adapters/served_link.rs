@@ -7,13 +7,14 @@
 //! side once the peer asked it anything, or the buddy slot, as a dialed link
 //! does (ADR-0031, ADR-0107 invariant 9).
 
-use rmule_net::peer::Connection as PeerConnection;
+use rmule_net::peer::{Connection as PeerConnection, PEER_SOCKET_TIMEOUT};
 use rmule_peer::{
     ConnectionCommand, ConnectionEvent, PeerCommand, PeerEvent, PeerIdentity, RequesterCommand,
     RequesterEvent,
 };
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
+use tokio::time::{Instant, sleep_until};
 
 use super::InboundPeerDeps;
 use super::inbound_triage::serve_side;
@@ -93,10 +94,13 @@ pub(super) async fn drive_served_link(
     moving.let_dead_dials_go();
     let mut joins = Some(joins);
     let mut riders = Riders::default();
+    // When the link last moved, either way (`ClientTCPSocket.cpp:201-229`).
+    let mut moved = Instant::now();
     let closed_by = loop {
         tokio::select! {
             command = command_rx.recv(), if serve.serving() => match command {
                 Some(ServeOutput::Server(command)) => {
+                    moved = Instant::now();
                     if conn.send(PeerCommand::Server(command)).await.is_err() {
                         // The driver stopped first; its paired `Disconnected`
                         // is queued behind whatever it said before.
@@ -143,6 +147,7 @@ pub(super) async fn drive_served_link(
             },
             command = riders.next_command() => match command {
                 Some(command) => {
+                    moved = Instant::now();
                     if conn.send(command).await.is_err() {
                         break close_reason(&mut conn).await;
                     }
@@ -166,6 +171,19 @@ pub(super) async fn drive_served_link(
                     }
                 }
             },
+            // Silent past stock's bound in both directions. A download riding
+            // the link, or the buddy slot, holds it (ADR-0031): the serve side
+            // judges the rest, a slot's silence being its own to bound.
+            () = sleep_until(moved + PEER_SOCKET_TIMEOUT) => {
+                moved = Instant::now();
+                if riders.is_empty()
+                    && !moving.coming()
+                    && serve.serving()
+                    && !serve.buddy_holds()
+                {
+                    let _ = event_tx.send(ServeInput::LinkSilent).await;
+                }
+            }
             // Dead at the far end, with the peer's own link come: whatever
             // rides it leaves it now (ADR-0107 invariant 7).
             () = let_go_of(far_end.as_ref()) => {
@@ -181,6 +199,7 @@ pub(super) async fn drive_served_link(
                     }
                     break PortTestClosedBy::DriverEnded;
                 };
+                moved = Instant::now();
                 let routed = route(&deps, remote, event, &mut identity, &event_tx, serve.serving(), riders.rider()).await;
                 match routed {
                     Routed::Open => {}
@@ -302,7 +321,11 @@ async fn route(
         PeerEvent::Connection(ConnectionEvent::IdentityVerified {
             user_hash,
             public_key,
-        }) => match deps.secured_identities.bind(user_hash, &public_key).await {
+        }) => match deps
+            .secured_identities
+            .bind(user_hash, &public_key, remote.ip())
+            .await
+        {
             KeyProof::Bound => ServeInput::IdentityBound { user_hash },
             KeyProof::Mismatch => ServeInput::KeyMismatch { user_hash },
             KeyProof::Unsettled => return Routed::Open,

@@ -11,6 +11,7 @@
 //! credit ledger and the event bus. The prologue runs before any adapter can
 //! open a connection; a cell never installed binds nothing.
 
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use rmule_primitives::UserHash;
@@ -52,12 +53,18 @@ impl SharedSecuredIdentities {
             .expect("secured identity cell poisoned") = Some(Installed { credit, events });
     }
 
-    /// Bind `public_key`, which a link's session proved `user_hash` holds,
-    /// as that client's Secured Identity through the ledger's compare-and-set
-    /// (ADR-0041). A key that differs from the one bound is eMule's
-    /// `IS_IDFAILED`: the stored key stays, and the theft is raised as
+    /// Bind `public_key`, which a link's session at `at` proved `user_hash`
+    /// holds, as that client's Secured Identity through the ledger's
+    /// compare-and-set (ADR-0041): the row pays at that address from now on.
+    /// A key that differs from the one bound is eMule's `IS_IDFAILED`: the
+    /// stored key stays, and the theft is raised as
     /// [`CoreEvent::SecuredIdentityMismatch`].
-    pub(crate) async fn bind(&self, user_hash: UserHash, public_key: &[u8]) -> KeyProof {
+    pub(crate) async fn bind(
+        &self,
+        user_hash: UserHash,
+        public_key: &[u8],
+        at: IpAddr,
+    ) -> KeyProof {
         let installed = self
             .installed
             .lock()
@@ -67,7 +74,10 @@ impl SharedSecuredIdentities {
             return KeyProof::Unsettled;
         };
         match installed.credit.bind_public_key(user_hash, public_key) {
-            Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound) => KeyProof::Bound,
+            Ok(KeyBinding::Adopted | KeyBinding::AlreadyBound) => {
+                installed.credit.prove(user_hash, at);
+                KeyProof::Bound
+            }
             Ok(KeyBinding::Mismatch) => {
                 if let Some(events) = installed.events.upgrade() {
                     let _ = events
@@ -98,6 +108,7 @@ mod tests {
     use crate::store::open_durable_store_in_memory;
 
     const PEER: UserHash = UserHash::from_bytes([0x42; UserHash::BYTE_LEN]);
+    const AT: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7));
 
     fn ledger() -> SharedCreditStore {
         Arc::new(DurableCreditStore::new(
@@ -113,17 +124,17 @@ mod tests {
         secured.install(Arc::clone(&credit), events_tx.downgrade());
 
         assert_eq!(
-            secured.bind(PEER, b"first-key").await,
+            secured.bind(PEER, b"first-key", AT).await,
             KeyProof::Bound,
             "first proof binds"
         );
         assert_eq!(
-            secured.bind(PEER, b"first-key").await,
+            secured.bind(PEER, b"first-key", AT).await,
             KeyProof::Bound,
             "the same key again"
         );
         assert_eq!(
-            secured.bind(PEER, b"thief-key").await,
+            secured.bind(PEER, b"thief-key", AT).await,
             KeyProof::Mismatch,
             "another key under the hash is refused"
         );

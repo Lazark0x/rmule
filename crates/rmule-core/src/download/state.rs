@@ -38,6 +38,7 @@ mod tick;
 mod worker_event;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use rmule_peer::PartBitmap;
@@ -99,9 +100,16 @@ pub(crate) enum Decision {
     /// source that holds nothing we need, so a slot it granted is given back
     /// with `OP_CANCELTRANSFER` (ADR-0056, ADR-0112).
     EndWorker { peer: PeerEndpoint, cancel: bool },
+    /// Ban `peer`'s address across the node: it was proven to have sent this
+    /// download corrupt data.
+    BanSender { peer: PeerEndpoint },
     /// Credit `user_hash` for serving `bytes`; the runner holds the
     /// ledger lock.
-    RecordCredit { user_hash: UserHash, bytes: u64 },
+    RecordCredit {
+        user_hash: UserHash,
+        at: IpAddr,
+        bytes: u64,
+    },
     /// Verify and persist the assembled bytes of `part_index` (contributed
     /// by `peer`). A fallible effect: the runner reports the outcome back
     /// through [`DownloadState::on_persist_result`].

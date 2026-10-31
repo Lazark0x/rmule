@@ -257,7 +257,7 @@ fn a_waiters_udp_reask_carries_a_partial_shares_range_and_a_whole_files_count_ze
         let _ = slot_request(&mut state, waiter, file, t);
         let rank = state.queue.waiting_len() as u16;
         assert_eq!(
-            state.on_reask_ping(t, udp(ip, 4672), &reask_ping(file)),
+            state.on_reask_ping(t, udp(ip, 4672), &reask_ping(file), &no_modifiers()),
             [ServeDecision::SendClientUdp {
                 to: udp(ip, 4672),
                 datagram: ReaskAck {

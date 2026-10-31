@@ -114,6 +114,8 @@ pub(crate) struct SharedRuntime<S, P> {
     /// own membership; the roster is kept per endpoint, so the two writers
     /// never retire each other's reason.
     pub(crate) peer_roster: crate::peer_roster::SharedPeerRoster,
+    /// The node's peer bans: where a corrupt sender's address goes.
+    pub(crate) bans: crate::ban_store::SharedBanStore,
     /// The **Name Resolver** a link's named sources are resolved through
     /// (ADR-0089's amendment), off the actor and bounded.
     pub(crate) resolver: crate::name_resolver::SharedNameResolver,

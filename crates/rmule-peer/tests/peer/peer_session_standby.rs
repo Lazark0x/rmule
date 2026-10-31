@@ -1,67 +1,13 @@
-//! What the driver signals and what standby remembers: slot-stale and
-//! idle-close, the slotless standby a cancel leaves behind, the re-ask that
-//! skips probe and hash set, and the latch that keeps one cancel from
-//! emitting twice.
+//! What standby remembers: the slotless standby a cancel leaves behind, the
+//! re-ask that skips probe and hash set, and the latch that keeps one cancel
+//! from emitting twice.
 
 use rmule_peer::{
-    ConnectionEvent, NoticeEvent, PartRanges, PeerCloseReason, PeerCommand, PeerError, PeerEvent,
-    PeerOutput, RequesterCommand, RequesterEvent, SlotReleaseReason,
+    PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{ED2K_PART_SIZE, Packet, PartHash};
 use rmule_testkit::peer_session::*;
-
-#[test]
-fn signal_slot_stale_releases_active_slot() {
-    let h = file_hash(0xAB);
-    let mut session = identified_session();
-    let ranges = PartRanges::new([(0, 4), (0, 0), (0, 0)]);
-    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
-        file_hash: h,
-        file_size: 1_000_000,
-        ranges,
-    }));
-    let _ = drain(|| session.poll_output());
-
-    session.signal_slot_stale();
-    let out = drain(|| session.poll_output());
-    assert!(events(&out).iter().any(|e| matches!(
-        e,
-        PeerEvent::Requester(RequesterEvent::SlotReleased { file_hash, reason: SlotReleaseReason::Stale }) if *file_hash == h
-    )));
-
-    // Stale clears active_slot — new RequestParts proceeds without SlotBusy.
-    let h2 = file_hash(0xAC);
-    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
-        file_hash: h2,
-        file_size: 1_000_000,
-        ranges,
-    }));
-    let out2 = drain(|| session.poll_output());
-    assert!(!events(&out2).iter().any(|e| matches!(
-        e,
-        PeerEvent::Notice(NoticeEvent::CommandRejected {
-            reason: PeerError::SlotBusy
-        })
-    )));
-}
-
-#[test]
-fn signal_idle_close_disconnects_when_no_active_work() {
-    let mut session = identified_session();
-    session.signal_idle_close();
-    let out = drain(|| session.poll_output());
-    assert!(out.iter().any(|o| matches!(
-        o,
-        PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Disconnected {
-            reason: PeerCloseReason::Local
-        }))
-    )));
-    assert!(matches!(
-        out.last(),
-        Some(PeerOutput::Close(PeerCloseReason::Local))
-    ));
-}
 
 #[test]
 fn slotless_standby_transition_on_cancel_transfer() {

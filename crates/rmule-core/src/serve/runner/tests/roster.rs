@@ -209,7 +209,9 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
             ServeInput::Server(ServerEvent::TransferCancelled { file_hash: file }),
             &no_modifiers,
         ),
-        crate::WaiterLeaveCause::UserHashClash => unreachable!("driven by the purge or a cancel"),
+        crate::WaiterLeaveCause::UserHashClash | crate::WaiterLeaveCause::Banned => {
+            unreachable!("driven by the purge or a cancel")
+        }
     }
     .into();
     super::super::enact(

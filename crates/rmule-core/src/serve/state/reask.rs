@@ -3,6 +3,7 @@
 //! against its queue, refreshes the standing the answer says was heard, records
 //! the part status the ping restated, and counts a silenced malformed ping.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use rmule_peer::peer_udp::responder::{
@@ -25,6 +26,7 @@ impl ServeState {
         now: Instant,
         udp_src: PeerEndpoint,
         datagram: &[u8],
+        modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         let Some(ping) = responder::read(datagram) else {
             return Vec::new();
@@ -75,6 +77,14 @@ impl ServeState {
                 size: found.file_size(),
                 status: found.status(),
             });
+        // A shared file's reask from a known waiter is an ask like any: a
+        // client it bans is not answered (`ClientUDPSocket.cpp:440-452`).
+        if shared.is_some()
+            && let Some(peer) = peer
+            && self.ask_bans(now, peer)
+        {
+            return self.ban_asker(now, peer, modifiers);
+        }
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),
             max: self.queue.max_queue_len(),

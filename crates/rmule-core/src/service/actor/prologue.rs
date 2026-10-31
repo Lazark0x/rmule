@@ -467,6 +467,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             connection_budget: crate::download::connection_budget::ConnectionBudget::shared(
                 wiring.config.peer_connections,
             ),
+            bans: wiring.kad_cells.adapters.ban_store.clone(),
             queue_standings: crate::download::queue_standings::QueueStandings::shared(),
             spent_names: crate::download::spent_names::SpentNames::shared(),
             held_places: crate::held_places::SharedHeldPlaces::default(),

@@ -484,6 +484,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
             self.ip_filter.clone(),
             self.ban_store.clone(),
             self.kad_pump.clone(),
+            self.peer_links.clone(),
         );
         let pump = spawn_accept_pump(
             listener,

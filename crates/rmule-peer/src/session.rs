@@ -433,28 +433,6 @@ impl PeerSession {
         }
     }
 
-    /// Driver-facing signal that the active slot context has been
-    /// silent past the slot-stale deadline. Per ADR-0025 the session
-    /// owns no clock; the runtime calls this when its
-    /// `slot_stale_timeout` fires.
-    pub fn signal_slot_stale(&mut self) {
-        let Some(active) = self.active_slot else {
-            return;
-        };
-        self.release_slot(active, SlotReleaseReason::Stale);
-    }
-
-    /// Driver-facing signal that the idle-close deadline elapsed (no
-    /// active slot, no probe traffic). Per ADR-0025 the runtime owns
-    /// the timer; the session translates the signal into a graceful
-    /// local close.
-    pub fn signal_idle_close(&mut self) {
-        if self.active_slot.is_some() {
-            return;
-        }
-        self.close(PeerCloseReason::Local);
-    }
-
     /// Take the next effect. The driver drains to `None` after every other
     /// call, which is what keeps this state machine free of a clock.
     pub fn poll_output(&mut self) -> Option<PeerOutput> {

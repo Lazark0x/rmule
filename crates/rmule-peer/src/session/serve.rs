@@ -15,7 +15,7 @@ use crate::file::PartBitmap;
 use crate::file_request::{FileReqAnsNoFil, FileStatus, PartStatusTail, ReqFileNameAnswer};
 use crate::parts::RequestParts as RequestPartsPacket;
 use crate::parts::{CompressedPart, SendingPart};
-use crate::slot::{AcceptUploadReq, QueueRanking};
+use crate::slot::{AcceptUploadReq, OutOfPartReqs, QueueRanking};
 
 impl PeerSession {
     pub(super) fn on_file_requested(&mut self, file_hash: FileHash, status: PartStatusTail) {
@@ -122,6 +122,18 @@ impl PeerSession {
         }
         self.served_slot = Some(file_hash);
         self.write_packet(AcceptUploadReq.encode_packet());
+    }
+
+    /// Server Capability — the slot ended on our side while the peer stays: a
+    /// block still on its way is refused by the cleared slot, and the peer is
+    /// told to go back on queue before anything else leaves
+    /// (`UploadClient.cpp:493-510`).
+    pub(super) fn end_upload_session(&mut self) {
+        if !self.require_identified() {
+            return;
+        }
+        self.served_slot = None;
+        self.write_packet(OutOfPartReqs.encode_packet());
     }
 
     /// Server Capability — the waiting peer's place in core's cross-connection

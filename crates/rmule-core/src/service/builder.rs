@@ -706,7 +706,10 @@ impl Core {
             hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
             // A changed Low ID is checked against the managed server list
             // before a link is found under it (ADR-0107).
-            peer_links: crate::adapters::SharedPeerLinks::knowing(app_config.clone()),
+            peer_links: crate::adapters::SharedPeerLinks::knowing(
+                app_config.clone(),
+                config.peer_connections.max_connections.max(1),
+            ),
             // One cell every link binds its verified identity through
             // (ADR-0041); the actor's prologue installs the ledger and bus.
             secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),

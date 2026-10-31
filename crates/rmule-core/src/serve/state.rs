@@ -30,6 +30,7 @@ mod tests;
 mod transfer;
 
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -43,6 +44,8 @@ use self::aich::AichTrees;
 use self::flow::ServeFlow;
 use crate::WaiterLeaveCause;
 use crate::adapters::{DialBack, FarEnd};
+use crate::serve::ask_pace::AskPace;
+use crate::serve::hash_track::HashTrack;
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::SourceExchangeThrottle;
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ServedLook};
@@ -64,8 +67,13 @@ pub(super) enum ServeDecision {
     Disconnect { peer: PeerEndpoint },
     /// Forward a serve fact to the core event stream.
     Emit(ServeEvent),
-    /// Credit `user_hash` for `bytes` that left for the socket.
-    RecordCredit { user_hash: UserHash, bytes: u64 },
+    /// Credit `user_hash` at `at` for `bytes` that left for the socket, if
+    /// its ledger row pays there (ADR-0041).
+    RecordCredit {
+        user_hash: UserHash,
+        at: IpAddr,
+        bytes: u64,
+    },
     /// Count `bytes` of `file_hash` as sent to `peer` (ADR-0077).
     CountSent {
         peer: PeerEndpoint,
@@ -192,8 +200,9 @@ pub(super) struct BlockRead {
 /// session's self-facts and hands it in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct ServeSelfPosition {
-    /// We hold no High-ID on a live server session (eMule
-    /// `CServerConnect::IsLowID()`). The default — `false` — is the
+    /// We hold a live server session under a Low ID: aMule's
+    /// `IsConnected() && IsLowID()` (`UploadQueue.cpp:403`), so a node with no
+    /// session has nothing to guard. The default — `false` — is the
     /// un-firewalled posture, so a brain nobody told anything never refuses on
     /// this ground.
     pub(super) low_id: bool,
@@ -201,6 +210,18 @@ pub(super) struct ServeSelfPosition {
     /// `None` between sessions, and also for a DNS-named server, whose host no
     /// peer can be proven to share.
     pub(super) server: Option<rmule_primitives::Ipv4Endpoint>,
+}
+
+/// What the node holds of the address an input came from: read by the enactor
+/// before each input, as the brain reads no cell. The default is a stranger.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct ServeAsker {
+    /// The address is banned (ADR-0064).
+    pub(super) banned: bool,
+    /// The address is a source of ours, connected or queued at: aMule's
+    /// `GetDownloadState() != DS_NONE`, which the Low-ID guard reads and
+    /// which no ban lands on (ADR-0055 divergence 7).
+    pub(super) our_source: bool,
 }
 
 /// The sans-I/O serving brain. See the module docs.
@@ -269,6 +290,13 @@ pub(super) struct ServeState {
     sx_throttle: SourceExchangeThrottle,
     /// Our own position, refreshed by the enactor (see [`ServeSelfPosition`]).
     ours: ServeSelfPosition,
+    /// What the node holds of the current input's address, refreshed by the
+    /// enactor (see [`ServeAsker`]).
+    asker: ServeAsker,
+    /// The **Ask Pace** (ADR-0055 divergence 7).
+    asks: AskPace,
+    /// The **Hash Track** of who proved a key where.
+    hashes: HashTrack,
 }
 
 impl ServeState {
@@ -290,6 +318,9 @@ impl ServeState {
             sx_part_status: HashMap::new(),
             sx_throttle: SourceExchangeThrottle::default(),
             ours: ServeSelfPosition::default(),
+            asker: ServeAsker::default(),
+            asks: AskPace::default(),
+            hashes: HashTrack::default(),
         }
     }
 
@@ -298,6 +329,12 @@ impl ServeState {
     /// simply reads the latest one at its next decision.
     pub(super) fn on_self_position(&mut self, ours: ServeSelfPosition) {
         self.ours = ours;
+    }
+
+    /// Refresh what the node holds of the next input's address (see
+    /// [`ServeAsker`]).
+    pub(super) fn on_asker(&mut self, asker: ServeAsker) {
+        self.asker = asker;
     }
 
     /// `peer` is a link rmule dialed, whose hello is still to come, and

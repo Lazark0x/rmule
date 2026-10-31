@@ -1,6 +1,7 @@
 //! The **Accept Gates**: what every inbound peer connection meets before the
 //! serve loop sees it — the IP filter, then the ban store (ADR-0064), then the
-//! Test Connection carve-out (ADR-0046) — in that order, and only here.
+//! Test Connection carve-out (ADR-0046), then the **Accept Limit** (ADR-0031) —
+//! in that order, and only here.
 //!
 //! They run on the producer's side of the accept channel: the accept pump
 //! passes each TCP accept through them, the admit seam each Tunnel and
@@ -14,7 +15,9 @@ use std::time::Instant;
 
 use rmule_net::peer::Connection as PeerConnection;
 
+use super::limit::AcceptLimit;
 use super::{AdmittedPeer, InboundOrigin};
+use crate::adapters::SharedPeerLinks;
 use crate::adapters::kad_runtime::SharedKadPump;
 use crate::adapters::serve_runtime::test_connection::answer_test_connection;
 use crate::awaited_testers::AwaitedServer;
@@ -31,6 +34,9 @@ pub(crate) struct AcceptGates {
     ban_store: SharedBanStore,
     /// Where a Test Connection's `OP_KAD_FWTCPCHECK_ACK` is carried.
     kad_pump: SharedKadPump,
+    /// The links open on the node, which the **Accept Limit** reads.
+    links: SharedPeerLinks,
+    limit: AcceptLimit,
 }
 
 /// One connection at the gates, before anything decided its fate.
@@ -57,11 +63,14 @@ impl AcceptGates {
         ip_filter: SharedIpFilter,
         ban_store: SharedBanStore,
         kad_pump: SharedKadPump,
+        links: SharedPeerLinks,
     ) -> Self {
         Self {
             ip_filter,
             ban_store,
             kad_pump,
+            links,
+            limit: AcceptLimit::default(),
         }
     }
 
@@ -91,10 +100,8 @@ impl AcceptGates {
             refuse(conn, awaited_server, PortTestEnd::IpFiltered).await;
             return None;
         }
-        // ADR-0064, peer-TCP enforcement: a flood-offender IP the core
-        // `BanStore` still holds is refused post-accept — the point aMule's own
-        // client-list ban decides at. Kad's datagram path never consults this
-        // store (no Kad ban gate).
+        // ADR-0064: an address the core `BanStore` still holds is refused
+        // post-accept, the point aMule's own client-list ban decides at.
         let banned = self
             .ban_store
             .lock()
@@ -114,6 +121,17 @@ impl AcceptGates {
                 if let Some(server) = awaited_server {
                     server.report(LoginStep::PortTestEnded { end }).await;
                 }
+            });
+            return None;
+        }
+        // A login's port test goes past the limit, as stock accepts past it
+        // while connecting: without it, a Low ID on every server
+        // (`ListenSocket.cpp:83-85`).
+        let (open, ceiling) = self.links.open_and_ceiling();
+        if awaited_server.is_none() && !self.limit.takes(Instant::now(), open, ceiling) {
+            tracing::debug!(%peer, open, "refusing an inbound connection past the accept limit");
+            tokio::spawn(async move {
+                let _ = conn.shutdown().await;
             });
             return None;
         }

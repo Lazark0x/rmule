@@ -194,10 +194,12 @@ impl ServeState {
             flow.ahead = flow.ahead.saturating_sub(1);
             flow.lend(now, bytes);
         }
+        self.queue.count_session_sent(peer, bytes);
         let mut decisions = Vec::new();
         if let Some(identity) = self.identities.get(&peer) {
             decisions.push(ServeDecision::RecordCredit {
                 user_hash: identity.user_hash(),
+                at: peer.ip(),
                 bytes,
             });
         }
@@ -261,6 +263,7 @@ impl ServeState {
                 decisions.push(ServeDecision::Disconnect { peer });
             }
         }
+        decisions.extend(self.end_over_session(now, modifiers));
         decisions
     }
 }

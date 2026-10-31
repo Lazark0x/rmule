@@ -57,6 +57,11 @@ impl ServeHold {
         self.pulled = true;
     }
 
+    /// Whether the link is the held buddy link.
+    pub(in crate::adapters) fn buddy_holds(&self) -> bool {
+        self.buddy.holds_link(self.remote)
+    }
+
     /// Whether the link stays up with no download holding it.
     pub(in crate::adapters) fn holds(&self) -> bool {
         (self.serving && self.pulled) || self.buddy.holds_link(self.remote)

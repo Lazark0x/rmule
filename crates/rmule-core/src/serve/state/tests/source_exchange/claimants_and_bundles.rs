@@ -77,7 +77,7 @@ fn a_v0_claimants_udp_reask_status_is_discarded_too() {
     .encode_udp();
     assert!(matches!(
         state
-            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping)
+            .on_reask_ping(t, udp([10, 0, 0, 2], 6000), &ping, &no_modifiers())
             .as_slice(),
         [ServeDecision::SendClientUdp { .. }],
     ));

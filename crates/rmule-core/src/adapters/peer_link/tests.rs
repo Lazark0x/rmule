@@ -341,7 +341,7 @@ fn a_changed_low_id_stands_only_on_a_server_the_list_holds() {
     let listed = rmule_primitives::ServerEndpoint::new("198.51.100.7", 4661).expect("endpoint");
     list.merge_server(ManagedServer::listed(listed))
         .expect("the list takes it");
-    let links = SharedPeerLinks::knowing(std::sync::Arc::new(list));
+    let links = SharedPeerLinks::knowing(std::sync::Arc::new(list), 500);
     let low_id = ClientId::from_u32(0x0000_1234);
 
     assert_eq!(

@@ -653,7 +653,9 @@ fn request_parts_with_mismatched_file_size_is_rejected() {
     let _ = drain(|| session.poll_output());
 
     // Drain slot terminal so active_slot clears.
-    session.signal_slot_stale();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::CancelTransfer {
+        file_hash: h,
+    }));
     let _ = drain(|| session.poll_output());
 
     // Re-request the same file with a different size.

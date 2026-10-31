@@ -88,6 +88,18 @@ impl SharedPeerRoster {
             .is_ok_and(|known| known.get(&ip).is_some_and(|held| !held.is_empty()))
     }
 
+    /// Whether `ip` is a source of ours, connected or queued at: aMule's
+    /// `GetDownloadState() != DS_NONE`.
+    #[must_use]
+    pub(crate) fn is_source(&self, ip: Ipv4Addr) -> bool {
+        self.0.lock().is_ok_and(|known| {
+            known.get(&ip).is_some_and(|held| {
+                held.iter()
+                    .any(|(relation, _)| !matches!(relation, PeerRelation::Upload))
+            })
+        })
+    }
+
     /// Mark this session as having `relation` with `endpoint`. Idempotent
     /// within `relation`: marking the same endpoint twice for the same
     /// relation — a reask that re-admits an already-queued peer, say — is one

@@ -5,11 +5,11 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rmule_peer::{
-    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, ClientSoftware, ConnectionEvent, MiscOptions1,
+    CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, CT_NAME, ClientSoftware, ConnectionEvent, MiscOptions1,
     MiscOptions2, PeerHelloBody, PeerIdentity, SourceExchangeSupport, UdpPortsAdvert,
 };
 use rmule_primitives::{
-    CT_MOD_IP_V6, ClientId, CryptStance, Ipv4Endpoint, Tag, TagName, TagValue, UserHash,
+    CT_MOD_IP_V6, ClientId, CryptStance, Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue, UserHash,
     ipv6_address_tag,
 };
 
@@ -19,6 +19,8 @@ use crate::adapters::ServeInput;
 pub(crate) struct HelloFacts {
     /// The user hash it names.
     pub(crate) user_hash: UserHash,
+    /// The nickname it names (`CT_NAME`).
+    pub(crate) nickname: Option<Ed2kText>,
     /// Its server-assigned id.
     pub(crate) client_id: ClientId,
     /// The server it says it is logged in to.
@@ -57,6 +59,7 @@ impl HelloFacts {
     pub(crate) fn of(user_hash: UserHash) -> Self {
         Self {
             user_hash,
+            nickname: None,
             client_id: ClientId::from_u32(0x0100_007F),
             connected_server: None,
             tcp_port: 4662,
@@ -85,6 +88,12 @@ impl HelloFacts {
             .to_tag(),
             MiscOptions2::from_stance(self.crypt).to_tag(),
         ];
+        if let Some(nickname) = self.nickname {
+            tags.push(Tag::new(
+                TagName::length_prefixed_id(CT_NAME),
+                TagValue::String(nickname),
+            ));
+        }
         if self.udp_port != 0 {
             tags.push(UdpPortsAdvert::new(self.udp_port, 0).to_tag());
         }

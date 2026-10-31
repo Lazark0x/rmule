@@ -52,8 +52,8 @@ one active slot context per connection.
   `OP_ACCEPTUPLOADREQ` grants it again, and the next `RequestParts` waits for that
   grant as a first one does. While the flow is only queued, `OP_OUTOFPARTREQS`
   changes nothing.
-- Timers stay in the driver (ADR-0021): it calls `signal_slot_stale()` and
-  `signal_idle_close()` when its clocks fire.
+- The session owns no clock (ADR-0021): a link's silence is timed where its router sees
+  both directions (ADR-0031), and the session only closes when told.
 
 ## Consequences
 

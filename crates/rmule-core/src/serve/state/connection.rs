@@ -8,9 +8,9 @@ use std::time::Instant;
 
 use rmule_peer::{
     BundleCut, BundledAsk, ConnectionEvent, FileSizedStatus, IdentityChange, PartStatusTail,
-    ServerCommand, ServerEvent,
+    PeerIdentity, ServerCommand, ServerEvent,
 };
-use rmule_primitives::{FileHash, PeerEndpoint};
+use rmule_primitives::{AccountingKey, FileHash, PeerEndpoint};
 
 use crate::WaiterLeaveCause;
 use crate::adapters::ServeInput;
@@ -216,6 +216,9 @@ impl ServeState {
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
         self.link_moved(now, peer);
+        if self.asker.banned && !self.spares(peer) && is_ask(&input) {
+            return self.on_banned(now, peer, modifiers);
+        }
         match input {
             ServeInput::Server(request) => self.on_server_request(now, peer, request, modifiers),
             ServeInput::Connection(fact) => self.on_connection_fact(now, peer, fact, modifiers),
@@ -233,10 +236,16 @@ impl ServeState {
                 Vec::new()
             }
             ServeInput::IdentityBound { user_hash } => {
-                self.on_identity_bound(peer, user_hash);
+                self.on_identity_bound(now, peer, user_hash);
                 Vec::new()
             }
             ServeInput::KeyMismatch { user_hash } => self.on_key_mismatch(peer, user_hash),
+            // A slot holder's silence is the slot sweep's, which lends what the
+            // kernel still holds; anyone else's link closes, and a waiter's
+            // place rides its reask (ADR-0057), as stock leaves it queued
+            // when its socket times out (`ClientTCPSocket.cpp:201-229`).
+            ServeInput::LinkSilent if self.queue.is_granted(peer) => Vec::new(),
+            ServeInput::LinkSilent => vec![ServeDecision::Disconnect { peer }],
             ServeInput::CrossedHelloHeld => {
                 vec![ServeDecision::Emit(ServeEvent::CrossedHelloHeld { peer })]
             }
@@ -284,6 +293,9 @@ impl ServeState {
                 vec![ServeDecision::Send { peer, command }]
             }
             ServerEvent::SlotRequested { file_hash } => {
+                if self.ask_bans(now, peer) {
+                    return self.ban_asker(now, peer, modifiers);
+                }
                 if !self.lookup(file_hash).is_some_and(|found| found.offered()) {
                     // We do not offer it — unshared, or a download with no
                     // verified part yet: nothing is sent, as aMule queues and
@@ -301,7 +313,7 @@ impl ServeState {
                 // packet.
                 let facts = LowIdAbuseFacts {
                     we_are_low_id: self.ours.low_id,
-                    downloading_from_us: self.queue.is_granted(peer),
+                    our_source: self.spares(peer),
                     // rmule keeps no friend list; the input is named so that
                     // adding one later fills a hole instead of finding one.
                     is_friend: false,
@@ -341,65 +353,8 @@ impl ServeState {
                 let slot_held = self.queue.live_slot_file(peer) == Some(file_hash);
                 let admission = self.queue.admit(peer, file_hash, now);
                 let counted = !waiting_already && admission != Admission::RefusedAddressCap;
-                let mut decisions = match admission {
-                    Admission::Granted => {
-                        let grant = ServeDecision::Send {
-                            peer,
-                            command: ServerCommand::GrantSlot { file_hash },
-                        };
-                        if slot_held {
-                            vec![grant]
-                        } else {
-                            vec![
-                                grant,
-                                ServeDecision::Emit(ServeEvent::UploadSlotGranted {
-                                    peer,
-                                    file_hash,
-                                    software: self.software_of(peer),
-                                    road,
-                                }),
-                            ]
-                        }
-                    }
-                    Admission::Queued { rank } => {
-                        // Stamp the waiter's advertised UDP contact so its
-                        // reask heartbeat matches by IP + port (ADR-0057); an
-                        // absent one keeps it TCP-reask-only.
-                        self.stamp_contact(peer);
-                        vec![
-                            ServeDecision::Send {
-                                peer,
-                                command: ServerCommand::SetQueueRank { rank },
-                            },
-                            ServeDecision::Emit(ServeEvent::PeerQueued {
-                                peer,
-                                rank,
-                                file_hash,
-                                software: self.software_of(peer),
-                            }),
-                        ]
-                    }
-                    // Nothing is sent, and that is the references' answer: both
-                    // aMule (`src/UploadQueue.cpp:534-537`) and eMule
-                    // (`srchybrid/UploadQueue.cpp:639-656`) `return` at the
-                    // wait-list cap before any packet is framed.
-                    // `OP_OUTOFPARTREQS` would say something else entirely —
-                    // it ends an upload session — and `OP_QUEUEFULL 0x93` is
-                    // the UDP reask reply, not this. The requester falls back
-                    // to its own reask timer; the event is the only trace.
-                    Admission::Refused => {
-                        vec![ServeDecision::Emit(ServeEvent::UploadQueueFull { peer })]
-                    }
-                    // Nothing is sent: the reference frames no packet for a
-                    // per-address refusal (ADR-0088), so the ask goes
-                    // unanswered and the requester falls back to its own reask
-                    // timer. Only the diagnostic fact leaves.
-                    Admission::RefusedAddressCap => {
-                        vec![ServeDecision::Emit(ServeEvent::UploadAddressCapReached {
-                            peer,
-                        })]
-                    }
-                };
+                let mut decisions =
+                    self.admission_decisions(peer, file_hash, road, slot_held, admission);
                 if counted {
                     decisions.insert(0, ServeDecision::CountUploadRequest { file_hash });
                 }
@@ -412,7 +367,12 @@ impl ServeState {
                 file_hash,
                 part,
                 root,
-            } => self.answer_aich_recovery(peer, file_hash, part, root),
+            } => {
+                if self.ask_bans(now, peer) {
+                    return self.ban_asker(now, peer, modifiers);
+                }
+                self.answer_aich_recovery(peer, file_hash, part, root)
+            }
             ServerEvent::AichFileHashRequested { file_hash } => {
                 self.answer_aich_root(peer, file_hash)
             }
@@ -466,8 +426,204 @@ impl ServeState {
                 file_hash,
                 start,
                 end,
-            } => self.on_block_left(now, peer, file_hash, end - start),
+            } => {
+                let mut decisions = self.on_block_left(now, peer, file_hash, end - start);
+                decisions.extend(self.end_over_session(now, modifiers));
+                decisions
+            }
         }
+    }
+
+    /// What `admission` of `peer`'s ask for `file_hash` says back. `slot_held`
+    /// is an ask from the holder of that file's slot, which is no new grant.
+    fn admission_decisions(
+        &mut self,
+        peer: PeerEndpoint,
+        file_hash: FileHash,
+        road: GrantRoad,
+        slot_held: bool,
+        admission: Admission,
+    ) -> Vec<ServeDecision> {
+        match admission {
+            Admission::Granted => {
+                let grant = ServeDecision::Send {
+                    peer,
+                    command: ServerCommand::GrantSlot { file_hash },
+                };
+                if slot_held {
+                    vec![grant]
+                } else {
+                    vec![
+                        grant,
+                        ServeDecision::Emit(ServeEvent::UploadSlotGranted {
+                            peer,
+                            file_hash,
+                            software: self.software_of(peer),
+                            road,
+                        }),
+                    ]
+                }
+            }
+            Admission::Queued { rank } => {
+                // Stamp the waiter's advertised UDP contact so its
+                // reask heartbeat matches by IP + port (ADR-0057); an
+                // absent one keeps it TCP-reask-only.
+                self.stamp_contact(peer);
+                vec![
+                    ServeDecision::Send {
+                        peer,
+                        command: ServerCommand::SetQueueRank { rank },
+                    },
+                    ServeDecision::Emit(ServeEvent::PeerQueued {
+                        peer,
+                        rank,
+                        file_hash,
+                        software: self.software_of(peer),
+                    }),
+                ]
+            }
+            // Nothing is sent, and that is the references' answer: both
+            // aMule (`src/UploadQueue.cpp:534-537`) and eMule
+            // (`srchybrid/UploadQueue.cpp:639-656`) `return` at the
+            // wait-list cap before any packet is framed.
+            // `OP_OUTOFPARTREQS` would say something else entirely —
+            // it ends an upload session — and `OP_QUEUEFULL 0x93` is
+            // the UDP reask reply, not this. The requester falls back
+            // to its own reask timer; the event is the only trace.
+            Admission::Refused => {
+                vec![ServeDecision::Emit(ServeEvent::UploadQueueFull { peer })]
+            }
+            // Nothing is sent: the reference frames no packet for a
+            // per-address refusal (ADR-0088), so the ask goes
+            // unanswered and the requester falls back to its own reask
+            // timer. Only the diagnostic fact leaves.
+            Admission::RefusedAddressCap => {
+                vec![ServeDecision::Emit(ServeEvent::UploadAddressCapReached {
+                    peer,
+                })]
+            }
+        }
+    }
+
+    /// End the **Upload Session** the queue says is over at `now` (ADR-0031):
+    /// its holder is told, the best waiter takes the slot in the same batch,
+    /// and the holder asks again from the wait list with a fresh wait, its
+    /// link kept (`UploadClient.cpp:493-510`).
+    pub(in crate::serve) fn end_over_session(
+        &mut self,
+        now: Instant,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let Some(peer) = self.queue.session_to_end(now) else {
+            return Vec::new();
+        };
+        let Some(file_hash) = self.queue.live_slot_file(peer) else {
+            return Vec::new();
+        };
+        self.served_ranges
+            .retain(|(range_peer, _), _| *range_peer != peer);
+        self.last_ask.remove(&peer);
+        let promotion = self.queue.release(peer, now, modifiers);
+        let mut decisions = vec![
+            ServeDecision::Send {
+                peer,
+                command: ServerCommand::EndUploadSession,
+            },
+            ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }),
+        ];
+        decisions.extend(self.promotion_decisions(promotion));
+        let admission = self.queue.admit(peer, file_hash, now);
+        decisions.extend(self.admission_decisions(
+            peer,
+            file_hash,
+            GrantRoad::Linked,
+            false,
+            admission,
+        ));
+        decisions
+    }
+
+    /// Whether no ban lands on `peer`: a source of ours, or a link rmule
+    /// dialed, which is one (ADR-0055 divergence 7).
+    pub(super) fn spares(&self, peer: PeerEndpoint) -> bool {
+        self.asker.our_source || self.dialed.contains_key(&peer)
+    }
+
+    /// One ask of `peer` on its **Ask Pace**; `true` when it bans the asker.
+    pub(super) fn ask_bans(&mut self, now: Instant, peer: PeerEndpoint) -> bool {
+        let Some(user_hash) = self.identities.get(&peer).map(PeerIdentity::user_hash) else {
+            return false;
+        };
+        let key = AccountingKey::of(peer.ip());
+        self.asks.ask(now, key, user_hash) && !self.spares(peer)
+    }
+
+    /// Ban `peer`'s address, and act on it at once ([`on_banned`](Self::on_banned)).
+    pub(super) fn ban_asker(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let mut decisions = vec![ServeDecision::Ban { peer }];
+        decisions.extend(self.on_banned(now, peer, modifiers));
+        decisions
+    }
+
+    /// `peer`'s address is banned: its slot or its place goes, the next waiter
+    /// takes the slot, and its link closes. Stock answers such a client
+    /// nothing and lets the 40 s silence close it; a closed link is that
+    /// silence, sooner (`UploadClient.cpp:628-649`, `UploadQueue.cpp:98`).
+    pub(in crate::serve) fn on_banned(
+        &mut self,
+        now: Instant,
+        peer: PeerEndpoint,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let held_slot = self.queue.is_granted(peer);
+        let waited = !held_slot && self.queue.contains(peer);
+        let unlinked = self.queue.is_unlinked(peer);
+        self.served_ranges
+            .retain(|(range_peer, _), _| *range_peer != peer);
+        self.last_ask.remove(&peer);
+        let promotion = self.queue.release(peer, now, modifiers);
+        let mut decisions = self.promotion_decisions(promotion);
+        if held_slot {
+            decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
+        } else if waited {
+            decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
+                peer,
+                cause: WaiterLeaveCause::Banned,
+            }));
+        }
+        decisions.push(ServeDecision::Disconnect { peer });
+        if unlinked {
+            self.forget(peer);
+            self.sx_throttle.forget(peer);
+        }
+        decisions
+    }
+
+    /// Every standing's peer, for the sweep of what a ban reached.
+    pub(in crate::serve) fn standing_peers(&self) -> Vec<PeerEndpoint> {
+        self.queue.standings().map(|(peer, _)| peer).collect()
+    }
+
+    /// The bans that reached `banned` while no input of theirs came: they
+    /// leave the queue. A link rmule dialed stays.
+    pub(in crate::serve) fn on_banned_standings(
+        &mut self,
+        now: Instant,
+        banned: &[PeerEndpoint],
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Vec<ServeDecision> {
+        let mut decisions = Vec::new();
+        for &peer in banned {
+            if !self.dialed.contains_key(&peer) {
+                decisions.extend(self.on_banned(now, peer, modifiers));
+            }
+        }
+        decisions
     }
 
     /// Fold one fact about the link into the serve-side bookkeeping.
@@ -480,7 +636,13 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
-                if self.refuses_hash_thief(peer, &identity) {
+                let changed = self.hashes.changed(
+                    now,
+                    peer.ip(),
+                    identity.tcp_port(),
+                    identity.user_hash(),
+                );
+                if self.refuses_hash_thief(peer, &identity) || changed && !self.spares(peer) {
                     return vec![
                         ServeDecision::Ban { peer },
                         ServeDecision::Disconnect { peer },
@@ -503,11 +665,19 @@ impl ServeState {
             // list takes a revised reask contact now; one that queues later
             // is stamped from the identity, as the hello's is.
             ConnectionEvent::IdentityRevised { identity, what } => {
+                // A hash changed on a live link bans (`BaseClient.cpp:788-792`).
+                let hash_moved = self
+                    .identities
+                    .get(&peer)
+                    .is_some_and(|held| held.user_hash() != identity.user_hash());
                 if let Some(held) = self.identities.get_mut(&peer) {
                     *held = identity;
                     if what == IdentityChange::ReaskContact {
                         self.stamp_contact(peer);
                     }
+                }
+                if hash_moved && !self.spares(peer) {
+                    return self.ban_asker(now, peer, modifiers);
                 }
                 Vec::new()
             }
@@ -571,6 +741,23 @@ impl ServeState {
                 },
             );
         }
+    }
+}
+
+/// Whether `input` is a request stock answers only a client not banned
+/// (`ClientTCPSocket.cpp:485`, `:547`, `:660`, `:924`, `:982`, `:1012`, `:1167`,
+/// `:1336`, `:1463`, `:1769`): not the session's reports, nor a cancel that only
+/// gives a place back.
+const fn is_ask(input: &ServeInput) -> bool {
+    match input {
+        ServeInput::Server(request) => !matches!(
+            request,
+            ServerEvent::BlockLeft { .. }
+                | ServerEvent::SourcesAnswered { .. }
+                | ServerEvent::TransferCancelled { .. }
+                | ServerEvent::PartsWithoutSlot { .. }
+        ),
+        _ => false,
     }
 }
 

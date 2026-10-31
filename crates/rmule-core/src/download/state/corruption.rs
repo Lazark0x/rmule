@@ -94,6 +94,9 @@ impl DownloadState {
         out: &mut Vec<Decision>,
     ) {
         for &writer in &verdict.proven {
+            // Across the node, not only this file: a corrupt sender's address
+            // is banned (`CorruptionBlackBox.cpp:223-231`).
+            out.push(Decision::BanSender { peer: writer });
             match evidence
                 .iter()
                 .find_map(|attempt| attempt.user_hash(writer))

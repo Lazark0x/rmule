@@ -10,6 +10,7 @@
 //! of a task whose end is one more input.
 
 use std::collections::{HashMap, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -29,7 +30,7 @@ use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::aich_builder::{AichBuilder, AichLanded};
 use crate::serve::block_reader::{BlockReader, FlowRead, ReadEnd, ReadLanded};
 use crate::serve::link_output::{LinkBlock, LinkOutput};
-use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
+use crate::serve::state::{ServeAsker, ServeDecision, ServeSelfPosition, ServeState};
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
 use crate::store::registry::DurableSharedFileRegistry;
@@ -111,16 +112,12 @@ pub(crate) struct ServeTask<L> {
 
 /// Project the session's self-facts into the brain's [`ServeSelfPosition`].
 ///
-/// No live session reads as Low-ID with no server, which is the references'
-/// own posture at `clientid == 0`: a node between sessions cannot be dialed
-/// back through one and shares its server with nobody.
+/// No live session reads as neither Low-ID nor on a server: both references
+/// guard only `IsConnected()`, so a node between sessions admits as any other.
 fn self_position(own: Option<&crate::own_identity::SharedOwnIdentity>) -> ServeSelfPosition {
     let Some(session) = own.and_then(crate::own_identity::SharedOwnIdentity::connected_session)
     else {
-        return ServeSelfPosition {
-            low_id: own.is_some(),
-            server: None,
-        };
+        return ServeSelfPosition::default();
     };
     ServeSelfPosition {
         low_id: !session.client_id.is_high_id(),
@@ -475,6 +472,7 @@ where
                     // The downloads' Verified Ranges likewise: a part a run
                     // just verified is answered for on this very input.
                     refresh_served(&served, &mut served_seen, &mut state);
+                    state.on_asker(asker_at(peer.ip(), &bans, &peer_roster).await);
                     let mut decisions: VecDeque<ServeDecision> = state
                         .on_conn_event(Instant::now(), peer, event, &modifiers)
                         .into();
@@ -500,6 +498,8 @@ where
                     let mut decisions: VecDeque<ServeDecision> =
                         state.on_rerank_tick(now, &modifiers).into();
                     decisions.extend(state.on_slot_sweep(now, &modifiers));
+                    let banned = banned_standings(&state, &bans, &peer_roster).await;
+                    decisions.extend(state.on_banned_standings(now, &banned, &modifiers));
                     enact(
                         &mut decisions,
                         &mut state,
@@ -531,9 +531,11 @@ where
                     // One inbound OP_REASKFILEPING from the client-UDP front:
                     // answer the reply matrix, refresh the waiter's standing.
                     Some((udp_src, datagram)) => {
+                        let modifiers = current_modifiers(&credit, &held_places, state.identities());
                         refresh_served(&served, &mut served_seen, &mut state);
+                        state.on_asker(asker_at(udp_src.ip(), &bans, &peer_roster).await);
                         let mut decisions: VecDeque<ServeDecision> = state
-                            .on_reask_ping(Instant::now(), udp_src, &datagram)
+                            .on_reask_ping(Instant::now(), udp_src, &datagram, &modifiers)
                             .into();
                         enact(
                             &mut decisions,
@@ -722,14 +724,15 @@ async fn enact<L: ServeRuntimeService>(
                 }
                 send_serve_event(evt_tx, event).await;
             }
-            ServeDecision::RecordCredit { user_hash, bytes } => {
-                let _ = credit.record_upload(user_hash, bytes);
+            ServeDecision::RecordCredit {
+                user_hash,
+                at,
+                bytes,
+            } => {
+                let _ = credit.credit_upload(user_hash, at, bytes);
             }
             ServeDecision::Ban { peer } => {
-                tracing::info!(
-                    %peer,
-                    "a second link named an identified client's user hash; its address is banned"
-                );
+                tracing::info!(%peer, "serve: address banned");
                 bans.lock().await.ban(peer.ip(), std::time::Instant::now());
             }
             ServeDecision::ReadRange {
@@ -901,12 +904,45 @@ async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
     let _ = evt_tx.send(CoreEvent::Serve(event)).await;
 }
 
+/// What the node holds of `ip`, for the input that came from it.
+async fn asker_at(
+    ip: IpAddr,
+    bans: &crate::ban_store::SharedBanStore,
+    roster: &crate::peer_roster::SharedPeerRoster,
+) -> ServeAsker {
+    let banned = bans.lock().await.is_banned(ip, Instant::now());
+    let our_source = match ip.to_canonical() {
+        IpAddr::V4(ip) => roster.is_source(ip),
+        IpAddr::V6(_) => false,
+    };
+    ServeAsker { banned, our_source }
+}
+
+/// The standings whose address a ban reached since the last sweep, a source of
+/// ours left out: a ban leaves the queue with them, heard from or not
+/// (`UploadQueue.cpp:98`).
+async fn banned_standings(
+    state: &ServeState,
+    bans: &crate::ban_store::SharedBanStore,
+    roster: &crate::peer_roster::SharedPeerRoster,
+) -> Vec<PeerEndpoint> {
+    let mut banned = Vec::new();
+    for peer in state.standing_peers() {
+        let asker = asker_at(peer.ip(), bans, roster).await;
+        if asker.banned && !asker.our_source {
+            banned.push(peer);
+        }
+    }
+    banned
+}
+
 /// Read the current score modifier for every peer rmule has identified, so the
-/// brain can rank its queue by `wait * modifier`: its credit (ADR-0041), times
-/// the **Reciprocity Factor** when its link's address and its User Hash name
-/// one of the node's **Held Places** (ADR-0116). Both are memory reads
-/// (ADR-0031); the map covers a superset of the waiting set, which is all the
-/// queue needs.
+/// brain can rank its queue by `wait * modifier`: its credit as its ledger row
+/// pays it at its address (ADR-0041), times the **Reciprocity Factor** when its
+/// link's address and its User Hash name one of the node's **Held Places**
+/// (ADR-0116). A client that named nobody scores nothing
+/// (`UploadClient.cpp:83`). All are memory reads (ADR-0031); the map covers a
+/// superset of the waiting set, which is all the queue needs.
 fn current_modifiers(
     credit: &SharedCreditStore,
     held_places: &SharedHeldPlaces,
@@ -916,13 +952,22 @@ fn current_modifiers(
     identities
         .iter()
         .map(|(peer, identity)| {
-            let credit = store.modifier(identity.user_hash()).unwrap_or(1.0);
+            let credit = store
+                .score_modifier(identity.user_hash(), peer.ip())
+                .unwrap_or(1.0);
+            let named = if identity
+                .nickname()
+                .is_some_and(|name| !name.as_bytes().is_empty()) {
+                1.0
+            } else {
+                0.0
+            };
             let place = if held_places.holds(identity.user_hash(), peer.ip()) {
                 RECIPROCITY_FACTOR
             } else {
                 1.0
             };
-            (*peer, credit * place)
+            (*peer, credit * place * named)
         })
         .collect()
 }

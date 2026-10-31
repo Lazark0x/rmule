@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_primitives::{Ed2kText, FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::super::current_modifiers;
 use crate::credit::SharedCreditStore;
@@ -44,9 +44,36 @@ async fn modifiers(
     }]);
     let identities = peers
         .iter()
-        .map(|&(peer, user_hash)| (peer, HelloFacts::of(user_hash).identity()))
+        .map(|&(peer, user_hash)| (peer, named(user_hash).identity()))
         .collect();
     current_modifiers(&credit, &places, &identities)
+}
+
+fn named(user_hash: UserHash) -> HelloFacts {
+    HelloFacts {
+        nickname: Some(Ed2kText::from_utf8("someone")),
+        ..HelloFacts::of(user_hash)
+    }
+}
+
+/// A client whose hello named nobody scores nothing, wherever it stands
+/// (`UploadClient.cpp:83`).
+#[tokio::test]
+async fn a_nameless_client_scores_nothing() {
+    let credit: SharedCreditStore =
+        Arc::new(DurableCreditStore::new(rmule_testkit::memory_store()));
+    let places = SharedHeldPlaces::default();
+    let identities = [
+        (at(1), HelloFacts::of(hash(1)).identity()),
+        (at(2), named(hash(2)).identity()),
+    ]
+    .into_iter()
+    .collect();
+
+    let modifiers = current_modifiers(&credit, &places, &identities);
+
+    assert_eq!(modifiers[&at(1)], 0.0);
+    assert_eq!(modifiers[&at(2)], 1.0);
 }
 
 /// A held place's waiter scores by the factor; a waiter that only claims its

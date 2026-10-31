@@ -298,11 +298,12 @@ pub fn seed_credit_ring(
         if known.uploaded != 0 || known.downloaded != 0 || store.public_key(record.key)?.is_some() {
             continue;
         }
-        store.record_upload(record.key, record.uploaded)?;
-        store.record_download(record.key, record.downloaded)?;
+        // The key first: binding a first key over received bytes wipes them.
         if let Some(der) = record.public_key() {
             store.bind_public_key(record.key, der)?;
         }
+        store.record_upload(record.key, record.uploaded)?;
+        store.record_download(record.key, record.downloaded)?;
         seeded += 1;
     }
     Ok(seeded)

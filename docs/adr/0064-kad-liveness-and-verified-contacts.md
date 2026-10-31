@@ -12,8 +12,9 @@ walks.
 
 aMule's flood ban lands in the eD2k client list (`AddBannedClient`,
 [ClientList.cpp#L727](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L727)),
-and no Kad receive path consults it: aMule keeps answering a banned IP's other opcodes,
-and the per-opcode buckets contain the flood.
+and every receive of the shared UDP socket consults it, Kad included: `CMuleUDPSocket`
+drops a datagram from a banned address before anything reads it (`MuleUDPSocket.cpp:166`;
+2.3.3 `:177`; eMule `ClientUDPSocket.cpp:78`).
 
 `validReceiverKey` is a property of the crypt trailer, not of the key family that
 decrypted the datagram. A captured crypt Kad2 `PING` decrypts under the Kad-ID family
@@ -79,7 +80,8 @@ lazy expiry) records it for `CLIENTBANTIME` = 2 hours, checked then evicted as a
 Enforcement is aMule's: inbound connections from a banned IP are refused, banned source
 candidates are not dialed, and every datagram from it stops at the client UDP front before
 the demux (`MuleUDPSocket.cpp:176-177`), which is Kad's socket and the peers'. Stock also
-gates its server UDP socket; rmule's hears only servers it asked, so that door stays open.
+gates its server UDP socket; rmule's hears only servers it asked, so that door stays open. A ban reaches
+the links and waiters already held as well (ADR-0031).
 The inbound refusal is the second of the **Accept Gates** — the IP filter, the ban, then the
 Test Connection carve-out (ADR-0046), in that order and in one place. They run where a
 connection enters the serve accept channel and before it does: in the accept pump for a TCP
@@ -199,8 +201,8 @@ outbound, because the `0x22` consume checks it.
 
 ## Considered options
 
-- **A Kad inbound ban gate.** Rejected: aMule keeps answering a banned IP's other opcodes,
-  and a ban would punish NAT-shared IPs; the per-opcode bucket already contains the flood.
+- **The ban on TCP alone.** Rejected: stock's gate is at the socket every UDP protocol shares,
+  and an offender left answered keeps its reask and its Kad replies for the whole ban.
 - **The limiter in the socket layer.** Rejected: the deterministic tier needs flood
   scenarios inside the sans-I/O node, and the socket stays thin.
 - **`verified := responded` everywhere.** Rejected: it mislabels what the flag means. The

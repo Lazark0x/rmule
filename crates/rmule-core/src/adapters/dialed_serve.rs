@@ -560,7 +560,7 @@ impl Halves<'_> {
                 let proof = self
                     .deps
                     .secured_identities
-                    .bind(user_hash, &public_key)
+                    .bind(user_hash, &public_key, peer.ip())
                     .await;
                 let input = match proof {
                     KeyProof::Bound => Some(ServeInput::IdentityBound { user_hash }),

@@ -115,6 +115,8 @@ impl LinkName {
 pub(crate) struct SharedPeerLinks {
     book: Arc<Mutex<Book>>,
     servers: Option<SharedServerListStore>,
+    /// The Connection Ceiling the accept limit reads; `None` has no limit.
+    ceiling: Option<usize>,
 }
 
 #[derive(Default)]
@@ -311,12 +313,21 @@ impl DialInFlight {
 }
 
 impl SharedPeerLinks {
-    /// Peer Links that check a changed Low ID's server against `servers`.
-    pub(crate) fn knowing(servers: SharedServerListStore) -> Self {
+    /// Peer Links that check a changed Low ID's server against `servers`,
+    /// under the node's Connection `ceiling`.
+    pub(crate) fn knowing(servers: SharedServerListStore, ceiling: usize) -> Self {
         Self {
             book: Arc::default(),
             servers: Some(servers),
+            ceiling: Some(ceiling),
         }
+    }
+
+    /// The links open now, dials in flight included, and the ceiling over
+    /// them: aMule's `GetOpenSockets` and `GetMaxConnections`.
+    pub(crate) fn open_and_ceiling(&self) -> (usize, usize) {
+        let open = self.book.lock().expect("peer links lock").live.len();
+        (open, self.ceiling.unwrap_or(usize::MAX))
     }
 
     /// What a link answers an `OP_CHANGE_CLIENT_ID` offer of `client_id` on

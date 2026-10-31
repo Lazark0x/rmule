@@ -61,6 +61,7 @@ pub use file_request::{
     ExtendedRequests, FileReqAnsNoFil, FileSizedStatus, FileStatus, PartStatusTail,
     ReqFileNameAnswer, RequestFileName, SetReqFileId,
 };
+pub use hello_tag::CT_NAME;
 pub use handshake::{
     CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, HelloGate, PeerHandshakeContext,
     SecureIdentConfig, ServingBuddyAdvert,

@@ -102,6 +102,7 @@ fn the_send_ahead_holds_the_next_read_until_a_block_has_left() {
         vec![
             ServeDecision::RecordCredit {
                 user_hash: user(0x0A),
+                at: p.ip(),
                 bytes: 512,
             },
             ServeDecision::CountSent {

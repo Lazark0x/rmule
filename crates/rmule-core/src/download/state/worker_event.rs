@@ -347,6 +347,7 @@ impl DownloadState {
         if let Some(user_hash) = user_hash {
             out.push(Decision::RecordCredit {
                 user_hash,
+                at: peer.ip(),
                 bytes: bytes.len() as u64,
             });
         }

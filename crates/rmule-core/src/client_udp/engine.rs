@@ -288,6 +288,7 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
             .is_banned(udp_src.ip(), std::time::Instant::now())
         {
             tracing::trace!(%udp_src, "datagram from a banned IP; dropped");
+            self.diagnostics.count_banned_datagram();
             return;
         }
         // Crypt receive-transform (ADR-0046), the plaintext-under-crypt split

@@ -358,6 +358,9 @@ pub struct SessionCounters {
     /// `natt_attempts_server_total`, this is how often ADR-0091's ordering
     /// actually earns its second rung.
     pub natt_attempt_fallthroughs_total: u64,
+    /// Datagrams the client-UDP front dropped unread because their address
+    /// is banned (ADR-0064).
+    pub banned_datagrams_total: u64,
     /// The client-UDP demux front's transport returned closed and the front
     /// wound down. In production this happens only when the
     /// receive-error budget (`RuntimeClientUdpTransport::recv`) is

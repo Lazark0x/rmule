@@ -88,6 +88,18 @@ _Avoid_: upload manager, seed scheduler, slot (a slot is one grant within the qu
 What one slot holder has in motion in the **Serve State**: its asked ranges waiting, the one read out, and how far it has read ahead of the socket. It ends with the slot, and its number tells a late read or block from those of a slot the same peer was granted since (ADR-0031).
 _Avoid_: upload session, transfer
 
+**Upload Session**:
+One slot's run from its grant: the bytes it has sent and the time it began. While a waiter the **Upload Slot Queue** can reach stands behind every slot, a session ends at 10 485 760 bytes or one hour, one a second; its holder is told `OP_OUTOFPARTREQS`, goes back on the wait list with a fresh wait and keeps its link (ADR-0031).
+_Avoid_: serve flow (that is what the slot has in motion), transfer
+
+**Ask Pace**:
+The serve side's one score of how fast each client asks for what costs us: a slot ask, a known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a later one takes 1 off, and 10 bans the address. Keyed by accounting key and **User Hash**, ages out with the client at 34 minutes, bounded (ADR-0055 divergence 7).
+_Avoid_: aggressiveness counter, flood limiter (that is Kad's)
+
+**Hash Track**:
+Which **User Hash** each address and listen port proved a key under in the last two hours, so a client coming back under another hash is banned at its hello (aMule's tracked client list).
+_Avoid_: prior hash list
+
 **Send-Ahead**:
 The ten blocks a **Serve Flow** may have read and not yet left for the socket, past which it starts no read (ADR-0031).
 _Avoid_: read-ahead, upload buffer
@@ -1547,12 +1559,8 @@ Core's cross-network recovery route (ADR-0067): a connected eD2k peer whose hell
 _Avoid_: Kad bootstrap fetch (that's the manual nodes.dat route), peer source exchange (a different peer-to-peer fact), Kad callback (parked)
 
 **Ban Store**:
-The core-owned record of flood-offender IPs (IP plus banned-until, lazily expired). Protocol
-nodes report offenders into it — they never enforce. Inbound peer connections from banned IPs
-are refused, banned source candidates are not dialed, and every datagram from one stops at the
-client UDP front, Kad's socket and the peers', where aMule's client-layer ban lands too. Only
-the server UDP socket stays open: it hears the servers we asked.
-_Avoid_: IP filter (local policy file), Kad ban (the node only reports), blocklist
+The core-owned record of banned addresses (IP plus banned-until, lazily expired), for two hours each, wherever the ban came from: a Kad flood report (ADR-0064), an **Ask Pace** score, a **Hash Track** change, a hash thief (ADR-0107), a corrupt sender. It is enforced at the **Accept Gates**, at every dial, in the **Serve State** on a live link and a waiter, and at the client-UDP front, Kad included. A source of ours is spared on the serve side (ADR-0055 divergence 7).
+_Avoid_: IP filter (local policy file), Kad ban (one store, one ban), blocklist
 
 **IP Filter**:
 The core-owned local-policy verdict store (aMule 2.3.3 `CIPFilter` parity): built

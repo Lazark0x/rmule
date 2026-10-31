@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use rmule_primitives::{AccountingKey, FileHash, PeerEndpoint};
 
 mod reask;
+mod session;
 
 /// How many **waiting** entries one accounting key may hold at once — the
 /// per-address queue cap (ADR-0088).
@@ -46,13 +47,14 @@ pub const LOW_ID_ABUSE_WAIT_LIST_THRESHOLD: usize = 50;
 /// already known rather than re-derived here (ADR-0031 amendment).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LowIdAbuseFacts {
-    /// We hold no High-ID on a live server session — eMule's
-    /// `CServerConnect::IsLowID()`. A node with no session at all is Low-ID
-    /// too, exactly as `clientid == 0` is in the references.
+    /// We hold a live server session under a Low ID: both references read
+    /// `IsConnected() && IsLowID()`, so a node with no session does not
+    /// guard (`UploadQueue.cpp:403`).
     pub(crate) we_are_low_id: bool,
-    /// The asker already holds an upload slot of ours, so it is in a
-    /// relationship we are not about to break by refusing it.
-    pub(crate) downloading_from_us: bool,
+    /// The asker is a source of ours, connected or queued at: aMule's
+    /// `GetDownloadState() != DS_NONE` (`UploadQueue.cpp:405`). Refusing it
+    /// could cost us a source.
+    pub(crate) our_source: bool,
     /// The asker is on our friend list. rmule has no friend list, so this is
     /// **always false** today; it is a named input rather than a silent
     /// omission so that adding friends later fills a hole instead of
@@ -76,7 +78,7 @@ pub(crate) struct LowIdAbuseFacts {
 /// — the same silence the two queue caps answer with (ADR-0088).
 pub(crate) const fn refuses_as_low_id_abuse(facts: &LowIdAbuseFacts) -> bool {
     facts.we_are_low_id
-        && !facts.downloading_from_us
+        && !facts.our_source
         && !facts.is_friend
         && !facts.on_our_server
         && facts.waiting > LOW_ID_ABUSE_WAIT_LIST_THRESHOLD
@@ -185,6 +187,8 @@ pub enum WaiterLeaveCause {
     /// Another client asked under its User Hash and it was not identified
     /// (ADR-0107; aMule `UploadQueue.cpp:432-447`).
     UserHashClash,
+    /// Its address is banned (`UploadQueue.cpp:98`).
+    Banned,
 }
 
 /// What a purge sweep removed, reclaimed, and promoted (ADR-0057).
@@ -293,6 +297,8 @@ pub struct UploadSlotQueue {
     /// over the budget: the last slot went to a waiter the queue could reach.
     /// aMule's `lastupslotHighID` (`UploadQueue.cpp:70`, `:147`, `:417-424`).
     extra_slot_open: bool,
+    /// When an **Upload Session** last ended at its bound: one a second.
+    last_session_end: Option<Instant>,
 }
 
 /// One occupied upload slot.
@@ -316,6 +322,10 @@ struct GrantedSlot {
     /// so a rank-only reply to a v4 waiter is unparseable there (it reads the
     /// rank as a part count and drops the datagram).
     udp_version: u8,
+    /// When the slot was granted, the start of its **Upload Session**.
+    session_start: Instant,
+    /// Bytes of the **Upload Session** that have left for the socket.
+    session_sent: u64,
 }
 
 impl UploadSlotQueue {
@@ -334,6 +344,7 @@ impl UploadSlotQueue {
             granted: Vec::new(),
             waiting: Vec::new(),
             extra_slot_open: true,
+            last_session_end: None,
         }
     }
 
@@ -449,6 +460,8 @@ impl UploadSlotQueue {
                     file_hash,
                     dial_back_since: None,
                     udp_version: entry.udp_version,
+                    session_start: now,
+                    session_sent: 0,
                 });
                 self.extra_slot_open = !marked;
                 return Admission::Granted;
@@ -476,6 +489,8 @@ impl UploadSlotQueue {
                 file_hash,
                 dial_back_since: None,
                 udp_version: 0,
+                session_start: now,
+                session_sent: 0,
             });
             return Admission::Granted;
         }
@@ -791,6 +806,8 @@ impl UploadSlotQueue {
             file_hash: head.file_hash,
             dial_back_since: dial_back.then_some(now),
             udp_version: head.udp_version,
+            session_start: now,
+            session_sent: 0,
         });
         Promotion {
             granted: Some((head.peer, head.file_hash)),
@@ -863,7 +880,7 @@ mod low_id_abuse_tests {
     fn every_condition_must_hold_for_the_guard_to_refuse() {
         let refusing = LowIdAbuseFacts {
             we_are_low_id: true,
-            downloading_from_us: false,
+            our_source: false,
             is_friend: false,
             on_our_server: false,
             waiting: LOW_ID_ABUSE_WAIT_LIST_THRESHOLD + 1,
@@ -879,9 +896,9 @@ mod low_id_abuse_tests {
                 },
             ),
             (
-                "a peer already pulling from us is in a relationship, not a stranger",
+                "a source of ours is in a relationship, not a stranger",
                 LowIdAbuseFacts {
-                    downloading_from_us: true,
+                    our_source: true,
                     ..refusing
                 },
             ),

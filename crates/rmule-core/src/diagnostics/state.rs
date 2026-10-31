@@ -312,6 +312,13 @@ impl DiagnosticsState {
             .saturating_add(1);
     }
 
+    /// Count a datagram the client-UDP front dropped for a banned address.
+    pub fn count_banned_datagram(&self) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        inner.session.banned_datagrams_total =
+            inner.session.banned_datagrams_total.saturating_add(1);
+    }
+
     /// Count the client-UDP demux front's transport returning closed
     /// — in production, the receive-error budget exhausted.
     pub fn count_client_udp_transport_ended(&self) {

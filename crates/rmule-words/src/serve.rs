@@ -343,6 +343,7 @@ pub fn log_line(event: &ServeEvent) -> Sentence {
                 WaiterLeaveCause::UserHashClash => {
                     "dropped from the upload queue: another client asked under its user hash"
                 }
+                WaiterLeaveCause::Banned => "dropped from the upload queue: its address is banned",
             };
             Sentence::owned(format!("{} {how}", address(*peer)))
         }

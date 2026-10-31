@@ -125,6 +125,43 @@ fn front_with_kad<T: ClientUdpTransport>(
     (engine, inboxes, kad_rx)
 }
 
+/// Stock's gate is at the socket every UDP protocol shares
+/// (`MuleUDPSocket.cpp:166`): a banned address's reask and Kad datagram stop at
+/// the front and are counted, and another address's go through.
+#[tokio::test]
+async fn a_banned_address_is_dropped_before_any_protocol_reads_it() {
+    let (banned_ip, open_ip) = (Ipv4Addr::new(203, 0, 113, 1), Ipv4Addr::new(203, 0, 113, 2));
+    let banned = PeerEndpoint::V4(Ipv4Endpoint::new(banned_ip, 5000));
+    let open = PeerEndpoint::V4(Ipv4Endpoint::new(open_ip, 5000));
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let kad = vec![0xE4, 0x00];
+    let script = vec![
+        (banned, ping.clone()),
+        (banned, kad.clone()),
+        (open, ping.clone()),
+        (open, kad),
+    ];
+    let diagnostics = DiagnosticsState::default();
+    let (mut engine, mut inboxes, mut kad_rx) =
+        front_with_kad(scripted(script), None, diagnostics.clone(), 4);
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock().await.ban(banned.ip(), Instant::now());
+    engine.bans = bans;
+
+    engine.run().await;
+
+    assert_eq!(inboxes.reask_ping.recv().await.map(|(from, _)| from), Some(open));
+    assert_eq!(inboxes.reask_ping.recv().await, None);
+    assert_eq!(kad_rx.try_recv().ok().map(|(from, _)| from.ip), Some(open_ip));
+    assert!(kad_rx.try_recv().is_err());
+    assert_eq!(diagnostics.snapshot().session.banned_datagrams_total, 2);
+}
+
 #[tokio::test]
 async fn the_front_routes_pings_to_serve_replies_to_the_downloader_and_drops_the_rest() {
     let src = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 5000));

@@ -363,6 +363,44 @@ scheduling is (ADR-0026).
 - When the activity ends, `DiagnosticsState::close_all_uploads` closes every open
   upload row with the same stop reason.
 
+### An upload session ends at stock's bound
+
+A slot is one **Upload Session**. While a waiter the queue can reach stands behind every
+slot, a session ends at 10 485 760 bytes sent or at one hour, whichever comes first
+(`UploadQueue.cpp:586-623`; 2.3.3 `UploadQueue.cpp:580-581`). With nobody reachable waiting
+it runs on: the bound exists to move the queue. At most one session ends per second, as
+`Process` kicks one client a cycle and starts one a second (`UploadQueue.cpp:244-258`). A
+friend slot or Release priority would be exempt; rmule has neither.
+
+The holder is told `OP_OUTOFPARTREQS` at once and asks again on its own terms: it is back
+on the wait list with a fresh wait, as `SendOutOfPartReqsAndAddToWaitingQueue` adds it
+(`UploadClient.cpp:493-510`), and the link stays. The slot goes to the best waiter in the
+same batch. Two inputs read the bound, one owner holds it: the queue counts a block when it
+has left and stamps the slot's start, and the serve brain asks after each block and at the
+slot sweep, so a stalled holder is ended by the hour too.
+
+The count lives on the slot, so it rides a relink (ADR-0107) and ends with the slot. A
+Cancel, a disconnect, a refused block ask and a serve restart end it with the slot; Pause
+and Resume of a download do not touch it, and a process restart loses it with the queue.
+
+### Every link is bounded, and so is what the listener takes
+
+A served link that moved nothing either way for stock's 40 s is told to the serve side
+(`ClientTCPSocket.cpp:201-229`). The link holds that clock, because only it sees both
+directions; the serve side judges it. A slot holder's silence stays the slot sweep's, which
+lends what the kernel still holds, and any other link closes: a waiter keeps its place on
+its reask (ADR-0057), as stock leaves it queued. A download riding the link, or the buddy
+slot, holds it, as the 15 minutes stock adds for a buddy and the Queued Hang-Up a rider owes
+make a shorter clock meaningless there (ADR-0107 invariant 9). A link rmule dialed for a
+download is that download's own to end, so stock's bound does not run on it yet.
+
+The **Accept Limit** is the last Accept Gate. Past the Connection Ceiling, which counts every
+live link and dial, or past 50 accepts in a five-second window, the listener refuses a peer
+before anything reads it (`ListenSocket.cpp:85`, `:186-196`, `Constants.h:72`). An awaited
+server's port test goes past it, as stock accepts past it while connecting. Stock's spike
+brake (`ListenSocket.cpp:218-232`) is not modelled: it only tightens the same window, whose
+bound already holds a burst to ten a second.
+
 ## Consequences
 
 - `CoreCommand` and `CoreEvent` wrap `DownloadCommand`/`DownloadEvent` and

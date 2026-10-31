@@ -1,17 +1,17 @@
-//! The core-owned **BanStore** (ADR-0064): where a flood offender's 2 hours
-//! are kept and enforced.
+//! The core-owned **BanStore** (ADR-0064): where every ban lands, whoever
+//! raised it, for two hours by address.
 //!
 //! `KadNode`'s flood limiter (ADR-0064, `rmule-kad`'s `flood.rs`) only
-//! *reports* an offender IP via `KadEvent::FloodOffenderDetected`. This store
-//! is where that report lands: an `Arc<Mutex<_>>`-shared IP -> banned-until
-//! map, fed by the `RuntimeKadFactory` pump task's fold of every
-//! `FloodOffenderDetected` event. As aMule's client ban does
-//! (`ClientTCPSocket.cpp:158`, `MuleUDPSocket.cpp:176-177`), it stops TCP and
-//! UDP alike, at three doors: the serve adapter's **Accept Gates** refuse an
-//! inbound connection, `RuntimePeerTransferService::start_download_worker`
-//! skips dialing the candidate, and the client UDP front drops every datagram
-//! before the demux, which is Kad's and the peers' one socket. The server UDP
-//! socket is the one door left open: it hears only servers we asked.
+//! *reports* an offender IP via `KadEvent::FloodOffenderDetected`, and the serve
+//! brain and a download's conviction raise their own: an `Arc<Mutex<_>>`-shared
+//! IP -> banned-until map, consulted by every surface that enforces it — the
+//! serve adapter's **Accept Gates** (refuse an inbound connection before the
+//! serve loop sees it), `RuntimePeerTransferService::start_download_worker`
+//! (skips dialing a banned candidate source entirely), the serve brain (a ban
+//! reaches a live link and a waiter) and the client-UDP front (a banned
+//! address's datagram stops there, Kad included, as `MuleUDPSocket.cpp:176-177`).
+//! The server UDP socket is the one door left open: it hears only servers we
+//! asked.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -20,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-/// The core-owned BanStore, shared between the Kad event fold and its three
-/// enforcement surfaces (`Core::builder`'s single instance).
+/// The core-owned BanStore, shared between what raises a ban and the surfaces
+/// that enforce it (`Core::builder`'s single instance).
 pub(crate) type SharedBanStore = Arc<Mutex<BanStore>>;
 
 /// IP -> banned-until (address-typed, so it applies to both families —
@@ -36,8 +36,8 @@ pub(crate) struct BanStore {
 }
 
 impl BanStore {
-    /// aMule's `CLIENTBANTIME` (`ed2k/Constants.h#L71`): how long a
-    /// flood-offender IP is refused once banned.
+    /// aMule's `CLIENTBANTIME` (`ed2k/Constants.h#L71`): how long an
+    /// offender's address is refused once banned.
     pub(crate) const CLIENTBANTIME: Duration = Duration::from_secs(2 * 60 * 60);
 
     /// Ban `ip` for [`CLIENTBANTIME`](Self::CLIENTBANTIME) from `now` (aMule
@@ -148,50 +148,5 @@ mod tests {
         // the IP is still banned because the second report reset the window.
         assert!(store.is_banned(ip(1), t0 + BanStore::CLIENTBANTIME));
         assert!(!store.is_banned(ip(1), t1 + BanStore::CLIENTBANTIME));
-    }
-
-    #[test]
-    fn banning_an_ip_in_ban_store_has_no_effect_on_the_kad_datagram_path() {
-        // ADR-0064: enforcement is peer-TCP only — there is no Kad ban gate.
-        // `BanStore` carries no reference into `rmule-kad` at all, so this
-        // demonstrates the property directly: banning an IP here changes
-        // nothing about how a live `KadNode` treats datagrams from it.
-        use rmule_kad::{
-            Kad2Message, KadId, KadInstant, KadNode, KadNodeConfig, KadNodeEndpoint, KadNodeStart,
-            KadOutput,
-        };
-        use rmule_primitives::session::drain;
-
-        let mut node = KadNode::new(KadNodeStart::new(
-            KadNodeConfig {
-                id: KadId::from_bytes([0xAA; KadId::BYTE_LEN]),
-                tcp_port: 4662,
-                udp_port: 4672,
-                user_hash: rmule_kad::UserHash::from_bytes([0xEE; 16]),
-            },
-            KadInstant::EPOCH,
-        ));
-        let from = KadNodeEndpoint::new(std::net::Ipv4Addr::new(203, 0, 113, 9), 4909);
-
-        let mut store = BanStore::default();
-        store.ban(IpAddr::V4(from.ip()), Instant::now());
-        assert!(store.is_banned(IpAddr::V4(from.ip()), Instant::now()));
-
-        let message = Kad2Message::Ping;
-        node.handle_datagram(KadInstant::EPOCH, from, &message.encode().encode());
-        let outputs = drain(|| node.poll_output());
-        let replied_to: Vec<_> = outputs
-            .iter()
-            .filter_map(|output| match output {
-                KadOutput::Datagram { to, .. } => Some(*to),
-                KadOutput::Event(_) => None,
-            })
-            .collect();
-        assert_eq!(
-            replied_to,
-            vec![from],
-            "Kad answers a ping from an IP the core BanStore has banned — \
-             the ban never reaches the Kad datagram path"
-        );
     }
 }

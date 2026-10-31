@@ -295,6 +295,7 @@ pub(super) const fn waiter_left(cause: WaiterLeaveCause) -> &'static str {
         WaiterLeaveCause::Purged => "purged",
         WaiterLeaveCause::Cancelled => "cancelled",
         WaiterLeaveCause::UserHashClash => "user_hash_clash",
+        WaiterLeaveCause::Banned => "banned",
     }
 }
 

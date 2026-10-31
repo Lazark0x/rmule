@@ -153,8 +153,6 @@ pub enum SlotReleaseReason {
     /// The peer answered `OP_FILEREQANSNOFIL` for the file mid-slot: it does
     /// not have it.
     FileNotFound,
-    /// Driver-owned slot-stale timeout fired (`signal_slot_stale`).
-    Stale,
     /// Local-reason teardown sent `OP_CANCELTRANSFER` before releasing
     /// (`CancelTransfer`, ADR-0056): `CancelDownload`, `PauseDownload`, or
     /// complete-overshoot while the slot was held.

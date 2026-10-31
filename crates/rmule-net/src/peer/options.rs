@@ -40,11 +40,6 @@ pub struct ConnectOptions {
     /// Cap on the peer identifying itself once TCP is up; armed as the
     /// driver's one startup deadline and disarmed by the hello.
     pub hello_timeout: Duration,
-    /// Cap on silence from a peer that already granted an upload slot.
-    pub slot_stale_timeout: Duration,
-    /// How long an established link with nothing pending is held open before
-    /// a graceful disconnect.
-    pub idle_close_timeout: Duration,
     /// Directory to stage this connection's capture in; `None` runs without
     /// a capture task at all.
     pub capture_dir: Option<PathBuf>,
@@ -156,8 +151,6 @@ impl Default for ConnectOptions {
             connect_timeout: Duration::from_secs(10),
             crypt_timeout: PEER_SOCKET_TIMEOUT,
             hello_timeout: Duration::from_secs(15),
-            slot_stale_timeout: Duration::from_secs(60),
-            idle_close_timeout: Duration::from_secs(300),
             capture_dir: None,
             capture_mode: CaptureMode::default(),
             secure_ident: None,

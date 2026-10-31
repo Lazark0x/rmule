@@ -5,7 +5,8 @@
 //! every question the seam asks is "what does this peer's row say", which the
 //! primary key already answers.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use rmule_primitives::UserHash;
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Schema;
 use crate::CoreError;
-use crate::credit::{CreditStore, CreditTotals, KeyBinding, PeerCredit};
+use crate::credit::{CreditProof, CreditStore, CreditTotals, KeyBinding, PeerCredit};
 
 /// The `peer_credit` record's shape version. Bumped with every field change,
 /// together with a ladder step (ADR-0083).
@@ -74,6 +75,12 @@ struct Books {
     /// What moved since the store last heard, added to its rows at the next
     /// write, so a key bound meanwhile is not written over.
     moved: HashMap<UserHash, CreditTotals>,
+    /// The rows holding a key, which pay only on proof (ADR-0041).
+    keyed: HashSet<UserHash>,
+    /// Where each key was last proved this run, one address per family
+    /// because a dual-stack client holds one in each (ADR-0107): aMule's
+    /// `m_identAddress`.
+    proved: HashMap<(UserHash, bool), IpAddr>,
 }
 
 impl Books {
@@ -96,24 +103,24 @@ impl DurableCreditStore {
     #[must_use]
     pub fn new(store: Arc<Store>) -> Self {
         let rows: Result<_, StoreError> = store.read(|txn| PEER_CREDIT.iter(txn));
-        let totals = rows
+        let rows = rows
             .inspect_err(|error| {
                 tracing::warn!(%error, "credit ring unreadable; peers start unknown this run");
             })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(key, row)| {
-                let totals = CreditTotals {
-                    uploaded: row.uploaded,
-                    downloaded: row.downloaded,
-                };
-                (UserHash::from_bytes(key), totals)
-            })
-            .collect();
-        let books = Mutex::new(Books {
-            totals,
-            moved: HashMap::new(),
-        });
+            .unwrap_or_default();
+        let mut books = Books::default();
+        for (key, row) in rows {
+            let peer = UserHash::from_bytes(key);
+            let totals = CreditTotals {
+                uploaded: row.uploaded,
+                downloaded: row.downloaded,
+            };
+            books.totals.insert(peer, totals);
+            if row.public_key.is_some() {
+                books.keyed.insert(peer);
+            }
+        }
+        let books = Mutex::new(books);
         Self {
             ring: Arc::new(Ring { store, books }),
         }
@@ -189,11 +196,30 @@ impl CreditStore for DurableCreditStore {
             .unwrap_or_default())
     }
 
+    fn proof(&self, peer: UserHash, at: IpAddr) -> CreditProof {
+        let at = at.to_canonical();
+        let books = self.ring.books();
+        match books.proved.get(&(peer, at.is_ipv6())) {
+            Some(proved) if *proved == at => CreditProof::Proved,
+            Some(_) => CreditProof::Elsewhere,
+            None if books.keyed.contains(&peer) => CreditProof::Owed,
+            None => CreditProof::Open,
+        }
+    }
+
+    fn prove(&self, peer: UserHash, at: IpAddr) {
+        let at = at.to_canonical();
+        self.ring.books().proved.insert((peer, at.is_ipv6()), at);
+    }
+
     /// The read and the write share one transaction, so the compare-and-set
     /// cannot interleave — and it flushes where it is written, because the
-    /// caller acts on the answer.
+    /// caller acts on the answer. A first key over a row with bytes received
+    /// leaves both totals at one: the prover has not shown it earned them
+    /// (`ClientCredits.cpp:235-241`).
     fn bind_public_key(&self, peer: UserHash, key: &[u8]) -> Result<KeyBinding, CoreError> {
-        self.ring.store.write(|txn| {
+        let wipe = self.totals(peer)?.downloaded > 0;
+        let binding: KeyBinding = self.ring.store.write(|txn| {
             let primary = *peer.as_bytes();
             let mut row = PEER_CREDIT.get(txn, &primary)?.unwrap_or_default();
             if let Some(bound) = &row.public_key {
@@ -204,9 +230,26 @@ impl CreditStore for DurableCreditStore {
                 });
             }
             row.public_key = Some(key.to_vec());
+            if wipe {
+                row.uploaded = 1;
+                row.downloaded = 1;
+            }
             PEER_CREDIT.put(txn, &primary, &row)?;
-            Ok(KeyBinding::Adopted)
-        })
+            Ok::<_, CoreError>(KeyBinding::Adopted)
+        })?;
+        if binding == KeyBinding::Adopted {
+            let mut books = self.ring.books();
+            books.keyed.insert(peer);
+            if wipe {
+                let left = CreditTotals {
+                    uploaded: 1,
+                    downloaded: 1,
+                };
+                books.totals.insert(peer, left);
+                books.moved.remove(&peer);
+            }
+        }
+        Ok(binding)
     }
 
     fn public_key(&self, peer: UserHash) -> Result<Option<Vec<u8>>, CoreError> {

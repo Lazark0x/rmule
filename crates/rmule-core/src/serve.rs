@@ -5,7 +5,9 @@
 //! module.
 
 mod aich_builder;
+mod ask_pace;
 mod block_reader;
+mod hash_track;
 mod link_output;
 mod liveness;
 mod runner;

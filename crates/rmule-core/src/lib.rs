@@ -159,7 +159,9 @@ pub use clients_met::{
     load_clients_met, save_clients_met, seed_credit_ring,
 };
 pub use content::{ContentFileStore, HoleVerdict, PartFileChange, RestoredProgress, Revalidation};
-pub use credit::{CreditStore, CreditTotals, KeyBinding, PeerCredit, credit_modifier};
+pub use credit::{
+    CreditProof, CreditStore, CreditTotals, KeyBinding, PeerCredit, credit_modifier,
+};
 pub use data_dir::{DataDir, DataDirSource, home_dir, resolve_data_dir};
 pub use directory_scan::{
     DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryScanDiagnostics, DirectoryState,

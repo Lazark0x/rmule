@@ -106,8 +106,16 @@ where
                         .forget(PeerRelation::Download(ctx.download_id), v4);
                 }
             }
-            Decision::RecordCredit { user_hash, bytes } => {
-                let _ = ctx.runner.rt.credit.record_download(user_hash, bytes);
+            Decision::BanSender { peer } => {
+                let mut bans = ctx.runner.rt.bans.lock().await;
+                bans.ban(peer.ip(), std::time::Instant::now());
+            }
+            Decision::RecordCredit {
+                user_hash,
+                at,
+                bytes,
+            } => {
+                let _ = ctx.runner.rt.credit.credit_download(user_hash, at, bytes);
             }
             Decision::PersistPart {
                 part_index,

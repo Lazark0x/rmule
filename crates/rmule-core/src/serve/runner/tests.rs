@@ -781,10 +781,10 @@ fn self_position_follows_a_mid_session_reassignment() {
     assert_eq!(
         super::self_position(Some(&own)),
         ServeSelfPosition {
-            low_id: true,
+            low_id: false,
             server: None
         },
-        "no session yet: Low ID, no server"
+        "no session: both references guard only `IsConnected()`"
     );
 
     let server = Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 1), 4661);

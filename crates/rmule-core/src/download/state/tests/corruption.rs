@@ -222,6 +222,13 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
             .any(|d| matches!(d, Decision::DistrustPeer { user_hash } if *user_hash == hash_of(1))),
         "the verified part proves its old cells corrupt: {verified:?}"
     );
+    assert!(
+        verified
+            .iter()
+            .any(|d| matches!(d, Decision::BanSender { peer: at } if *at == peer(1))),
+        "a proven corrupt sender is banned across the node \
+         (`CorruptionBlackBox.cpp:223-231`): {verified:?}"
+    );
 }
 
 /// One worker wrote the whole part, and the recovery ask goes to it; it ends
