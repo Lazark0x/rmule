@@ -77,6 +77,14 @@ where
         if let Some(front) = self.server_udp.take() {
             front.retire().await;
         }
+        // Its readers are gone, and the server hears the end before the ports
+        // go, as aMule disconnects in `ShutDown` before `DeletePortMappings`
+        // (`amule.cpp:1412-1423`). Bounded: a quit outlasts no stalled link.
+        let live = self.wiring.shared_server_session.slot().lock().await.take();
+        if let Some(live) = live {
+            announce(&self.evt_tx, QuitStep::ServerSession).await;
+            let _ = tokio::time::timeout(JOIN_GRACE, live.disconnect()).await;
+        }
         if let Some(port_mapping) = self.port_mapping.take() {
             announce(&self.evt_tx, QuitStep::PortMapping).await;
             port_mapping.retire().await;

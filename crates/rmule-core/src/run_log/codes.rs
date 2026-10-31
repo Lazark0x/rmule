@@ -596,6 +596,7 @@ pub(super) const fn quit_step(step: QuitStep) -> &'static str {
         QuitStep::Download => "download",
         QuitStep::Serve => "serve",
         QuitStep::Kad => "kad",
+        QuitStep::ServerSession => "server_session",
         QuitStep::PortMapping => "port_mapping",
         QuitStep::CreditCheckpoint => "credit_checkpoint",
     }

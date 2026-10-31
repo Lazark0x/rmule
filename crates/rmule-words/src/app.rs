@@ -22,6 +22,7 @@ pub const fn quit_step(step: QuitStep) -> Sentence {
         QuitStep::Download => "Shutting down… downloads",
         QuitStep::Serve => "Shutting down… serving",
         QuitStep::Kad => "Shutting down… Kad",
+        QuitStep::ServerSession => "Shutting down… server connection",
         QuitStep::PortMapping => "Shutting down… port mappings",
         QuitStep::CreditCheckpoint => "Shutting down… saving credits",
     })

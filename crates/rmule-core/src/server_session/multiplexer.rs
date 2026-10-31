@@ -138,6 +138,14 @@ impl SearchStream {
 pub(crate) trait ServerLink: Send + 'static {
     fn send(&self, command: Ed2kCommand) -> impl Future<Output = Result<(), ()>> + Send;
     fn next_event(&mut self) -> impl Future<Output = Option<Ed2kEvent>> + Send;
+    /// Close the link, its socket gone when this returns: the session's end
+    /// is the server's to hear before the session reports itself down.
+    fn close(self) -> impl Future<Output = ()> + Send
+    where
+        Self: Sized,
+    {
+        async {}
+    }
 }
 
 impl ServerLink for Ed2kConnection {
@@ -146,6 +154,11 @@ impl ServerLink for Ed2kConnection {
     }
     async fn next_event(&mut self) -> Option<Ed2kEvent> {
         Ed2kConnection::next_event(self).await
+    }
+    async fn close(self) {
+        // A driver that died already reports so here; the link is gone either
+        // way, and that is all the session's end asks.
+        let _ = self.shutdown().await;
     }
 }
 
@@ -961,6 +974,7 @@ async fn run_session<L: ServerLink>(
     // with nobody, which is exactly what `None` here says.
     own.set_connected_session(None);
     own.addresses().end_server_session();
+    link.close().await;
     if let Some(ack) = disconnect_ack {
         let _ = ack.send(());
     }

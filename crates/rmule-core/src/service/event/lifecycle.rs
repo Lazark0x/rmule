@@ -49,6 +49,8 @@ pub enum QuitStep {
     Serve,
     /// The Kad node stops through its one lever.
     Kad,
+    /// The server session is hung up, its socket closed.
+    ServerSession,
     /// The port-mapping runtime releases every lease.
     PortMapping,
     /// The credit ring is checkpointed and `clients.met` written.
@@ -65,6 +67,7 @@ impl QuitStep {
             Self::Download => "download",
             Self::Serve => "serve",
             Self::Kad => "Kad",
+            Self::ServerSession => "server connection",
             Self::PortMapping => "port mappings",
             Self::CreditCheckpoint => "credit checkpoint",
         }
