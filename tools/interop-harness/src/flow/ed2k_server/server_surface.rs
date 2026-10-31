@@ -9,8 +9,9 @@
 //! - **A Sentinel Source, to a Low-ID requester only.** On `config-ipv6.toml`
 //!   one Low-ID client offers a file and names an IPv6 in its login; a second
 //!   Low-ID client naming an IPv6 asks for it and must read a sentinel; a third
-//!   naming none must read the classic record for the same source.
-//!   ed2k-server's rule is `get_sources.rs:131-133`.
+//!   naming none, with no UDP port and no NAT bit, can reach no Low-ID source
+//!   and must read nothing of it. ed2k-server's rules are
+//!   `get_sources.rs:26-28` and `:190-192`.
 //! - **`0x26` and the `OP_SERVERLIST` v6 block.** The pin writes neither:
 //!   `build_tcp_server_list` is IPv4 records and nothing after them, and
 //!   `build_callbackrequested` has no IPv6 form because an IPv6 session is
@@ -465,8 +466,8 @@ pub(crate) fn claims(rows: &Rows, sources_named: bool) -> Vec<Claim> {
             ),
         ),
         Claim::about(
-            "a-requester-without-the-tag-read-the-classic-record",
-            rows.legacy_sentinels == 0 && rows.legacy_sources > 0,
+            "a-requester-that-reaches-no-low-id-read-nothing-of-the-source",
+            rows.legacy_sentinels == 0 && rows.legacy_sources == 0,
             Evidence::Captured,
             format!(
                 "{} sentinels, {} sources",
