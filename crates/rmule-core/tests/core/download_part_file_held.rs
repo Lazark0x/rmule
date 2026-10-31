@@ -13,11 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(unix)]
+use rmule_core::VolumeStop;
 use rmule_core::{
     ContentFileStore, Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent,
     DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths, DownloadRepository,
     DurableDownloadRepository, HoleVerdict, PartFileChange, PartsLost, StorageIntegrityFault,
-    VerifiedPartRecord, VolumeStop, open_durable_store,
+    VerifiedPartRecord, open_durable_store,
 };
 use rmule_primitives::ED2K_PART_SIZE;
 use rmule_testkit::{FakeEd2kServer, ServingCore, file_link};
