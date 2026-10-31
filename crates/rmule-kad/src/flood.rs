@@ -24,6 +24,7 @@ use std::time::Duration;
 use rmule_primitives::AccountingKey;
 
 use crate::KadInstant;
+use crate::buddy::{KADEMLIA_CALLBACK_REQ, KADEMLIA_FINDBUDDY_REQ};
 use crate::opcode::{
     KADEMLIA2_BOOTSTRAP_REQ, KADEMLIA2_HELLO_REQ, KADEMLIA2_PING, KADEMLIA2_PUBLISH_KEY_REQ,
     KADEMLIA2_PUBLISH_NOTES_REQ, KADEMLIA2_PUBLISH_SOURCE_REQ, KADEMLIA2_REQ,
@@ -56,8 +57,8 @@ const MAX_BUCKETS: usize = 50_000;
 
 /// The allowed requests per minute for a request opcode's leaky bucket
 /// (aMule's `PacketTracking.cpp` table, ADR-0064). `None` means untracked:
-/// every response opcode (solicitation correlation owns those, per the ADR)
-/// and every request opcode this node does not dispatch.
+/// every response opcode, which solicitation correlation owns, per the ADR.
+/// The **Kad Send Gate** reads the same table: what rmule enforces it obeys.
 ///
 /// The keyword (`0x33`/`0x43`) and notes (`0x35`/`0x45`) request buckets are
 /// tracked because `node.rs` dispatches all four, and leaving them out left an
@@ -81,7 +82,7 @@ const MAX_BUCKETS: usize = 50_000;
 /// following eMule here implies advertising a Kad version rmule cannot yet
 /// support (`KADEMLIA_VERSION` stays at 8: a v9 node is published the `BSOB`
 /// `TAG_KADAICHHASHPUB`, which rmule's tag lists step over rather than keep).
-const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
+pub(crate) const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
     match opcode {
         KADEMLIA2_BOOTSTRAP_REQ => Some(2),
         KADEMLIA2_HELLO_REQ => Some(3),
@@ -92,6 +93,8 @@ const fn request_rate_per_minute(opcode: u8) -> Option<u32> {
         KADEMLIA2_PUBLISH_KEY_REQ => Some(3),
         KADEMLIA2_PUBLISH_SOURCE_REQ | KADEMLIA2_PUBLISH_NOTES_REQ => Some(2),
         KADEMLIA_FIREWALLED_REQ | KADEMLIA_FIREWALLED2_REQ => Some(2),
+        KADEMLIA_FINDBUDDY_REQ => Some(2),
+        KADEMLIA_CALLBACK_REQ => Some(1),
         KADEMLIA2_PING => Some(2),
         _ => None,
     }
@@ -290,6 +293,8 @@ mod tests {
             (KADEMLIA2_PUBLISH_NOTES_REQ, 2),
             (KADEMLIA_FIREWALLED_REQ, 2),
             (KADEMLIA_FIREWALLED2_REQ, 2),
+            (KADEMLIA_FINDBUDDY_REQ, 2),
+            (KADEMLIA_CALLBACK_REQ, 1),
         ];
         for (opcode, rate) in cases {
             let mut table = FloodTable::new();

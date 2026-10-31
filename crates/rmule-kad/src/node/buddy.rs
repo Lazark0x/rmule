@@ -4,7 +4,7 @@
 
 use rmule_primitives::Ipv4Endpoint;
 
-use super::callback_pace::{CallbackOffer, CallbackSend, CallbackSendRoad};
+use super::send_gate::{PacedSend, SendOffer, SendRoad};
 use super::{KadCallbackPace, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::{BuddyMessage, confirms_recruitment, recruitment_target};
 use crate::{KadEnvelope, KadId, KadInstant, KadNodeEndpoint};
@@ -97,42 +97,42 @@ impl KadNode {
         };
         let pace = self.pace_callback(
             now,
-            CallbackSend {
+            PacedSend {
                 to: buddy,
                 envelope: request.encode(),
-                road: CallbackSendRoad::Clear,
+                road: SendRoad::Clear,
             },
         );
         self.emit_event(KadEvent::BuddyCallbackPaced { buddy_id, pace });
     }
 
-    /// The one way a `0x52` leaves: through the **Callback Pace**, at once when
+    /// The one way a `0x52` leaves: through the **Kad Send Gate**, at once when
     /// its IP's window is open.
-    pub(super) fn pace_callback(&mut self, now: KadInstant, send: CallbackSend) -> KadCallbackPace {
-        match self.callback_pace.offer(now, send) {
-            CallbackOffer::Leave(send) => {
-                self.send_callback(&send);
+    pub(super) fn pace_callback(&mut self, now: KadInstant, send: PacedSend) -> KadCallbackPace {
+        match self.send_gate.offer(now, send) {
+            SendOffer::Leave(send) => {
+                self.send_paced(&send);
                 KadCallbackPace::Left
             }
-            CallbackOffer::Held(leaves_in) => KadCallbackPace::Held { leaves_in },
-            CallbackOffer::Refused => KadCallbackPace::Refused,
+            SendOffer::Held(leaves_in) => KadCallbackPace::Held { leaves_in },
+            SendOffer::Refused => KadCallbackPace::Refused,
         }
     }
 
-    /// Every held `0x52` whose window has opened goes out.
-    pub(super) fn release_held_callbacks(&mut self, now: KadInstant) {
-        while let Some(send) = self.callback_pace.take_due(now) {
-            self.send_callback(&send);
+    /// Every held send whose instant has come goes out.
+    pub(super) fn release_held_sends(&mut self, now: KadInstant) {
+        while let Some(send) = self.send_gate.take_due(now) {
+            self.send_paced(&send);
         }
     }
 
-    fn send_callback(&mut self, send: &CallbackSend) {
+    pub(super) fn send_paced(&mut self, send: &PacedSend) {
         match send.road {
-            CallbackSendRoad::Clear => self.outputs.push_back(super::KadOutput::Datagram {
+            SendRoad::Clear => self.outputs.push_back(super::KadOutput::Datagram {
                 to: send.to,
                 bytes: send.envelope.encode(),
             }),
-            CallbackSendRoad::Contact => self.send_envelope(send.to, &send.envelope),
+            SendRoad::Contact => self.send_envelope(send.to, &send.envelope),
         }
     }
 

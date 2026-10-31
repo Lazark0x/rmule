@@ -224,6 +224,7 @@ impl KadNode {
         node.contact_admission = admission;
         if self_lookup {
             node.next_self_lookup = Some(now + Self::SELF_LOOKUP_INITIAL);
+            node.walk_starts.publishing = false;
         }
         if small_timer {
             node.next_small_timer = Some(now + Self::SMALL_TIMER_INITIAL);

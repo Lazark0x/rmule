@@ -164,6 +164,7 @@ impl KadNode {
         // packet (`KademliaUDPListener.cpp:254`). After dispatch, so a first
         // datagram's sender is already a seed the lookup can walk from.
         self.launch_udp_helper_lookup(now);
+        self.drive_walk_starts(now);
     }
 
     /// Route one gate-passed, decoded datagram to its handler.

@@ -411,6 +411,53 @@ impl KadLookupWalk {
         (true, actions)
     }
 
+    /// The **Kad Send Gate** holds this walk's datagram to `to` until
+    /// `leaves`: its clock starts then, not now.
+    pub(crate) fn on_send_held(&mut self, to: KadNodeEndpoint, leaves: KadInstant) {
+        let window = if self.purpose.is_search() {
+            KadNode::SOURCE_SEARCH_WINDOW
+        } else {
+            KadNode::PUBLISH_ACK_WINDOW
+        };
+        if let Some(terminal) = &mut self.terminal {
+            terminal.deadline = terminal.deadline.max(leaves + window);
+        } else if let Some(query) = self.in_flight.iter_mut().find(|q| q.endpoint == to) {
+            query.deadline = leaves + KadNode::LOOKUP_QUERY_TIMEOUT;
+        }
+    }
+
+    /// The **Kad Send Gate** refused this walk's datagram to `to`, so no answer
+    /// will come. A query frees its slot without spending the budget, and the
+    /// contact is not tried again; a fan recipient leaves the fan, and a fan
+    /// left empty ends the walk as one that found nobody.
+    pub(crate) fn on_send_refused(
+        &mut self,
+        now: KadInstant,
+        to: KadNodeEndpoint,
+    ) -> Vec<KadWalkAction> {
+        let mut actions = Vec::new();
+        if let Some(terminal) = &mut self.terminal {
+            let Some(index) = terminal.endpoints.iter().position(|&at| at == to) else {
+                return actions;
+            };
+            terminal.endpoints.remove(index);
+            terminal.versions.remove(index);
+            if terminal.endpoints.is_empty() {
+                self.complete = true;
+                actions.push(KadWalkAction::Complete {
+                    outcome: nobody_reached(self.purpose.is_search()),
+                });
+            }
+            return actions;
+        }
+        if let Some(position) = self.in_flight.iter().position(|q| q.endpoint == to) {
+            self.in_flight.remove(position);
+            self.queries_sent -= 1;
+            self.advance(now, &mut actions);
+        }
+        actions
+    }
+
     /// Expire due query deadlines and the terminal window.
     pub(crate) fn tick(&mut self, now: KadInstant) -> Vec<KadWalkAction> {
         let mut actions = Vec::new();
@@ -585,17 +632,7 @@ impl KadLookupWalk {
         if fan.is_empty() {
             self.complete = true;
             actions.push(KadWalkAction::Complete {
-                outcome: if self.purpose.is_search() {
-                    KadWalkOutcome::Search {
-                        result_rows: 0,
-                        ended_by: KadSearchEnd::NoSearchableContacts,
-                    }
-                } else {
-                    KadWalkOutcome::Publish {
-                        acked_stores: 0,
-                        ended_by: KadPublishEnd::NoPublishableContacts,
-                    }
-                },
+                outcome: nobody_reached(self.purpose.is_search()),
             });
             return;
         }
@@ -617,6 +654,21 @@ impl KadLookupWalk {
         });
         for contact in fan {
             actions.push(action(contact));
+        }
+    }
+}
+
+/// How a walk ends whose terminal fan reached nobody.
+const fn nobody_reached(search: bool) -> KadWalkOutcome {
+    if search {
+        KadWalkOutcome::Search {
+            result_rows: 0,
+            ended_by: KadSearchEnd::NoSearchableContacts,
+        }
+    } else {
+        KadWalkOutcome::Publish {
+            acked_stores: 0,
+            ended_by: KadPublishEnd::NoPublishableContacts,
         }
     }
 }

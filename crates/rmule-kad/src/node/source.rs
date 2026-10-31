@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use super::{KadEvent, KadNode, KadNodeDiagnostic, KadPublishRejection, ScheduledPublish};
+use super::{KadEvent, KadNode, KadNodeDiagnostic, KadPublishRejection};
 use crate::lookup::kad_wire_id;
 use crate::lookup_walk::KadWalkPurpose;
 use crate::messages::{Kad2Message, KadPublishedSource};
@@ -22,7 +22,7 @@ use crate::source_result::{
 use crate::source_store::StoreOutcome;
 use crate::{
     KadEnvelope, KadId, KadInstant, KadNodeEndpoint, KadPublishPosture, KadPublishRequest,
-    KadSourceLookupRequest, KadSourceRow, encode_source_result, opcode::KADEMLIA2_PUBLISH_RES_ACK,
+    KadSourceRow, encode_source_result, opcode::KADEMLIA2_PUBLISH_RES_ACK,
 };
 
 impl KadNode {
@@ -170,51 +170,11 @@ impl KadNode {
         });
     }
 
-    /// Start the walk for a source-lookup request (see `lookup_walk.rs` for
-    /// the state machine and its termination budgets).
-    pub(super) fn start_source_search(&mut self, now: KadInstant, request: KadSourceLookupRequest) {
-        let target = request.kad_target();
-        if self.walks.iter().any(|walk| walk.target() == target) {
-            self.emit_diagnostic(KadNodeDiagnostic::DuplicateSourceSearch { target });
-            return;
-        }
-        self.start_walk(now, KadWalkPurpose::SearchSources(request));
-    }
-
-    /// Register a publication and publish it immediately; `tick` republishes
-    /// it every [`Self::SOURCE_REPUBLISH_INTERVAL`] from each start.
-    pub(super) fn register_publish(&mut self, now: KadInstant, request: KadPublishRequest) {
-        let target = request.kad_target();
-        if self
-            .scheduled_publishes
-            .iter()
-            .any(|scheduled| scheduled.request.kad_target() == target)
-        {
-            self.emit_diagnostic(KadNodeDiagnostic::DuplicatePublish { target });
-            return;
-        }
-        self.scheduled_publishes.push(ScheduledPublish {
-            request,
-            next_at: now + Self::SOURCE_REPUBLISH_INTERVAL,
-        });
-        self.start_publish_walk(now, request);
-    }
-
     /// Stop republishing `request`'s file.
     pub(super) fn withdraw_publish(&mut self, request: KadPublishRequest) {
         let target = request.kad_target();
         self.scheduled_publishes
             .retain(|scheduled| scheduled.request.kad_target() != target);
-    }
-
-    /// Launch one publish walk now, unless the target is already being
-    /// walked (a republish firing while the previous walk still runs).
-    pub(super) fn start_publish_walk(&mut self, now: KadInstant, request: KadPublishRequest) {
-        let target = request.kad_target();
-        if self.walks.iter().any(|walk| walk.target() == target) {
-            return;
-        }
-        self.start_walk(now, KadWalkPurpose::PublishSource(request));
     }
 
     /// Route a `KADEMLIA2_PUBLISH_RES` to the publish walk that fanned a

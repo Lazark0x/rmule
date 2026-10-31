@@ -108,6 +108,19 @@ pub enum KadNodeDiagnostic {
         /// The key the request named.
         target: KadId,
     },
+    /// A `SearchSources` command past the bound on waiting asks.
+    SourceSearchRefused {
+        /// The key the request named.
+        target: KadId,
+    },
+    /// The **Kad Send Gate** would not keep this send: its key was booked too
+    /// far ahead, or too much is held.
+    SendRefused {
+        /// Where it was going.
+        to: KadNodeEndpoint,
+        /// Its opcode.
+        opcode: u8,
+    },
     /// A `PublishSource` command for a target that is already registered;
     /// the existing registration (and its cadence) is kept.
     DuplicatePublish {

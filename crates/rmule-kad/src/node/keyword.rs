@@ -351,18 +351,29 @@ impl KadNode {
     /// Fan a keyword publish round's files to one storer as
     /// `KADEMLIA2_PUBLISH_KEY_REQ` packets, chunked at the emit-side 50-file cap
     /// (aMule stores ≤ 50 per packet; a 150-file round is up to three packets).
-    pub(super) fn send_keyword_publish(&mut self, to: KadNodeEndpoint, keyword: KadId) {
-        let Some(files) = self
+    ///
+    /// Each chunk goes through the **Kad Send Gate**. Returns `to` only when the
+    /// first was refused: past that, the storer holds an answer to give.
+    pub(super) fn send_keyword_publish(
+        &mut self,
+        now: KadInstant,
+        to: KadNodeEndpoint,
+        keyword: KadId,
+    ) -> Option<KadNodeEndpoint> {
+        let files = self
             .keyword_publishes
             .iter()
             .find(|round| round.keyword == keyword)
-            .map(|round| round.files.clone())
-        else {
-            return;
-        };
-        for chunk in files.chunks(KEYWORD_PUBLISH_BATCH_CAP) {
-            self.send_envelope(to, &encode_publish_key_req(keyword, chunk));
+            .map(|round| round.files.clone())?;
+        let mut first_refused = None;
+        for (index, chunk) in files.chunks(KEYWORD_PUBLISH_BATCH_CAP).enumerate() {
+            let envelope = encode_publish_key_req(keyword, chunk);
+            let refused = self.pace_walk_send(now, keyword, to, envelope);
+            if index == 0 {
+                first_refused = refused;
+            }
         }
+        first_refused
     }
 
     /// Fold a completed keyword publish walk's collected loads into the

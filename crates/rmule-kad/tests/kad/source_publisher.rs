@@ -4,12 +4,14 @@
 
 use rmule_kad::KadNodeStart;
 use std::net::Ipv4Addr;
+use std::time::Duration;
 
 use rmule_kad::{
     Kad2Message, KadCommand, KadDecoded, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadPublishEnd, KadPublishedSource, decode_exact,
+    KadNodeDiagnostic, KadNodeEndpoint, KadPublishEnd, KadPublishRequest, KadPublishedSource,
+    decode_exact,
 };
-use rmule_primitives::UserHash;
+use rmule_primitives::{FileHash, SourceLookupTarget, UserHash};
 use rmule_testkit::drain_split;
 use rmule_testkit::kad_node::{hello_req_from, lookup_res_bytes};
 use rmule_testkit::kad_source::{
@@ -340,7 +342,7 @@ fn publish_res_gating_mirrors_the_search_side() {
 }
 
 #[test]
-fn publish_with_an_empty_table_completes_and_still_schedules_the_retry() {
+fn a_publish_waits_for_a_joined_node_and_spends_no_due_time() {
     let now = KadInstant::EPOCH;
     let mut node = publisher_node();
 
@@ -351,20 +353,91 @@ fn publish_with_an_empty_table_completes_and_still_schedules_the_retry() {
         },
     );
     let (datagrams, events) = drain_split(&mut node);
-
     assert_eq!(datagrams, vec![]);
-    assert_eq!(
-        events,
-        vec![KadEvent::PublishComplete {
-            target: key(),
-            acked_stores: 0,
-            ended_by: KadPublishEnd::NoPublishableContacts,
-        }]
+    assert_eq!(events, vec![]);
+    assert_eq!(node.next_wake(), None, "what opens the gate wakes the node");
+
+    // The first datagram joins the node, and the walk starts on it.
+    let later = now + Duration::from_secs(600);
+    node.handle_datagram(
+        later,
+        contact_endpoint(10),
+        &hello_req_from(id_near_key(10), contact_endpoint(10)),
     );
+    let (datagrams, _) = drain_split(&mut node);
+    assert!(datagrams.iter().any(|(_, bytes)| bytes[1] == 0x21));
+}
+
+/// `count` distinct publishes from a node with three contacts near every key.
+fn publisher_with_share(now: KadInstant, count: u8) -> KadNode {
+    let mut node = publisher_node();
+    for d in [10, 20, 30] {
+        node.handle_datagram(
+            now,
+            contact_endpoint(d),
+            &hello_req_from(id_near_key(d), contact_endpoint(d)),
+        );
+    }
+    let _ = drain_split(&mut node);
+    for file in 0..count {
+        let mut hash = [file; 16];
+        hash[15] = 0xAA;
+        node.handle_command(
+            now,
+            KadCommand::PublishSource {
+                request: KadPublishRequest::new(SourceLookupTarget::new(
+                    FileHash::from_bytes(hash),
+                    65_536,
+                )),
+            },
+        );
+    }
+    node
+}
+
+fn lookups_sent(node: &mut KadNode) -> usize {
+    let (datagrams, _) = drain_split(node);
+    datagrams
+        .iter()
+        .filter(|(_, bytes)| bytes[1] == 0x21)
+        .count()
+}
+
+#[test]
+fn a_share_starts_its_publishes_two_seconds_apart_and_three_at_once() {
+    let now = KadInstant::EPOCH;
+    let mut node = publisher_with_share(now, 8);
+    assert_eq!(lookups_sent(&mut node), 3, "one walk at the first instant");
+    assert_eq!(node.next_wake(), Some(now + Duration::from_secs(2)));
+
+    node.tick(now + Duration::from_millis(1999));
+    assert_eq!(lookups_sent(&mut node), 0, "inside the spacing");
+
+    node.tick(now + Duration::from_secs(2));
+    assert_eq!(lookups_sent(&mut node), 3, "the second walk");
+    node.tick(now + Duration::from_millis(2900));
+    let _ = lookups_sent(&mut node);
+    node.tick(now + Duration::from_secs(4));
+    assert!(lookups_sent(&mut node) > 0, "the third walk");
+    // Three walks run, each silent inside its 3 s query deadline at +5 s.
+    node.tick(now + Duration::from_millis(4500));
+    let starts_at_cap = lookups_sent(&mut node);
+    assert_eq!(starts_at_cap, 0, "the cap holds the fourth back");
+}
+
+#[test]
+fn a_republish_is_due_five_hours_from_its_own_start() {
+    let now = KadInstant::EPOCH;
+    let mut node = publisher_with_share(now, 2);
+    let _ = lookups_sent(&mut node);
+    node.tick(now + Duration::from_secs(2));
+    let _ = lookups_sent(&mut node);
+    // Both walks end on silence; the next wake is the first file's 5 h due.
+    node.tick(now + Duration::from_secs(60));
+    let _ = drain_split(&mut node);
     assert_eq!(
         node.next_wake(),
-        Some(now + KadNode::SOURCE_REPUBLISH_INTERVAL),
-        "an unpublishable file retries on the republish cadence"
+        Some(now + KadNode::SOURCE_REPUBLISH_INTERVAL)
     );
 }
 
@@ -396,6 +469,13 @@ fn republish_fires_on_tick_and_duplicate_commands_are_diagnosed() {
     // At the interval the registration starts a fresh walk toward the key.
     let republish_at = now + KadNode::SOURCE_REPUBLISH_INTERVAL;
     node.tick(republish_at);
+    let (datagrams, _) = drain_split(&mut node);
+    assert_eq!(
+        datagrams,
+        vec![],
+        "five silent hours left the node unjoined"
+    );
+    node.handle_datagram(republish_at, fan[0], &publish_res_bytes(key(), 1));
     let (datagrams, _) = drain_split(&mut node);
     assert_eq!(datagrams.len(), 3, "a fresh α wave of lookups goes out");
     for (_, bytes) in &datagrams {
@@ -549,6 +629,8 @@ fn a_withdrawn_file_is_not_republished_and_may_be_published_again() {
     assert!(datagrams.is_empty(), "a withdrawn file is not republished");
 
     let later = now + KadNode::SOURCE_REPUBLISH_INTERVAL;
+    node.handle_datagram(later, fan[0], &publish_res_bytes(key(), 1));
+    let _ = drain_split(&mut node);
     node.handle_command(
         later,
         KadCommand::PublishSource {
