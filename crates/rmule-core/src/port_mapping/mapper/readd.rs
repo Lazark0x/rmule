@@ -1,7 +1,8 @@
 //! The **epoch re-add** (ADR-0086, RFC 6887 §8.5): a gateway that reports an
 //! epoch reset has lost every mapping it held for us, so the mapper re-adds
-//! the whole held set, one mapping per spacing. The answers settle as
-//! renewals do, and the last one to land fires the reachability recheck.
+//! the whole held set, one mapping per spacing, in whatever phase the reset
+//! landed. The answers settle as renewals do, in any phase, and the last one
+//! to land fires the reachability recheck.
 
 use std::time::{Duration, Instant};
 

@@ -53,15 +53,19 @@ impl PortMapper {
         {
             self.queue_readds(now);
         }
-        // A renewal names a lease this protocol holds, and renewals fire
-        // only while mapped — or for the incumbent while a re-race asks the
-        // others.
-        let renewing = self
+        // A lease this protocol holds is what both a re-add and a renewal name.
+        // A re-add goes out in any phase, so its answer is its own in any
+        // phase, ahead of a trial of the same row; renewals fire only while
+        // mapped, or for the incumbent while a re-race asks the others.
+        let held = self
             .leases
             .get(&mapping)
-            .is_some_and(|held| held.protocol == protocol)
-            && (matches!(self.phase, Phase::Mapped) || self.reracing == Some(protocol));
+            .is_some_and(|held| held.protocol == protocol);
+        let readd = held && self.readd_outstanding.contains(&mapping);
+        let renewing =
+            held && (matches!(self.phase, Phase::Mapped) || self.reracing == Some(protocol));
         match &mut self.phase {
+            _ if readd => self.settle_renewal(mapping, outcome, now),
             Phase::Trialling { current, .. } if current.protocol == protocol => {
                 current.record(mapping, outcome);
                 self.settle_trial(now);

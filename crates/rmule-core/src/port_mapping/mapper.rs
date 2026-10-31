@@ -299,9 +299,7 @@ impl PortMapper {
             Phase::Mapped if self.rerace_at.is_some_and(|at| now >= at) => self.rerace(now),
             _ => {}
         }
-        if matches!(self.phase, Phase::Mapped) || self.reracing.is_some() {
-            self.fire_due_renewals(now);
-        }
+        self.fire_due_renewals(now);
     }
 
     /// Take one answer from the runtime.
@@ -343,16 +341,10 @@ impl PortMapper {
             Phase::Mapped => self.rerace_at,
             Phase::Idle => None,
         };
-        // Only while renewals actually fire: a lease a set change kept while
-        // it is re-raced is not renewed until the race concludes, and its
+        // Only what a tick would fire: a lease a set change kept while it is
+        // re-raced, or one a re-add holds, is not renewed now, and its
         // past-due instant as the wake would be a runtime that spins.
-        let renewing = matches!(self.phase, Phase::Mapped) || self.reracing.is_some();
-        let renewals = self
-            .leases
-            .values()
-            .map(|lease| lease.renew_at)
-            .min()
-            .filter(|_| renewing);
+        let renewals = self.renewable().map(|(_, lease)| lease.renew_at).min();
         [phase, renewals, self.next_readd_at]
             .into_iter()
             .flatten()
