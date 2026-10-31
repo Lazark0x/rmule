@@ -397,6 +397,16 @@ impl DownloadEvent {
             } => Record::new("download.hole_less_destination")
                 .count("id", download_id.as_u64())
                 .path("directory", directory),
+            D::VolumeStopped {
+                download_id,
+                directory,
+                stop,
+            } => codes::volume_stop(
+                Record::new("download.volume_stopped")
+                    .count("id", download_id.as_u64())
+                    .path("directory", directory),
+                *stop,
+            ),
             D::Completing {
                 download_id,
                 to,

@@ -303,6 +303,14 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = words::hole_less_destination(&download_name(state, download_id), &directory);
             note(state, text)
         }
+        E::VolumeStopped {
+            download_id,
+            directory,
+            stop,
+        } => {
+            let text = words::volume_stopped(&download_name(state, download_id), &directory, stop);
+            note(state, text)
+        }
         E::PartsDisproved {
             download_id,
             parts,

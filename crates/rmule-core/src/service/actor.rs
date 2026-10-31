@@ -449,6 +449,8 @@ where
             crate::download::source_seeds::SEED_WRITE_INTERVAL,
         );
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut space_tick = tokio::time::interval(crate::content::free_space::SPACE_RECHECK);
+        space_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut served_offers = self.wiring.served_downloads.offer_changes();
         loop {
             tokio::select! {
@@ -465,6 +467,9 @@ where
                 }
                 _ = restore_tick.tick(), if self.activities.restore_pending() => {
                     self.restore_next().await;
+                }
+                _ = space_tick.tick(), if self.activities.space_awaited() => {
+                    self.resume_for_space().await;
                 }
                 Some(reach) = download_reach_rx.recv() => {
                     // A download's callback has been silent for twelve seconds
@@ -592,7 +597,7 @@ where
                 Some(report) = in_place_rx.recv() => self.on_final_file_in_place(report).await,
                 Some(finished) = finished_rx.recv() => {
                     let download_id = match finished {
-                        FinishedActivity::Download(download_id, run) => {
+                        FinishedActivity::Download(download_id, run, awaits_space) => {
                             // A download that ended on its own (a death,
                             // ADR-0093) retires here; one a stop already
                             // retired is gone from the ledger, or replaced by
@@ -601,6 +606,9 @@ where
                                 && let Some(active) = self.retire_download(download_id)
                             {
                                 self.take_back_served(active.file_hash, active.run);
+                            }
+                            if awaits_space {
+                                self.activities.await_space(download_id);
                             }
                             download_id
                         }

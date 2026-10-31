@@ -62,7 +62,7 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
 
 /// What the system said when it refused, as a parenthesised clause after
 /// the refusal's sentence; nothing when it gave no code.
-fn os_clause(os_code: Option<i32>) -> String {
+pub(super) fn os_clause(os_code: Option<i32>) -> String {
     os_code.map_or_else(String::new, |code| {
         format!(
             " ({})",

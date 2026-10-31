@@ -28,12 +28,13 @@ use crate::{
 pub struct ContentFileStore;
 
 mod checked;
+pub(crate) mod free_space;
 mod held;
 mod sparse;
 
 pub(crate) use checked::CheckedReadError;
 pub use held::PartFileChange;
-pub(crate) use held::{HeldPartFile, HeldWriteError};
+pub(crate) use held::{HeldCheckFailed, HeldPartFile, HeldWriteError};
 pub use sparse::HoleVerdict;
 pub(crate) use sparse::probe_holes;
 

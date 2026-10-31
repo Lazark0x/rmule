@@ -13,6 +13,11 @@
 //! run asks again and fetches the lost parts, keeping every part that holds.
 //! The completion move's check repairs the same way when the whole file does
 //! not hash.
+//!
+//! A local failure is no peer's fault (ADR-0094, "A volume's refusal is a
+//! Volume Stop"): a write the volume refuses, a volume under its free-space
+//! floor and a path that names nothing over a whole file end the run as a
+//! pause, keep every verified part and reach no verdict.
 
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
@@ -23,23 +28,26 @@ use tokio::sync::mpsc;
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
 use crate::content::{
-    HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation, probe_holes,
+    HeldCheckFailed, HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation,
+    probe_holes,
 };
 use crate::download::runner::RunnerContext;
-use crate::durable::VerifiedPartRecord;
+use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
 use crate::error::{DownloadFailure, StorageIntegrityFault};
 use crate::hashing::{ResolvedHashSet, part_hash_on_arrival, verify_part_bytes};
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost, send_download_event};
+use crate::service::{
+    CoreEvent, DownloadEvent, DownloadId, PartsLost, VolumeStop, send_download_event,
+};
 use crate::storage::DownloadRepository;
 
 /// Why a part was not persisted.
 pub(super) enum PersistError {
-    /// The brain's own affair: the bytes did not verify, or the write failed.
+    /// The brain's own affair: the bytes did not verify.
     Rejected(DownloadFailure),
     /// The run ends with this failure: the part file changed under it (what
     /// that cost is already said and dropped; a repair, when the run was
-    /// marked for one, is not a failure the operator sees), or the Durable
-    /// Store could not record the part.
+    /// marked for one, is not a failure the operator sees), the Durable
+    /// Store could not record the part, or the volume stopped the run.
     Ended(DownloadFailure),
 }
 
@@ -73,6 +81,16 @@ pub(super) async fn hold_part_file<S, P>(
     let part_path = record.paths().part_path();
     match HeldPartFile::hold(part_path, recorded_end(&parts)).await {
         Ok((file, allocated)) => {
+            // Whatever a leftover held past the file's end never lands
+            // (ADR-0115).
+            if let Err(error) = file.cut_to(record.file_size()).await {
+                tracing::warn!(%error, "the part file could not be cut to the file's size");
+                return Err(DownloadFailure::StorageIntegrityFailed(
+                    StorageIntegrityFault::PartFileUnreadable {
+                        os_code: error.raw_os_error(),
+                    },
+                ));
+            }
             *held = Some(file);
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
@@ -96,7 +114,11 @@ pub(super) async fn hold_part_file<S, P>(
             }
             Ok(())
         }
-        Err(HeldWriteError::Changed(_)) => Err(DownloadFailure::StorageIntegrityFailed(
+        Err(
+            HeldWriteError::Changed(_)
+            | HeldWriteError::PathAbsent
+            | HeldWriteError::OutOfSpace { .. },
+        ) => Err(DownloadFailure::StorageIntegrityFailed(
             StorageIntegrityFault::PartFileMissing,
         )),
         Err(HeldWriteError::Io(error)) => {
@@ -164,11 +186,28 @@ pub(super) async fn check_held_part_file<S, P>(
 ) -> Result<(), DownloadFailure> {
     let mut held = runner.part_file.lock().await;
     if let Some(part_file) = held.as_mut()
-        && let Err(change) = part_file.check().await
+        && let Err(failed) = part_file.check().await
     {
-        return Err(part_file_changed(runner, download_id, part_file, change).await);
+        return Err(check_failed(runner, download_id, part_file, failed).await);
     }
     Ok(())
+}
+
+/// What a look at the held part file found costs: a change is said and costs
+/// what it costs, an absent path over a whole file is a Volume Stop. Answers
+/// the failure the run ends with.
+pub(super) async fn check_failed<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    held: &mut HeldPartFile,
+    failed: HeldCheckFailed,
+) -> DownloadFailure {
+    match failed {
+        HeldCheckFailed::Changed(change) => {
+            part_file_changed(runner, download_id, held, change).await
+        }
+        HeldCheckFailed::PathAbsent => runner.stop_for_volume(VolumeStop::PartFileOutOfReach),
+    }
 }
 
 /// Where the highest recorded part ends.
@@ -245,9 +284,10 @@ async fn write_through_held<S, P>(
     record: VerifiedPartRecord,
     bytes: &[u8],
 ) -> Result<(), PersistError> {
-    let rejected = || PersistError::Rejected(DownloadFailure::PartVerificationFailed);
     let mut held = runner.part_file.lock().await;
-    let file = held.as_mut().ok_or_else(rejected)?;
+    let file = held.as_mut().ok_or(PersistError::Ended(
+        DownloadFailure::StorageIntegrityFailed(StorageIntegrityFault::PartFileMissing),
+    ))?;
     match file.write_part(record.offset, bytes).await {
         Ok(allocated) => {
             runner.rt.diagnostics.part_file_read(download_id, allocated);
@@ -262,8 +302,21 @@ async fn write_through_held<S, P>(
         }
         Err(HeldWriteError::Io(error)) => {
             tracing::warn!(%error, "a verified part could not be written to the part file");
-            Err(rejected())
+            Err(PersistError::Ended(runner.stop_for_volume(
+                VolumeStop::WriteRefused {
+                    os_code: error.raw_os_error(),
+                },
+            )))
         }
+        Err(HeldWriteError::OutOfSpace { free_bytes }) => {
+            tracing::warn!(free_bytes, "the volume is under its free-space floor");
+            Err(PersistError::Ended(
+                runner.stop_for_volume(VolumeStop::OutOfSpace { free_bytes }),
+            ))
+        }
+        Err(HeldWriteError::PathAbsent) => Err(PersistError::Ended(
+            runner.stop_for_volume(VolumeStop::PartFileOutOfReach),
+        )),
         Err(HeldWriteError::Changed(change)) => Err(PersistError::Ended(
             part_file_changed(runner, download_id, file, change).await,
         )),
@@ -406,6 +459,43 @@ pub(super) async fn repair_at_finalize<S, P>(
         }
         Err(_) => DownloadFailure::StoreFailed,
     }
+}
+
+/// The volume stopped the run: the row is stored `Paused`, and the stop and
+/// the pause are told, as an operator's pause is. A store that cannot keep it
+/// leaves the row as it was: the next start reads that one, and the volume
+/// stops that run too.
+pub(super) async fn record_volume_stop<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    stop: VolumeStop,
+) {
+    let store = &runner.rt.store;
+    if let Err(error) = store.set_lifecycle(download_id, DownloadLifecycle::Paused) {
+        tracing::warn!(%error, "the store could not record the volume's stop");
+    }
+    let directory = store.load_download(download_id).ok().and_then(|record| {
+        let parent = record.paths().part_path().parent()?;
+        Some(parent.to_path_buf())
+    });
+    tracing::warn!(
+        download_id = download_id.as_u64(),
+        ?stop,
+        "the volume stopped the download"
+    );
+    let evt_tx = &runner.rt.evt_tx;
+    if let Some(directory) = directory {
+        send_download_event(
+            evt_tx,
+            DownloadEvent::VolumeStopped {
+                download_id,
+                directory,
+                stop,
+            },
+        )
+        .await;
+    }
+    send_download_event(evt_tx, DownloadEvent::DownloadPaused { download_id }).await;
 }
 
 /// Keep why a download failed on its row, and tell it. The failure is told

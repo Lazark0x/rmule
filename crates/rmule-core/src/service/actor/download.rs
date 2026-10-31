@@ -8,7 +8,7 @@ use rmule_primitives::Ed2kFileLink;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::content::{ContentFileStore, RestoredProgress, Revalidation};
+use crate::content::{ContentFileStore, RestoredProgress, Revalidation, free_space, on_pool};
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{StopReason, file_link_from_record};
 use crate::service::activity::ActiveDownload;
@@ -148,7 +148,12 @@ where
                 // back as it lets its part file go (ADR-0113).
                 match self.stop_run(download_id, StopReason::Pause).await {
                     Err(reason) => return self.reject(reason).await,
-                    Ok(false) if self.activities.take_restoring(download_id).is_none() => {
+                    // A download waiting for free space is at rest already:
+                    // the operator's Pause ends the wait (ADR-0094).
+                    Ok(false)
+                        if self.activities.take_restoring(download_id).is_none()
+                            && !self.activities.end_space_wait(download_id) =>
+                    {
                         return self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     }
                     Ok(_) => {}
@@ -189,6 +194,7 @@ where
                     Some(remembered) => remembered,
                     None => self.stored_seeds(download_id),
                 };
+                self.activities.end_space_wait(download_id);
                 if let Err(reason) = self.resume(download_id, remembered).await {
                     self.reject(reason).await;
                 }
@@ -540,6 +546,37 @@ where
 
     async fn reject(&mut self, reason: CoreCommandRejectReason) {
         send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
+    }
+
+    /// The once-a-minute look at the downloads a Volume Stop paused for free
+    /// space (ADR-0094): each still paused with a part's room over the floor
+    /// resumes, as `CDownloadQueue::CheckDiskspace` resumes an insufficient
+    /// file (`DownloadQueue.cpp:1229`). A row no longer paused left the wait.
+    pub(super) async fn resume_for_space(&mut self) {
+        for download_id in self.activities.awaiting_space() {
+            let part_path = self
+                .wiring
+                .store
+                .load_download(download_id)
+                .ok()
+                .filter(|record| record.lifecycle() == DownloadLifecycle::Paused)
+                .map(|record| record.paths().part_path().to_path_buf());
+            let Some(part_path) = part_path else {
+                self.activities.end_space_wait(download_id);
+                continue;
+            };
+            if !on_pool(move || free_space::fits_a_part(&part_path)).await {
+                continue;
+            }
+            self.activities.end_space_wait(download_id);
+            let remembered = self.stored_seeds(download_id);
+            if let Err(reason) = self.resume(download_id, remembered).await {
+                tracing::warn!(
+                    ?reason,
+                    "a download could not resume with its free space back"
+                );
+            }
+        }
     }
 
     /// Retire one download (ADR-0093): take it out of the **Download Set**

@@ -77,6 +77,9 @@ pub(super) struct Activities<L> {
     /// The **Source Seeds** attach loaded for each download in `restoring`
     /// (ADR-0109), handed to its run when it starts.
     remembered: HashMap<DownloadId, Vec<crate::download::source_seeds::SourceSeed>>,
+    /// Downloads a Volume Stop paused for free space, which resume when it
+    /// returns (ADR-0094). Memory only: a restart reads a plain pause.
+    awaiting_space: std::collections::BTreeSet<DownloadId>,
     /// The serve activity, while one runs.
     serve: Option<ServeActivity<L>>,
     /// A **Download Directory Scan** per scanned directory of the **Shared
@@ -94,6 +97,7 @@ impl<L> Default for Activities<L> {
             next_download_run: RunNumber::default(),
             restoring: VecDeque::new(),
             remembered: HashMap::new(),
+            awaiting_space: std::collections::BTreeSet::new(),
             serve: None,
             scans: std::collections::BTreeMap::new(),
         }
@@ -149,6 +153,27 @@ impl<L> Activities<L> {
     /// Whether the Download Set holds no live run.
     pub(super) fn downloads_idle(&self) -> bool {
         self.downloads.is_empty()
+    }
+
+    /// `download_id` paused for free space, and waits for it.
+    pub(super) fn await_space(&mut self, download_id: DownloadId) {
+        self.awaiting_space.insert(download_id);
+    }
+
+    /// `download_id` no longer waits for free space, because it left the wait
+    /// or the operator took it: whether it did.
+    pub(super) fn end_space_wait(&mut self, download_id: DownloadId) -> bool {
+        self.awaiting_space.remove(&download_id)
+    }
+
+    /// Whether any download waits for free space.
+    pub(super) fn space_awaited(&self) -> bool {
+        !self.awaiting_space.is_empty()
+    }
+
+    /// The downloads waiting for free space.
+    pub(super) fn awaiting_space(&self) -> Vec<DownloadId> {
+        self.awaiting_space.iter().copied().collect()
     }
 
     /// Whether attach left a download waiting its restore.
@@ -287,8 +312,9 @@ pub(super) struct ActiveDownload {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FinishedActivity {
-    /// A download run ended: the download and which run of it.
-    Download(DownloadId, RunNumber),
+    /// A download run ended: the download, which run of it, and whether it
+    /// stopped for free space and waits for it (ADR-0094).
+    Download(DownloadId, RunNumber, bool),
     /// A search ended on its own: the search and which run of it.
     Search(SearchId, u64),
 }

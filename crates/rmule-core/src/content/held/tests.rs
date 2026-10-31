@@ -129,3 +129,36 @@ async fn a_first_write_that_renumbers_the_file_is_no_replacement() {
 
     assert_eq!(held.check().await, Ok(()));
 }
+
+#[tokio::test]
+async fn a_path_gone_with_the_file_whole_is_no_loss() {
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("mounted");
+    std::fs::create_dir(&parent).unwrap();
+    let (mut held, _) = held_with_one_part(&parent).await;
+    std::fs::rename(&parent, dir.path().join("elsewhere")).unwrap();
+
+    assert_eq!(held.check().await, Err(HeldCheckFailed::PathAbsent));
+    assert!(matches!(
+        held.write_part(PART.len() as u64, PART).await,
+        Err(HeldWriteError::PathAbsent)
+    ));
+    assert_eq!(
+        std::fs::read(dir.path().join("elsewhere/film.bin.part")).unwrap(),
+        PART,
+        "nothing was written into the file"
+    );
+}
+
+#[tokio::test]
+async fn a_file_longer_than_the_download_is_cut_to_its_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("left.part");
+    std::fs::write(&path, b"verified bytes and a leftover tail").unwrap();
+    let (held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+
+    held.cut_to(8).await.unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"verified");
+    held.cut_to(100).await.unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"verified", "never grown");
+}

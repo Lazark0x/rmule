@@ -18,11 +18,12 @@ use rmule_core::{
     CoreSettingsHandle, DownloadCommand, DownloadEvent, DownloadId, DurableAppConfig, DurableStore,
     ManagedServer, NameTaken, RuntimeKadFactory, RuntimePeerTransferService,
     RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent, ServerListStore,
-    ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards, open_durable_store,
+    ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards, VolumeStop,
+    open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
 use rmule_words::download::{
-    completed_line, completing_line, download_failure_words, hole_less_destination,
+    completed_line, completing_line, download_failure_words, hole_less_destination, volume_stopped,
 };
 use rmule_words::reach::{client_udp_bind_failed, half_bound as half_bound_words};
 
@@ -505,6 +506,18 @@ async fn drive_add(
                     "{}",
                     hole_less_destination(&download_label(download_id), &directory)
                 );
+            }
+            // The volume paused the download (ADR-0094). A stop for free
+            // space resumes itself; any other waits for an operator this
+            // one-shot run does not have.
+            CoreEvent::Download(DownloadEvent::VolumeStopped {
+                directory, stop, ..
+            }) => {
+                let line = volume_stopped(&download_label(download_id), &directory, stop);
+                if !matches!(stop, VolumeStop::OutOfSpace { .. }) {
+                    anyhow::bail!("{line}");
+                }
+                println!("{line}");
             }
             // The one client-UDP socket never bound at core start (ADR-0057):
             // non-fatal to this download (it runs over the

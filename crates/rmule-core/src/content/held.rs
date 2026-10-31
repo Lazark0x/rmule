@@ -13,6 +13,11 @@
 //! held file. Both keys are read at the check, never kept: exFAT gives an empty
 //! file a made-up number and its first write a real one, through the handle
 //! and the path alike, so a key read at hold names no file by the first part.
+//! A path that names nothing proves a loss only when the handle reads no link
+//! left: a parent directory renamed or a volume lazily unmounted leaves a whole
+//! file with its handle healthy, which is a **Volume Stop** (ADR-0094), no
+//! `Gone`. Where a file system keeps a link count on a removed file the stop
+//! errs towards keeping the records, and the next hold says `Gone`.
 //! On Unix the key is the device and inode, `stat` against `fstat`: one of
 //! each per 9.28 MB part, and an open file's inode is never reused.
 //!
@@ -47,8 +52,8 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::content::{on_pool, sparse};
-use crate::file_key::FileKey;
+use crate::content::{free_space, on_pool, sparse};
+use crate::file_key::{FileKey, links_of_open};
 
 /// What a run found at its part file's path that is no longer the file it
 /// holds, or no longer all of it.
@@ -81,8 +86,35 @@ pub(crate) enum HeldWriteError {
     /// The file at the path is not (all of) the file the run holds. Nothing
     /// was written.
     Changed(PartFileChange),
+    /// The path names nothing, while the handle reads a file with a link
+    /// left. Nothing was written, and nothing proves a byte lost.
+    PathAbsent,
+    /// The volume is under the free-space floor. Nothing was written, or a
+    /// write the volume refused left it there.
+    OutOfSpace {
+        /// The free bytes read beside the part file.
+        free_bytes: u64,
+    },
     /// The OS refused the open, the read of its metadata, or the write.
     Io(std::io::Error),
+}
+
+/// What a look at the held file found amiss.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeldCheckFailed {
+    /// The file at the path is not (all of) the file the run holds.
+    Changed(PartFileChange),
+    /// [`HeldWriteError::PathAbsent`].
+    PathAbsent,
+}
+
+impl From<HeldCheckFailed> for HeldWriteError {
+    fn from(failed: HeldCheckFailed) -> Self {
+        match failed {
+            HeldCheckFailed::Changed(change) => Self::Changed(change),
+            HeldCheckFailed::PathAbsent => Self::PathAbsent,
+        }
+    }
 }
 
 /// The one open handle a run holds on its `.part` file.
@@ -138,7 +170,7 @@ impl HeldPartFile {
             Err(error) => return Err(HeldWriteError::Io(error)),
         };
         let punches = sparse::open_for_writes(&file);
-        check_file(&file, &path, recorded_end).map_err(HeldWriteError::Changed)?;
+        check_file(&file, &path, recorded_end)?;
         let allocated = rmule_os::sparse::allocated_bytes(&file).ok();
         let held = Self {
             file: Arc::new(file),
@@ -151,7 +183,7 @@ impl HeldPartFile {
 
     /// Is the file at the path still the file held, and all of it? Reads the
     /// keys of the path and the handle, and the handle's length.
-    pub(crate) async fn check(&self) -> Result<(), PartFileChange> {
+    pub(crate) async fn check(&self) -> Result<(), HeldCheckFailed> {
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
         let recorded_end = self.recorded_end;
@@ -161,8 +193,11 @@ impl HeldPartFile {
     }
 
     /// Write one verified part at `offset` through the held handle, after
-    /// checking the file is still the one held, and punch the Extension Gap
-    /// the write opened. Never truncates, and handed to the operating system
+    /// checking the file is still the one held and the volume over its
+    /// free-space floor, and punch the Extension Gap the write opened. A write
+    /// the volume refuses with the floor crossed is
+    /// [`HeldWriteError::OutOfSpace`], whatever error it gave: a nearly full
+    /// exFAT volume answers `EINVAL` as well as `ENOSPC`. Never truncates, and handed to the operating system
     /// before returning, so a crash of the process cannot lose a part the
     /// store says it has. Answers the Allocated Bytes reading after the
     /// write, `None` when it failed.
@@ -176,9 +211,17 @@ impl HeldPartFile {
         let (recorded_end, punches) = (self.recorded_end, self.punches);
         let part = bytes.to_vec();
         let allocated = on_pool(move || {
-            let end = check_file(&file, &path, recorded_end).map_err(HeldWriteError::Changed)?;
-            sparse::write_at(&file, offset, &part, end.filter(|_| punches))
-                .map_err(HeldWriteError::Io)?;
+            let end = check_file(&file, &path, recorded_end)?;
+            let len = part.len() as u64;
+            if let Some(free_bytes) = free_space::under_the_floor(&path, len) {
+                return Err(HeldWriteError::OutOfSpace { free_bytes });
+            }
+            sparse::write_at(&file, offset, &part, end.filter(|_| punches)).map_err(|error| {
+                match free_space::under_the_floor(&path, len) {
+                    Some(free_bytes) => HeldWriteError::OutOfSpace { free_bytes },
+                    None => HeldWriteError::Io(error),
+                }
+            })?;
             Ok(rmule_os::sparse::allocated_bytes(&file).ok())
         })
         .await?;
@@ -194,6 +237,32 @@ impl HeldPartFile {
         on_pool(move || Ok((FileKey::of_open(&file)?, file.metadata()?))).await
     }
 
+    /// Cut the file to `size`, the download's, when it is longer: no byte past
+    /// the file's end lands, whatever a leftover held (ADR-0115). A healthy
+    /// run never writes past it.
+    pub(crate) async fn cut_to(&self, size: u64) -> io::Result<()> {
+        let file = Arc::clone(&self.file);
+        on_pool(move || {
+            if file.metadata()?.len() > size {
+                file.set_len(size)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    /// A handle the volume refuses every write through, standing for a
+    /// volume that does: the file at `path`, open for reading alone.
+    #[cfg(test)]
+    pub(crate) fn refusing_writes(path: &Path) -> Self {
+        Self {
+            file: Arc::new(File::open(path).expect("open the part file")),
+            path: path.to_path_buf(),
+            recorded_end: 0,
+            punches: false,
+        }
+    }
+
     /// The parts a truncation cut were dropped: the recorded parts now end at
     /// `recorded_end`, which the file still reaches.
     pub(crate) fn parts_dropped(&mut self, recorded_end: u64) {
@@ -205,14 +274,21 @@ impl HeldPartFile {
 /// long? Answers the handle's length, `None` when it could not
 /// be read: an unreadable key or length is not proof of a change, and the
 /// write that follows says what is wrong.
-fn check_file(file: &File, path: &Path, recorded_end: u64) -> Result<Option<u64>, PartFileChange> {
+fn check_file(file: &File, path: &Path, recorded_end: u64) -> Result<Option<u64>, HeldCheckFailed> {
     let Ok(held) = FileKey::of_open(file) else {
         return Ok(None);
     };
     match FileKey::at(path) {
-        Ok(at_path) if at_path != held => return Err(PartFileChange::Replaced),
+        Ok(at_path) if at_path != held => {
+            return Err(HeldCheckFailed::Changed(PartFileChange::Replaced));
+        }
         Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => return Err(PartFileChange::Gone),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(match links_of_open(file) {
+                Ok(0) => HeldCheckFailed::Changed(PartFileChange::Gone),
+                _ => HeldCheckFailed::PathAbsent,
+            });
+        }
         Err(_) => return Ok(None),
     }
     let Ok(meta) = file.metadata() else {
@@ -220,7 +296,7 @@ fn check_file(file: &File, path: &Path, recorded_end: u64) -> Result<Option<u64>
     };
     let len = meta.len();
     if len < recorded_end {
-        return Err(PartFileChange::Truncated { len });
+        return Err(HeldCheckFailed::Changed(PartFileChange::Truncated { len }));
     }
     Ok(Some(len))
 }

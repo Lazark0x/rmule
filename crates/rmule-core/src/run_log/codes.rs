@@ -15,7 +15,7 @@ use crate::{
     RelatedSearchRefusal, SearchFailure, SearchLegState, SearchResultSkipReason, ServeStartFailure,
     ServeStopReason, ServerConnectFailure, ServerListUpdateFailure, ShareRejectReason,
     SharesWithheld, SocketRole, SourcePurgeReason, SourceWait, TunnelTransport,
-    VerificationAuthority, WaiterLeaveCause, WatchFault, WithheldReason,
+    VerificationAuthority, VolumeStop, WaiterLeaveCause, WatchFault, WithheldReason,
 };
 use rmule_primitives::AddressFamily;
 
@@ -169,6 +169,22 @@ pub(super) fn part_file_change(record: Record, change: PartFileChange) -> Record
         PartFileChange::Truncated { len } => {
             record.code("found", "truncated").count("found_len", len)
         }
+    }
+}
+
+/// Why the volume stopped a run.
+pub(super) fn volume_stop(record: Record, stop: VolumeStop) -> Record {
+    match stop {
+        VolumeStop::OutOfSpace { free_bytes } => record
+            .code("stop", "out_of_space")
+            .count("free_bytes", free_bytes),
+        VolumeStop::WriteRefused { os_code } => match os_code {
+            Some(code) => record
+                .code("stop", "write_refused")
+                .count("os_code", i64::from(code)),
+            None => record.code("stop", "write_refused"),
+        },
+        VolumeStop::PartFileOutOfReach => record.code("stop", "part_file_out_of_reach"),
     }
 }
 

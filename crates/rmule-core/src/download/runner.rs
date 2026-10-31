@@ -19,7 +19,7 @@ use crate::global_sources::SharedServerList;
 use crate::scheduler::PartOrder;
 use crate::server_session::live_peer_handshake_context;
 use crate::service::{
-    DownloadEvent, DownloadId, FinishedActivity, SourceWait, send_download_event,
+    DownloadEvent, DownloadId, FinishedActivity, SourceWait, VolumeStop, send_download_event,
 };
 use crate::storage::DownloadRepository;
 use rmule_peer::PeerHandshakeContext;
@@ -176,6 +176,9 @@ pub(crate) struct RunnerContext<S, P> {
     /// a finished file that did not hash — so its end starts it over in place
     /// instead of failing the download.
     pub(crate) repair: std::sync::atomic::AtomicBool,
+    /// Set when the volume stopped the run (ADR-0094): its end pauses the
+    /// download and says why.
+    pub(crate) volume_stop: std::sync::Mutex<Option<VolumeStop>>,
     /// Set once the run's **Hole Probe** has run (ADR-0111): a run that
     /// holds its part file again after a repair probes nothing and tells
     /// nothing again, so the probe and its `HoleLess` notice come once per
@@ -198,6 +201,21 @@ impl<S, P> RunnerContext<S, P> {
     /// Mark this run to start over in place when it ends (see `repair`).
     pub(crate) fn mark_for_repair(&self) {
         self.repair.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The volume stopped the run: answers the failure that ends it, a pause
+    /// in all but the telling.
+    pub(crate) fn stop_for_volume(&self, stop: VolumeStop) -> DownloadFailure {
+        *self.volume_stop.lock().expect("the run's volume stop") = Some(stop);
+        DownloadFailure::Paused
+    }
+
+    /// What the volume stopped the run for, clearing it.
+    pub(crate) fn take_volume_stop(&self) -> Option<VolumeStop> {
+        self.volume_stop
+            .lock()
+            .expect("the run's volume stop")
+            .take()
     }
 
     /// Whether the run that just ended was marked for repair, clearing it.
@@ -288,6 +306,13 @@ where
             served::let_go(&self.runner).await;
         }
         let completed = result.is_ok();
+        let volume_stop = self
+            .runner
+            .take_volume_stop()
+            .filter(|_| *self.runner.stop_rx.borrow() == StopReason::Active);
+        if let Some(stop) = volume_stop {
+            crate::download::persist::record_volume_stop(&self.runner, download_id, stop).await;
+        }
 
         if let Err(reason) = result
             && !matches!(reason, DownloadFailure::Cancelled | DownloadFailure::Paused)
@@ -306,7 +331,11 @@ where
         self.runner.rt.diagnostics.end_run(download_id, completed);
         let _ = self
             .finished_tx
-            .send(FinishedActivity::Download(download_id, self.run))
+            .send(FinishedActivity::Download(
+                download_id,
+                self.run,
+                volume_stop.is_some_and(VolumeStop::waits_for_space),
+            ))
             .await;
     }
 }

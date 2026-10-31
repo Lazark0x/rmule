@@ -7,8 +7,8 @@ use rmule_primitives::PartHash;
 use tokio::sync::mpsc;
 
 use super::{
-    PersistError, distrusted_at_start, hold_part_file, part_file_changed, record_failure,
-    write_through_held,
+    PersistError, check_held_part_file, distrusted_at_start, hold_part_file, part_file_changed,
+    record_failure, write_through_held,
 };
 use crate::content::{HeldPartFile, PartFileChange};
 use crate::diagnostics::DiagnosticsState;
@@ -16,7 +16,7 @@ use crate::download::runner::RunnerContext;
 use crate::download::runner::test_context::{Held, runner_context};
 use crate::durable::VerifiedPartRecord;
 use crate::error::DownloadFailure;
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost};
+use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost, VolumeStop};
 use crate::store::download::DurableDownloadRepository;
 
 const UNKNOWN: DownloadId = DownloadId::from_u64(9);
@@ -70,6 +70,54 @@ async fn a_part_the_store_cannot_record_ends_the_run_as_a_store_failure() {
             Err(PersistError::Ended(DownloadFailure::StoreFailed))
         ),
         "not a part that failed its check"
+    );
+}
+
+#[tokio::test]
+async fn a_write_the_volume_refuses_is_a_volume_stop_and_no_failed_part() {
+    let (runner, _held) = context();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("file.part");
+    std::fs::write(&path, b"").unwrap();
+    *runner.part_file.lock().await = Some(HeldPartFile::refusing_writes(&path));
+    let record = VerifiedPartRecord {
+        part_index: 0,
+        offset: 0,
+        len: 4,
+        part_hash: PartHash::from_bytes([0x11; 16]),
+    };
+
+    let result = write_through_held(&runner, UNKNOWN, record, b"abcd").await;
+    assert!(
+        matches!(result, Err(PersistError::Ended(DownloadFailure::Paused))),
+        "a refused write must not reach the brain as a part that failed its check"
+    );
+    assert!(matches!(
+        runner.take_volume_stop(),
+        Some(VolumeStop::WriteRefused { os_code: Some(_) })
+    ));
+}
+
+#[tokio::test]
+async fn an_absent_path_over_a_whole_file_drops_no_record() {
+    let (runner, mut held) = context();
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("mounted");
+    std::fs::create_dir(&parent).unwrap();
+    let path = parent.join("file.part");
+    let (file, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+    *runner.part_file.lock().await = Some(file);
+    std::fs::rename(&parent, dir.path().join("elsewhere")).unwrap();
+
+    let ended = check_held_part_file(&runner, UNKNOWN).await;
+    assert_eq!(ended, Err(DownloadFailure::Paused));
+    assert_eq!(
+        runner.take_volume_stop(),
+        Some(VolumeStop::PartFileOutOfReach)
+    );
+    assert!(
+        held.evt_rx.try_recv().is_err(),
+        "no part is told lost, and so none is dropped"
     );
 }
 

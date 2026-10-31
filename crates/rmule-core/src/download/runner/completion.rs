@@ -197,15 +197,11 @@ async fn let_go_of_part_file<S, P>(
     part_path: &Path,
 ) -> Result<(), DownloadFailure> {
     if let Some(part_file) = runner.part_file.lock().await.as_mut()
-        && let Err(change) = part_file.check().await
+        && let Err(failed) = part_file.check().await
     {
-        return Err(crate::download::persist::part_file_changed(
-            runner,
-            download_id,
-            part_file,
-            change,
-        )
-        .await);
+        return Err(
+            crate::download::persist::check_failed(runner, download_id, part_file, failed).await,
+        );
     }
     served::let_go_to_move(runner, part_path).await;
     Ok(())

@@ -38,6 +38,7 @@ pub use self::event::{
     ScanEvent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, ServeEvent,
     ServeStartFailure, ServeStopReason, ServerConnectFailure, ServerConnectionEvent,
     ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
+    VolumeStop,
 };
 
 use std::sync::Arc;

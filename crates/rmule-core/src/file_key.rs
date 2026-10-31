@@ -23,6 +23,21 @@ pub(crate) struct FileKey {
     pub(crate) file: u64,
 }
 
+/// How many names the file `file` holds open has left: none once its last
+/// was removed.
+#[cfg(unix)]
+pub(crate) fn links_of_open(file: &std::fs::File) -> io::Result<u64> {
+    use std::os::unix::fs::MetadataExt;
+    file.metadata().map(|meta| meta.nlink())
+}
+
+/// How many names the file `file` holds open has left: none once its last
+/// was removed.
+#[cfg(windows)]
+pub(crate) fn links_of_open(file: &std::fs::File) -> io::Result<u64> {
+    winapi_util::file::information(file).map(|info| info.number_of_links())
+}
+
 #[cfg(unix)]
 impl FileKey {
     fn of_metadata(meta: &std::fs::Metadata) -> Self {

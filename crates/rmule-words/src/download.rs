@@ -35,7 +35,8 @@ pub use link::{
 };
 pub use part_file::{
     damaged_parts, finished_file_rejected, part_file_change_words, part_file_lost, parts_disproved,
-    parts_lost_words, parts_to_fetch_again, restart_words, restarted,
+    parts_lost_words, parts_to_fetch_again, restart_words, restarted, volume_stop_words,
+    volume_stopped,
 };
 pub use source::link_turn_words;
 pub use source::{
@@ -369,6 +370,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::HoleLessDestination { directory, .. } => {
             format!("{}; {HOLE_LESS_REMEDY}", hole_less_where(directory))
         }
+        D::VolumeStopped {
+            directory, stop, ..
+        } => volume_stop_words(directory, *stop),
         // The line a one-shot download prints, so the two front ends say a
         // step of the move one way.
         D::Completing { to, step, .. } => completing_line(*step, to),

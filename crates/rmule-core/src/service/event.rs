@@ -15,7 +15,9 @@ mod source_ends;
 
 pub use buddy::BuddyDialFailure;
 pub use download::LinkTurn;
-pub use download::{CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait};
+pub use download::{
+    CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait, VolumeStop,
+};
 pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
 pub use login::{
     DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginLink, LoginStep,

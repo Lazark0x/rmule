@@ -559,6 +559,18 @@ pub enum DownloadEvent {
         /// The directory that holds the part file.
         directory: PathBuf,
     },
+    /// The volume, not a peer, stopped the run (ADR-0094, "A volume's refusal
+    /// is a Volume Stop"): the workers are told, every verified part is kept,
+    /// and [`DownloadPaused`](Self::DownloadPaused) follows. A stop for free
+    /// space resumes itself when it returns.
+    VolumeStopped {
+        /// The download that stopped.
+        download_id: DownloadId,
+        /// The directory that holds the part file.
+        directory: PathBuf,
+        /// What the volume did.
+        stop: VolumeStop,
+    },
     /// A step of the completion move that waits or copies began (ADR-0115):
     /// the download is `Completing`, its finished file headed for `to`. Told
     /// once as each such step begins; the step and the bytes copied are the
@@ -641,6 +653,31 @@ pub enum RestartOutcome {
         /// The bytes they held.
         dropped_bytes: u64,
     },
+}
+
+/// Why a volume stopped a run ([`VolumeStopped`](DownloadEvent::VolumeStopped)).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VolumeStop {
+    /// The free bytes beside the part file are under the floor of one part.
+    OutOfSpace {
+        /// The free bytes read.
+        free_bytes: u64,
+    },
+    /// The volume refused a write, for a reason other than space.
+    WriteRefused {
+        /// The OS's error number, when there is one.
+        os_code: Option<i32>,
+    },
+    /// The part file's path names nothing, while the run's handle still reads
+    /// a file with a name: a parent renamed, or a volume taken away.
+    PartFileOutOfReach,
+}
+
+impl VolumeStop {
+    /// Whether the download resumes on its own when free space returns.
+    pub(crate) const fn waits_for_space(self) -> bool {
+        matches!(self, Self::OutOfSpace { .. })
+    }
 }
 
 /// What a changed part file cost in verified parts

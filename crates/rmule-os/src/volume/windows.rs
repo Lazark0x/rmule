@@ -72,7 +72,10 @@ pub(super) fn is_fat(dir: &Path) -> io::Result<bool> {
     if ok == 0 {
         return Err(io::Error::last_os_error());
     }
-    let end = name.iter().position(|&unit| unit == 0).unwrap_or(name.len());
+    let end = name
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(name.len());
     let name = String::from_utf16_lossy(&name[..end]);
     Ok(name == "FAT" || name == "FAT32")
 }

@@ -3,10 +3,13 @@
 //! longer match, parts a hash set or the finished file's hash disproved,
 //! and what a Restart kept or started over from.
 
-use rmule_core::{PartFault, PartFileChange, PartsLost, RestartOutcome};
+use std::path::Path;
+
+use rmule_core::{PartFault, PartFileChange, PartsLost, RestartOutcome, VolumeStop};
 
 use super::super::Sentence;
 use super::super::units::{count, human_size};
+use super::failure::os_clause;
 use super::{integrity_fault_words, part_fault_words};
 
 /// What a run found at its part file's path.
@@ -19,6 +22,34 @@ pub fn part_file_change_words(found: PartFileChange) -> String {
             format!("part file cut short to {}", human_size(len))
         }
     }
+}
+
+/// Why the volume paused a download, and what brings it back (ADR-0094).
+#[must_use]
+pub fn volume_stop_words(directory: &Path, stop: VolumeStop) -> String {
+    let directory = directory.display();
+    match stop {
+        VolumeStop::OutOfSpace { free_bytes } => format!(
+            "paused: the disk holding {directory} has {} free, too little to write a part; \
+             it resumes when space returns",
+            human_size(free_bytes)
+        ),
+        VolumeStop::WriteRefused { os_code } => format!(
+            "paused: the disk holding {directory} refused a write{}; verified parts are kept, \
+             Resume once the disk is back",
+            os_clause(os_code)
+        ),
+        VolumeStop::PartFileOutOfReach => format!(
+            "paused: its part file can no longer be reached in {directory}; verified parts are \
+             kept, Resume once the disk or folder is back"
+        ),
+    }
+}
+
+/// The volume paused the download `name`.
+#[must_use]
+pub fn volume_stopped(name: &str, directory: &Path, stop: VolumeStop) -> Sentence {
+    Sentence::owned(format!("{name}: {}", volume_stop_words(directory, stop)))
 }
 
 /// What a changed part file cost, or that the store could not say.
