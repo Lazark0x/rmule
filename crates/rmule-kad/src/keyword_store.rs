@@ -146,6 +146,22 @@ pub const KEYWORD_PER_KEYWORD_CAP: usize = 50_000;
 /// the only thing you index").
 pub const KEYWORD_DUPLICATE_GUARD_THRESHOLD: usize = KEYWORD_PER_KEYWORD_CAP - 5_000;
 
+/// The bytes of publishers' names and verbatim tags the index holds. Past it a
+/// publish is refused as a full index. An honest row is a few hundred bytes, so
+/// this sits above the row cap's honest fill; a row of tags can be 16 MiB, so the
+/// row cap alone is gigabytes. **Divergence (documented):** aMule has only the row
+/// caps. aMule is the wire's truth here, not the bar for what a stranger may cost.
+pub const KEYWORD_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+
+/// Most bytes of one published filename the index keeps, cut on a character:
+/// a thousand-character name, past any file system's, is still whole.
+pub const KEYWORD_NAME_CAP: usize = 1024;
+
+/// Most distinct filenames one entry keeps. A republish under a further name
+/// renews the entry and adds no name, so a flood costs no lowercasing past this.
+/// `TAG_PUBLISHINFO`'s one-byte name count reads the same up to here.
+pub const KEYWORD_NAMES_PER_ENTRY: usize = 64;
+
 /// How long an indexed keyword entry lives (aMule's `KADEMLIAREPUBLISHTIMEK`,
 /// 24 h — distinct from the 5 h source-publish lifetime).
 pub const KEYWORD_ENTRY_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);

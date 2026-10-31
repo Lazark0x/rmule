@@ -240,11 +240,10 @@ fn a_publish_full_of_tags_serves_with_its_publish_info_in_a_counted_row() {
     );
 }
 
-/// Bytes that are not UTF-8 widen threefold as the stored display name, so a
-/// name that fit a sixteen-bit length on the way in no longer does on the way
-/// out.
+/// Bytes that are not UTF-8 widen threefold as the stored display name: the cap
+/// holds the widened name, so what is served fits however the bytes came in.
 #[test]
-fn a_name_that_widens_past_sixteen_bits_serves_at_the_longest_length() {
+fn a_name_that_widens_when_rendered_serves_within_the_name_cap() {
     let mut store = KeywordStore::new();
     let now = KadInstant::EPOCH;
     let raw_name = rmule_primitives::Tag::new(
@@ -268,5 +267,6 @@ fn a_name_that_widens_past_sixteen_bits_serves_at_the_longest_length() {
     let TagValue::String(name) = decoded[0].tags[0].value() else {
         panic!("the served name is a string tag");
     };
-    assert_eq!(name.as_bytes().len(), 0xFFFF);
+    // Three bytes a replacement character, cut on a character at 1,024.
+    assert_eq!(name.as_bytes().len(), 1_023);
 }
