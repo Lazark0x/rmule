@@ -236,6 +236,22 @@ current family reads, and read in both**:
   lapses with no dial-back, rmule sends **one** more `0x52` under the fallback (same buddy,
   file and port) and re-arms the wait; never both at once. Only for a buddy with a known
   endpoint: a buddy named by ID alone gets no second Callback Walk.
+- **One gate paces every `0x52`.** No two reach one IP inside the stock window, whichever
+  download, source, reading or road sent them. Stock takes one `KADEMLIA_CALLBACK_REQ` per
+  sender IP per minute, strictly more than 60 s apart, tracked across every file; it counts
+  a packet even when it drops it, so an early send also costs the next one, and five over
+  the rate bans the IP (`PacketTracking.cpp:158-160`, `:188-215`; the same in 3.1.0 and kno).
+  eMule 0.70.1 and eMuleAI keep a token bucket to the same rate, with the same debt
+  (`PacketTracking.cpp:144-145`, `:174-197` in `emule-qt/srchybrid`). The node's **Callback
+  Pace** spaces sends 65 s, the window plus a margin for link jitter, and sits at the one
+  place both `0x52` emits go through: the endpoint-known send and the Callback Walk's
+  sends. Each send books the next free instant of its IP, so sends to one IP leave in the
+  order they were asked. A held `0x52` is deferred, never dropped, and the road's callback
+  wait and its 12 s silence start when it leaves: the node says how long it holds it, and
+  the download moves both deadlines. Bounded: the IP table keeps 1024 entries, oldest out,
+  and an ask that would wait past four spacings, or find 64 sends already held, is refused
+  at once and ends its road as one that never left, since a slot held longer starves the
+  download of the next candidate.
 - **A source keeps the reading that answered.** A dial-back after the fallback makes the
   fallback the ID the source's record holds, so every later road leads with it, the other
   reading becomes that road's fallback, and a sighting of the same row does not move it
@@ -274,10 +290,10 @@ current family reads, and read in both**:
   for byte.
 - Measured against a stock buddy (`kad-core-buddy --stock-buddy`, run `1793423850`): the
   primary `0x52` against a stock aMule's own row is relayed verbatim and dropped by the
-  source's exact check. The fallback, 30 s on, is dropped by the buddy's flood guard, one
-  `KADEMLIA_CALLBACK_REQ` a minute per IP (`PacketTracking.cpp:158-160`), so through 3.1.0
-  the road ends there: no dial-back, no adoption. Open until the fallback leaves past that
-  minute, and rmule's `0x94` through a stock buddy waits on the same adoption.
+  source's exact check. The fallback, 30 s on, was dropped by the buddy's flood guard, so
+  through 3.1.0 the road ended there: no dial-back, no adoption. The Callback Pace now
+  holds the fallback to 65 s after the primary, but no stock run has measured that yet,
+  and rmule's `0x94` through a stock buddy waits on the same adoption.
 - Still source-derived: an eMule-layout row read off a third body (it needs an eMule 0.70b,
   eMuleAI, aMule 3.2.0 or current emule-qt body), and a `0x99` relayed by aMule over a link
   rmule serves.
@@ -308,6 +324,10 @@ current family reads, and read in both**:
   an exact check only to be dropped there.
 - **Keeping aMule's layout for stock 2.3.3's sake.** Rejected: rmule would be alone in it
   among the current families, and the stock reader is served anyway by our `0x99` check.
+- **A per-download fallback timer.** Rejected: stock tracks the opcode per IP across every
+  file, so two downloads behind one buddy break the window with each one's timer honest.
+- **Dropping a `0x52` the window holds.** Rejected: the send is the road; dropping it spends
+  the callback wait on a request that never left.
 - **Sending both forms of a `0x52` at once.** Rejected: eMule's Kad flood protection allows
   about one a minute per address, and a source could dial back twice.
 - **A second Callback Walk toward the other layout.** Rejected: the walk is the expensive
