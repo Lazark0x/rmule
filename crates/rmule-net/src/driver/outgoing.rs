@@ -8,11 +8,14 @@ use std::time::Duration;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::time::Instant;
 
-/// How long a write may move no byte before the connection ends: aMule's
-/// `CONNECTION_TIMEOUT` (`protocol/ed2k/Constants.h:34`), which ends a client
-/// socket that moved none for that long (`ClientTCPSocket.cpp:226`). Unlike
-/// aMule's clock this one hears nothing the peer sends, because a peer that
-/// asks and never reads has not moved the socket that is stuck (ADR-0031).
+/// How long a socket owed bytes may move none before the connection ends:
+/// aMule's `CONNECTION_TIMEOUT` (`protocol/ed2k/Constants.h:34`), which ends a
+/// client socket that moved none for that long (`ClientTCPSocket.cpp:226`). A
+/// write that takes a byte re-arms it, and so does a reading of the socket's
+/// send side past the last one: a slow reader drains a full socket for longer
+/// than this with no write taken. Unlike aMule's clock this one hears nothing
+/// the peer sends, because a peer that asks and never reads has not moved the
+/// socket that is stuck (ADR-0031).
 pub const WRITE_STALL_BOUND: Duration = Duration::from_secs(40);
 
 /// Unwritten bytes past which the driver stops reading: more than a whole

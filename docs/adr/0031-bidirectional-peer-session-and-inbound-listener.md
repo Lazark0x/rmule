@@ -265,9 +265,19 @@ scheduling is (ADR-0026).
 - **Two bounds end a stuck peer**, both aMule's `CONNECTION_TIMEOUT` of 40 s
   (`Constants.h:34`), which ends a client socket that moved no byte either way for that
   long (`ClientTCPSocket.cpp:226`, reset at `:1888`, `:1895`, `:2059`, `:2071`, `:2080`).
-  - A driver whose write moves no byte for 40 s closes the connection with
-    `TimedOut`. Unlike aMule's, this clock is not reset by what the peer sends: a peer
-    that asks and never reads has not moved the socket that is stuck.
+  - A driver owing bytes to a socket that moved none for 40 s closes the connection with
+    `TimedOut`. The clock hears the socket, not only the write: Linux wakes a writer only
+    at half free, so a slow reader's full socket drains for longer than the bound with no
+    write taken. A write that takes a byte re-arms the bound. So does a reading of the
+    socket's send side that is past the last one: on Linux and macOS the bytes the kernel
+    still holds, unsent and unacked, fallen (`SIOCOUTQ`, `SO_NWRITE`); on Windows, which
+    counts no unsent byte, the bytes acknowledged, risen (`SIO_TCP_INFO`). The driver reads
+    the socket 1 s after the last byte taken, for the count the bound compares against, and
+    again at the bound; a reading that stands ends the connection, and so does a socket
+    that cannot answer. A socket that keeps taking bytes pays no call, a stalled one one
+    per bound. Unlike aMule's, this clock is not reset by what the peer sends: a peer that
+    asks and never reads has not moved the socket that is stuck, and its count stands once
+    its receive window is full.
   - A slot holder with nothing left to send and nothing moving for 40 s, neither a word
     from it nor a block leaving, loses its slot and its link at the next re-rank tick,
     20 s by default. This is the peer that stopped reading with all its bytes in the
