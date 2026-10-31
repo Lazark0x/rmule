@@ -231,26 +231,40 @@ scheduling is (ADR-0026).
   waiting ranges go, a read waiting for its turn is not started, a read out lands and is
   dropped, and blocks still in the Link Outbox are not deflated or sent. Flows are
   numbered, so a block of an ended flow cannot pass for one of a slot the same peer
-  was granted since. What the link already handed its connection, at most the
-  Send-Ahead, goes out; a peer's own `OP_CANCELTRANSFER` drops even that, in its
+  was granted since. What the link already handed its connection, at most one
+  block, goes out; a peer's own `OP_CANCELTRANSFER` drops even that, in its
   session. aMule truncates its socket's standard queue the same way
   (`UploadClient.cpp:665-671`, `EMSocket.cpp:712`).
 - **A failed read** is a fact about the file whichever flow it was for, ended or not.
   A Served Download's is judged against the Part File Identity that read was
   checked against, which the entry may have moved on from.
-- **A Link Outbox** holds 64 entries. The Send-Ahead keeps blocks to ten of them, so a
+- **A Link Outbox** has two lanes, an answer's and a block's, of 64 entries each, and a
   full one is a peer asking faster than it reads, whose link ends at once: its slot goes
   to the next waiter and nothing has to wait. aMule's queues have no bound
   (`EMSocket.cpp:330-358`), and 64 is safe against its clients because of how they ask,
   not because of how much they hold. A client asks for one file at a time (`m_reqfile`)
-  and waits for each answer, so one file costs at most six entries (name, status, hash
+  and waits for each answer, so one file costs at most six answers (name, status, hash
   set, AICH root, sources, rank), and the next file waits on the socket until the
-  transfer ends. A peer holding a slot adds no entries to it: its `OP_REQUESTPARTS` go
-  to its flow, and a rank goes only to a waiter, which has no blocks ahead of it.
-  Fifty-four entries behind the Send-Ahead is nine whole files asked with no answer read,
-  which only a peer that stops reading does. Ending that link is the design, so the
-  number stays; a bench run of a stock client on a throttled link would disprove it. The
-  link's task parks on neither its
+  transfer ends. Sixty-four answers is ten whole files asked with none read, which only
+  a peer that stops reading does. A peer holding a slot adds no answers for it: its
+  `OP_REQUESTPARTS` go to its flow. The Send-Ahead keeps a flow to ten blocks, and an
+  ended flow's leave at the link's next look, so the block lane fills only behind
+  a socket nothing moves through. Ending that link is the design, so the number
+  stays; a bench run of a stock client on a throttled link would disprove it.
+- **An answer goes ahead of the blocks.** aMule's socket drains its control queue before
+  its standard queue (`EMSocket.cpp:500-504`, 3.1.0 `:534`), and everything but block
+  data is a control packet (`UploadClient.cpp:328`, `:658`). A connection is a FIFO,
+  and what it holds no later answer can pass, so the link hands it one block at a
+  time: the next waits until the session says this one left (**Send-Ahead**), or until
+  this one's flow ends, since the session frames no block of a slot gone and says
+  nothing of it. An answer goes down whenever the connection has room. So an answer
+  waits for the block on the wire and no other, however many the Send-Ahead
+  holds, as a slot holder's status for its next file would behind ten. The rule falls
+  on a block's end, not between its frames as aMule's may: the block goes as one run
+  (`OP_SENDINGPART`, `OP_COMPRESSEDPART`), and a driver takes a command once the last
+  one's bytes are in the kernel. Blocks keep their order. The next block is read and
+  deflated while this one is on the wire, so the wire waits for neither.
+- The link's task parks on neither its
   outbox nor its connection alone, so what the peer says still reaches the loop while
   a command waits to go down. A link whose connection ended under a command says so,
   as every link does when it ends, or its slot would never be released.

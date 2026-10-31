@@ -93,7 +93,7 @@ The ten blocks a **Serve Flow** may have read and not yet left for the socket, p
 _Avoid_: read-ahead, upload buffer
 
 **Link Outbox**:
-The bounded queue of what the serve loop has for one link, which it fills without waiting. A full one means the peer asks faster than it reads, and its link ends (ADR-0031).
+The bounded queue of what the serve loop has for one link, which it fills without waiting: a lane for answers, which go down first, and a lane for blocks, of which the connection holds one at a time. A full lane means the peer asks faster than it reads, and its link ends (ADR-0031).
 _Avoid_: send queue, connection queue
 
 **Dial-Back Grant**:
