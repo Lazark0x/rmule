@@ -117,7 +117,10 @@ fn an_unknown_pinger_is_answered_by_the_queues_own_room() {
         std::time::Instant::now(),
         &std::collections::HashMap::new(),
     );
-    assert_eq!(roomy.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()), Vec::new());
+    assert_eq!(
+        roomy.on_reask_ping(t, src, &reask_ping(file), &no_modifiers()),
+        Vec::new()
+    );
 }
 
 /// Several waiters behind one IP on different UDP ports make a ping from a
@@ -245,7 +248,9 @@ fn purge_reaps_a_silent_waiter_but_a_reask_heartbeat_saves_it() {
         Vec::new(),
     );
     assert!(matches!(
-        state.on_reask_ping(mid, src, &reask_ping(file), &no_modifiers()).as_slice(),
+        state
+            .on_reask_ping(mid, src, &reask_ping(file), &no_modifiers())
+            .as_slice(),
         [ServeDecision::SendClientUdp { .. }]
     ));
 
@@ -551,12 +556,19 @@ fn a_fifth_fast_reask_bans_the_waiter_unanswered() {
     for n in 1..=3 {
         let at = t + Duration::from_secs(n);
         let answered = state.on_reask_ping(at, src, &ping, &no_modifiers());
-        assert!(matches!(answered.as_slice(), [ServeDecision::SendClientUdp { .. }]));
+        assert!(matches!(
+            answered.as_slice(),
+            [ServeDecision::SendClientUdp { .. }]
+        ));
     }
     let banned = state.on_reask_ping(t + Duration::from_secs(4), src, &ping, &no_modifiers());
 
     assert_eq!(banned[0], ServeDecision::Ban { peer: waiter });
-    assert!(!banned.iter().any(|d| matches!(d, ServeDecision::SendClientUdp { .. })));
+    assert!(
+        !banned
+            .iter()
+            .any(|d| matches!(d, ServeDecision::SendClientUdp { .. }))
+    );
     assert!(!state.queue.contains(waiter));
 
     let mut polite = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
@@ -567,6 +579,9 @@ fn a_fifth_fast_reask_bans_the_waiter_unanswered() {
     for n in 1..=8 {
         let at = t + Duration::from_secs(n * 29 * 60);
         let answered = polite.on_reask_ping(at, src, &ping, &no_modifiers());
-        assert!(matches!(answered.as_slice(), [ServeDecision::SendClientUdp { .. }]));
+        assert!(matches!(
+            answered.as_slice(),
+            [ServeDecision::SendClientUdp { .. }]
+        ));
     }
 }

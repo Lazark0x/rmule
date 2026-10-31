@@ -156,7 +156,10 @@ fn a_keyed_row_pays_and_accrues_only_where_its_key_was_proved() {
     const MIB: u64 = 1 << 20;
     let ledger = DurableCreditStore::new(rmule_testkit::memory_store());
     let peer = UserHash::from_bytes([0x0C; UserHash::BYTE_LEN]);
-    let (owner, thief): (IpAddr, IpAddr) = ("203.0.113.1".parse().unwrap(), "203.0.113.2".parse().unwrap());
+    let (owner, thief): (IpAddr, IpAddr) = (
+        "203.0.113.1".parse().unwrap(),
+        "203.0.113.2".parse().unwrap(),
+    );
     ledger.bind_public_key(peer, b"key").unwrap();
     ledger.record_download(peer, 100 * MIB).unwrap();
     let earned = ledger.modifier(peer).unwrap();
@@ -190,7 +193,10 @@ fn a_keyed_row_pays_and_accrues_only_where_its_key_was_proved() {
 fn a_proof_in_one_family_leaves_the_other_alone() {
     let ledger = DurableCreditStore::new(rmule_testkit::memory_store());
     let peer = UserHash::from_bytes([0x0E; UserHash::BYTE_LEN]);
-    let (v4, v6): (IpAddr, IpAddr) = ("203.0.113.1".parse().unwrap(), "2001:db8::1".parse().unwrap());
+    let (v4, v6): (IpAddr, IpAddr) = (
+        "203.0.113.1".parse().unwrap(),
+        "2001:db8::1".parse().unwrap(),
+    );
     ledger.bind_public_key(peer, b"key").unwrap();
     ledger.prove(peer, v4);
     ledger.prove(peer, v6);

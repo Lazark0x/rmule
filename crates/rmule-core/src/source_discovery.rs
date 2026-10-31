@@ -330,7 +330,14 @@ mod tests {
 
         let (channel, mut asks) = recording_channel();
         let task = tokio::spawn(
-            SourceDiscovery::new(channel, registry, Duration::from_millis(10), clock, u32::MAX).run(),
+            SourceDiscovery::new(
+                channel,
+                registry,
+                Duration::from_millis(10),
+                clock,
+                u32::MAX,
+            )
+            .run(),
         );
         assert!(
             tokio::time::timeout(Duration::from_millis(100), asks.recv())

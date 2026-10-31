@@ -34,8 +34,8 @@ impl AcceptLimit {
             return false;
         }
         let mut window = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let open_window = window
-            .filter(|window| now.saturating_duration_since(window.opened_at) < ACCEPT_WINDOW);
+        let open_window =
+            window.filter(|window| now.saturating_duration_since(window.opened_at) < ACCEPT_WINDOW);
         let accepted = open_window.map_or(0, |window| window.accepted);
         if accepted > MAX_ACCEPTS_PER_WINDOW {
             return false;

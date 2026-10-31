@@ -957,7 +957,8 @@ fn current_modifiers(
                 .unwrap_or(1.0);
             let named = if identity
                 .nickname()
-                .is_some_and(|name| !name.as_bytes().is_empty()) {
+                .is_some_and(|name| !name.as_bytes().is_empty())
+            {
                 1.0
             } else {
                 0.0

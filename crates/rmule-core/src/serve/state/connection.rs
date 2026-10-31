@@ -636,12 +636,9 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
-                let changed = self.hashes.changed(
-                    now,
-                    peer.ip(),
-                    identity.tcp_port(),
-                    identity.user_hash(),
-                );
+                let changed =
+                    self.hashes
+                        .changed(now, peer.ip(), identity.tcp_port(), identity.user_hash());
                 if self.refuses_hash_thief(peer, &identity) || changed && !self.spares(peer) {
                     return vec![
                         ServeDecision::Ban { peer },

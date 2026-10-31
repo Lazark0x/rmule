@@ -769,7 +769,11 @@ fn the_low_id_guard_spares_our_sources_and_nobody_else() {
     let file_hash = hash(0x55);
     let t = Instant::now();
     let mut state = ServeState::new(UploadSlotQueue::new(1, 64));
-    let _ = state.on_share_set(vec![entry(file_hash, 4096, "served.bin")], t, &no_modifiers());
+    let _ = state.on_share_set(
+        vec![entry(file_hash, 4096, "served.bin")],
+        t,
+        &no_modifiers(),
+    );
     state.on_self_position(ServeSelfPosition {
         low_id: true,
         server: None,
@@ -777,11 +781,19 @@ fn the_low_id_guard_spares_our_sources_and_nobody_else() {
     let holder = peer_at([198, 51, 100, 200], 4662);
     let _ = slot_request(&mut state, holder, file_hash, t);
     for n in 0..51 {
-        let _ = slot_request(&mut state, peer_at([198, 51, 100, n + 1], 4662), file_hash, t);
+        let _ = slot_request(
+            &mut state,
+            peer_at([198, 51, 100, n + 1], 4662),
+            file_hash,
+            t,
+        );
     }
 
     let refused = ServeDecision::Emit(ServeEvent::UploadLowIdAbuseRefused { peer: holder });
-    assert_eq!(slot_request(&mut state, holder, file_hash, t), vec![refused]);
+    assert_eq!(
+        slot_request(&mut state, holder, file_hash, t),
+        vec![refused]
+    );
 
     state.on_asker(ServeAsker {
         banned: false,
@@ -809,11 +821,20 @@ fn a_banned_holders_next_ask_ends_its_slot_and_moves_the_queue() {
     let (mut state, holder, waiter) = holder_and_waiter(file_hash, t);
 
     state.on_asker(banned_asker());
-    let decisions = state.on_conn_event(t, holder, parts(file_hash, [(0, 512), (0, 0), (0, 0)]), &no_modifiers());
+    let decisions = state.on_conn_event(
+        t,
+        holder,
+        parts(file_hash, [(0, 512), (0, 0), (0, 0)]),
+        &no_modifiers(),
+    );
 
     assert!(decisions.contains(&ServeDecision::Disconnect { peer: holder }));
     assert!(decisions.contains(&send(waiter, ServerCommand::GrantSlot { file_hash })));
-    assert!(decisions.contains(&ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer: holder })));
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::UploadSlotReleased {
+            peer: holder
+        }))
+    );
     assert!(!state.queue.contains(holder));
 }
 
@@ -827,10 +848,12 @@ fn a_banned_waiter_leaves_at_the_sweep() {
 
     let decisions = state.on_banned_standings(t, &[waiter], &no_modifiers());
 
-    assert!(decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterLeft {
-        peer: waiter,
-        cause: WaiterLeaveCause::Banned,
-    })));
+    assert!(
+        decisions.contains(&ServeDecision::Emit(ServeEvent::WaiterLeft {
+            peer: waiter,
+            cause: WaiterLeaveCause::Banned,
+        }))
+    );
     assert!(!state.queue.contains(waiter));
     assert!(state.queue.is_granted(holder));
 }
@@ -898,7 +921,9 @@ fn fast_aich_recovery_asks_ban_too() {
     let ask = ServeInput::Server(ServerEvent::AichRequested {
         file_hash,
         part: 0,
-        root: rmule_primitives::AichRootHash::from_bytes([1; rmule_primitives::AichRootHash::BYTE_LEN]),
+        root: rmule_primitives::AichRootHash::from_bytes(
+            [1; rmule_primitives::AichRootHash::BYTE_LEN],
+        ),
     });
     let mut last = Vec::new();
     for _ in 0..5 {
@@ -924,7 +949,12 @@ fn a_new_hash_at_a_place_that_proved_another_bans_at_the_hello() {
     );
 
     let back = hello_facts(user(2), 0, 0, 2).identified();
-    let decisions = state.on_conn_event(t, peer_at([10, 0, 0, 9], 4662), back.clone(), &no_modifiers());
+    let decisions = state.on_conn_event(
+        t,
+        peer_at([10, 0, 0, 9], 4662),
+        back.clone(),
+        &no_modifiers(),
+    );
     assert!(decisions.is_empty(), "another place is another client");
 
     let decisions = state.on_conn_event(t, place, back, &no_modifiers());

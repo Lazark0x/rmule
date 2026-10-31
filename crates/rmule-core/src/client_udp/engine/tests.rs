@@ -155,9 +155,15 @@ async fn a_banned_address_is_dropped_before_any_protocol_reads_it() {
 
     engine.run().await;
 
-    assert_eq!(inboxes.reask_ping.recv().await.map(|(from, _)| from), Some(open));
+    assert_eq!(
+        inboxes.reask_ping.recv().await.map(|(from, _)| from),
+        Some(open)
+    );
     assert_eq!(inboxes.reask_ping.recv().await, None);
-    assert_eq!(kad_rx.try_recv().ok().map(|(from, _)| from.ip), Some(open_ip));
+    assert_eq!(
+        kad_rx.try_recv().ok().map(|(from, _)| from.ip),
+        Some(open_ip)
+    );
     assert!(kad_rx.try_recv().is_err());
     assert_eq!(diagnostics.snapshot().session.banned_datagrams_total, 2);
 }

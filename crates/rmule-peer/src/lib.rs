@@ -61,13 +61,13 @@ pub use file_request::{
     ExtendedRequests, FileReqAnsNoFil, FileSizedStatus, FileStatus, PartStatusTail,
     ReqFileNameAnswer, RequestFileName, SetReqFileId,
 };
-pub use hello_tag::CT_NAME;
 pub use handshake::{
     CT_EMULE_BUDDYIP, CT_EMULE_BUDDYUDP, HelloAdvert, HelloGate, PeerHandshakeContext,
     SecureIdentConfig, ServingBuddyAdvert,
 };
 pub use hash_set::{HashSetAnswer, HashSetRequest};
 pub use hello::{Hello, HelloAnswer, HelloRefusal, HelloRefusalCode, HelloTrailer, PeerHelloBody};
+pub use hello_tag::CT_NAME;
 pub use human_layer::{ChangeClientId, FileDesc, Message, PublicIpAnswer};
 pub use identity::PeerIdentity;
 pub use ipv6::{ChangeClientIpV6, PeerIpv6Tags};
