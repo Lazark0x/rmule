@@ -40,6 +40,7 @@ async fn an_opener_opens_a_slot_only_from_an_introduced_address() {
                 role: rmule_ed2k::HolepunchRole::Responder,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )

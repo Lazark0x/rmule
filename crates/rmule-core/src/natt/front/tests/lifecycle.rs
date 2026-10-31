@@ -16,6 +16,7 @@ async fn dialing(harness: &mut Harness, target: UserHash, low_id: ClientId, now:
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )
@@ -143,6 +144,7 @@ async fn an_introduced_attempt_stops_answering_to_its_low_id() {
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             t0,
         )
@@ -194,6 +196,7 @@ async fn an_attempt_no_clock_holds_retires_at_its_run() {
                 role: rmule_ed2k::HolepunchRole::Responder,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             t0,
         )

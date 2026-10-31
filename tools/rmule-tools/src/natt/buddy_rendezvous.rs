@@ -479,6 +479,7 @@ fn reach(target: &Target) -> PeerReach {
                 buddy: None,
                 ipv6: None,
                 supports_natt: false,
+                crypt: None,
                 user_hash: Some(target.user_hash),
             };
         }
@@ -498,6 +499,7 @@ fn reach(target: &Target) -> PeerReach {
         // server needs none because it holds the target's own `0xF9`, but no
         // server stands here.
         supports_natt: true,
+        crypt: None,
         user_hash: Some(target.user_hash),
     }
 }

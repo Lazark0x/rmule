@@ -4,6 +4,15 @@
 
 use super::*;
 
+/// What the triage reports for a hello read at `at` naming `peer`.
+fn hello_of(at: Ipv4Endpoint, peer: UserHash) -> Risen {
+    let stance = rmule_primitives::CryptStance::disabled();
+    Risen::TunnelIdentified {
+        at: PeerEndpoint::V4(at),
+        peer: PeerUdpCryptTarget::new(peer, stance),
+    }
+}
+
 /// How late past its computed deadline a released burst may reach the send
 /// half. Paused tokio time makes the deadline exact; this only absorbs the
 /// loop's own turn.
@@ -128,10 +137,7 @@ async fn a_hello_on_a_remapped_port_ends_its_only_pending_peer() {
     let remapped = at(9, 40000);
     let due = held_toward(&mut harness, target, hinted).await;
 
-    let named = Risen::TunnelIdentified {
-        at: PeerEndpoint::V4(remapped),
-        peer: target,
-    };
+    let named = hello_of(remapped, target);
     harness.front.on_risen(named, due).await;
 
     harness.front.release_held(due).await;
@@ -250,10 +256,7 @@ async fn a_syn_from_a_lone_targets_address_leaves_its_traversal_running() {
 
     let accepted = accepted_from(&mut harness, neighbour, early).await;
     harness.front.on_risen(accepted, early).await;
-    let named = Risen::TunnelIdentified {
-        at: PeerEndpoint::V4(neighbour),
-        peer: hash(0x77),
-    };
+    let named = hello_of(neighbour, hash(0x77));
     harness.front.on_risen(named, early).await;
 
     harness.front.release_held(due).await;
@@ -263,10 +266,7 @@ async fn a_syn_from_a_lone_targets_address_leaves_its_traversal_running() {
         "and so does the dial"
     );
 
-    let named = Risen::TunnelIdentified {
-        at: PeerEndpoint::V4(neighbour),
-        peer: target,
-    };
+    let named = hello_of(neighbour, target);
     harness.front.on_risen(named, due).await;
     assert!(
         !harness.front.dials.in_flight(target),
@@ -323,10 +323,7 @@ async fn a_dialed_tunnel_naming_somebody_else_leaves_the_attempt_dialing() {
     assert!(harness.front.attempts.contains(&target), "no hello yet");
     assert!(harness.front.dials.in_flight(target), "no second opener");
 
-    let named = Risen::TunnelIdentified {
-        at: PeerEndpoint::V4(stranger),
-        peer: hash(0x77),
-    };
+    let named = hello_of(stranger, hash(0x77));
     harness.front.on_risen(named, due).await;
 
     assert!(harness.front.attempts.contains(&target));
@@ -361,12 +358,97 @@ async fn a_dialed_tunnels_own_hello_ends_its_attempt() {
     let answered = at(9, 40000);
     let due = dialed_tunnel(&mut harness, target, answered).await;
 
-    let named = Risen::TunnelIdentified {
-        at: PeerEndpoint::V4(answered),
-        peer: target,
-    };
+    let named = hello_of(answered, target);
     harness.front.on_risen(named, due).await;
 
     assert!(!harness.front.attempts.contains(&target));
     assert!(!harness.front.dials.holds(target));
+}
+
+/// A stance that requires the layer, as byte 29 or a hello states it.
+fn requires_crypt() -> rmule_primitives::CryptStance {
+    rmule_primitives::SourceCryptOptions::from_byte(0b111).crypt_stance()
+}
+
+/// The front's own punches are the server burst's equal: a peer that requires
+/// the layer drops a plain datagram, so the cadence re-dial's burst carries
+/// the stance the introduction stated (ADR-0091, security rule 13).
+#[tokio::test]
+async fn a_re_dials_burst_carries_the_stance_its_introduction_stated() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let t0 = Instant::now();
+    harness
+        .front
+        .on_command(
+            NattCommand::Introduced {
+                peer_hash: target,
+                target: at(9, 31999),
+                role: HolepunchRole::Initiator,
+                burst: false,
+                source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: Some(requires_crypt()),
+            },
+            t0,
+        )
+        .await;
+    let settled = t0 + DIAL_ATTEMPT_TIMEOUT;
+    harness
+        .front
+        .on_risen(Risen::DialSettled { peer: target }, settled)
+        .await;
+
+    harness.front.on_tick(t0 + REDIAL_INTERVAL).await;
+
+    let burst = harness.drained();
+    assert!(!burst.is_empty(), "the cadence re-dial bursts");
+    let stated = PeerUdpCryptTarget::new(target, requires_crypt());
+    assert!(burst.iter().all(|send| send.crypt_target == Some(stated)));
+}
+
+/// A held burst's attempt holds the stance the reach's source record stated.
+#[tokio::test]
+async fn a_held_burst_carries_the_stance_its_reach_stated() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let stated = PeerUdpCryptTarget::new(target, requires_crypt());
+    let due = held_toward(&mut harness, target, at(9, 31999)).await;
+    harness.front.crypt_targets.state(target, requires_crypt());
+
+    harness.front.release_held(due).await;
+
+    let burst = harness.drained();
+    assert!(!burst.is_empty());
+    assert!(burst.iter().all(|send| send.crypt_target == Some(stated)));
+}
+
+/// A path outlives the attempt that opened it, so its keepalive reads the
+/// target the hello bound to the path, and a closed path's goes with it.
+#[tokio::test]
+async fn a_keepalive_carries_the_crypt_target_its_hello_named() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let path = at(9, 40000);
+    let due = held_toward(&mut harness, target, path).await;
+    let accepted = accepted_from(&mut harness, path, due).await;
+    harness.front.on_risen(accepted, due).await;
+    let hello = PeerUdpCryptTarget::new(target, requires_crypt());
+    let named = Risen::TunnelIdentified {
+        at: PeerEndpoint::V4(path),
+        peer: hello,
+    };
+    harness.front.on_risen(named, due).await;
+
+    harness
+        .front
+        .on_tick(due + rmule_peer::natt::PUNCHED_PATH_KEEPALIVE)
+        .await;
+
+    let keepalive = harness.drained();
+    assert_eq!(keepalive.len(), 1, "one keepalive: {keepalive:?}");
+    assert_eq!(keepalive[0].crypt_target, Some(hello));
+
+    let closed = Risen::Closed { at: path };
+    harness.front.on_risen(closed, due).await;
+    assert_eq!(harness.front.crypt_targets.of_path(path), None);
 }

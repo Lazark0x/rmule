@@ -386,6 +386,7 @@ impl SharedServerPunch {
                     burst: false,
                     // The server saw the peer's UDP source itself.
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: info.peer_crypt.map(|crypt| crypt.crypt_stance()),
                 })
             });
             if !taken {

@@ -56,6 +56,7 @@ fn punchable() -> PeerReach {
         }),
         ipv6: None,
         supports_natt: true,
+        crypt: None,
         user_hash: Some(hash(0xAB)),
     }
 }

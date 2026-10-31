@@ -103,6 +103,7 @@ fn firewalled_peer(kad_udp: Ipv4Endpoint) -> PeerReach {
         buddy: None,
         ipv6: None,
         // Route 2 needs no ledger key; rung 1's does, and is not this test's.
+        crypt: None,
         user_hash: None,
         supports_natt: false,
     }

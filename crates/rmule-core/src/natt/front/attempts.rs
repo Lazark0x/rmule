@@ -38,7 +38,7 @@ use rmule_ed2k::HolepunchFailReason;
 use rmule_net::natt::NattDatagramSink;
 use rmule_peer::BUDDY_ID_LEN;
 use rmule_peer::natt::{RENDEZVOUS_TIMEOUT, RetireReason};
-use rmule_primitives::{ClientId, Ipv4Endpoint, UserHash};
+use rmule_primitives::{ClientId, CryptStance, Ipv4Endpoint, UserHash};
 
 use crate::address_learning::SocketRole;
 use crate::callback::{NattCoordinator, NattFacts, RoutePosition, next_natt_coordinator};
@@ -57,6 +57,8 @@ pub(crate) struct AttemptOwner {
     /// The candidate's own half of rung 1's condition, for picking the next
     /// coordinator when this one fails.
     pub(crate) facts: NattFacts,
+    /// The stance the reach holds for the target, when it holds one.
+    pub(crate) crypt: Option<CryptStance>,
     /// What rmule says about itself in a rendezvous.
     pub(crate) offer: RendezvousOffer,
 }
@@ -465,8 +467,12 @@ impl<S: NattDatagramSink> NattFront<S> {
         let AttemptOwner {
             target,
             facts,
+            crypt,
             offer,
         } = owner;
+        if let Some(stance) = crypt {
+            self.crypt_targets.state(target, stance);
+        }
         if self.attempts.contains(&target) {
             // One attempt per peer at a time: a second download
             // falling to the same target joins the traversal already running.

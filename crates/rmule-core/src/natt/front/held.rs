@@ -89,7 +89,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 late = ?now.saturating_duration_since(burst.at),
                 "held burst released on its deadline"
             );
-            self.fire_burst(burst.target, now).await;
+            self.fire_burst(burst.target, burst.peer, now).await;
             self.plan_prediction(burst.peer, burst.target, now);
             self.dial(burst.peer, burst.target, now).await;
         }

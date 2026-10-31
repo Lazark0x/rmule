@@ -23,6 +23,7 @@ async fn an_attempt_redials_on_the_cadence_within_one_burst_window() {
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: true,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             t0,
         )
@@ -77,6 +78,7 @@ async fn a_redial_burst_is_not_refused_by_a_neighbour_on_one_address() {
         role: rmule_ed2k::HolepunchRole::Initiator,
         burst: true,
         source: rmule_peer::natt::PunchTargetSource::Observed,
+        crypt: None,
     };
     harness
         .front
@@ -130,6 +132,7 @@ async fn the_attempt_ends_at_the_budget_with_its_dial_count() {
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )

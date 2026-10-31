@@ -77,6 +77,7 @@ fn buddy_only_peer() -> PeerReach {
             buddy_udp: Some(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)),
         }),
         ipv6: None,
+        crypt: None,
         user_hash: None,
         supports_natt: false,
     }

@@ -58,7 +58,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // re-dial that cannot burst still dials, because the mapping
                 // may well be open anyway.
                 if burst && self.bursts.admit(at, now) {
-                    self.fire_burst_only(at).await;
+                    self.fire_burst_only(at, peer).await;
                 }
                 if !self.spawn_dial(peer, at) {
                     self.dials.skipped(peer);
@@ -156,6 +156,7 @@ impl<S: NattDatagramSink> NattFront<S> {
             Risen::DialSettled { peer } => self.dial_settled(peer, now).await,
             Risen::Closed { at } => {
                 let closed = self.paths.on_path_closed(at);
+                self.crypt_targets.path_closed(at);
                 self.release_prediction_route(at);
                 // Nobody was ever named on this path, so what is pending
                 // behind its address is still pending: a forged opener must
@@ -189,7 +190,12 @@ impl<S: NattDatagramSink> NattFront<S> {
                     .lock()
                     .expect("the NAT-T tunnel registry is never poisoned")
                     .identified(at);
-                let aimed = at.as_v4().and_then(|path| self.paths.identified(path));
+                let named = peer;
+                let peer = named.user_hash;
+                let aimed = at.as_v4().and_then(|path| {
+                    self.crypt_targets.bind_path(path, named);
+                    self.paths.identified(path)
+                });
                 if let Some(dials) = self.dials.risen(peer) {
                     self.wiring.diagnostics.record_natt_attempt_dials(dials);
                 }

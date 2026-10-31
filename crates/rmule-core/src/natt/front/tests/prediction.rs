@@ -82,6 +82,7 @@ fn introduced(peer: UserHash, target: Ipv4Endpoint) -> NattCommand {
         role: HolepunchRole::Responder,
         burst: false,
         source: PunchTargetSource::Observed,
+        crypt: None,
     }
 }
 
@@ -106,6 +107,7 @@ async fn begun(
                         advertised_udp,
                         ..buddy_facts()
                     },
+                    crypt: None,
                     offer: RendezvousOffer {
                         our_user_hash: hash(0xAA),
                         options: NattConnectOptions::advertise(0, true, false),
@@ -241,11 +243,16 @@ async fn an_endpoint_independent_node_probes_after_the_fan_it_is_meant_to_meet()
     let unpunched = (1024..=65535)
         .find(|port| !set.contains(port) && port.abs_diff(target.port) > 16 && *port != 60_001)
         .unwrap();
-    assert!(!front.note_probe_answer(Ipv4Endpoint::new(target.ip, unpunched)));
-    assert!(front.note_probe_answer(Ipv4Endpoint::new(target.ip, drawn)));
-    assert!(!front.note_probe_answer(Ipv4Endpoint::new(target.ip, drawn)));
+    let answered = |front: &mut NattFront<NullSink>, port| {
+        front
+            .note_probe_answer(Ipv4Endpoint::new(target.ip, port))
+            .is_some()
+    };
+    assert!(!answered(&mut front, unpunched));
+    assert!(answered(&mut front, drawn));
+    assert!(!answered(&mut front, drawn));
     // The baseline sweep's ports are ours too: the Fan's mapping may sit there.
-    assert!(front.note_probe_answer(Ipv4Endpoint::new(target.ip, target.port + 16)));
+    assert!(answered(&mut front, target.port + 16));
     assert_eq!(diagnostics.snapshot().session.natt_prediction_hits_total, 2);
 }
 
@@ -332,6 +339,7 @@ async fn a_claimed_target_starts_no_plan() {
                 role: HolepunchRole::Responder,
                 burst: false,
                 source: PunchTargetSource::PublicClaim,
+                crypt: None,
             },
             Instant::now(),
         )

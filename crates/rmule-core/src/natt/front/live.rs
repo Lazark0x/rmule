@@ -281,6 +281,7 @@ impl Node {
                 role,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             })
             .await
             .expect("the front is running");
@@ -315,6 +316,7 @@ impl Node {
                         buddy: None,
                         advertised_udp: None,
                     },
+                    crypt: None,
                     offer: crate::natt::RendezvousOffer {
                         // The buddy in this fixture is our own test code and
                         // never reads what we claim about ourselves.
@@ -755,7 +757,13 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
 
     // The hello that ends the attempt, as the triage reports it for any
     // Tunnel (ADR-0091, security rule 12).
-    a.claims.tunnel_identified(dialed.conn.peer_endpoint(), b_hash);
+    a.claims.tunnel_identified(
+        dialed.conn.peer_endpoint(),
+        rmule_peer::peer_udp::crypt::PeerUdpCryptTarget::new(
+            b_hash,
+            rmule_primitives::CryptStance::disabled(),
+        ),
+    );
 
     let after_adoption = a.diagnostics.snapshot().session;
     assert_eq!(

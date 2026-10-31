@@ -304,6 +304,7 @@ impl PeerReacher {
         Some(AttemptOwner {
             target,
             facts: callback_target(peer).natt_facts(),
+            crypt: peer.crypt,
             offer: crate::natt::RendezvousOffer {
                 our_user_hash,
                 // uTP only: ADR-0091 keeps QUIC dark until a live handshake

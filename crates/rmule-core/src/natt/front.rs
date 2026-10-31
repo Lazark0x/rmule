@@ -61,6 +61,7 @@ use rmule_net::natt::{
 use rmule_peer::natt::{
     EndpointHint, RendezvousFailure, RendezvousStep, holepunch_datagram, is_holepunch, punch_burst,
 };
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
@@ -78,6 +79,7 @@ use super::requester::{HintVerdict, RendezvousRequester};
 #[cfg(test)]
 mod adoption;
 mod attempts;
+mod crypt_targets;
 mod dialing;
 mod expectations;
 mod held;
@@ -183,6 +185,8 @@ pub(crate) enum NattCommand {
         /// endpoint a coordinator observed may start a **Prediction Plan**
         /// The burst and the dial go wherever the rule said.
         source: rmule_peer::natt::PunchTargetSource,
+        /// The stance the coordinator stated for the peer, when it stated one.
+        crypt: Option<rmule_primitives::CryptStance>,
     },
 }
 
@@ -270,7 +274,10 @@ enum Risen {
     Identified { peer: UserHash },
     /// The hello of a Tunnel, either direction, named `peer` at `at`: the
     /// first thing that names anybody on it (ADR-0091, security rule 12).
-    TunnelIdentified { at: PeerEndpoint, peer: UserHash },
+    TunnelIdentified {
+        at: PeerEndpoint,
+        peer: PeerUdpCryptTarget,
+    },
     /// The download that claimed `peer` let go — its slot lapsed, or the
     /// callback beside the punch landed first — so the attempt has no
     /// claimant left to raise a Tunnel for.
@@ -299,7 +306,7 @@ impl NattRisenSender {
     /// A Tunnel's hello named `peer` at `at`. `try_send` for the
     /// reason [`Self::identified`] gives; a lost report leaves the endpoint
     /// spending the Unidentified Allowance until its Tunnel ends.
-    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, peer: UserHash) {
+    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, peer: PeerUdpCryptTarget) {
         let _ = self.0.try_send(Risen::TunnelIdentified { at, peer });
     }
 
@@ -324,7 +331,7 @@ impl NattRisenSender {
                 let reported = match risen {
                     Risen::Identified { peer } => ReportedToFront::Identified(peer),
                     Risen::TunnelIdentified { at, peer } => {
-                        ReportedToFront::TunnelIdentified(at, peer)
+                        ReportedToFront::TunnelIdentified(at, peer.user_hash)
                     }
                     Risen::Abandoned { peer } => ReportedToFront::Abandoned(peer),
                     _ => continue,
@@ -398,6 +405,8 @@ pub(crate) struct NattFront<S> {
     wiring: NattWiring,
     requester: RendezvousRequester,
     paths: PunchedPaths,
+    /// How a punch goes out: one stance per peer, one target per named path.
+    crypt_targets: crypt_targets::CryptTargets,
     /// Every **Traversal Attempt** this front owns: which coordinator is
     /// carrying each target, what a rendezvous re-emits on a retry, and the
     /// facts that pick the next coordinator. Keyed like the requester ledger,
@@ -495,6 +504,7 @@ fn assemble<S: NattDatagramSink>(
             wiring,
             requester: RendezvousRequester::default(),
             paths: PunchedPaths::default(),
+            crypt_targets: crypt_targets::CryptTargets::default(),
             attempts: Attempts::default(),
             expectations: Expectations::default(),
             held: HeldBursts::default(),
@@ -622,8 +632,9 @@ impl<S: NattDatagramSink> NattFront<S> {
             return;
         };
         self.paths.on_activity(observed, now);
-        if self.note_probe_answer(observed) {
-            self.send_punch(observed).await;
+        if let Some(peer) = self.note_probe_answer(observed) {
+            let crypt = self.crypt_targets.of_peer(&peer);
+            self.send_punch(observed, crypt).await;
         }
         match self.expectations.on_punch(observed, now) {
             PunchVerdict::Unexpected => {
@@ -705,7 +716,11 @@ impl<S: NattDatagramSink> NattFront<S> {
                 role,
                 burst,
                 source,
+                crypt,
             } => {
+                if let Some(stance) = crypt {
+                    self.crypt_targets.state(peer_hash, stance);
+                }
                 // The role byte is advisory for *timing* — a server tells both
                 // sides at once, so there is no round trip to halve — but it
                 // still names which side asked, and that is exactly the fact
@@ -723,7 +738,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 self.record_expectation(peer_hash, target, side, now);
                 self.attempts.introduced(&peer_hash);
                 if burst {
-                    self.fire_burst(target, now).await;
+                    self.fire_burst(target, peer_hash, now).await;
                 }
                 self.plan_introduced_prediction(peer_hash, target, source, now);
                 if side == PunchSide::Dialer {
@@ -838,8 +853,12 @@ impl<S: NattDatagramSink> NattFront<S> {
             }
         }
         for peer in self.paths.due_keepalives(now) {
-            self.send_punch(peer).await;
+            let crypt = self.crypt_targets.of_path(peer);
+            self.send_punch(peer, crypt).await;
         }
+        let (attempts, dials) = (&self.attempts, &self.dials);
+        self.crypt_targets
+            .prune(|peer| attempts.contains(peer) || dials.holds(*peer));
         self.drive_predictions(now);
     }
 
@@ -867,20 +886,24 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// Stamps the destination limiter on the way: the coordinator paths' bursts
     /// *are* the traversal and are never refused here, but they are what a
     /// cadence re-dial's burst must not double.
-    async fn fire_burst(&mut self, target: Ipv4Endpoint, now: Instant) {
+    async fn fire_burst(&mut self, target: Ipv4Endpoint, peer: UserHash, now: Instant) {
         let _ = self.bursts.admit(target, now);
-        self.fire_burst_only(target).await;
+        self.fire_burst_only(target, peer).await;
     }
 
     /// The burst itself, for a caller that has already consulted the limiter.
-    pub(super) async fn fire_burst_only(&self, target: Ipv4Endpoint) {
+    /// Each punch meets the send gate with what the front holds for `peer`
+    /// (ADR-0091, security rule 13).
+    pub(super) async fn fire_burst_only(&self, target: Ipv4Endpoint, peer: UserHash) {
+        let crypt = self.crypt_targets.of_peer(&peer);
         for endpoint in punch_burst(target) {
             if self
                 .wiring
                 .client_udp
-                .send(ClientUdpSend::plaintext(
+                .send(ClientUdpSend::to_peer(
                     PeerEndpoint::V4(endpoint),
                     holepunch_datagram(),
+                    crypt,
                 ))
                 .await
                 .is_err()
@@ -890,9 +913,10 @@ impl<S: NattDatagramSink> NattFront<S> {
         }
     }
 
-    /// One empty `OP_HOLEPUNCH` — the keepalive an idle punched path lives on.
-    async fn send_punch(&self, peer: Ipv4Endpoint) {
-        let send = ClientUdpSend::plaintext(PeerEndpoint::V4(peer), holepunch_datagram());
+    /// One empty `OP_HOLEPUNCH` — the keepalive an idle punched path lives on,
+    /// and the answer to a probe.
+    async fn send_punch(&self, peer: Ipv4Endpoint, crypt: Option<PeerUdpCryptTarget>) {
+        let send = ClientUdpSend::to_peer(PeerEndpoint::V4(peer), holepunch_datagram(), crypt);
         let _ = self.wiring.client_udp.send(send).await;
     }
 }

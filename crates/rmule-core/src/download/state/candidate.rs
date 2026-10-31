@@ -336,6 +336,7 @@ impl LowIdCandidate {
             }),
             ipv6: self.ipv6,
             supports_natt: self.supports_natt,
+            crypt: self.crypt_options.map(SourceCryptOptions::crypt_stance),
             user_hash: self.user_hash,
         }
     }

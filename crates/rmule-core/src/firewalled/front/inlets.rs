@@ -173,7 +173,10 @@ impl<D: Dialer> FirewalledFront<D> {
         use crate::natt::acting::ActingVerdict;
         match verdict {
             ActingVerdict::Punch {
-                requester, target, ..
+                requester,
+                crypt,
+                target,
+                ..
             } => {
                 // The requester asked for this introduction, so **it** dials
                 // and we accept (ADR-0091). The burst is the
@@ -185,6 +188,7 @@ impl<D: Dialer> FirewalledFront<D> {
                     role: rmule_ed2k::HolepunchRole::Responder,
                     burst: true,
                     source: target.source,
+                    crypt: Some(crypt),
                 });
                 self.wiring.diagnostics.record_acting_punch(sent);
                 if !sent {

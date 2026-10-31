@@ -367,6 +367,7 @@ fn a_relayed_reask_is_split_by_its_forwarded_tail() {
         slot.consume_reask_relay(relay(embedded_rendezvous()), false, |_| false, t0),
         ReaskRelayConsume::Rendezvous(ActingVerdict::Punch {
             requester: UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
+            crypt: rmule_primitives::CryptStance::disabled(),
             file_hash: None,
             target: rmule_peer::natt::PunchTarget {
                 endpoint: at(45, 55, 200, 7, 5000),

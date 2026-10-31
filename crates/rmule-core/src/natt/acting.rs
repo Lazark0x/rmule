@@ -27,7 +27,8 @@ use std::time::{Duration, Instant};
 use rmule_peer::natt::{
     NattTransport, PunchTarget, RendezvousBody, RendezvousTrigger, resolve_punch_target,
 };
-use rmule_primitives::{FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
+use rmule_peer::peer_udp::crypt::stance_from_connect_options;
+use rmule_primitives::{CryptStance, FileHash, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use crate::interval_limiter::IntervalLimiter;
 
@@ -83,6 +84,8 @@ pub(crate) enum ActingVerdict {
     /// it is armed immediate rather than jittered.
     Punch {
         requester: UserHash,
+        /// The crypt bits of the requester's connect-options byte.
+        crypt: CryptStance,
         file_hash: Option<FileHash>,
         target: PunchTarget,
         transport: NattTransport,
@@ -169,6 +172,7 @@ impl ActingPath {
         }
         ActingVerdict::Punch {
             requester: body.requester,
+            crypt: stance_from_connect_options(body.options.as_byte()),
             file_hash: body.file_hash,
             target,
             transport,
@@ -242,6 +246,7 @@ mod tests {
             verdict,
             ActingVerdict::Punch {
                 requester: UserHash::from_bytes([0x11; 16]),
+                crypt: CryptStance::disabled(),
                 file_hash: None,
                 target: PunchTarget {
                     endpoint: requester_seen(),

@@ -36,6 +36,9 @@ pub struct PeerReach {
     /// in its hello, or the uTP bit in a source record's connect options.
     /// With it, rung 1 of the route tree punches rather than drops.
     pub supports_natt: bool,
+    /// The crypt stance its source record stated, when one did: how a punch at
+    /// it goes out (ADR-0091, security rule 13).
+    pub crypt: Option<rmule_primitives::CryptStance>,
     /// The peer's eD2k user hash, when the caller holds it (a hello, a source
     /// record, a Kad publish). It is the **one name for a peer that survives
     /// its address changing under a NAT**, so it is what the rendezvous ledger

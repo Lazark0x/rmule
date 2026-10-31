@@ -287,16 +287,18 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// `0xA1` then reaches us, and without an answer the Fan side would never
     /// learn which socket works. Bounded like the Fan's: only to a port on the
     /// peer's address we already sent to, once per port.
-    pub(super) fn note_probe_answer(&mut self, observed: Ipv4Endpoint) -> bool {
-        let mut hit = false;
-        for active in self.predictions.plans.values_mut() {
+    pub(super) fn note_probe_answer(&mut self, observed: Ipv4Endpoint) -> Option<UserHash> {
+        let mut hit = None;
+        for (peer, active) in &mut self.predictions.plans {
             if active.plan.role() != PredictionRole::Probe || active.target.ip != observed.ip {
                 continue;
             }
             active.peer_heard = true;
-            hit |= active.answerable.remove(&observed.port);
+            if active.answerable.remove(&observed.port) {
+                hit = Some(*peer);
+            }
         }
-        if hit {
+        if hit.is_some() {
             self.wiring.diagnostics.count_natt_prediction_hit();
         }
         hit

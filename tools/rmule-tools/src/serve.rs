@@ -513,6 +513,7 @@ fn firewalled_peer_reach(kad_udp: SocketAddrV4) -> PeerReach {
         supports_natt: false,
         // Rung 1 is not this driver's route; the ledger key it would need
         // is only ever a hash the caller already holds.
+        crypt: None,
         user_hash: None,
     }
 }

@@ -332,6 +332,7 @@ fn reach(target: &Target) -> PeerReach {
         // it has none, so this flag is left false and the route is still the
         // server's.
         supports_natt: false,
+        crypt: None,
         user_hash: Some(target.user_hash),
     }
 }

@@ -46,6 +46,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use rmule_peer::PartBitmap;
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
@@ -255,7 +256,7 @@ impl AwaitedInbound {
     /// A Tunnel's hello named `hello` at `at`: the front's
     /// `identified` report for a Tunnel no download may have claimed
     /// (ADR-0091, security rule 12).
-    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, hello: UserHash) {
+    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, hello: PeerUdpCryptTarget) {
         if let Some(risen) = self.risen.get() {
             risen.tunnel_identified(at, hello);
         }

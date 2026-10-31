@@ -261,6 +261,7 @@ impl Harness {
                             buddy,
                             ..buddy_facts()
                         },
+                        crypt: None,
                         offer: RendezvousOffer {
                             our_user_hash: hash(0xAA),
                             options: NattConnectOptions::advertise(0, true, false),
@@ -338,6 +339,7 @@ fn rendezvous_toward(target: UserHash) -> NattCommand {
         owner: Some(AttemptOwner {
             target,
             facts: buddy_facts(),
+            crypt: None,
             offer: RendezvousOffer {
                 our_user_hash: hash(0xAA),
                 options: NattConnectOptions::advertise(0, true, false),
@@ -547,6 +549,7 @@ async fn a_responders_punch_only_refreshes_and_a_strangers_is_never_answered() {
                 role: rmule_ed2k::HolepunchRole::Responder,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )
@@ -605,6 +608,7 @@ async fn an_initiator_dials_once_however_many_punches_arrive() {
                 role: rmule_ed2k::HolepunchRole::Initiator,
                 burst: false,
                 source: rmule_peer::natt::PunchTargetSource::Observed,
+                crypt: None,
             },
             now,
         )
@@ -678,6 +682,7 @@ async fn two_peers_behind_one_address_are_two_traversals() {
                     role: rmule_ed2k::HolepunchRole::Initiator,
                     burst: false,
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: None,
                 },
                 now,
             )
@@ -725,6 +730,7 @@ async fn a_punch_that_names_nobody_refreshes_and_dials_nothing() {
                     role: rmule_ed2k::HolepunchRole::Initiator,
                     burst: false,
                     source: rmule_peer::natt::PunchTargetSource::Observed,
+                    crypt: None,
                 },
                 now,
             )
