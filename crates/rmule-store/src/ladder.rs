@@ -5,6 +5,8 @@
 //! refused, a fresh file is stamped at the current version. The stamp lives
 //! in a meta table of the store's own.
 
+use std::path::{Path, PathBuf};
+
 use redb::{ReadableTable, TableDefinition};
 
 use crate::{Readable, StoreError, WriteTransaction};
@@ -15,6 +17,12 @@ pub(crate) const META: TableDefinition<&str, u32> = TableDefinition::new("rmule.
 
 /// The meta key under which the store-wide version is stamped.
 const STORE_VERSION: &str = "STORE_VERSION";
+
+/// Where the file lies, written before a climb for the rung that needs it.
+const HOME: TableDefinition<&str, &str> = TableDefinition::new("rmule.home");
+
+/// The one key of [`HOME`].
+const HOME_KEY: &str = "HOME";
 
 /// One rung of a [`Ladder`]: carries a store from `from` to `from + 1`.
 ///
@@ -60,6 +68,24 @@ impl Ladder {
 pub(crate) fn read_version(txn: &impl Readable) -> Result<Option<u32>, StoreError> {
     let meta = txn.table(META)?;
     let found = meta.get(STORE_VERSION)?.map(|guard| guard.value());
+    Ok(found)
+}
+
+/// Note the directory the file lies in, for a rung that rewrites paths.
+pub(crate) fn stamp_home(txn: &WriteTransaction, home: &Path) -> Result<(), StoreError> {
+    let home = home.to_string_lossy();
+    txn.open_table(HOME)?.insert(HOME_KEY, home.as_ref())?;
+    Ok(())
+}
+
+/// The directory the file being climbed lies in, for a rung that rewrites
+/// paths against it. `None` for a store with no file.
+///
+/// # Errors
+/// An engine error.
+pub fn climbing_home(txn: &WriteTransaction) -> Result<Option<PathBuf>, StoreError> {
+    let home = txn.open_table(HOME)?;
+    let found = home.get(HOME_KEY)?.map(|guard| guard.value().into());
     Ok(found)
 }
 

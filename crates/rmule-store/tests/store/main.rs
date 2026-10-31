@@ -16,5 +16,9 @@ mod indexes;
 // The version ladder: fresh stamp, ordered steps, refusals.
 mod ladder;
 
+// What an open leaves and says: the copy before a climb, sorted refusals,
+// the stopped store, the per-row read.
+mod opening;
+
 // One store shared across threads behind an `Arc`.
 mod sharing;
