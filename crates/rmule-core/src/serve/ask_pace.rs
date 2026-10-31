@@ -2,7 +2,7 @@
 //! one owner of how fast each client asks a serving node for something that
 //! costs it. An ask under [`MIN_ASK_GAP`] after the last adds three, a later
 //! one takes one off, and a client reaching [`BAN_SCORE`] is an offender
-//! (`UploadClient.cpp:656-683`). Explicit time and bounded memory: a score
+//! (`UploadClient.cpp:795-825`). Explicit time and bounded memory: a score
 //! unheard for [`FORGET_AFTER`] is gone at its next ask, as a client object
 //! ages out of stock's list, and a full table lets its oldest go first.
 
@@ -11,17 +11,17 @@ use std::time::{Duration, Instant};
 
 use rmule_primitives::{AccountingKey, UserHash};
 
-/// aMule's `MIN_REQUESTTIME` (`Constants.h:79`).
+/// aMule's `MIN_REQUESTTIME` (`Constants.h:67`).
 const MIN_ASK_GAP: Duration = Duration::from_secs(590);
 
-/// What an ask inside [`MIN_ASK_GAP`] adds (`UploadClient.cpp:667`).
+/// What an ask inside [`MIN_ASK_GAP`] adds (`UploadClient.cpp:807`).
 const IMPOLITE_ASK: u8 = 3;
 
-/// The score that bans (`UploadClient.cpp:670`).
+/// The score that bans (`UploadClient.cpp:810`).
 const BAN_SCORE: u8 = 10;
 
-/// aMule's idle client object lifetime (`Constants.h:86`,
-/// `ClientList.cpp:1010`): a score goes with it.
+/// aMule's idle client object lifetime (`Constants.h:74`,
+/// `ClientList.cpp:997-1003`): a score goes with it.
 const FORGET_AFTER: Duration = Duration::from_secs(34 * 60);
 
 /// The clients held at once: past the wait list and the links of any node, so

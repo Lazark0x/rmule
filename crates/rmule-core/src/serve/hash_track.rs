@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use rmule_primitives::UserHash;
 
-/// aMule's `KEEPTRACK_TIME` (`Constants.h:85`).
+/// aMule's `KEEPTRACK_TIME` (`Constants.h:73`).
 const KEEP_TRACK: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// The places held at once: past what a node meets in two hours of proofs.

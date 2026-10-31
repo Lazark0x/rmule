@@ -571,16 +571,15 @@ impl SourceBook {
     /// the period — the silence fallback and the direct road for a source no
     /// ping can reach; before it, in the `[period − lead, period)` window, the
     /// ping goes when every gate passes: our socket, our reachability, the
-    /// source's contact, parts we need, no ping already out, and no source ask
-    /// due, which the TCP ask carries (`DownloadClient.cpp:1269-1273`,
-    /// ADR-0108). While we are unreachable, a Low-ID source whose record names
+    /// source's contact, parts we need, no ping already out, the **Peer Clock**
+    /// past its 590 s, and no source ask due, which the TCP ask carries
+    /// (`DownloadClient.cpp:1269-1273`, ADR-0108). While we are unreachable, a Low-ID source whose record names
     /// its buddy's ID and endpoint is reasked through that buddy instead,
     /// neither our reachability nor a source ask holding that road
     /// (`DownloadClient.cpp:1297-1318`). A ping the moving gates held is
     /// looked at again [`REASK_RECHECK`] later. Only the download holding the
-    /// peer's Queue Standing re-asks it, each ping stamped on the peer in
-    /// `standings`, and each TCP full ask when its slot ask leaves
-    /// (ADR-0107 invariants 12-14).
+    /// peer's Queue Standing re-asks it, each ask stamped on the peer as it
+    /// leaves, past this sweep (ADR-0107 invariants 12-14).
     pub(crate) fn sweep(
         &mut self,
         now: Instant,

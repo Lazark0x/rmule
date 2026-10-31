@@ -116,7 +116,9 @@ impl SourceBook {
                     self.records
                         .get(id)
                         .and_then(|record| record.candidate)
-                        .is_some_and(|candidate| self.blocks.is_spent(AskName::LowId(candidate.key())))
+                        .is_some_and(|candidate| {
+                            self.blocks.is_spent(AskName::LowId(candidate.key()))
+                        })
                 })
                 .collect();
             for id in spent {

@@ -541,7 +541,7 @@ impl ServeState {
             // list takes a revised reask contact now; one that queues later
             // is stamped from the identity, as the hello's is.
             ConnectionEvent::IdentityRevised { identity, what } => {
-                // A hash changed on a live link bans (`BaseClient.cpp:788-792`).
+                // A hash changed on a live link bans (`BaseClient.cpp:690-695`).
                 let hash_moved = self
                     .identities
                     .get(&peer)
