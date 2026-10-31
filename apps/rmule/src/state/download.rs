@@ -381,6 +381,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
         | E::PeerSlotTimeout { .. }
         | E::SourceRemoteQueued { .. }
         | E::SourceWaitsOnStanding { .. }
+        | E::SourceRoadHeld { .. }
         | E::SourceHandedOver { .. }
         | E::SourceReaskAcked { .. }
         | E::SourceReaskQueueFull { .. }

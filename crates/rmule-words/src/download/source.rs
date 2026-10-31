@@ -9,7 +9,7 @@ use rmule_core::{
     DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PurgedSource,
     SourcePurgeReason, SourceWait,
 };
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint};
 
 use super::super::Sentence;
 use super::super::units::{address, count};
@@ -107,14 +107,16 @@ pub const fn dial_end_words(cause: DialEnd) -> &'static str {
 pub(super) fn purged_source_words(source: PurgedSource) -> String {
     match source {
         PurgedSource::Endpoint(peer) => format!("peer {}", address(peer)),
-        PurgedSource::LowId {
-            low_id,
-            server: None,
-        } => format!("low-ID peer {} on our server", low_id.as_u32()),
-        PurgedSource::LowId {
-            low_id,
-            server: Some(server),
-        } => format!(
+        PurgedSource::LowId { low_id, server } => low_id_source_words(low_id, server),
+    }
+}
+
+/// A Low-ID source, as the operator reads it: with the server that assigned
+/// the ID.
+pub(super) fn low_id_source_words(low_id: ClientId, server: Option<Ipv4Endpoint>) -> String {
+    match server {
+        None => format!("low-ID peer {} on our server", low_id.as_u32()),
+        Some(server) => format!(
             "low-ID peer {} on server {}",
             low_id.as_u32(),
             address(PeerEndpoint::V4(server))

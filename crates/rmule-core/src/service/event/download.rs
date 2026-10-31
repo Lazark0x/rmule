@@ -260,6 +260,18 @@ pub enum DownloadEvent {
         /// The source it waits at.
         peer: rmule_primitives::PeerEndpoint,
     },
+    /// A Low-ID source this download would have opened a callback road to
+    /// stands on the peer's **Queue Standing** instead: it may not ask yet and
+    /// has no address to wait at, so the road stays shut until its ask falls
+    /// due on the peer's clock (a **Held Road**, ADR-0090).
+    SourceRoadHeld {
+        /// The download whose road is held.
+        download_id: DownloadId,
+        /// The source's Low ID.
+        low_id: rmule_primitives::ClientId,
+        /// The server that assigned it, `None` for our own or a Kad road's.
+        server: Option<rmule_primitives::Ipv4Endpoint>,
+    },
     /// A source holding nothing this download needs passed to another of our
     /// downloads that holds the peer and may need a part of it (a **Source
     /// Handover**, ADR-0090): this download keeps its record and asks nothing

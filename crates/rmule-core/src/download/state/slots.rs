@@ -158,9 +158,29 @@ impl DownloadState {
                 true
             }
             NextDial::Callback { candidate, .. } => {
-                self.sources.hold_road(candidate.key(), role, now)
+                self.hold_road(candidate.key(), role, now, out)
             }
         }
+    }
+
+    /// The record on `key`'s road holds it back, and the Run Log says so.
+    /// Whether one was on that road.
+    fn hold_road(
+        &mut self,
+        key: CallbackKey,
+        role: Role,
+        now: Instant,
+        out: &mut Vec<Decision>,
+    ) -> bool {
+        let held = self.sources.hold_road(key, role, now);
+        if held {
+            out.push(Decision::Emit(DownloadEvent::SourceRoadHeld {
+                download_id: self.download_id,
+                low_id: key.low_id,
+                server: key.server,
+            }));
+        }
+        held
     }
 
     /// The road of `key` could only ride a link, and none stands (ADR-0090):
@@ -173,7 +193,7 @@ impl DownloadState {
         }
         if let Some(place) = self.sources.road_place(key) {
             let role = self.standings.role(&place);
-            self.sources.hold_road(key, role, now);
+            self.hold_road(key, role, now, &mut out);
         }
         self.fill(now, &mut out);
         out

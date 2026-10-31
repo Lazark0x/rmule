@@ -1,5 +1,7 @@
 //! The Run Log's record of each download event.
 
+use rmule_primitives::{ClientId, Ipv4Endpoint};
+
 use crate::{DownloadEvent, PurgedSource, RestartOutcome};
 
 use crate::run_log::codes;
@@ -202,6 +204,15 @@ impl DownloadEvent {
                     .count("id", download_id.as_u64())
                     .peer_address("peer", peer)
             }
+            D::SourceRoadHeld {
+                download_id,
+                low_id,
+                server,
+            } => low_id_fields(
+                Record::new("download.source_road_held").count("id", download_id.as_u64()),
+                *low_id,
+                *server,
+            ),
             D::SourceHandedOver { download_id, peer } => Record::new("download.source_handed_over")
                 .count("id", download_id.as_u64())
                 .peer_address("peer", peer),
@@ -237,11 +248,7 @@ impl DownloadEvent {
                 match source {
                     PurgedSource::Endpoint(peer) => record.peer_address("peer", peer),
                     PurgedSource::LowId { low_id, server } => {
-                        let record = record.peer_id("low_id", *low_id);
-                        match server {
-                            Some(server) => record.server_address("server", server),
-                            None => record,
-                        }
+                        low_id_fields(record, *low_id, *server)
                     }
                 }
             }
@@ -396,5 +403,15 @@ impl DownloadEvent {
                 .path("to", to)
                 .code("step", codes::completion_step(*step)),
         }
+    }
+}
+
+/// A Low-ID source's fields: its ID and, when not ours, the server that
+/// assigned it.
+fn low_id_fields(record: Record, low_id: ClientId, server: Option<Ipv4Endpoint>) -> Record {
+    let record = record.peer_id("low_id", low_id);
+    match server {
+        Some(server) => record.server_address("server", &server),
+        None => record,
     }
 }

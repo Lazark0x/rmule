@@ -228,6 +228,7 @@ fn a_taker_a_callback_road_reaches_holds_the_road_on_the_peers_clock() {
     taker.hold_standings();
     let started = taker.start(t0() + Duration::from_secs(60));
     assert!(!asks_for_callback(&started), "{started:?}");
+    assert_eq!(roads_held(&started), [low(7).as_u32()], "{started:?}");
     assert_eq!(taker.next_wake(), Some(t0() + FILE_REASK_TIME));
     assert_eq!(taker.sources.counts().known, 1, "it took the source");
 
@@ -238,6 +239,40 @@ fn a_taker_a_callback_road_reaches_holds_the_road_on_the_peers_clock() {
         asks_for_callback(&due),
         "its full ask opens the road: {due:?}"
     );
+}
+
+/// A road that could only ride a link, and found none, is held once.
+#[test]
+fn a_road_no_link_carries_is_held_where_the_operator_can_read_it() {
+    let standings = QueueStandings::shared();
+    let sighting = SourceSighting::new(
+        rmule_primitives::PeerSource::new(low(7), 4662),
+        Some(SOURCE),
+        None,
+        Informant::Own,
+    );
+    let mut download = seated(&standings, 1, &[]);
+    take(&mut download, Channel::Server, vec![sighting]);
+    let started = download.start(t0());
+    assert!(asks_for_callback(&started), "{started:?}");
+    let key = connected_key(low(7));
+
+    let held = download.on_no_link(t0(), key);
+    assert_eq!(roads_held(&held), [low(7).as_u32()], "{held:?}");
+
+    let again = download.on_no_link(t0(), key);
+    assert!(roads_held(&again).is_empty(), "{again:?}");
+}
+
+/// The Low IDs `decisions` say a road was held for.
+fn roads_held(decisions: &[Decision]) -> Vec<u32> {
+    decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Emit(DownloadEvent::SourceRoadHeld { low_id, .. }) => Some(low_id.as_u32()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn asks_for_callback(decisions: &[Decision]) -> bool {

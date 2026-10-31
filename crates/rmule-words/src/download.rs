@@ -38,7 +38,7 @@ pub use part_file::{
     parts_lost_words, parts_to_fetch_again, restart_words, restarted,
 };
 pub use source::link_turn_words;
-use source::purged_source_words;
+use source::{low_id_source_words, purged_source_words};
 pub use source::{
     HANDED_OVER, NO_NETWORK_WAIT, NO_NETWORK_WAIT_NOTE, REMEMBER_PEERS_NOTE,
     REMEMBER_PEERS_REFUSED, REMEMBERED, ceiling_lowered, dial_end_words, ignored_reask_reply_words,
@@ -245,6 +245,10 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::SourceWaitsOnStanding { peer, .. } => format!(
             "peer {} already queues us for another download; this one waits on that place and asks nothing",
             address(*peer)
+        ),
+        D::SourceRoadHeld { low_id, server, .. } => format!(
+            "{} waits on its queue place; no callback goes out until its next ask falls due",
+            low_id_source_words(*low_id, *server)
         ),
         D::SourceHandedOver { peer, .. } => format!(
             "peer {} holds nothing this download needs; another download that may need it asks it from now on",
