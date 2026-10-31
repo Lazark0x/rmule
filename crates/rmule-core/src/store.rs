@@ -16,12 +16,12 @@ mod spare_copy;
 use std::path::Path;
 use std::sync::Arc;
 
-pub use rmule_store::Schema;
 /// The one open Durable Store a process runs on — `rmule-store`'s engine
 /// handle, re-exported so a front-end can hold the `Arc` it hands each seam
 /// without depending on the engine crate.
 pub use rmule_store::Store as DurableStore;
 use rmule_store::{Ladder, Store, StoreError, UpgradeStep};
+pub use rmule_store::{OpenRefusal, Opening, OpeningWatch, Schema};
 
 use crate::CoreError;
 
@@ -29,12 +29,12 @@ use crate::CoreError;
 pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 
 /// The store-wide version ladder (ADR-0083): the current version and the
-/// steps up to it. No release exists yet, but the operator's own store holds
-/// downloads a reset would lose, so a record change takes a rung
-/// (ADR-0102), and so does a new table whose absence an
-/// older build would write past (ADR-0105 "The Had Set").
+/// steps up to it. Published builds wrote every version from 13 up, and the
+/// operator's store holds downloads a reset would lose, so a record change
+/// takes a rung (ADR-0102), and so does a new table whose absence an older
+/// build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
-    16,
+    17,
     &[
         registry::UPGRADE_FROM_V1,
         had_set::UPGRADE_FROM_V2,
@@ -51,6 +51,7 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         UPGRADE_FROM_V13,
         UPGRADE_FROM_V14,
         credit::UPGRADE_FROM_V15,
+        download::UPGRADE_FROM_V16,
     ],
 );
 
@@ -138,18 +139,41 @@ pub(crate) fn durable_schema_v12() -> Schema {
 /// wraps a clone of the returned handle.
 ///
 /// # Errors
-/// [`CoreError::Repository`] when the directory cannot be created or the
-/// store refuses to open (a newer file, a missing ladder step, another process
-/// holding the lock).
+/// [`CoreError::StoreRefused`], as [`open_durable_store_watched`].
 pub fn open_durable_store(data_dir: &Path) -> Result<Arc<Store>, CoreError> {
-    std::fs::create_dir_all(data_dir).map_err(|error| {
-        CoreError::Repository(format!("create data dir {}: {error}", data_dir.display()))
+    open_durable_store_watched(data_dir, &(Arc::new(|_| {}) as OpeningWatch))
+}
+
+/// [`open_durable_store`], telling `watch` when a repair or a climb runs. The
+/// directory and everything in it are kept private (ADR-0083), a store just
+/// made included.
+///
+/// # Errors
+/// [`CoreError::StoreRefused`] when the directory cannot be created or the
+/// store refuses to open: a newer file, a damaged one, a climb that could not
+/// keep its copy, another process holding the lock.
+pub fn open_durable_store_watched(
+    data_dir: &Path,
+    watch: &OpeningWatch,
+) -> Result<Arc<Store>, CoreError> {
+    std::fs::create_dir_all(data_dir).map_err(|error| CoreError::StoreRefused {
+        refusal: OpenRefusal::Disk {
+            os_code: error.raw_os_error(),
+        },
+        reason: format!("create data dir {}: {error}", data_dir.display()),
     })?;
-    let store = Store::open(
+    crate::data_dir::make_private(data_dir);
+    let store = Store::open_watched(
         data_dir.join(DURABLE_STORE_FILE),
         &durable_schema(),
         &LADDER,
-    )?;
+        watch,
+    )
+    .map_err(|error| CoreError::StoreRefused {
+        refusal: error.open_refusal(),
+        reason: error.to_string(),
+    })?;
+    crate::data_dir::make_private(data_dir);
     Ok(Arc::new(store))
 }
 

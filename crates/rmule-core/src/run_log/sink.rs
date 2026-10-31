@@ -146,6 +146,16 @@ pub(super) struct Sink {
     tell: Option<Sender<RunLogFailure>>,
 }
 
+/// The log at `path` for appending; a new one is born readable by this user
+/// alone (ADR-0083), and `make_private` repairs one an older run left.
+fn private_append(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
 impl LogFile {
     /// Open (creating the directory and the file as needed) the log in
     /// `data_dir`, appending to what earlier runs left, moved aside past
@@ -158,8 +168,9 @@ impl LogFile {
     /// If the directory cannot be created or the file cannot be opened.
     pub(super) fn open(data_dir: &Path, cap: u64, tell: Sender<RunLogFailure>) -> io::Result<Self> {
         std::fs::create_dir_all(data_dir)?;
+        crate::data_dir::make_private(data_dir);
         let path = data_dir.join(FILE_NAME);
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = private_append(&path)?;
         let written = file.metadata()?.len();
         Ok(Self {
             sink: Arc::new(Mutex::new(Sink {
@@ -181,10 +192,7 @@ impl Sink {
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
         std::fs::rename(&self.path, &self.predecessor)?;
-        self.file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)?;
+        self.file = private_append(&self.path)?;
         self.written = 0;
         self.retry_at = 0;
         Ok(())

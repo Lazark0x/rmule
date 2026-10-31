@@ -137,7 +137,9 @@ async fn a_dimmed_item_sends_nothing_and_stays_on_its_tab() {
 async fn with_no_core_attached_the_item_is_dimmed_and_nothing_is_queued() {
     let mut app = App::new(Theme::default_dark());
     app.state = connected_granting(three_downloads(), true);
-    app.state.ui_only = Some(crate::state::AttachFailure::OpenStore);
+    app.state.ui_only = Some(crate::state::AttachFailure::OpenStore(
+        rmule_core::OpenRefusal::Busy,
+    ));
     app.chrome.active = ViewId::Transfers;
     keys(
         &mut app,

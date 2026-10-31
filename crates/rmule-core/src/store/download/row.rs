@@ -15,7 +15,8 @@ mod rungs;
 
 pub(super) use part_path::PartPathSlot;
 pub(crate) use rungs::{
-    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, UPGRADE_FROM_V16, grow_from_v8,
+    grow_from_v14,
 };
 #[cfg(test)]
 pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
@@ -23,6 +24,8 @@ pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
 use rmule_primitives::{
     AichRootHash, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,
 };
+use std::path::Path;
+
 use rmule_store::{Children, Indexed, MultimapIndex, Record, Sequence, UniqueIndex};
 use serde::{Deserialize, Serialize};
 
@@ -144,6 +147,7 @@ impl DownloadRow {
         source_hint: Option<&ServerEndpoint>,
         paths: &DownloadPaths,
         kad_aich_root: Option<AichRootHash>,
+        home: Option<&Path>,
     ) -> Self {
         let metadata = DownloadMetadata::from_link(file);
         // A link set that is not the file's own is never recorded: the
@@ -158,7 +162,7 @@ impl DownloadRow {
             canonical_link: Ed2kLink::File(file.clone()).to_string(),
             source_hint: source_hint.cloned(),
             final_path: paths.final_path().to_string_lossy().into_owned(),
-            part_path: PartPathSlot::held(paths.part_path()),
+            part_path: PartPathSlot::held(paths.part_path(), home),
             lifecycle: DownloadLifecycle::Queued,
             verification_authority: file
                 .part_hash_set
@@ -204,17 +208,18 @@ impl DownloadRow {
 
     /// Where this download's bytes live: the two paths it was created with,
     /// the final one a completion move's destination once it has one, and
-    /// its Download Name.
-    pub(super) fn paths(&self) -> DownloadPaths {
-        DownloadPaths::new(
-            self.final_path.clone().into(),
-            self.part_path.index_text().into(),
-        )
-        .named(self.name.clone())
+    /// its Download Name. `home` is the Data Directory a relative part path
+    /// is read against.
+    pub(super) fn paths(&self, home: Option<&Path>) -> DownloadPaths {
+        let part_path = self
+            .part_path
+            .held_path(home)
+            .unwrap_or_else(|| self.part_path.index_text().into());
+        DownloadPaths::new(self.final_path.clone().into(), part_path).named(self.name.clone())
     }
 
     /// The domain record this row stands for, under the id it is keyed by.
-    pub(super) fn to_record(&self, id: DownloadId) -> DurableDownloadRecord {
+    pub(super) fn to_record(&self, id: DownloadId, home: Option<&Path>) -> DurableDownloadRecord {
         DurableDownloadRecord::new(DurableDownloadRecordInput {
             id,
             file_hash: self.file_hash,
@@ -225,7 +230,7 @@ impl DownloadRow {
             },
             canonical_link: self.canonical_link.clone(),
             source_hint: self.source_hint.clone(),
-            paths: self.paths(),
+            paths: self.paths(home),
             lifecycle: self.lifecycle,
             verification_authority: self.verification_authority,
             failure: self.failure.clone(),

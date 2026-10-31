@@ -499,3 +499,24 @@ fn a_run_starts_with_its_build_and_says_unknown_for_what_the_build_lacks() {
         "run_start version=0.1.0 commit=unknown dirty=no committed=unknown"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_log_and_its_rotated_twin_are_kept_to_this_user() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (tell, _failures) = std::sync::mpsc::channel();
+    let mut log = sink::LogFile::open(dir.path(), 8, tell).unwrap();
+    std::io::Write::write_all(&mut log, b"one line of log\n").unwrap();
+    std::io::Write::write_all(&mut log, b"another line\n").unwrap();
+    let mode = |name: &str| {
+        std::fs::metadata(dir.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(FILE_NAME), 0o600);
+    assert_eq!(mode(PREDECESSOR_NAME), 0o600);
+}

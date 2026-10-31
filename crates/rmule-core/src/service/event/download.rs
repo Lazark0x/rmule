@@ -559,6 +559,23 @@ pub enum DownloadEvent {
         /// The directory that holds the part file.
         directory: PathBuf,
     },
+    /// A cancelled download's part file could not be deleted (ADR-0094): the
+    /// row says Cancelled, and each attach tries again.
+    CancelledFileLeft {
+        /// The cancelled download.
+        download_id: DownloadId,
+        /// The file that stands.
+        part_path: PathBuf,
+    },
+    /// Rows of the store's download table did not decode at attach (ADR-0083):
+    /// the rest are listed, and these stay in the store.
+    RowsUnreadable {
+        /// How many.
+        rows: u32,
+    },
+    /// A failed write stopped the store (ADR-0083): nothing is recorded from
+    /// here on until rmule starts again.
+    StoreStopped,
     /// The volume, not a peer, stopped the run (ADR-0094, "A volume's refusal
     /// is a Volume Stop"): the workers are told, every verified part is kept,
     /// and [`DownloadPaused`](Self::DownloadPaused) follows. A stop for free

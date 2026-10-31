@@ -52,6 +52,10 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
         R::DownloadPathConflict => {
             "download refused: a file of that name is already in the download dir"
         }
+        R::PartFileMoved => {
+            "restart refused: its part file is not where it was placed, and a file of that \
+             name stands in the Temp dir; put it back rather than start over"
+        }
         R::FileTooLargeForVolume => {
             "download refused: the file is over 4 GB, and the download dir or the Temp dir \
              lies on a FAT disk, which cannot hold it"

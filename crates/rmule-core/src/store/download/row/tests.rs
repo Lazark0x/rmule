@@ -17,7 +17,7 @@ fn row() -> DownloadRow {
         sources: Default::default(),
     };
     let paths = DownloadPaths::new("/dl/a.bin".into(), "/dl/a.bin.part".into());
-    DownloadRow::new(&file, None, &paths, None)
+    DownloadRow::new(&file, None, &paths, None, None)
 }
 
 /// Every byte of the version-5 row: the record's postcard encoding store
@@ -58,7 +58,7 @@ fn a_row_encodes_its_part_path_as_version_nine_wrote_it_and_its_name_last() {
         postcard::from_bytes::<DownloadRow>(&bytes).unwrap(),
         released
     );
-    assert_eq!(released.part_path.held_path(), None);
+    assert_eq!(released.part_path.held_path(None), None);
 }
 
 /// The live lifecycle and failure are encoded by position on today's row:

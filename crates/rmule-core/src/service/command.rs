@@ -429,6 +429,10 @@ pub enum CoreCommandRejectReason {
     /// a `.part` that stands in the part file's directory, or a name a live
     /// row holds, compared as the strictest volume folds (ADR-0115).
     DownloadPathConflict,
+    /// A Restart found its part file gone from the path its row names while a
+    /// file of that name stands in the current Temp Directory (ADR-0094):
+    /// starting over would throw away a file that was only moved.
+    PartFileMoved,
     /// A start named a file past `OLD_MAX_FILE_SIZE` and the Temp Directory
     /// or the download directory lies on FAT, whose files end below 4 GiB
     /// (`DownloadQueue.cpp:242-251`, ADR-0115).

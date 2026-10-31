@@ -46,6 +46,8 @@ pub struct Store {
     file: Option<PathBuf>,
     /// Whether a failed read or write latched the engine.
     stopped: AtomicBool,
+    /// Whether the stop has been handed to someone to tell.
+    stop_told: AtomicBool,
 }
 
 impl Store {
@@ -140,6 +142,7 @@ impl Store {
             db,
             file: file.map(Path::to_path_buf),
             stopped: AtomicBool::new(false),
+            stop_told: AtomicBool::new(false),
         }
     }
 
@@ -197,6 +200,12 @@ impl Store {
     #[must_use]
     pub fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Relaxed)
+    }
+
+    /// Whether the store stopped and nobody was told yet: `true` once.
+    #[must_use]
+    pub fn stop_to_tell(&self) -> bool {
+        self.stopped() && !self.stop_told.swap(true, Ordering::Relaxed)
     }
 
     /// The file this store lies in, when it has one.

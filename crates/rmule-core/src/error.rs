@@ -49,6 +49,15 @@ pub enum CoreError {
     /// is the backend's own message and is for a log, not for matching on.
     #[error("download repository error: {0}")]
     Repository(String),
+    /// The Durable Store would not open: why, for the operator's words, and
+    /// what the engine said, for the log.
+    #[error("the store would not open: {reason}")]
+    StoreRefused {
+        /// What refused it.
+        refusal: rmule_store::OpenRefusal,
+        /// The store's own message.
+        reason: String,
+    },
     /// A second provisional part hash set was offered for a download that
     /// already has one. Only one provisional authority can be in force, since
     /// two would disagree about what a verified part means.

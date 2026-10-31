@@ -160,7 +160,7 @@ pub use clients_met::{
 };
 pub use content::{ContentFileStore, HoleVerdict, PartFileChange, RestoredProgress, Revalidation};
 pub use credit::{CreditProof, CreditStore, CreditTotals, KeyBinding, PeerCredit, credit_modifier};
-pub use data_dir::{DataDir, DataDirSource, home_dir, resolve_data_dir};
+pub use data_dir::{DataDir, DataDirSource, home_dir, make_private, resolve_data_dir};
 pub use directory_scan::{
     DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryScanDiagnostics, DirectoryState,
     ScanPhase, ScanSummary, ShareGuards, SharedDirectoryDiagnostics, WatchFault,
@@ -248,7 +248,8 @@ pub use store::credit::DurableCreditStore;
 pub use store::download::{DurableDownloadRepository, LoadedSeeds};
 pub use store::registry::DurableSharedFileRegistry;
 pub use store::{
-    DURABLE_STORE_FILE, DurableStore, open_durable_store, open_durable_store_in_memory,
+    DURABLE_STORE_FILE, DurableStore, OpenRefusal, Opening, OpeningWatch, open_durable_store,
+    open_durable_store_in_memory, open_durable_store_watched,
 };
 pub use upload_queue::{
     Admission, LOW_ID_ABUSE_WAIT_LIST_THRESHOLD, MAX_WAITING_PER_ADDRESS, Promotion,

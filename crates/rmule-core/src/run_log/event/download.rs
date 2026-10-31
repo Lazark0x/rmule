@@ -397,6 +397,16 @@ impl DownloadEvent {
             } => Record::new("download.hole_less_destination")
                 .count("id", download_id.as_u64())
                 .path("directory", directory),
+            D::CancelledFileLeft {
+                download_id,
+                part_path,
+            } => Record::new("download.cancelled_file_left")
+                .count("id", download_id.as_u64())
+                .path("part_path", part_path),
+            D::RowsUnreadable { rows } => {
+                Record::new("download.rows_unreadable").count("rows", u64::from(*rows))
+            }
+            D::StoreStopped => Record::new("download.store_stopped"),
             D::VolumeStopped {
                 download_id,
                 directory,

@@ -78,6 +78,11 @@ pub(crate) trait CompletionFs: Send + Sync + 'static {
     /// Delete `path`; one already gone is no refusal.
     fn remove(&self, path: &Path) -> Result<(), Refusal>;
 
+    /// The refusal a failed sync stands for.
+    fn sync_refusal(&self, error: &io::Error) -> Refusal {
+        Refusal::of(error)
+    }
+
     /// Put the bytes of the file at `path` on the disk.
     fn sync_file(&self, path: &Path) -> io::Result<()> {
         std::fs::OpenOptions::new()

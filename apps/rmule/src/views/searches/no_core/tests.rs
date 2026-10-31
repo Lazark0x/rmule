@@ -17,7 +17,9 @@ use crate::view::ViewId;
 /// A UI-only run: no session, no core, and the reason the attach failed.
 fn ui_only() -> UiState {
     UiState {
-        ui_only: Some(crate::state::AttachFailure::OpenStore),
+        ui_only: Some(crate::state::AttachFailure::OpenStore(
+            rmule_core::OpenRefusal::Busy,
+        )),
         ..UiState::default()
     }
 }

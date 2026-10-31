@@ -1,20 +1,25 @@
 //! **A download row's part path slot**: the `.part` file a row names, or the
 //! record that a terminal row gave that path up.
 //!
+//! A path inside the Data Directory is stored relative to it, so moving that
+//! directory carries every download; one outside stays absolute, since a Temp
+//! Directory the operator set keeps what was placed in it (ADR-0083).
+//!
 //! The slot is one unique-index value, so a released row must still hold a
 //! text no other row can hold. Stored, the two states are one string: a held
 //! path's own text, and for a released one `"\0released:{key}"` — a NUL cannot
 //! occur in a path. That encoding is what store version 9 writes and must not
 //! move; only this file reads or writes it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Where a row's `.part` file lives, or that no file does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::store::download) enum PartPathSlot {
-    /// The path the row writes, stored lossily as text.
+    /// The path the row writes, stored lossily as text: relative to the
+    /// Data Directory when it lies inside it.
     Held(String),
     /// The path was given up to a new row; `key` is the row's own primary
     /// key, and `stand_in` its stored text, the only value the unique index
@@ -25,8 +30,13 @@ pub(in crate::store::download) enum PartPathSlot {
 const RELEASED_PREFIX: &str = "\0released:";
 
 impl PartPathSlot {
-    pub(in crate::store::download) fn held(path: &Path) -> Self {
-        Self::Held(path.to_string_lossy().into_owned())
+    /// The slot of a row writing `path`, `home` being the Data Directory of a
+    /// store that has one.
+    pub(in crate::store::download) fn held(path: &Path, home: Option<&Path>) -> Self {
+        let stored = home
+            .and_then(|home| path.strip_prefix(home).ok())
+            .unwrap_or(path);
+        Self::Held(stored.to_string_lossy().into_owned())
     }
 
     /// The slot of the row keyed `key` once it has given its path up.
@@ -37,10 +47,11 @@ impl PartPathSlot {
         }
     }
 
-    /// The path a row still writes; `None` once it was released.
-    pub(in crate::store::download) fn held_path(&self) -> Option<&str> {
+    /// The path a row still writes, read against `home`; `None` once it was
+    /// released.
+    pub(in crate::store::download) fn held_path(&self, home: Option<&Path>) -> Option<PathBuf> {
         match self {
-            Self::Held(path) => Some(path),
+            Self::Held(path) => Some(home.map_or_else(|| path.into(), |home| home.join(path))),
             Self::Released { .. } => None,
         }
     }

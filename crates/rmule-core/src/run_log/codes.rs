@@ -505,6 +505,7 @@ pub(super) fn command_rejected(record: Record, reason: &CoreCommandRejectReason)
         CoreCommandRejectReason::DownloadCompleting => "download_completing",
         CoreCommandRejectReason::DuplicateDownload => "duplicate_download",
         CoreCommandRejectReason::DownloadPathConflict => "download_path_conflict",
+        CoreCommandRejectReason::PartFileMoved => "part_file_moved",
         CoreCommandRejectReason::FileTooLargeForVolume => "file_too_large_for_volume",
         CoreCommandRejectReason::NoDownloadDir => "no_download_dir",
         CoreCommandRejectReason::DownloadDirRefused(guard) => {

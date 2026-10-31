@@ -24,6 +24,7 @@ use tokio::sync::oneshot;
 
 use super::{RunnerContext, served, stop_reason, wait_until_stop};
 use crate::content::{ContentFileStore, copy_path, on_pool};
+use crate::download::persist::store_failed;
 use crate::error::{DownloadFailure, FinalizeError, StorageIntegrityFault};
 use crate::service::{CompletionStep, DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
@@ -145,7 +146,7 @@ fn row_paths<S, P>(
         .store
         .load_download(download_id)
         .map(|record| record.paths().clone())
-        .map_err(|_| DownloadFailure::StoreFailed)
+        .map_err(store_failed("the download's row could not be read"))
 }
 
 /// The run of a row attach found `Completing` resolves it by what is on disk
@@ -309,7 +310,7 @@ async fn move_into_place<S, P>(
         .diagnostics
         .completion_step(download_id, CompletionStep::Moving);
     make_directory(&destination).await?;
-    sync_part_file(runner, part_path).await?;
+    sync_part_file(runner, download_id, part_path, &destination).await?;
     let mut backoff = Backoff::new();
     let mut waiting = false;
     loop {
@@ -349,31 +350,51 @@ async fn move_into_place<S, P>(
 }
 
 /// Put the finished bytes on the disk before their name moves: nothing
-/// rechecks a `Completed` file (ADR-0115, step 3). A volume with no sync to
-/// give, or a program holding the file, leaves the rename to answer; a sync
-/// that failed leaves the file unproven, and the move stops with the part
-/// file and every verified part kept.
+/// rechecks a `Completed` file (ADR-0115, step 3). A program holding the file
+/// is waited out as the rename waits for it, since going on would land bytes
+/// the disk has not taken. Only a volume with no sync to give leaves the
+/// rename to answer; a sync that failed leaves the file unproven, and the move
+/// stops with the part file and every verified part kept.
 async fn sync_part_file<S, P>(
     runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
     part_path: &Path,
+    destination: &Path,
 ) -> Result<(), DownloadFailure> {
-    let fs = Arc::clone(&runner.rt.completion_fs);
-    let path = part_path.to_path_buf();
-    let Err(error) = on_pool(move || fs.sync_file(&path)).await else {
-        return Ok(());
-    };
-    let unsupported = matches!(
-        error.kind(),
-        std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
-    );
-    if unsupported || matches!(Refusal::of(&error), Refusal::InUse { .. }) {
-        tracing::info!(%error, "the finished file was not synced before its rename");
-        return Ok(());
+    let mut backoff = Backoff::new();
+    let mut waiting = false;
+    loop {
+        let fs = Arc::clone(&runner.rt.completion_fs);
+        let path = part_path.to_path_buf();
+        let Err(error) = on_pool(move || fs.sync_file(&path)).await else {
+            return Ok(());
+        };
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+        ) {
+            tracing::info!(%error, "the finished file was not synced before its rename");
+            return Ok(());
+        }
+        let Refusal::InUse { os_code } = runner.rt.completion_fs.sync_refusal(&error) else {
+            tracing::warn!(%error, "the finished file could not be synced");
+            return Err(DownloadFailure::CompletedFileNotMoved {
+                os_code: error.raw_os_error(),
+            });
+        };
+        if !waiting {
+            waiting = true;
+            tracing::info!(os_code, "another program holds the finished file; waiting");
+            tell(
+                runner,
+                download_id,
+                destination,
+                CompletionStep::WaitingForRelease,
+            )
+            .await;
+        }
+        wait_or_stop(runner, backoff.next()).await?;
     }
-    tracing::warn!(%error, "the finished file could not be synced");
-    Err(DownloadFailure::CompletedFileNotMoved {
-        os_code: error.raw_os_error(),
-    })
 }
 
 /// Put the rename that landed at `destination` on the disk. The file is in

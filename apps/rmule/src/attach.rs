@@ -28,13 +28,15 @@
 //! goes in front of the walk's addresses and one walk runs.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmule_bootstrap::{
     BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, should_auto_fetch_server_met,
 };
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, DurableAppConfig, KadEnableConfig,
-    MappingBackend, ServerListCommand, ServerListStore, open_durable_store,
+    AppConfigStore, Core, CoreCommand, CoreConfig, CoreError, DurableAppConfig, KadEnableConfig,
+    MappingBackend, OpenRefusal, Opening, OpeningWatch, ServerListCommand, ServerListStore,
+    open_durable_store_watched,
 };
 
 use crate::args::DataDir;
@@ -127,10 +129,23 @@ pub struct KadJoin<F> {
     pub fetcher: F,
 }
 
+/// A slow open said on the plain terminal, before the screen starts: a climb
+/// as it begins, a repair once, whatever its progress.
+fn opening_on_the_terminal() -> OpeningWatch {
+    let repair_told = AtomicBool::new(false);
+    Arc::new(move |opening| {
+        if matches!(opening, Opening::Repairing { .. }) && repair_told.swap(true, Ordering::Relaxed)
+        {
+            return;
+        }
+        eprintln!("rmule: {}", crate::words::app::store_opening(opening));
+    })
+}
+
 /// Trace why attaching failed, for the Run Log, and hand back the step.
 fn attach_failed(failure: AttachFailure, error: &dyn std::fmt::Display) -> AttachFailure {
     tracing::warn!(
-        step = crate::words::app::attach_failure_words(failure),
+        step = %crate::words::app::attach_failure_words(failure),
         %error,
         "the core could not be attached"
     );
@@ -157,8 +172,14 @@ pub async fn attach<D: Deployment>(
     // The one store open of the process: every durable seam below is a view
     // over this handle, and the engine's file lock makes a second app on the
     // same data dir fail here rather than race.
-    let durable = open_durable_store(&data_dir)
-        .map_err(|error| attach_failed(AttachFailure::OpenStore, &error))?;
+    let durable =
+        open_durable_store_watched(&data_dir, &opening_on_the_terminal()).map_err(|error| {
+            let refusal = match &error {
+                CoreError::StoreRefused { refusal, .. } => *refusal,
+                _ => OpenRefusal::Damaged,
+            };
+            attach_failed(AttachFailure::OpenStore(refusal), &error)
+        })?;
     let store = DurableAppConfig::new(Arc::clone(&durable));
 
     // The per-install PCP nonce secret (ADR-0086): generate-once, so a restart

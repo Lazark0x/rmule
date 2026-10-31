@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
+use crate::content::ContentFileStore;
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
 use crate::served_downloads::ServedDownloads;
@@ -45,6 +46,11 @@ pub(in crate::service::actor) async fn attach_downloads(
             return (VecDeque::new(), HashMap::new());
         }
     };
+    sweep_cancelled(store, evt_tx).await;
+    match store.unreadable_rows() {
+        Ok(0) | Err(_) => {}
+        Ok(rows) => send_download_event(evt_tx, DownloadEvent::RowsUnreadable { rows }).await,
+    }
     let mut restoring = VecDeque::new();
     for record in records {
         let download_id = record.id();
@@ -177,6 +183,27 @@ where
                 );
                 Vec::new()
             }
+        }
+    }
+}
+
+/// Try again the part files a cancel could not delete (ADR-0094). One that
+/// is still refused is told again, and the next attach goes on trying.
+async fn sweep_cancelled(store: &DurableDownloadRepository, evt_tx: &mpsc::Sender<CoreEvent>) {
+    for record in store.cancelled_part_files().unwrap_or_default() {
+        let download_id = record.id();
+        if let Err(error) = ContentFileStore::delete_part(record.paths()).await {
+            tracing::warn!(%error, "a cancelled download's part file is still there");
+            send_download_event(
+                evt_tx,
+                DownloadEvent::CancelledFileLeft {
+                    download_id,
+                    part_path: record.paths().part_path().to_path_buf(),
+                },
+            )
+            .await;
+        } else if let Err(error) = store.part_file_gone(download_id) {
+            tracing::warn!(%error, "a deleted part file could not be taken off its row");
         }
     }
 }

@@ -14,7 +14,8 @@ mod row;
 mod seeds;
 
 pub(crate) use row::{
-    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, grow_from_v8, grow_from_v14,
+    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, UPGRADE_FROM_V16, grow_from_v8,
+    grow_from_v14,
 };
 #[cfg(test)]
 pub(crate) use row::{schema_v1, seed_v1, seed_v5};
@@ -72,6 +73,11 @@ pub struct DurableDownloadRepository {
 }
 
 impl DurableDownloadRepository {
+    /// The Data Directory a relative part path is read against.
+    fn home(&self) -> Option<&Path> {
+        self.store.file().and_then(Path::parent)
+    }
+
     /// A repository over the already-open store. The tables were created by
     /// [`Store::open`] against this module's schema.
     #[must_use]
@@ -202,19 +208,81 @@ impl DurableDownloadRepository {
     /// # Errors
     /// [`CoreError::Repository`] when the store read fails.
     pub fn part_files(&self) -> Result<Vec<(PathBuf, bool)>, CoreError> {
+        let home = self.home();
         self.store.read(|txn| {
-            Ok(DOWNLOADS
-                .iter(txn)?
+            Ok(readable_rows(txn)?
                 .into_iter()
                 .flat_map(|(_, row)| {
                     let live = row.is_live();
-                    let part = row.part_path.held_path().map(|path| (path.into(), live));
+                    let part = row.part_path.held_path(home).map(|path| (path, live));
                     let destination = (row.lifecycle == DownloadLifecycle::Completing)
                         .then(|| (PathBuf::from(&row.final_path), true));
                     part.into_iter().chain(destination)
                 })
                 .collect())
         })
+    }
+
+    /// How many rows will not decode (ADR-0083): what attach reports, the rest
+    /// of the table being readable without them.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`] when the store read fails.
+    pub fn unreadable_rows(&self) -> Result<u32, CoreError> {
+        self.store.read(|txn| {
+            let bad = DOWNLOADS
+                .rows(txn)?
+                .iter()
+                .filter(|row| row.1.is_err())
+                .count();
+            Ok(u32::try_from(bad).unwrap_or(u32::MAX))
+        })
+    }
+
+    /// Every cancelled download still holding its part path: a delete was
+    /// refused, or an older build cancelled it (ADR-0094). What attach tries
+    /// again; [`Self::part_file_gone`] takes one off the list.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`] when the store read fails.
+    pub fn cancelled_part_files(&self) -> Result<Vec<DurableDownloadRecord>, CoreError> {
+        self.store.read(|txn| {
+            Ok(readable_rows(txn)?
+                .into_iter()
+                .filter(|(_, row)| {
+                    row.lifecycle == DownloadLifecycle::Cancelled
+                        && row.part_path.held_path(None).is_some()
+                })
+                .map(|(key, row)| row.to_record(DownloadId::from_u64(key), self.home()))
+                .collect())
+        })
+    }
+
+    /// A cancelled download's part file is gone: the row gives its path up,
+    /// and no attach looks for it again.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`] when the store fails.
+    pub fn part_file_gone(&self, id: DownloadId) -> Result<(), CoreError> {
+        self.store.write(|txn| {
+            let mut row = read_row(txn, id)?;
+            row.release_part_path(id.as_u64());
+            Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
+        })
+    }
+
+    /// Whether the store stopped and the operator has not been told: `true`
+    /// once (ADR-0083).
+    #[must_use]
+    pub fn store_stop_to_tell(&self) -> bool {
+        self.store.stop_to_tell()
+    }
+
+    /// The directory the store's file lies in, whose volume the free-space
+    /// floor also holds to. `None` for a store with no file.
+    #[must_use]
+    pub fn store_directory(&self) -> Option<PathBuf> {
+        self.home().map(Path::to_path_buf)
     }
 
     /// Mark the download failed and keep why, in one write (ADR-0094,
@@ -373,11 +441,10 @@ impl DurableDownloadRepository {
     /// [`CoreError::Repository`] when the store read fails.
     pub fn listed_downloads(&self) -> Result<Vec<DurableDownloadRecord>, CoreError> {
         self.store.read(|txn| {
-            Ok(DOWNLOADS
-                .iter(txn)?
+            Ok(readable_rows(txn)?
                 .into_iter()
                 .filter(|(_, row)| row.lifecycle != DownloadLifecycle::Cancelled)
-                .map(|(key, row)| row.to_record(DownloadId::from_u64(key)))
+                .map(|(key, row)| row.to_record(DownloadId::from_u64(key), self.home()))
                 .collect())
         })
     }
@@ -388,8 +455,7 @@ impl DurableDownloadRepository {
     /// [`CoreError::Repository`] when the store read fails.
     pub fn completed_downloads(&self) -> Result<Vec<DownloadId>, CoreError> {
         self.store.read(|txn| {
-            Ok(DOWNLOADS
-                .iter(txn)?
+            Ok(readable_rows(txn)?
                 .into_iter()
                 .filter(|(_, row)| row.lifecycle == DownloadLifecycle::Completed)
                 .map(|(key, _)| DownloadId::from_u64(key))
@@ -403,6 +469,42 @@ fn read_row(txn: &impl Readable, id: DownloadId) -> Result<DownloadRow, CoreErro
     DOWNLOADS
         .get(txn, &id.as_u64())?
         .ok_or(CoreError::UnknownDownload)
+}
+
+/// A row whose bytes are no row, as a flipped bit leaves one.
+#[cfg(test)]
+pub(crate) fn write_undecodable_row(store: &Store, key: u64) {
+    use rmule_store::redb::Value;
+    use rmule_store::{Packed, StoreError, TableDefinition};
+
+    let table = TableDefinition::<u64, Packed<DownloadRow>>::new("download");
+    let bad = <Packed<DownloadRow> as Value>::from_bytes(&[0xFF]);
+    store
+        .write(|txn| {
+            let mut table = txn.open_table(table).map_err(StoreError::from)?;
+            table.insert(key, bad).map_err(StoreError::from)?;
+            Ok::<_, StoreError>(())
+        })
+        .unwrap();
+}
+
+/// Every row that reads, in ascending id order. One that does not decode
+/// costs that row and a line in the Run Log, and [`unreadable_rows`] counts
+/// it for the operator (ADR-0083).
+///
+/// [`unreadable_rows`]: DurableDownloadRepository::unreadable_rows
+fn readable_rows(txn: &impl Readable) -> Result<Vec<(u64, DownloadRow)>, CoreError> {
+    Ok(DOWNLOADS
+        .rows(txn)?
+        .into_iter()
+        .filter_map(|(key, row)| match row {
+            Ok(row) => Some((key, row)),
+            Err(error) => {
+                tracing::warn!(key, %error, "a download's row could not be read");
+                None
+            }
+        })
+        .collect())
 }
 
 /// Refuse a child write whose parent is gone, without decoding the parent.
@@ -425,12 +527,14 @@ fn read_provisional(txn: &impl Readable, id: DownloadId) -> Result<Vec<PartHash>
 }
 
 /// Every resumable row on `txn`, in ascending id order.
-fn resumable_records(txn: &impl Readable) -> Result<Vec<DurableDownloadRecord>, CoreError> {
-    Ok(DOWNLOADS
-        .iter(txn)?
+fn resumable_records(
+    txn: &impl Readable,
+    home: Option<&Path>,
+) -> Result<Vec<DurableDownloadRecord>, CoreError> {
+    Ok(readable_rows(txn)?
         .into_iter()
         .filter(|(_, row)| row.is_resumable())
-        .map(|(key, row)| row.to_record(DownloadId::from_u64(key)))
+        .map(|(key, row)| row.to_record(DownloadId::from_u64(key), home))
         .collect())
 }
 
@@ -456,7 +560,7 @@ impl DownloadRepository for DurableDownloadRepository {
         if paths.final_path().exists() {
             return Err(CoreError::PathConflict);
         }
-        let new = DownloadRow::new(file, source_hint, paths, kad_aich_root);
+        let new = DownloadRow::new(file, source_hint, paths, kad_aich_root, self.home());
         self.store.write(|txn| {
             if let Some(holder) =
                 DOWNLOADS.by_unique(txn, &PART_PATH, new.part_path.index_text())?
@@ -477,25 +581,25 @@ impl DownloadRepository for DurableDownloadRepository {
 
             let id = DownloadId::from_u64(DOWNLOAD_IDS.next(txn)?);
             DOWNLOADS.insert(txn, &id.as_u64(), &new)?;
-            Ok(new.to_record(id))
+            Ok(new.to_record(id, self.home()))
         })
     }
 
     /// Read one row back, or [`CoreError::UnknownDownload`] when there is none.
     fn load_download(&self, id: DownloadId) -> Result<DurableDownloadRecord, CoreError> {
-        self.store.read(|txn| Ok(read_row(txn, id)?.to_record(id)))
+        self.store
+            .read(|txn| Ok(read_row(txn, id)?.to_record(id, self.home())))
     }
 
     /// Every queued, paused or failed row, in ascending id order. Completed
     /// and cancelled rows are excluded — nothing can resume them.
     fn list_resumable(&self) -> Result<Vec<DurableDownloadRecord>, CoreError> {
-        self.store.read(resumable_records)
+        self.store.read(|txn| resumable_records(txn, self.home()))
     }
 
     fn list_cancelled(&self) -> Result<Vec<Ed2kIdentity>, CoreError> {
         self.store.read(|txn| {
-            Ok(DOWNLOADS
-                .iter(txn)?
+            Ok(readable_rows(txn)?
                 .into_iter()
                 .filter(|(_, row)| row.lifecycle == DownloadLifecycle::Cancelled)
                 .map(|(_, row)| Ed2kIdentity::new(row.file_hash, row.file_size))
@@ -520,6 +624,13 @@ impl DownloadRepository for DurableDownloadRepository {
             // "Source Seeds"): they leave in the move that ends it.
             if !row.is_live() {
                 seeds::forget(txn, id.as_u64())?;
+            }
+            // Nothing reads a cancelled row's parts again, and the table
+            // would otherwise only grow.
+            if state == DownloadLifecycle::Cancelled {
+                VERIFIED_PARTS.clear(txn, id.as_u64())?;
+                PROVISIONAL_HASHES.clear(txn, id.as_u64())?;
+                DISTRUSTED_PEERS.clear(txn, id.as_u64())?;
             }
             Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
         })
@@ -606,9 +717,9 @@ impl DownloadRepository for DurableDownloadRepository {
     fn live_downloads(&self) -> Result<Vec<DurableDownloadRecord>, CoreError> {
         self.store.read(|txn| {
             let mut live = Vec::new();
-            for (key, row) in DOWNLOADS.iter(txn)? {
+            for (key, row) in readable_rows(txn)? {
                 if row.is_live() {
-                    live.push(row.to_record(DownloadId::from_u64(key)));
+                    live.push(row.to_record(DownloadId::from_u64(key), self.home()));
                 }
             }
             Ok(live)

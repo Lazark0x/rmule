@@ -69,7 +69,7 @@ fn main() -> ExitCode {
     // One multi-thread runtime for UI loop, bridge, and core tasks.
     let result = tokio::runtime::Runtime::new().and_then(|runtime| runtime.block_on(run(run_args)));
     match result {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!(
                 "{}",
@@ -85,7 +85,7 @@ fn data_dir(run_args: &RunArgs) -> Option<args::DataDir> {
     args::resolve_data_dir(run_args.data_dir.as_deref(), |name| std::env::var_os(name))
 }
 
-async fn run(run_args: RunArgs) -> std::io::Result<()> {
+async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     let (actions_tx, actions_rx) = tokio::sync::mpsc::channel(256);
     let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -98,8 +98,9 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
         std::env::var("COLORTERM").ok().as_deref(),
     );
 
-    // Attach the core before entering the alternate screen so failures print
-    // normally; the UI-only fallback still runs with the reason visible.
+    // Attach the core before entering the alternate screen, so a run with no
+    // core ends with its reason on the normal screen and a failing status,
+    // not in tabs that can do nothing (ADR-0083).
     // The Run Log first, so the attachment's own events are in it.
     let data_dir = data_dir(&run_args);
     let opened = data_dir
@@ -129,117 +130,115 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
         }
         Err(failure) => Err(failure),
     };
-    let attachment = attach(data_dir.clone(), &Live, run_log_level.clone()).await;
+    let attachment = match attach(data_dir, &Live, run_log_level.clone()).await {
+        Ok(attachment) => attachment,
+        Err(failure) => {
+            eprintln!(
+                "rmule: {}",
+                rmule::words::app::attach_failure_words(failure)
+            );
+            return Ok(ExitCode::from(EXIT_FAILURE));
+        }
+    };
 
     let mut tui = Tui::enter()?;
     let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown));
 
     let mut app = App::new(theme);
-    match attachment {
-        Ok(Attachment {
-            core,
-            session,
-            config,
-            mut preferences,
-            kad,
-            at_start,
-            ceiling_lowered,
-        }) => {
-            // `--log-level` holds for this run and is never stored; the
-            // Settings tab shows the level in force.
-            if let Some(level) = run_args.log_level {
-                preferences.run_log_full = level == Level::Full;
-            }
-            run_log_level.set(Level::from_full(preferences.run_log_full));
-            let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
-            if let Some(lowered) = ceiling_lowered {
-                let words = rmule::words::download::ceiling_lowered(lowered);
-                let _ = actions_tx.send(Action::Note(words)).await;
-            }
-            // The operator's connect, given ahead of time — or nothing
-            // (ADR-0095): no other road in the app dials a server.
-            match at_start {
-                rmule::connect::AtStart::Nothing => {}
-                rmule::connect::AtStart::Connect(server) => {
-                    let command = CoreCommand::ConnectToServer { server };
-                    if let Err(error) = rmule::client::CoreClient::send(&handle, command) {
-                        tracing::warn!(%error, "connect at start could not be sent");
-                    }
-                }
-                rmule::connect::AtStart::CannotConnect(why) => {
-                    let _ = actions_tx.send(Action::Note(why)).await;
-                }
-            }
-            // The Kad join, parked behind the run's first eD2k login
-            // or the operator's `K`: nothing of Kad's reaches the
-            // network — not the seed acquisition, not the UDP socket — until
-            // the operator has asked to be on one. Off the first-frame path
-            // either way, since a cold-start acquisition can mean an HTTP
-            // round trip. Each outcome reaches the same status bar every other
-            // command's does, including the honest "no contacts, waiting for
-            // an eD2k peer" degrade.
-            // The player lane (ADR-0114): each Preview's player is started
-            // and awaited on a task of its own, and how it ended is noted.
-            let (player, launches) = rmule::player::lane();
-            tokio::spawn(rmule::player::play_each(launches, actions_tx.clone()));
-            let (kad_start, mut kad_starts) = rmule::kad::start_lane();
-            // …and the panel's bare "Kad: off" says nothing about *why* until
-            // then, so the app does.
-            let _ = actions_tx
-                .send(Action::Note(rmule::words::kad::WAITING_FOR_CONNECT))
-                .await;
-            let kad_client = handle.clone();
-            tokio::spawn(async move {
-                while let Some(joined) = rmule::kad::join_on_next_start(
-                    &mut kad_starts,
-                    &kad_client,
-                    &kad.config,
-                    kad.own_id,
-                    &kad.bootstrap,
-                    &kad.fetcher,
-                )
-                .await
-                {
-                    match joined {
-                        Ok(outcome) => {
-                            let _ = actions_tx
-                                .send(Action::Note(rmule::words::kad::seed_outcome_words(
-                                    &outcome,
-                                )))
-                                .await;
-                        }
-                        // The core stopped; the bus already carries `CoreClosed`.
-                        Err(error) => {
-                            tracing::warn!(%error, "kad join could not be sent");
-                            break;
-                        }
-                    }
-                }
-            });
-            app = app
-                .with_client(handle)
-                .with_session(session)
-                .with_run_log(run_log_level)
-                .with_config(config, preferences)
-                .with_kad_start(kad_start)
-                .with_player(player);
-            if let Err(failure) = run_log {
-                app.state.notable = Some(rmule::words::app::no_run_log(failure));
+    let Attachment {
+        core,
+        session,
+        config,
+        mut preferences,
+        kad,
+        at_start,
+        ceiling_lowered,
+    } = attachment;
+    // `--log-level` holds for this run and is never stored; the
+    // Settings tab shows the level in force.
+    if let Some(level) = run_args.log_level {
+        preferences.run_log_full = level == Level::Full;
+    }
+    run_log_level.set(Level::from_full(preferences.run_log_full));
+    let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
+    if let Some(lowered) = ceiling_lowered {
+        let words = rmule::words::download::ceiling_lowered(lowered);
+        let _ = actions_tx.send(Action::Note(words)).await;
+    }
+    // The operator's connect, given ahead of time — or nothing
+    // (ADR-0095): no other road in the app dials a server.
+    match at_start {
+        rmule::connect::AtStart::Nothing => {}
+        rmule::connect::AtStart::Connect(server) => {
+            let command = CoreCommand::ConnectToServer { server };
+            if let Err(error) = rmule::client::CoreClient::send(&handle, command) {
+                tracing::warn!(%error, "connect at start could not be sent");
             }
         }
-        Err(failure) => {
-            // Surface the degrade in the status bar's info feed.
-            app.state.notable = Some(rmule::words::app::ui_only(failure));
-            // Where the data directory is stays true without a core, and
-            // the Settings tab says it.
-            app.state.preferences.data_dir = data_dir;
-            app.state.ui_only = Some(failure);
+        rmule::connect::AtStart::CannotConnect(why) => {
+            let _ = actions_tx.send(Action::Note(why)).await;
         }
+    }
+    // The Kad join, parked behind the run's first eD2k login
+    // or the operator's `K`: nothing of Kad's reaches the
+    // network — not the seed acquisition, not the UDP socket — until
+    // the operator has asked to be on one. Off the first-frame path
+    // either way, since a cold-start acquisition can mean an HTTP
+    // round trip. Each outcome reaches the same status bar every other
+    // command's does, including the honest "no contacts, waiting for
+    // an eD2k peer" degrade.
+    // The player lane (ADR-0114): each Preview's player is started
+    // and awaited on a task of its own, and how it ended is noted.
+    let (player, launches) = rmule::player::lane();
+    tokio::spawn(rmule::player::play_each(launches, actions_tx.clone()));
+    let (kad_start, mut kad_starts) = rmule::kad::start_lane();
+    // …and the panel's bare "Kad: off" says nothing about *why* until
+    // then, so the app does.
+    let _ = actions_tx
+        .send(Action::Note(rmule::words::kad::WAITING_FOR_CONNECT))
+        .await;
+    let kad_client = handle.clone();
+    tokio::spawn(async move {
+        while let Some(joined) = rmule::kad::join_on_next_start(
+            &mut kad_starts,
+            &kad_client,
+            &kad.config,
+            kad.own_id,
+            &kad.bootstrap,
+            &kad.fetcher,
+        )
+        .await
+        {
+            match joined {
+                Ok(outcome) => {
+                    let _ = actions_tx
+                        .send(Action::Note(rmule::words::kad::seed_outcome_words(
+                            &outcome,
+                        )))
+                        .await;
+                }
+                // The core stopped; the bus already carries `CoreClosed`.
+                Err(error) => {
+                    tracing::warn!(%error, "kad join could not be sent");
+                    break;
+                }
+            }
+        }
+    });
+    app = app
+        .with_client(handle)
+        .with_session(session)
+        .with_run_log(run_log_level)
+        .with_config(config, preferences)
+        .with_kad_start(kad_start)
+        .with_player(player);
+    if let Err(failure) = run_log {
+        app.state.notable = Some(rmule::words::app::no_run_log(failure));
     }
     let result = app.run(&mut tui, actions_rx).await;
 
     shutdown.store(true, Ordering::Relaxed);
     drop(tui); // restore the terminal before waiting on the pump's poll tick
     let _ = pump.join();
-    result
+    result.map(|()| ExitCode::SUCCESS)
 }

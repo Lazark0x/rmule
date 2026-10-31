@@ -13,6 +13,7 @@ use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, UpgradeStep, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
+use super::{DOWNLOADS, PartPathSlot};
 use crate::PartFault;
 
 mod row_enums;
@@ -20,6 +21,31 @@ mod row_v5;
 
 use row_enums::{DownloadLifecycleV1, DownloadMetadataOriginV1, VerificationAuthorityV1};
 pub(crate) use row_v5::grow_from_v14;
+
+/// Store version 16 → 17 (ADR-0083): a part path inside the Data Directory
+/// becomes relative to it, so a move of that directory carries the download.
+/// The row's shape does not change; what its text means does, so a version-16
+/// build refuses the store rather than read a relative path against its own
+/// working directory.
+pub(crate) const UPGRADE_FROM_V16: UpgradeStep = UpgradeStep {
+    from: 16,
+    run: |txn| {
+        let Some(home) = rmule_store::climbing_home(txn)? else {
+            return Ok(());
+        };
+        for (key, mut row) in DOWNLOADS.iter(txn)? {
+            let Some(path) = row.part_path.held_path(None) else {
+                continue;
+            };
+            let rooted = PartPathSlot::held(&path, Some(&home));
+            if rooted != row.part_path {
+                row.part_path = rooted;
+                DOWNLOADS.update(txn, &key, &row)?;
+            }
+        }
+        Ok(())
+    },
+};
 use row_v5::{DOWNLOADS_V5, DownloadFailureV5, DownloadRowV5};
 
 /// The row as record version 1 wrote it, before the failure reason was kept.

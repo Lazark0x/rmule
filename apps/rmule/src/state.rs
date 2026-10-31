@@ -57,8 +57,8 @@ pub use session::SessionConfig;
 pub enum AttachFailure {
     /// Neither `RMULE_DATA` nor `HOME` names a data directory.
     NoDataDir,
-    /// The Durable Store would not open.
-    OpenStore,
+    /// The Durable Store would not open, and why.
+    OpenStore(rmule_core::OpenRefusal),
     /// The port-mapping secret could not be read or made.
     PortMapSecret,
     /// The server list could not be read.

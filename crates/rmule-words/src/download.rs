@@ -124,6 +124,29 @@ pub const NOTHING_TO_PAUSE: Sentence =
 pub const NO_DOWNLOAD_DIR: Sentence =
     Sentence::fixed("no download dir — set one with rmule-cli config set-download-dir");
 
+/// A failed write stopped the store: the sentence that says what cures it.
+pub const STORE_STOPPED: &str = "the disk refused a store write, so nothing more is recorded \
+     this run: free some space and restart rmule";
+
+/// A cancelled download's part file that would not be deleted.
+#[must_use]
+pub fn cancelled_file_left(part_path: &Path) -> String {
+    format!(
+        "{} could not be deleted; rmule tries again at its next start",
+        part_path.display()
+    )
+}
+
+/// Rows of the download table that would not read at attach.
+#[must_use]
+pub fn rows_unreadable(rows: u32) -> String {
+    format!(
+        "{} could not be read from the store and is not listed; keep rmule.redb, its part \
+         files still stand",
+        crate::units::count(u64::from(rows), "download", "downloads")
+    )
+}
+
 /// A download event's line in the Networks log: terse, no ids or hashes.
 #[must_use]
 pub fn log_line(event: &DownloadEvent) -> Sentence {
@@ -370,6 +393,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::HoleLessDestination { directory, .. } => {
             format!("{}; {HOLE_LESS_REMEDY}", hole_less_where(directory))
         }
+        D::CancelledFileLeft { part_path, .. } => cancelled_file_left(part_path),
+        D::RowsUnreadable { rows } => rows_unreadable(*rows),
+        D::StoreStopped => STORE_STOPPED.to_string(),
         D::VolumeStopped {
             directory, stop, ..
         } => volume_stop_words(directory, *stop),

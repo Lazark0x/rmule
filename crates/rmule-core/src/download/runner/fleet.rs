@@ -14,6 +14,7 @@ use crate::adapters::{
     CallbackKey, LinkOffer, PeerTransferService, PeerWorker, PeerWorkerEvent, SourceLookupService,
 };
 use crate::client_udp::ClientUdpDatagram;
+use crate::download::persist::store_failed;
 use crate::download::state::{
     AichRootAuthority, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
     StartingFacts, Tally,
@@ -162,7 +163,7 @@ where
         let store = &runner.rt.store;
         store
             .provisional_part_hashes(download_id)
-            .map_err(|_| DownloadFailure::PartVerificationFailed)?
+            .map_err(store_failed("the provisional hash set could not be read"))?
     };
     // The link's set counts only when it is the file's own; otherwise
     // the peer's proven set wins.

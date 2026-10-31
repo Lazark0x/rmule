@@ -18,7 +18,7 @@ use crate::service::{
 };
 use crate::storage::DownloadRepository;
 use crate::{
-    CoreError, DownloadFailure, DownloadLifecycle, DurableDownloadRecord, PartFault,
+    CoreError, DownloadFailure, DownloadLifecycle, DownloadPaths, DurableDownloadRecord, PartFault,
     StorageIntegrityFault, VerifiedPartRecord,
 };
 
@@ -293,6 +293,11 @@ where
                 (progress, restart.then_some(outcome))
             }
             Ok(Revalidation::Condemned(fault)) if restart && starts_over(&fault) => {
+                if let Some(candidate) = self.moved_part_candidate(&record, &fault)
+                    && on_pool(move || candidate.is_file()).await
+                {
+                    return Err(CoreCommandRejectReason::PartFileMoved);
+                }
                 self.discard(download_id, &record).await?;
                 let outcome = RestartOutcome::StartedOver {
                     fault,
@@ -478,13 +483,31 @@ where
             .load_download(download_id)
             .ok()
             .map(|record| record.paths().clone());
-        if let Some(paths) = paths {
-            let _ = ContentFileStore::delete_part(&paths).await;
-        }
-        let _ = self
+        // Stored first: a row that says Cancelled with its file still there
+        // is swept at the next attach, and a row still live with its file
+        // gone fails its next start.
+        match self
             .wiring
             .store
-            .set_lifecycle(download_id, DownloadLifecycle::Cancelled);
+            .set_lifecycle(download_id, DownloadLifecycle::Cancelled)
+        {
+            Ok(()) => {
+                if let Some(paths) = paths {
+                    self.delete_cancelled(download_id, &paths).await;
+                }
+            }
+            Err(CoreError::UnknownDownload | CoreError::InvalidLifecycleTransition) => {}
+            Err(error) => {
+                tracing::warn!(
+                    download_id = download_id.as_u64(),
+                    %error,
+                    "a cancel could not be stored, so the download stands"
+                );
+                self.reject(CoreCommandRejectReason::DownloadStoreFailed)
+                    .await;
+                return;
+            }
+        }
         self.diagnostics.remove_download(download_id);
         tracing::info!(download_id = download_id.as_u64(), "download cancelled");
         send_download_event(
@@ -492,6 +515,40 @@ where
             DownloadEvent::DownloadCancelled { download_id },
         );
         self.end_served(download_id, crate::PartialEnd::Ended).await;
+    }
+
+    /// Where a Restart that found the part file gone would look before
+    /// throwing it away: the name in the current Temp Directory (ADR-0094).
+    fn moved_part_candidate(
+        &self,
+        record: &DurableDownloadRecord,
+        fault: &StorageIntegrityFault,
+    ) -> Option<std::path::PathBuf> {
+        let StorageIntegrityFault::PartFileMissing = fault else {
+            return None;
+        };
+        let temp_dir = self.directories.temp_dir.as_deref()?;
+        Some(temp_dir.join(record.paths().part_path().file_name()?))
+    }
+
+    /// Delete a cancelled download's files. A delete that is refused is told;
+    /// the row keeps the path, and each attach tries again.
+    async fn delete_cancelled(&mut self, download_id: DownloadId, paths: &DownloadPaths) {
+        if let Err(error) = ContentFileStore::delete_part(paths).await {
+            tracing::warn!(%error, "a cancelled download's part file could not be deleted");
+            send_download_event(
+                &self.evt_tx,
+                DownloadEvent::CancelledFileLeft {
+                    download_id,
+                    part_path: paths.part_path().to_path_buf(),
+                },
+            )
+            .await;
+            return;
+        }
+        if let Err(error) = self.wiring.store.part_file_gone(download_id) {
+            tracing::warn!(%error, "a deleted part file could not be taken off its row");
+        }
     }
 
     /// Forget one completed download: its record and its resting row, then
@@ -558,6 +615,11 @@ where
     /// insufficient file (`DownloadQueue.cpp:1267-1269`), so a resume does not
     /// stop again. A row no longer paused left the wait.
     pub(super) async fn resume_for_space(&mut self) {
+        // A stopped store cannot resume anything, and nothing else says so.
+        if self.wiring.store.store_stop_to_tell() {
+            tracing::warn!("a failed write stopped the store until the next start");
+            send_download_event(&self.evt_tx, DownloadEvent::StoreStopped).await;
+        }
         for download_id in self.activities.awaiting_space() {
             let paused = self
                 .wiring
@@ -570,7 +632,11 @@ where
                 self.activities.end_space_wait(download_id);
                 continue;
             };
-            if !on_pool(move || free_space::fits_what_is_left(&part_path, file_size)).await {
+            let store_dir = self.wiring.store.store_directory();
+            let fits = on_pool(move || {
+                free_space::fits_what_is_left(&part_path, store_dir.as_deref(), file_size)
+            });
+            if !fits.await {
                 continue;
             }
             self.activities.end_space_wait(download_id);

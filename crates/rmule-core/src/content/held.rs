@@ -129,6 +129,8 @@ pub(crate) struct HeldPartFile {
     /// Whether a write punches its Extension Gap: off for the run when the
     /// volume refused the sparse flag, where a punch writes zeros.
     punches: bool,
+    /// The directory of the store that records this file's parts.
+    store_dir: Option<PathBuf>,
 }
 
 impl HeldPartFile {
@@ -177,6 +179,7 @@ impl HeldPartFile {
             path,
             recorded_end,
             punches,
+            store_dir: None,
         };
         Ok((held, allocated))
     }
@@ -209,15 +212,17 @@ impl HeldPartFile {
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
         let (recorded_end, punches) = (self.recorded_end, self.punches);
+        let store_dir = self.store_dir.clone();
         let part = bytes.to_vec();
         let allocated = on_pool(move || {
             let end = check_file(&file, &path, recorded_end)?;
             let len = part.len() as u64;
-            if let Some(free_bytes) = free_space::under_the_floor(&path, len) {
+            if let Some(free_bytes) = free_space::under_the_floor(&path, store_dir.as_deref(), len)
+            {
                 return Err(HeldWriteError::OutOfSpace { free_bytes });
             }
             sparse::write_at(&file, offset, &part, end.filter(|_| punches)).map_err(|error| {
-                match free_space::under_the_floor(&path, len) {
+                match free_space::under_the_floor(&path, store_dir.as_deref(), len) {
                     Some(free_bytes) => HeldWriteError::OutOfSpace { free_bytes },
                     None => HeldWriteError::Io(error),
                 }
@@ -260,7 +265,16 @@ impl HeldPartFile {
             path: path.to_path_buf(),
             recorded_end: 0,
             punches: false,
+            store_dir: None,
         }
+    }
+
+    /// The directory of the store this file's parts are recorded in, whose
+    /// volume each write is held to the floor on as well (ADR-0083).
+    #[must_use]
+    pub(crate) fn recorded_in(mut self, store_dir: Option<PathBuf>) -> Self {
+        self.store_dir = store_dir;
+        self
     }
 
     /// The parts a truncation cut were dropped: the recorded parts now end at

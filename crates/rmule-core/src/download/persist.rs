@@ -32,7 +32,7 @@ use crate::content::{
 };
 use crate::download::runner::RunnerContext;
 use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
-use crate::error::{DownloadFailure, StorageIntegrityFault};
+use crate::error::{CoreError, DownloadFailure, StorageIntegrityFault};
 use crate::hashing::{ResolvedHashSet, part_hash_on_arrival, verify_part_bytes};
 use crate::service::{DownloadEvent, DownloadId, PartsLost, VolumeStop, send_download_event};
 use crate::storage::DownloadRepository;
@@ -46,6 +46,15 @@ pub(super) enum PersistError {
     /// marked for one, is not a failure the operator sees), the Durable
     /// Store could not record the part, or the volume stopped the run.
     Ended(DownloadFailure),
+}
+
+/// The store refused `what`: the run ends on it, and the cause goes to the Run
+/// Log, since `StoreFailed` is all the operator's sentence can name.
+pub(crate) fn store_failed(what: &'static str) -> impl Fn(CoreError) -> DownloadFailure {
+    move |error| {
+        tracing::warn!(%error, "{what}");
+        DownloadFailure::StoreFailed
+    }
 }
 
 /// Open the run's part file and hold it (ADR-0094): created for a download
@@ -64,17 +73,16 @@ pub(super) async fn hold_part_file<S, P>(
     if held.is_some() {
         return Ok(());
     }
-    let store_failed = |_| DownloadFailure::StoreFailed;
     let record = runner
         .rt
         .store
         .load_download(download_id)
-        .map_err(store_failed)?;
+        .map_err(store_failed("the download's row could not be read"))?;
     let parts = runner
         .rt
         .store
         .verified_parts(download_id)
-        .map_err(store_failed)?;
+        .map_err(store_failed("the verified parts could not be read"))?;
     let part_path = record.paths().part_path();
     match HeldPartFile::hold(part_path, recorded_end(&parts)).await {
         Ok((file, allocated)) => {
@@ -88,7 +96,7 @@ pub(super) async fn hold_part_file<S, P>(
                     },
                 ));
             }
-            *held = Some(file);
+            *held = Some(file.recorded_in(runner.rt.store.store_directory()));
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
             if runner.hole_probed.swap(true, Ordering::SeqCst) {
@@ -433,8 +441,9 @@ pub(super) async fn repair_at_finalize<S, P>(
             // the records themselves are wrong (a file-hash-only download, or a
             // peer's hash set that lied consistently). Nothing can be named,
             // so every part and the peer's hash set go.
-            let Ok(dropped) = runner.rt.store.drop_every_part(download_id) else {
-                return DownloadFailure::StoreFailed;
+            let dropped = match runner.rt.store.drop_every_part(download_id) {
+                Ok(dropped) => dropped,
+                Err(error) => return store_failed("every part could not be dropped")(error),
             };
             let lost: Vec<u32> = dropped.iter().map(|part| part.part_index).collect();
             runner.rt.diagnostics.parts_lost(download_id, &lost);
@@ -449,7 +458,7 @@ pub(super) async fn repair_at_finalize<S, P>(
             runner.mark_for_repair();
             DownloadFailure::PartVerificationFailed
         }
-        Err(_) => DownloadFailure::StoreFailed,
+        Err(error) => store_failed("the rejected file's parts could not be dropped")(error),
     }
 }
 

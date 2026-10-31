@@ -148,11 +148,13 @@ impl StoreError {
             Self::Engine(redb::Error::DatabaseAlreadyOpen) => OpenRefusal::Busy,
             // An error the system did not raise is the engine reading a file
             // short or wrong, as a truncated store reads.
-            Self::Engine(redb::Error::Io(error)) => error
-                .raw_os_error()
-                .map_or(OpenRefusal::Damaged, |os_code| OpenRefusal::Disk {
-                    os_code: Some(os_code),
-                }),
+            Self::Engine(redb::Error::Io(error)) => {
+                error
+                    .raw_os_error()
+                    .map_or(OpenRefusal::Damaged, |os_code| OpenRefusal::Disk {
+                        os_code: Some(os_code),
+                    })
+            }
             Self::FutureVersion { found, current } => OpenRefusal::Newer {
                 found: *found,
                 current: *current,

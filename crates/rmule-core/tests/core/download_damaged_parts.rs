@@ -344,3 +344,97 @@ async fn a_restart_with_nothing_on_disk_to_continue_from_starts_over() {
         "the old part file is removed; the new run holds a fresh one"
     );
 }
+
+/// A moved part file is not a lost one: while a file of its name stands in
+/// the current Temp Directory, Restart refuses rather than throw it away.
+#[tokio::test]
+async fn a_restart_refuses_to_start_over_a_file_that_stands_in_temp() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(&dir.path().join("data")).unwrap();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let (link, _) = three_part_link(0x3E);
+    let paths = DownloadPaths::from_final_path(dir.path().join("away/moved.bin"));
+    let id = row_with_three_verified(&repo, &link, &paths, DownloadLifecycle::Failed);
+    let temp = dir.path().join("Temp");
+    std::fs::create_dir(&temp).unwrap();
+    let moved = temp.join(paths.part_path().file_name().unwrap());
+    std::fs::write(&moved, b"what it held").unwrap();
+
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings {
+            temp_dir: Some(temp),
+            ..rmule_core::CoreSettings::default()
+        })
+        .source_lookup(two_high_id_sources())
+        .peer_transfer(PendingPeerTransfer)
+        .build();
+    resume(&mut core, id).await;
+    let refused = next_expected(&mut core, "the refusal", |event| {
+        matches!(event, CoreEvent::CommandRejected { .. })
+    })
+    .await;
+    core.shutdown().await;
+    assert!(
+        matches!(
+            refused,
+            CoreEvent::CommandRejected {
+                reason: rmule_core::CoreCommandRejectReason::PartFileMoved
+            }
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(repo.verified_parts(id).unwrap().len(), 3);
+    assert_eq!(std::fs::read(&moved).unwrap(), b"what it held");
+}
+
+/// A delete the system refused is told, and the row says Cancelled with the
+/// path still held, so the next attach finishes the job.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cancel_stores_first_tells_a_refused_delete_and_attach_tries_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(&dir.path().join("data")).unwrap();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let (link, bytes) = three_part_link(0x3F);
+    let locked = dir.path().join("locked");
+    std::fs::create_dir(&locked).unwrap();
+    let paths = DownloadPaths::from_final_path(locked.join("held.bin"));
+    let id = row_with_three_verified(&repo, &link, &paths, DownloadLifecycle::Paused);
+    std::fs::write(paths.part_path(), &bytes).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let mut core = core_on(&store);
+    core.send(CoreCommand::Download(DownloadCommand::CancelDownload {
+        download_id: id,
+    }))
+    .await
+    .unwrap();
+    let left = next_expected(&mut core, "the refused delete", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::CancelledFileLeft { .. })
+        )
+    })
+    .await;
+    core.shutdown().await;
+    assert!(
+        matches!(
+            &left,
+            CoreEvent::Download(DownloadEvent::CancelledFileLeft { download_id, part_path })
+                if *download_id == id && part_path == paths.part_path()
+        ),
+        "{left:?}"
+    );
+    assert_eq!(
+        repo.load_download(id).unwrap().lifecycle(),
+        DownloadLifecycle::Cancelled
+    );
+    assert!(paths.part_path().exists());
+
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    core_on(&store).shutdown().await;
+    assert!(!paths.part_path().exists(), "swept at attach");
+    assert_eq!(repo.cancelled_part_files().unwrap().len(), 0);
+}

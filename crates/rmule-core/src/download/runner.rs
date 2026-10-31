@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::DurableDownloadRecord;
 use crate::adapters::{PeerTransferService, SourceLookupService};
+use crate::download::persist::store_failed;
 use crate::download::state::SourcingPosture;
 use crate::download::{RunNumber, SharedRuntime};
 use crate::durable::DownloadLifecycle;
@@ -289,7 +290,9 @@ where
                 break result;
             }
             match self.runner.rt.store.verified_parts(download_id) {
-                Err(_) => break Err(DownloadFailure::StoreFailed),
+                Err(error) => {
+                    break Err(store_failed("the verified parts could not be read")(error));
+                }
                 Ok(parts) => {
                     request.recovered = None;
                     request.verified_part_indexes =
@@ -409,7 +412,7 @@ where
         .rt
         .store
         .set_lifecycle(request.download_id, DownloadLifecycle::Active)
-        .map_err(|_| DownloadFailure::StoreFailed)?;
+        .map_err(store_failed("the download could not be stored active"))?;
     check_stop(&runner.stop_rx)?;
     if let Some(outcome) = &source_outcome {
         send_download_event(

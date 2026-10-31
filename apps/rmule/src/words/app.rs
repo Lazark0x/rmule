@@ -10,6 +10,8 @@ use std::path::Path;
 
 use super::Sentence;
 use crate::config::{PrefEdit, UnfitDirectory};
+use rmule_core::{OpenRefusal, Opening};
+
 use crate::state::AttachFailure;
 
 /// The status-bar receipt for a saved Settings edit, which names the restart
@@ -76,16 +78,64 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
 /// Why the core could not be attached, as a clause; what the store or the
 /// web client said is in the Run Log.
 #[must_use]
-pub const fn attach_failure_words(failure: AttachFailure) -> &'static str {
+pub fn attach_failure_words(failure: AttachFailure) -> String {
     match failure {
-        AttachFailure::NoDataDir => NO_DATA_DIR,
-        AttachFailure::OpenStore => {
-            "the store would not open — is another rmule running on this data dir?"
+        AttachFailure::NoDataDir => NO_DATA_DIR.to_string(),
+        AttachFailure::OpenStore(refusal) => store_refusal(refusal),
+        AttachFailure::PortMapSecret => "the port-mapping secret could not be read".to_string(),
+        AttachFailure::Servers => "the server list could not be read".to_string(),
+        AttachFailure::Preferences => "the preferences could not be read".to_string(),
+        AttachFailure::HttpClient => {
+            "the web client for server-list updates could not start".to_string()
         }
-        AttachFailure::PortMapSecret => "the port-mapping secret could not be read",
-        AttachFailure::Servers => "the server list could not be read",
-        AttachFailure::Preferences => "the preferences could not be read",
-        AttachFailure::HttpClient => "the web client for server-list updates could not start",
+    }
+}
+
+/// Why the store would not open, and what to keep: the file is the only link
+/// from each part file to its download, so no sentence may read as leave to
+/// delete it.
+fn store_refusal(refusal: OpenRefusal) -> String {
+    match refusal {
+        OpenRefusal::Busy => "another rmule is running on this data directory".to_string(),
+        OpenRefusal::Newer { found, current } => format!(
+            "rmule.redb is store version {found}, and this build reads up to {current}: \
+             run the newer rmule, and keep the file"
+        ),
+        OpenRefusal::TooOld { found } => format!(
+            "rmule.redb is store version {found}, older than this build can upgrade: \
+             keep the file and open it with an older rmule first"
+        ),
+        OpenRefusal::Damaged => "rmule.redb is damaged: keep it, and any rmule.redb.v file \
+             beside it, since they hold your downloads"
+            .to_string(),
+        OpenRefusal::Disk { os_code } => format!(
+            "the disk refused rmule.redb{}: free some space or check the permissions, \
+             then start rmule again",
+            os_code_clause(os_code)
+        ),
+        OpenRefusal::NotCopied { os_code } => format!(
+            "rmule.redb needs an upgrade, and the copy kept before one could not be made{}: \
+             free some space, then start rmule again; the file is as it was",
+            os_code_clause(os_code)
+        ),
+    }
+}
+
+fn os_code_clause(os_code: Option<i32>) -> String {
+    os_code.map_or_else(String::new, |code| format!(" (system code {code})"))
+}
+
+/// What a slow store open is doing, on the plain terminal before the screen
+/// starts.
+#[must_use]
+pub fn store_opening(opening: Opening) -> Sentence {
+    match opening {
+        Opening::Repairing { .. } => Sentence::fixed(
+            "the last run did not close the store; checking it, this can take a while",
+        ),
+        Opening::Climbing { from, to } => Sentence::owned(format!(
+            "upgrading the store from version {from} to {to}; a copy stays as rmule.redb.v{from}"
+        )),
     }
 }
 
@@ -271,5 +321,37 @@ pub fn temp_dir_default(default: Option<&Path>) -> String {
     match default {
         Some(dir) => format!("{}  (the default)", dir.display()),
         None => "the default: Temp in the data dir".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sentence the operator acts on: asking about a second process
+    /// after a downgrade sends them to delete the file instead.
+    #[test]
+    fn a_refused_store_is_told_by_its_cause() {
+        let words = |refusal| attach_failure_words(AttachFailure::OpenStore(refusal));
+        assert!(words(OpenRefusal::Busy).contains("another rmule"));
+        let newer = words(OpenRefusal::Newer {
+            found: 17,
+            current: 16,
+        });
+        assert!(newer.contains("17") && newer.contains("16"), "{newer}");
+        for refusal in [
+            OpenRefusal::Newer {
+                found: 17,
+                current: 16,
+            },
+            OpenRefusal::TooOld { found: 1 },
+            OpenRefusal::Damaged,
+            OpenRefusal::Disk { os_code: Some(28) },
+            OpenRefusal::NotCopied { os_code: None },
+        ] {
+            let sentence = words(refusal);
+            assert!(!sentence.contains("another rmule"), "{sentence}");
+        }
+        assert!(words(OpenRefusal::Damaged).contains("keep"));
     }
 }
