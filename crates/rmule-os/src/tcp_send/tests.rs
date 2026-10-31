@@ -27,24 +27,25 @@ fn the_count_stands_on_an_unread_socket_and_falls_as_the_receiver_reads() {
     let (mut receiver, _) = listener.accept().unwrap();
     assert_eq!(send_progress(&sender), Some(SendProgress::Held(0)));
 
-    fill(&mut sender);
-    // What the receiver's window took acks away at once; wait for it to end.
-    let settle = Instant::now() + Duration::from_secs(5);
+    // The receiver's kernel acks what its window takes, and autotuning grows
+    // that window, so the count only stands once the window is full too.
+    let settle = Instant::now() + Duration::from_secs(10);
     let full = loop {
-        let before = send_progress(&sender);
+        fill(&mut sender);
+        let before = send_progress(&sender).expect("a TCP stream answers");
         std::thread::sleep(Duration::from_millis(50));
-        if send_progress(&sender) == before {
-            break before.expect("a TCP stream answers");
+        let after = send_progress(&sender).expect("a TCP stream answers");
+        if after == before && !matches!(after, SendProgress::Held(0)) {
+            break after;
         }
         assert!(Instant::now() < settle, "the count never settled");
     };
-    assert!(
-        matches!(full, SendProgress::Held(held) if held > 0),
-        "{full:?}"
-    );
 
     let mut chunk = [0u8; 64 * 1024];
-    let give_up = Instant::now() + Duration::from_secs(5);
+    receiver
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let give_up = Instant::now() + Duration::from_secs(10);
     loop {
         receiver.read_exact(&mut chunk).unwrap();
         if send_progress(&sender).is_some_and(|now| now.is_past(full)) {
