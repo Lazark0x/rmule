@@ -178,9 +178,7 @@ impl KadNode {
 
     /// Stop republishing `request`'s file.
     pub(super) fn withdraw_publish(&mut self, request: KadPublishRequest) {
-        let target = request.kad_target();
-        self.scheduled_publishes
-            .retain(|scheduled| scheduled.request.kad_target() != target);
+        self.publish_schedule.withdraw(request.kad_target());
     }
 
     /// Route a `KADEMLIA2_PUBLISH_RES` to the publish walk that fanned a
@@ -249,6 +247,22 @@ impl KadNode {
         }
     }
 
+    fn callable_by_udp(&self) -> bool {
+        self.publish_connect_options.is_some_and(|byte| {
+            rmule_primitives::SourceCryptOptions::from_byte(byte).supports_direct_udp_callback()
+        })
+    }
+
+    /// Whether this node can state a source row at all: a firewalled node with
+    /// no buddy and no direct UDP callback cannot.
+    pub(super) fn has_publish_row(&self) -> bool {
+        self.callable_by_udp()
+            || !matches!(
+                self.publish_posture,
+                KadPublishPosture::Firewalled { buddy: None }
+            )
+    }
+
     /// This node as a `0x44` announcement: own TCP port, the size (narrowed or widened to
     /// `TAG_FILESIZE`'s `CTagVarInt` width), the source
     /// ID as the User Hash in Kad wire order, and — only while the chooser
@@ -302,9 +316,7 @@ impl KadNode {
         // aMule's `IsLargeFile` (`Search.cpp:613`, `:633`): strictly past
         // `OLD_MAX_FILE_SIZE`, which a `u32` still holds.
         let large = rmule_primitives::is_large_file(file_size);
-        let callable_by_udp = self.publish_connect_options.is_some_and(|byte| {
-            rmule_primitives::SourceCryptOptions::from_byte(byte).supports_direct_udp_callback()
-        });
+        let callable_by_udp = self.callable_by_udp();
         let (source_type, buddy) = match (callable_by_udp, self.publish_posture, large) {
             (true, _, _) => (SOURCETYPE_FIREWALLED_UDP, None),
             (false, KadPublishPosture::Firewalled { buddy: Some(buddy) }, false) => {

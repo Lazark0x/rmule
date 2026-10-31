@@ -67,7 +67,8 @@ the 2 s pace at start spreads every later round too.
 Core keeps that per hash in one clock the actor owns, outside any run and any Kad node, so
 Pause, Resume, Cancel, a re-add of the hash, a run restart and a Kad restart all keep it. Only
 a process restart loses it, as stock's does. Stock's Stop clears it; rmule does not, because
-the peer's count does not clear either. An ask is spent only once the node has heard someone.
+the peer's count does not clear either. An ask is spent only once the node has heard someone,
+and never on a run holding 50 sources (`GetMaxSourcePerFileUDP`, `PartFile.cpp:1512`).
 
 **Ban: the node reports, core enforces.** At `count > 5 × rate`
 ([PacketTracking.cpp#L212](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/PacketTracking.cpp#L212))

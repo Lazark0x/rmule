@@ -71,14 +71,16 @@ pub enum KadCommand {
         /// The Kad endpoint the eD2k peer hinted at.
         endpoint: KadNodeEndpoint,
     },
-    /// Walk toward the request's Kad target and search the nearest responded
-    /// nodes for sources (the **Kad Requester** role).
+    /// Queue a walk toward the request's Kad target, to search the nearest
+    /// responded nodes for sources (the **Kad Requester** role). It starts at
+    /// stock's pace, once the node has joined (ADR-0064).
     SearchSources {
         /// The file to find sources for, carrying the target the walk aims at.
         request: KadSourceLookupRequest,
     },
     /// Register the request's file for publication (the **Kad Publisher**
-    /// role): publish immediately, then republish every
+    /// role): the node starts it at stock's pace once it may publish
+    /// (ADR-0064), then republishes every
     /// [`KadNode::SOURCE_REPUBLISH_INTERVAL`](crate::KadNode::SOURCE_REPUBLISH_INTERVAL) through `tick`.
     PublishSource {
         /// The file to publish ourselves as a source of.

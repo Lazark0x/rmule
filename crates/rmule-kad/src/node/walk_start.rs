@@ -13,11 +13,12 @@
 //! list holds asks already spent on Core's **Ask Clock**; a paused download's
 //! ask still walks, and its answer finds no sink.
 
+use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use super::{KadNode, KadNodeDiagnostic};
-use crate::lookup_walk::KadWalkPurpose;
-use crate::{KadInstant, KadPublishRequest, KadSourceLookupRequest};
+use crate::lookup_walk::{KadLookupWalk, KadWalkPurpose};
+use crate::{KadId, KadInstant, KadPublishRequest, KadSourceLookupRequest};
 
 /// Source publish walks at once (`KADEMLIATOTALSTORESRC`, `Constants.h:39`).
 const MOST_PUBLISH_WALKS: usize = 3;
@@ -35,14 +36,61 @@ const SEARCH_SPACING: Duration = Duration::from_secs(1);
 /// Asks waiting at once: more downloads than stock's queue holds.
 const MOST_QUEUED_SEARCHES: usize = 4096;
 
-/// A registered publication: republished every
-/// [`KadNode::SOURCE_REPUBLISH_INTERVAL`], anchored at each publish start
-/// (the aMule cadence: its shared-file loop schedules the next source publish
-/// when one starts).
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ScheduledPublish {
-    pub(super) request: KadPublishRequest,
-    pub(super) next_at: KadInstant,
+/// The registered publications by next due instant: each is republished every
+/// [`KadNode::SOURCE_REPUBLISH_INTERVAL`], anchored at its own start (the aMule
+/// cadence: its shared-file loop schedules the next source publish when one
+/// starts). Ordered, because the node reads the soonest on every datagram and a
+/// share runs to thousands of files.
+#[derive(Debug, Default)]
+pub(super) struct PublishSchedule {
+    by_due: BTreeMap<(KadInstant, u64), KadPublishRequest>,
+    key_of: HashMap<KadId, (KadInstant, u64)>,
+    registered: u64,
+}
+
+impl PublishSchedule {
+    /// Register `request`, due at `now`; `false` if its target already is.
+    fn register(&mut self, now: KadInstant, request: KadPublishRequest) -> bool {
+        let target = request.kad_target();
+        if self.key_of.contains_key(&target) {
+            return false;
+        }
+        self.registered += 1;
+        let key = (now, self.registered);
+        self.by_due.insert(key, request);
+        self.key_of.insert(target, key);
+        true
+    }
+
+    /// Stop republishing `target`.
+    pub(super) fn withdraw(&mut self, target: KadId) {
+        if let Some(key) = self.key_of.remove(&target) {
+            self.by_due.remove(&key);
+        }
+    }
+
+    /// The soonest publication no walk holds.
+    fn soonest(&self, walks: &[KadLookupWalk]) -> Option<(KadInstant, KadPublishRequest)> {
+        self.by_due
+            .iter()
+            .find(|(_, request)| {
+                let target = request.kad_target();
+                !walks.iter().any(|walk| walk.target() == target)
+            })
+            .map(|(&(due, _), &request)| (due, request))
+    }
+
+    /// Move `request` to `next`.
+    fn reschedule(&mut self, request: KadPublishRequest, next: KadInstant) {
+        let target = request.kad_target();
+        if let Some(key) = self.key_of.get_mut(&target)
+            && let Some(request) = self.by_due.remove(key)
+        {
+            self.registered += 1;
+            *key = (next, self.registered);
+            self.by_due.insert(*key, request);
+        }
+    }
 }
 
 /// The node's own clock on bulk walk starts.
@@ -93,19 +141,11 @@ impl KadNode {
     /// Register a publication, due at once. The tick starts it, and
     /// republishes it every [`Self::SOURCE_REPUBLISH_INTERVAL`] from each start.
     pub(super) fn register_publish(&mut self, now: KadInstant, request: KadPublishRequest) {
-        let target = request.kad_target();
-        if self
-            .scheduled_publishes
-            .iter()
-            .any(|scheduled| scheduled.request.kad_target() == target)
-        {
+        if !self.publish_schedule.register(now, request) {
+            let target = request.kad_target();
             self.emit_diagnostic(KadNodeDiagnostic::DuplicatePublish { target });
             return;
         }
-        self.scheduled_publishes.push(ScheduledPublish {
-            request,
-            next_at: now,
-        });
         self.drive_walk_starts(now);
     }
 
@@ -115,34 +155,37 @@ impl KadNode {
         if publishes_open
             && now >= self.walk_starts.next_publish
             && self.publish_walks() < MOST_PUBLISH_WALKS
-            && let Some(index) = self.next_publish_index(now)
+            && let Some((due, request)) = self.publish_schedule.soonest(&self.walks)
+            && due <= now
         {
-            let request = self.scheduled_publishes[index].request;
-            self.scheduled_publishes[index].next_at = now + Self::SOURCE_REPUBLISH_INTERVAL;
+            let next = now + Self::SOURCE_REPUBLISH_INTERVAL;
+            self.publish_schedule.reschedule(request, next);
             self.walk_starts.next_publish = now + PUBLISH_SPACING;
             self.start_walk(now, KadWalkPurpose::PublishSource(request));
         }
         let joined = self.joined(now);
-        if joined && now >= self.walk_starts.next_search && self.search_walks() < MOST_SEARCH_WALKS
+        if joined
+            && now >= self.walk_starts.next_search
+            && self.search_walks() < MOST_SEARCH_WALKS
+            && let Some(request) = self.source_searches.pop_front()
         {
-            if let Some(request) = self.source_searches.pop_front() {
-                self.walk_starts.next_search = now + SEARCH_SPACING;
-                self.start_walk(now, KadWalkPurpose::SearchSources(request));
-            }
+            self.walk_starts.next_search = now + SEARCH_SPACING;
+            self.start_walk(now, KadWalkPurpose::SearchSources(request));
         }
         let publish_wake = (publishes_open && self.publish_walks() < MOST_PUBLISH_WALKS)
-            .then(|| self.next_publish_due())
+            .then(|| self.publish_schedule.soonest(&self.walks))
             .flatten()
-            .map(|due| due.max(self.walk_starts.next_publish));
+            .map(|(due, _)| due.max(self.walk_starts.next_publish));
         let search_wake =
             (joined && !self.source_searches.is_empty() && self.search_walks() < MOST_SEARCH_WALKS)
                 .then_some(self.walk_starts.next_search);
         self.walk_starts.wake = publish_wake.into_iter().chain(search_wake).min();
     }
 
-    /// `SharedFileList.cpp:773`: joined, and the self-lookup ended.
+    /// `SharedFileList.cpp:773`: joined, the self-lookup ended, and a row to
+    /// state, which a firewalled node with no buddy lacks.
     fn publish_gate_open(&self, now: KadInstant) -> bool {
-        self.joined(now) && self.walk_starts.publishing
+        self.joined(now) && self.walk_starts.publishing && self.has_publish_row()
     }
 
     fn publish_walks(&self) -> usize {
@@ -157,32 +200,5 @@ impl KadNode {
             .iter()
             .filter(|walk| matches!(walk.purpose(), KadWalkPurpose::SearchSources(_)))
             .count()
-    }
-
-    /// Whether a publication can start: no walk holds its target, and the node
-    /// has a row to state for it (a firewalled node with no buddy has none,
-    /// `SharedFileList.cpp:773`).
-    fn publishable(&self, scheduled: &ScheduledPublish) -> bool {
-        let target = scheduled.request.kad_target();
-        !self.walks.iter().any(|walk| walk.target() == target)
-            && self.publish_source_req(&scheduled.request).is_some()
-    }
-
-    /// The registration index of the longest-due publication at `now`.
-    fn next_publish_index(&self, now: KadInstant) -> Option<usize> {
-        self.scheduled_publishes
-            .iter()
-            .enumerate()
-            .filter(|(_, scheduled)| scheduled.next_at <= now && self.publishable(scheduled))
-            .min_by_key(|(_, scheduled)| scheduled.next_at)
-            .map(|(index, _)| index)
-    }
-
-    fn next_publish_due(&self) -> Option<KadInstant> {
-        self.scheduled_publishes
-            .iter()
-            .filter(|scheduled| self.publishable(scheduled))
-            .map(|scheduled| scheduled.next_at)
-            .min()
     }
 }

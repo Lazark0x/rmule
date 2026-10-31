@@ -223,7 +223,7 @@ pub struct KadNode {
     /// The **Kad Storer**'s bounded source index.
     source_store: SourceStore,
     /// Registered publications, in registration order.
-    scheduled_publishes: Vec<walk_start::ScheduledPublish>,
+    publish_schedule: walk_start::PublishSchedule,
     /// Source searches waiting for their start.
     source_searches: VecDeque<KadSourceLookupRequest>,
     /// The node's clock on bulk walk starts.
@@ -389,7 +389,7 @@ impl KadNode {
             pending_probes: Vec::new(),
             walks: Vec::new(),
             source_store: SourceStore::new(Self::MAX_SOURCES_PER_KEY, Self::MAX_SOURCE_INDEX_TOTAL),
-            scheduled_publishes: Vec::new(),
+            publish_schedule: walk_start::PublishSchedule::default(),
             source_searches: VecDeque::new(),
             walk_starts: walk_start::WalkStarts::new(),
             awaiting_acks: Vec::new(),
