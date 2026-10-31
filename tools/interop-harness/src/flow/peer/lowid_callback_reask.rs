@@ -282,8 +282,7 @@ pub fn run_peer_lowid_callback_reask(options: PeerLowIdCallbackReaskOptions<'_>)
             &rmule,
             options.layout.root(),
             &server,
-            link,
-            deadline,
+            (link, deadline),
             &if options.sharer_asks {
                 sharer_asks::rmule_flags()
             } else {
@@ -426,8 +425,7 @@ fn rmule_download(
     name: &str,
     run_root: &Path,
     server: &SocketAddrV4,
-    link: &str,
-    max_seconds: u64,
+    (link, max_seconds): (&str, u64),
     flags: &[String],
 ) -> RunContainer {
     [
