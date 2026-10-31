@@ -98,6 +98,10 @@ fn of_download(event: &DownloadEvent) -> Weight {
         | E::FailureNotRecorded { .. }
         | E::HoleLessDestination { .. }
         | E::VolumeStopped { .. }
+        | E::CancelledFileLeft { .. }
+        | E::RowsUnreadable { .. }
+        | E::PartFilesAdopted { .. }
+        | E::StoreStopped
         | E::Completing { .. } => Weight::Edge,
         E::ServerLoginAccepted { .. }
         | E::SourcesFound { .. }

@@ -51,7 +51,7 @@ pub(in crate::service::actor) async fn attach_downloads(
     sweep_cancelled(store, evt_tx).await;
     match store.unreadable_rows() {
         Ok(0) | Err(_) => {}
-        Ok(rows) => send_download_event(evt_tx, DownloadEvent::RowsUnreadable { rows }).await,
+        Ok(rows) => send_download_event(evt_tx, DownloadEvent::RowsUnreadable { rows }),
     }
     let mut restoring = VecDeque::new();
     for record in records {
@@ -196,7 +196,7 @@ pub(in crate::service::actor) async fn adopt_part_files(
     store: &DurableDownloadRepository,
     temp_dir: Option<PathBuf>,
     download_dir: Option<PathBuf>,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) {
     let (Some(temp_dir), Some(download_dir)) = (temp_dir, download_dir) else {
         return;
@@ -215,13 +215,13 @@ pub(in crate::service::actor) async fn adopt_part_files(
         }
     }
     if parts > 0 {
-        send_download_event(evt_tx, DownloadEvent::PartFilesAdopted { parts }).await;
+        send_download_event(evt_tx, DownloadEvent::PartFilesAdopted { parts });
     }
 }
 
 /// Try again the part files a cancel could not delete (ADR-0094). One that
 /// is still refused is told again, and the next attach goes on trying.
-async fn sweep_cancelled(store: &DurableDownloadRepository, evt_tx: &mpsc::Sender<CoreEvent>) {
+async fn sweep_cancelled(store: &DurableDownloadRepository, evt_tx: &crate::service::Outbox) {
     for record in store.cancelled_part_files().unwrap_or_default() {
         let download_id = record.id();
         if let Err(error) = ContentFileStore::delete_part(record.paths()).await {
@@ -232,8 +232,7 @@ async fn sweep_cancelled(store: &DurableDownloadRepository, evt_tx: &mpsc::Sende
                     download_id,
                     part_path: record.paths().part_path().to_path_buf(),
                 },
-            )
-            .await;
+            );
         } else if let Err(error) = store.part_file_gone(download_id) {
             tracing::warn!(%error, "a deleted part file could not be taken off its row");
         }

@@ -50,13 +50,13 @@ pub(super) enum PersistError {
 }
 
 /// Say once that a failed write stopped the store (ADR-0083).
-pub(crate) async fn tell_store_stop(
+pub(crate) fn tell_store_stop(
     store: &crate::store::download::DurableDownloadRepository,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) {
     if store.store_stop_to_tell() {
         tracing::warn!("a failed write stopped the store until the next start");
-        send_download_event(evt_tx, DownloadEvent::StoreStopped).await;
+        send_download_event(evt_tx, DownloadEvent::StoreStopped);
     }
 }
 
@@ -598,7 +598,7 @@ pub(crate) async fn record_failure(
             "the store could not record why the download failed",
         );
         send_download_event(evt_tx, DownloadEvent::FailureNotRecorded { download_id });
-        tell_store_stop(store, evt_tx).await;
+        tell_store_stop(store, evt_tx);
     }
 }
 

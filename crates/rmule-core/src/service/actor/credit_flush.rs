@@ -12,7 +12,6 @@ use tokio::task::JoinHandle;
 use crate::content::on_pool;
 use crate::credit::SharedCreditStore;
 use crate::download::persist::tell_store_stop;
-use crate::service::CoreEvent;
 use crate::store::download::DurableDownloadRepository;
 
 /// How often what moved is written.
@@ -30,7 +29,7 @@ impl CreditFlush {
     pub(super) fn start(
         credit: SharedCreditStore,
         store: Arc<DurableDownloadRepository>,
-        evt_tx: mpsc::Sender<CoreEvent>,
+        evt_tx: crate::service::Outbox,
     ) -> Self {
         let (stop, mut stopped) = mpsc::channel::<()>(1);
         let periodic = tokio::spawn(async move {
@@ -43,7 +42,7 @@ impl CreditFlush {
                         if let Err(error) = on_pool(move || credit.checkpoint()).await {
                             tracing::warn!(%error, "credit flush failed; retried next time");
                         }
-                        tell_store_stop(&store, &evt_tx).await;
+                        tell_store_stop(&store, &evt_tx);
                     }
                     _ = stopped.recv() => return,
                 }

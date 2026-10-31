@@ -505,7 +505,7 @@ where
                 );
                 self.reject(CoreCommandRejectReason::DownloadStoreFailed)
                     .await;
-                crate::download::persist::tell_store_stop(&self.wiring.store, &self.evt_tx).await;
+                crate::download::persist::tell_store_stop(&self.wiring.store, &self.evt_tx);
                 return;
             }
         }
@@ -543,8 +543,7 @@ where
                     download_id,
                     part_path: paths.part_path().to_path_buf(),
                 },
-            )
-            .await;
+            );
             return;
         }
         if let Err(error) = self.wiring.store.part_file_gone(download_id) {
