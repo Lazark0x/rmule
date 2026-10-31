@@ -21,7 +21,7 @@
 # Native-arch build: unlike the amule/eserver images this is not amd64-only,
 # so no `--platform` and no qemu emulation.
 
-FROM rust:1-bookworm AS builder
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS builder
 WORKDIR /src
 COPY . .
 # `tikv-jemallocator` compiles jemalloc from C source; the rust bookworm image
@@ -30,7 +30,7 @@ COPY . .
 # resulting binary is portable.
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1

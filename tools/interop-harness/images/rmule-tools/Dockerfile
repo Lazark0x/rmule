@@ -37,7 +37,7 @@
 # seconds; this image takes that debug binary (same Debian bookworm glibc as
 # the base below). An unchanged binary is an unchanged `COPY` layer.
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 LABEL org.rmule.bench=1
 # iproute2 backs the LAN default-route knob the entrypoint applies (ADR-0092):
 # a driver on a NAT gateway's LAN has no egress until its default route points

@@ -208,9 +208,13 @@ accepts, run the bench flows that cover it and say which ones in the pull reques
 You need a Docker-compatible runtime (`--container-runtime <BIN>` selects another
 CLI than `docker`). The images are built on your machine from the recipes under
 [`tools/interop-harness/images/`](tools/interop-harness/images/), which fetch
-pinned upstream inputs (versions, commits and checksums are in the recipes).
-Nothing prebuilt is downloaded and no built image is committed. If your container
-runtime runs in a VM, keep the checkout and the run directory under your home
+pinned upstream inputs (base images by digest; versions, commits and checksums
+are in the recipes). No built image is committed. One input is a prebuilt binary:
+the `server` recipe downloads Lugdunum's closed `eserver` for `linux/amd64` from
+its author's site and checks its SHA-256, because no source exists to build it
+from. The flows that stand Lugdunum need that download, and on another
+architecture they run under your runtime's `linux/amd64` emulation. If your
+container runtime runs in a VM, keep the checkout and the run directory under your home
 directory, which is what such VMs usually mount.
 
 Run one flow end to end. aMule shares a synthetic file, rmule finds it through a

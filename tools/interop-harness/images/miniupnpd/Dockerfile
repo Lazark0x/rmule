@@ -43,7 +43,7 @@
 #   --sysctl net.netfilter.nf_conntrack_udp_timeout=180
 # (the last for the same RFC 4787 REQ-5 reason the `natgw` image documents).
 
-FROM alpine:edge
+FROM alpine:edge@sha256:020dfcbaaf4cc1078bf2d9c7ba31a8466e334061dcd2f248001d68f79e52c000
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1

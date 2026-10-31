@@ -22,7 +22,7 @@
 ARG EMULEQT_BUILD_IMAGE=rmule/interop-emuleqt-build:local
 FROM ${EMULEQT_BUILD_IMAGE} AS build
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 # `org.rmule.bench=1` scopes the bench-image cleanup to harness images
 # Every harness final stage carries it.
 LABEL org.rmule.bench=1

@@ -14,7 +14,7 @@
 # rmule-tools stack; the entrypoint pins the subcommand, and the scenarios'
 # bare `--flag` arguments append after it unchanged.
 
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS build
 LABEL org.rmule.bench.stage=1
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
@@ -24,7 +24,7 @@ COPY apps ./apps
 RUN cargo build --release -p rmule-tools \
     && cp target/release/rmule-tools /rmule-tools
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3
 LABEL org.rmule.bench=1
 # iproute2 backs the LAN default-route knob the entrypoint applies (ADR-0092).
 ENV DEBIAN_FRONTEND=noninteractive

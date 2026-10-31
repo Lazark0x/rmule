@@ -4,6 +4,52 @@ All notable changes to rmule are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Transfers
+
+- Part files are sparse where the file system allows, and a download keeps its
+  place across a restart without re-reading what it verified.
+- Parts are fetched by availability inside a streaming window, down to the
+  block, with a bounded end game.
+- A file is shared from its first verified part, and a queued or paused
+  download is offered again once it passes the offer check after a restart.
+- Preview hands a download's file to your player.
+- A Temp Directory holds part files, and `rmule-cli config set-temp-dir` sets
+  it. Completed files move out of it when they finish.
+
+### Peers
+
+- One peer holds one link and one place in a queue across several downloads,
+  and rmule asks each source on one clock.
+
+### Interop harness
+
+- Every flow writes one typed verdict to one TOML file, and the harness exits
+  non-zero on `FAIL`. A run that wrote no verdict records `unknown`.
+- A partial-share `PASS` needs every claim the run owes and a fully read wire.
+  A sentinel run that drives no aMule reads `OBSERVED`.
+- Base images are pinned by digest.
+
+## [0.2.0] - 2026-10-13
+
+An internal rework: each fact now has one owner across downloads, reachability,
+Kad, settings and the wire.
+
+### Changed
+
+- Download sources live in one record per source, with one intake and one clock
+  per file for purging them.
+- A called-back Low ID source is pinged at the address it called in from, and
+  queued sources are asked again only while connected.
+- Core owns its settings through one handle, and the obfuscation policy changes
+  live on every surface.
+- Server UDP aims at the standard port; datagrams other than the crypt ping are
+  sealed to the obfuscation port, which is read from the login answer and from
+  `server.met`.
+- `OP_OFFERFILES` follows aMule's per-server rule, completeness markers
+  included.
+
 ## [0.1.0] - 2026-10-02
 
 The first public release.
@@ -88,4 +134,6 @@ The first public release.
 - On Windows the data directory is `%LOCALAPPDATA%\rmule`, and the binaries
   link the C runtime statically.
 
+[Unreleased]: https://github.com/Lazark0x/rmule/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Lazark0x/rmule/releases/tag/v0.2.0
 [0.1.0]: https://github.com/Lazark0x/rmule/releases/tag/v0.1.0
