@@ -680,3 +680,63 @@ const fn nobody_reached(search: bool) -> KadWalkOutcome {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use super::*;
+
+    const T0: KadInstant = KadInstant::EPOCH;
+
+    fn id(byte: u8) -> KadId {
+        KadId::from_bytes([byte; KadId::BYTE_LEN])
+    }
+
+    fn contact(byte: u8) -> KadContact {
+        let endpoint = KadNodeEndpoint::new(Ipv4Addr::new(203, 0, 113, byte), 4672);
+        KadContact::new(id(byte), endpoint, 4662, 8)
+    }
+
+    fn walk(seeds: Vec<KadContact>) -> (KadLookupWalk, Vec<KadWalkAction>) {
+        let purpose = KadWalkPurpose::RefreshLookup { target: id(0) };
+        KadLookupWalk::start(T0, purpose, id(0xFF), seeds)
+    }
+
+    #[test]
+    fn a_held_query_waits_from_when_it_leaves() {
+        let (mut walk, _) = walk(vec![contact(1)]);
+        let leaves = T0 + Duration::from_secs(6);
+        walk.on_send_held(contact(1).endpoint(), leaves);
+
+        assert!(walk.tick(T0 + KadNode::LOOKUP_QUERY_TIMEOUT).is_empty());
+        assert!(walk.awaits(contact(1).endpoint()));
+        walk.tick(leaves + KadNode::LOOKUP_QUERY_TIMEOUT);
+        assert!(walk.is_complete(), "silent past its own deadline");
+    }
+
+    #[test]
+    fn a_refused_query_takes_the_next_candidate_and_spends_no_budget() {
+        let seeds = vec![contact(1), contact(2), contact(3), contact(4)];
+        let (mut walk, actions) = walk(seeds);
+        assert_eq!(actions.len(), KadNode::LOOKUP_ALPHA);
+        let refused = contact(1).endpoint();
+
+        let actions = walk.on_send_refused(T0, refused);
+
+        assert!(matches!(
+            actions.as_slice(),
+            [KadWalkAction::SendLookup { contact: next }] if next.id() == id(4)
+        ));
+        assert!(!walk.awaits(refused));
+        assert_eq!(walk.queries_sent, KadNode::LOOKUP_ALPHA);
+    }
+
+    #[test]
+    fn a_walk_whose_every_query_was_refused_ends() {
+        let (mut walk, _) = walk(vec![contact(1)]);
+        walk.on_send_refused(T0, contact(1).endpoint());
+        assert!(walk.is_complete());
+    }
+}
