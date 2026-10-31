@@ -79,8 +79,10 @@ user did not ask for. Examples:
 
 - Weaknesses of the eD2k and Kad protocols themselves that rmule shares with
   every compatible client: cleartext traffic, unauthenticated Kad contacts,
-  Sybil and eclipse attacks on the DHT, and the fact that protocol obfuscation
-  hides traffic from casual inspection but is not encryption. rmule keeps these
+  Sybil and eclipse attacks on the DHT, the fact that protocol obfuscation
+  hides traffic from casual inspection but is not encryption, and the fact that
+  Secure User Identification's 384-bit key, which the wire fixes, deters casual
+  hash theft and can be factored offline. rmule keeps these
   behaviours so that it stays compatible. A report that rmule makes one of them
   worse than a stock client does is in scope.
 - Vulnerabilities in other clients or servers. Please report those to their

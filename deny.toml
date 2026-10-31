@@ -49,7 +49,7 @@ ignore = false
 yanked = "warn"
 ignore = [
     { id = "RUSTSEC-2026-0293", reason = "ringbuf is pinned to 0.4 by librqbit-utp and its only ring holds u8 elements, whose drop cannot panic." },
-    { id = "RUSTSEC-2023-0071", reason = "The rsa crate is only used to sign, verify and generate keys, never to decrypt, and no patched release exists." },
+    { id = "RUSTSEC-2023-0071", reason = "Signing is the private-key operation, on bytes a peer chose, so the one call is blinded (`RandomizedSigner`). The key is the wire's 384 bits, factorable offline from the public half, so a timing leak gives nothing more. No patched release exists." },
     # The rest are in tools/ed2ksrv-differ only. Its oracle, ed2k-server, is
     # pinned to the bench's exact upstream commit (ADR-0045) and itself pins
     # every direct dependency with `=`, so a lockfile update cannot move these.

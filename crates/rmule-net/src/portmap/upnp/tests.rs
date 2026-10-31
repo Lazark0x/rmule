@@ -237,3 +237,24 @@ fn the_device_cache_is_keyed_on_the_next_hop_it_was_found_from() {
     assert!(backend.cached(first).is_some());
     assert!(backend.cached(second).is_none());
 }
+
+/// The first SSDP reply wins the search and its `Location` is the sender's own
+/// word: a LAN neighbour is never taken for the gateway.
+#[test]
+fn a_device_not_at_the_next_hop_is_refused_and_never_cached() {
+    let backend = UpnpMappingBackend::new();
+    let gateway = Gateway::v4(Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 5));
+    let at = |ip: [u8; 4]| igd_next::Gateway {
+        addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(ip)), 5000),
+        root_url: String::new(),
+        control_url: String::new(),
+        control_schema_url: String::new(),
+        control_schema: std::collections::HashMap::new(),
+    };
+
+    assert!(backend.adopted(gateway, at([192, 168, 1, 66])).is_err());
+    assert!(backend.cached(gateway).is_none());
+
+    assert!(backend.adopted(gateway, at([192, 168, 1, 1])).is_ok());
+    assert!(backend.cached(gateway).is_some());
+}

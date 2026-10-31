@@ -128,6 +128,26 @@ impl UpnpMappingBackend {
         .await
         .map_err(|error| transport(&error))?
         .map_err(|_| MappingError::Unsupported(MappingProtocol::Upnp))?;
+        self.adopted(gateway, found)
+    }
+
+    /// The device a search found, kept when it stands at the next hop. The
+    /// search takes the first SSDP reply, whose `Location` is the sender's own
+    /// word: any host on the LAN could otherwise name itself the gateway, take
+    /// rmule's mappings and tell it its external address.
+    fn adopted(
+        &self,
+        gateway: Gateway,
+        found: igd_next::Gateway,
+    ) -> Result<igd_next::Gateway, MappingError> {
+        if found.addr.ip().to_canonical() != gateway.address.to_canonical() {
+            tracing::debug!(
+                device = %found.addr,
+                next_hop = %gateway.address,
+                "refusing a UPnP device that is not the gateway"
+            );
+            return Err(MappingError::Unsupported(MappingProtocol::Upnp));
+        }
         self.remember(gateway, &found);
         Ok(found)
     }
