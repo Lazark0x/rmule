@@ -46,7 +46,7 @@
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, UserHash};
+use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
 
 use crate::diagnostics::DiagnosticsState;
@@ -250,6 +250,15 @@ impl AwaitedInbound {
             self.let_go(let_go);
         }
         verdict
+    }
+
+    /// An accepted Tunnel's hello named `hello` at `at`: the front's
+    /// `identified` report for a Tunnel no download may have claimed
+    /// (ADR-0091, security rule 12).
+    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, hello: UserHash) {
+        if let Some(risen) = self.risen.get() {
+            risen.tunnel_identified(at, hello);
+        }
     }
 
     /// Tell every download that claimed `target` that the **Traversal

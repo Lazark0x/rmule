@@ -251,7 +251,7 @@ impl Node {
                 .admit_tx
                 .try_send(AdmittedPeer {
                     conn,
-                    dialed_toward: None,
+                    origin: crate::adapters::InboundOrigin::Socket,
                     awaited_server: None,
                 })
                 .is_err()
@@ -400,8 +400,8 @@ async fn two_fronts_raise_a_tunnel_over_loopback_and_carry_a_hello() {
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(b_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash),
         "a dialed tunnel names the target its punch was aimed at (ADR-0091)"
     );
     let accepted = tokio::time::timeout(deadline, b.accepted.recv())
@@ -409,7 +409,8 @@ async fn two_fronts_raise_a_tunnel_over_loopback_and_carry_a_hello() {
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "an accepted tunnel was aimed at us by somebody else; no download may claim it"
     );
     let mut dialed = dialed.conn;
@@ -457,12 +458,18 @@ async fn a_tunnel_rises_with_both_admitted_paths_drained_off_task() {
         .await
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
-    assert_eq!(dialed.dialed_toward, Some(b_hash));
+    assert_eq!(
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash)
+    );
     let accepted = tokio::time::timeout(deadline, b_accepted.recv())
         .await
         .expect("the responder's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
-    assert_eq!(accepted.dialed_toward, None);
+    assert_eq!(
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel
+    );
     assert_eq!(
         a_diagnostics.snapshot().session.natt_inbox_drops_total,
         0,
@@ -567,7 +574,10 @@ async fn a_dial_whose_first_opener_lands_on_nothing_is_recovered_by_the_redial()
         .await
         .expect("the re-dial reached the responder inside one attempt")
         .expect("the admit channel is open");
-    assert_eq!(dialed.dialed_toward, Some(b_hash));
+    assert_eq!(
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash)
+    );
     tokio::time::timeout(deadline, b.accepted.recv())
         .await
         .expect("the responder accepted the opener it was awake for")
@@ -725,8 +735,8 @@ async fn a_tunnel_adopted_cancels_a_still_pending_hold_toward_the_same_peer() {
         .expect("the dialer's tunnel entered the serve pipeline")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(b_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(b_hash),
         "the dialed path names the peer whose hold this leg is proving against"
     );
     tokio::time::timeout(deadline, b.accepted.recv())

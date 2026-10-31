@@ -115,7 +115,7 @@ fn triage_admitted(admitted: AdmittedPeer, awaited: AwaitedInbound) {
     tokio::spawn(async move { while evt_rx.recv().await.is_some() {} });
     tokio::spawn(triage_inbound_connection(
         admitted.conn,
-        admitted.dialed_toward,
+        admitted.origin,
         cmd_rx,
         evt_tx,
         awaited,
@@ -131,7 +131,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
     let (evt_tx, mut evt_rx) = mpsc::channel(32);
     tokio::spawn(triage_inbound_connection(
         admitted.conn,
-        admitted.dialed_toward,
+        admitted.origin,
         cmd_rx,
         evt_tx,
         AwaitedInbound::default(),
@@ -341,12 +341,13 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
         .expect("the target's accepted tunnel was admitted within 20s")
         .expect("the admit channel is open");
     assert_eq!(
-        dialed.dialed_toward,
-        Some(target_hash),
+        dialed.origin,
+        crate::adapters::InboundOrigin::DialedTunnel(target_hash),
         "the dialed path names the target its punch was aimed at"
     );
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "the accepted path was aimed at us, so no download of ours may claim it"
     );
     triage_admitted(dialed, claims.clone());
@@ -479,7 +480,8 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
         .expect("alice's real Tunnel was admitted within 20s")
         .expect("the admit channel is open");
     assert_eq!(
-        accepted.dialed_toward, None,
+        accepted.origin,
+        crate::adapters::InboundOrigin::AcceptedTunnel,
         "target never dialed; nothing here named a target for this accepted path"
     );
 

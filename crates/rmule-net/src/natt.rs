@@ -71,8 +71,8 @@ pub use quic::{
     QuicNattError, QuicTlsError, is_quic_long_header,
 };
 pub use registry::{
-    Admission, DialingSlot, ExpectsSource, HeldSlot, OPENING_MAX, OPENING_PER_IP, OPENING_TTL,
-    TunnelRegistry, TunnelSlot,
+    Admission, DialingSlot, ExpectsSource, HeldSlot, OPENING_TTL, TunnelRegistry, TunnelSlot,
+    UNIDENTIFIED_MAX, UNIDENTIFIED_PER_IP,
 };
 pub use send::{NattCrypt, NattDatagramSink, NattOwnHash, NattSender, SentFrame};
 pub use tunnel::{Tunnel, TunnelTransport};

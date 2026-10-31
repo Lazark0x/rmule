@@ -185,6 +185,12 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // simultaneous open raised on the same endpoint.
             }
             Risen::Identified { peer } => self.identified(peer),
+            Risen::TunnelIdentified { at, peer: _ } => {
+                self.registry
+                    .lock()
+                    .expect("the NAT-T tunnel registry is never poisoned")
+                    .identified(at);
+            }
             Risen::Abandoned { peer } => {
                 self.requester.abandon(&peer, now);
                 self.end_attempt(&peer);
@@ -382,7 +388,7 @@ pub(super) fn spawn_adopter(
             }
             let admitted = match dialed_toward {
                 Some(target) => admit.admit_dialed_toward(guard, at, role, target).await,
-                None => admit.admit(guard, at, role).await,
+                None => admit.admit_accepted_tunnel(guard, at, role).await,
             };
             match admitted {
                 Ok(()) => {

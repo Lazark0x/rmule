@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{ConnectionEvent, PeerIdentity, SideEvent};
-use rmule_primitives::{PeerEndpoint, UserHash};
+use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
 use crate::buddy_link::SharedBuddySlot;
@@ -32,7 +32,7 @@ use super::kad_runtime::{
 use super::peer_link::{AcceptedLink, SharedPeerLinks};
 use super::peer_transfer::PeerWorker;
 use super::peer_transfer::worker::drive_peer_worker;
-use super::serve_runtime::{ServeInput, ServeOutput};
+use super::serve_runtime::{InboundOrigin, ServeInput, ServeOutput};
 use super::served_link::{ServedOrigin, drive_served_link};
 
 mod crossed_hello;
@@ -103,14 +103,13 @@ pub(crate) enum InboundEnd {
 /// precedes `Identified`, so nothing is lost by waiting for identify before
 /// deciding.
 ///
-/// `dialed_toward` is the target User Hash a NAT-T punch raised this stream
-/// toward (ADR-0091), `None` for every stream this node did not aim.
+/// `origin` is what the NAT-T front knows about the stream (ADR-0091).
 ///
 /// Returns how the connection left the router: closed here, with who closed
 /// it, or adopted.
 pub(crate) async fn triage_inbound_connection(
     mut conn: PeerConnection,
-    dialed_toward: Option<UserHash>,
+    origin: InboundOrigin,
     command_rx: mpsc::Receiver<ServeOutput>,
     event_tx: mpsc::Sender<ServeInput>,
     awaited: AwaitedInbound,
@@ -151,6 +150,12 @@ pub(crate) async fn triage_inbound_connection(
             return InboundEnd::Closed(closed_by);
         }
     };
+
+    // The hello is the first thing that names anybody on an accepted Tunnel
+    // (ADR-0091, security rule 12), whichever road below then takes it.
+    if origin == InboundOrigin::AcceptedTunnel {
+        awaited.tunnel_identified(remote, identity.user_hash());
+    }
 
     // ed2k→Kad handoff (ADR-0067): an accepted peer that carries a Kad node
     // hint bootstraps our Kad node — aMule's `ConnectionEstablished` handoff, on
@@ -196,9 +201,9 @@ pub(crate) async fn triage_inbound_connection(
     // The one question (ADR-0039, ADR-0091): how the connection came in and
     // what its hello says. The key carries the concrete server the peer
     // reports; the runner resolved any connected-server `None` when it filed.
-    let arrival = match dialed_toward {
-        Some(target) => InboundArrival::DialedToward(target),
-        None => InboundArrival::Accepted,
+    let arrival = match origin {
+        InboundOrigin::DialedTunnel(target) => InboundArrival::DialedToward(target),
+        InboundOrigin::Socket | InboundOrigin::AcceptedTunnel => InboundArrival::Accepted,
     };
     let reported = CallbackKey {
         server: identity.connected_server(),

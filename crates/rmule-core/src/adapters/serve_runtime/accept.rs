@@ -92,19 +92,29 @@ pub(crate) enum TunnelAdmitRefusal {
 /// One connection past the **Accept Gates**, which the serve pipeline is about
 /// to triage, and the one thing a socket cannot say about itself.
 ///
-/// `dialed_toward` is the target **User Hash** a NAT-T punch raised this
-/// stream toward (ADR-0091). It is `None` for every road but one — a TCP
-/// accept, an accepted (Responder) tunnel, a callback dial-back — because none
-/// of them was opened toward a hash *this* node named. Only the NAT-T front
-/// knows it, and only for a tunnel it dialed, so it travels with the
-/// connection rather than being re-derived from the stream's role: a Dialer
-/// role alone says who spoke first, not who was aimed at.
+/// `origin` says what the NAT-T front knows about the stream (ADR-0091). Only
+/// the front knows it, so it travels with the connection rather than being
+/// re-derived from the stream's role: a Dialer role alone says who spoke
+/// first, not who was aimed at.
 pub(crate) struct AdmittedPeer {
     pub(crate) conn: PeerConnection,
-    pub(crate) dialed_toward: Option<UserHash>,
+    pub(crate) origin: InboundOrigin,
     /// The awaited server, when this connection came from its address inside
     /// its port test's window: where the test's end is reported.
     pub(crate) awaited_server: Option<AwaitedServer>,
+}
+
+/// Where an inbound stream came from, as far as the NAT-T front is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InboundOrigin {
+    /// Not a Tunnel, or none the front raised: a TCP accept, a callback
+    /// dial-back.
+    Socket,
+    /// A Tunnel a peer opened. It names nobody until its hello does, and that
+    /// hello is reported back to the front (ADR-0091, security rule 12).
+    AcceptedTunnel,
+    /// A Tunnel this node dialed toward the named User Hash.
+    DialedTunnel(UserHash),
 }
 
 /// The live half of [`SharedTunnelAdmit`] — everything the pump reads per
@@ -136,7 +146,27 @@ impl SharedTunnelAdmit {
     where
         S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        self.push(stream, peer, role, None).await
+        self.push(stream, peer, role, InboundOrigin::Socket).await
+    }
+
+    /// Hand a Tunnel a peer opened to the serve pipeline. The same road as
+    /// [`admit`](Self::admit), except that its hello is reported to the NAT-T
+    /// front (ADR-0091, security rule 12).
+    ///
+    /// # Errors
+    /// [`TunnelAdmitRefusal`] when this node is not serving, or its pipeline
+    /// has closed.
+    pub(crate) async fn admit_accepted_tunnel<S>(
+        &self,
+        stream: S,
+        peer: PeerEndpoint,
+        role: PeerStreamRole,
+    ) -> Result<(), TunnelAdmitRefusal>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        self.push(stream, peer, role, InboundOrigin::AcceptedTunnel)
+            .await
     }
 
     /// Hand one open stream to the serve pipeline, saying which target's punch
@@ -158,7 +188,8 @@ impl SharedTunnelAdmit {
     where
         S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        self.push(stream, peer, role, Some(target)).await
+        self.push(stream, peer, role, InboundOrigin::DialedTunnel(target))
+            .await
     }
 
     async fn push<S>(
@@ -166,7 +197,7 @@ impl SharedTunnelAdmit {
         stream: S,
         peer: PeerEndpoint,
         role: PeerStreamRole,
-        dialed_toward: Option<UserHash>,
+        origin: InboundOrigin,
     ) -> Result<(), TunnelAdmitRefusal>
     where
         S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
@@ -192,7 +223,7 @@ impl SharedTunnelAdmit {
         // server's port test: those are TCP accepts the listener classed.
         let arrival = Arrival {
             conn,
-            dialed_toward,
+            origin,
             test_connection: false,
             awaited_server: None,
         };
@@ -424,7 +455,7 @@ pub(super) fn spawn_accept_pump(
                         // dial it, so no download may claim it (ADR-0091).
                         let arrival = Arrival {
                             conn,
-                            dialed_toward: None,
+                            origin: InboundOrigin::Socket,
                             test_connection,
                             awaited_server,
                         };

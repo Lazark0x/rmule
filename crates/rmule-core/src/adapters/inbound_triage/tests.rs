@@ -112,7 +112,7 @@ async fn dial_a_buddy(
     let (evt_tx, mut evt_rx) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         conn,
-        None,
+        crate::adapters::InboundOrigin::Socket,
         cmd_rx,
         evt_tx,
         AwaitedInbound::default(),
@@ -456,7 +456,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     let (evt_tx, _evt_rx) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         conn,
-        None,
+        crate::adapters::InboundOrigin::Socket,
         cmd_rx,
         evt_tx,
         awaited.clone(),

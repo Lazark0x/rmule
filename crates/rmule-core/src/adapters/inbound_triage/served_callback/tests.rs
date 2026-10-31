@@ -82,7 +82,7 @@ async fn served_link(deps: InboundPeerDeps, diagnostics: DiagnosticsState) -> Se
     let (event_tx, mut events) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         conn,
-        None,
+        crate::adapters::InboundOrigin::Socket,
         command_rx,
         event_tx,
         AwaitedInbound::default(),
@@ -217,17 +217,14 @@ async fn a_served_links_callback_dials_the_requester_back_and_counts_each_drop()
         .await
         .expect("the dial-back reached the requester within 2s")
         .expect("the requester accepted it");
-    let AdmittedPeer {
-        conn,
-        dialed_toward,
-        ..
-    } = timeout(Duration::from_secs(2), admitted.recv())
+    let AdmittedPeer { conn, origin, .. } = timeout(Duration::from_secs(2), admitted.recv())
         .await
         .expect("the dial-back entered the serve pipeline within 2s")
         .expect("the admit channel stayed open");
     assert_eq!(conn.peer_endpoint(), PeerEndpoint::V4(requester));
     assert_eq!(
-        dialed_toward, None,
+        origin,
+        crate::adapters::InboundOrigin::Socket,
         "a callback dial-back is aimed at no hash this node named"
     );
     counted(&link.diagnostics, 1, 3).await;

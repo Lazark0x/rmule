@@ -32,12 +32,17 @@
 //! `ST_STATE` and a KEY frame sent to its claimed source. So an opening packet
 //! opens a slot only when the caller says its source IP is **expected** — the
 //! core's Punch Expectations and Peer Roster answer that, asked only when a
-//! packet would actually open a slot — and only while the `Opening` slots
-//! stay under [`OPENING_PER_IP`] for that IP and [`OPENING_MAX`] in all. The
-//! per-IP cap is what keeps a flood spoofing one expected address from
-//! crowding out another. Expired `Opening` slots are removed by
-//! [`TunnelRegistry::prune`] on the caller's tick, never by a scan per admit;
-//! one that has expired but not yet been pruned admits nothing.
+//! packet would actually open a slot — and only while the **Unidentified
+//! Allowance** has room: [`UNIDENTIFIED_PER_IP`] endpoints for that IP and
+//! [`UNIDENTIFIED_MAX`] in all. The per-IP half is what keeps a flood spoofing
+//! one expected address from crowding out another. Expired `Opening` slots are
+//! removed by [`TunnelRegistry::prune`] on the caller's tick, never by a scan
+//! per admit; one that has expired but not yet been pruned admits nothing.
+//!
+//! The charge outlives the `Opening` slot. `librqbit-utp` hands a stream over
+//! at the `ST_SYN`, so a slot that turned [`TunnelSlot::Held`] at the accept
+//! has proved nothing, and it spends the allowance until
+//! [`TunnelRegistry::identified`] says a hello read on it or its tunnel drops.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -57,16 +62,15 @@ use rmule_primitives::PeerEndpoint;
 /// nothing a stranger sent created it.
 pub const OPENING_TTL: Duration = Duration::from_secs(30);
 
-/// How many [`TunnelSlot::Opening`] slots one source IP may hold at once.
-/// Four, as many as the peers the core expects behind one address
-/// (a CGNAT pool, a home NAT with several clients); a legitimate peer opens
-/// one.
-pub const OPENING_PER_IP: usize = 4;
+/// How many unidentified endpoints one source IP may hold at once. Four, as
+/// many as the peers the core expects behind one address (a CGNAT pool, a home
+/// NAT with several clients); a legitimate peer holds one.
+pub const UNIDENTIFIED_PER_IP: usize = 4;
 
-/// How many [`TunnelSlot::Opening`] slots the registry holds at once, over
-/// every IP. A hard bound on what forged openers from expected addresses can
-/// make rmule answer inside one [`OPENING_TTL`].
-pub const OPENING_MAX: usize = 64;
+/// How many unidentified endpoints the registry holds at once, over every IP.
+/// A hard bound on what forged frames from expected addresses can make rmule
+/// answer or keep before a hello names anyone.
+pub const UNIDENTIFIED_MAX: usize = 64;
 
 /// The caller's answer to "is an opening packet from this IP expected?" —
 /// asked only when a packet would open a slot (ADR-0091, security rule 10).
@@ -114,17 +118,20 @@ struct SlotEntry {
     /// either side settles on one, and the loser closing must not evict the
     /// winner's admission. Zero unless `slot` is [`TunnelSlot::Held`].
     holders: u32,
+    /// Whether this row spends the **Unidentified Allowance**: it came from an
+    /// inbound frame and no hello has named anyone at the endpoint yet.
+    unidentified: bool,
 }
 
 /// The endpoint → tunnel-state table.
 #[derive(Debug, Default)]
 pub struct TunnelRegistry {
     slots: HashMap<PeerEndpoint, SlotEntry>,
-    /// How many [`TunnelSlot::Opening`] slots each IP holds — kept beside the
-    /// table so the caps cost a lookup, not a scan.
-    opening: HashMap<IpAddr, usize>,
-    /// The sum of `opening`.
-    opening_total: usize,
+    /// How many unidentified endpoints each IP holds — kept beside the table
+    /// so the allowance costs a lookup, not a scan.
+    unidentified: HashMap<IpAddr, usize>,
+    /// The sum of `unidentified`.
+    unidentified_total: usize,
 }
 
 impl TunnelRegistry {
@@ -139,7 +146,7 @@ impl TunnelRegistry {
     /// `opens` is whether *this packet* is an opening one — a uTP `ST_SYN` or a
     /// QUIC long header. An opening packet from an endpoint with no slot opens
     /// a [`TunnelSlot::Opening`] one when `expects` says its IP is expected
-    /// and the caps leave room, because the handshake's own follow-ups are
+    /// and the allowance has room, because the handshake's own follow-ups are
     /// not opening packets and would otherwise be dropped a millisecond later.
     /// `expects` is asked only then.
     pub fn admit(
@@ -154,10 +161,12 @@ impl TunnelRegistry {
             Some(_) => self.remove(peer),
             None => {}
         }
-        if !opens || !expects(peer.ip()) || !self.has_opening_room(peer.ip()) {
+        if !opens || !expects(peer.ip()) || !self.has_room(peer.ip()) {
             return Admission::Drop;
         }
-        self.insert(peer, SlotEntry::new(TunnelSlot::Opening, now));
+        let mut entry = SlotEntry::new(TunnelSlot::Opening, now);
+        entry.unidentified = true;
+        self.insert(peer, entry);
         Admission::Opened
     }
 
@@ -203,22 +212,37 @@ impl TunnelRegistry {
         }
     }
 
-    /// Promote `peer` to a held tunnel — the handshake completed and a
-    /// [`Tunnel`](super::Tunnel) exists — counting one more holder. A held
-    /// slot never ages out; it goes when its last holder does.
+    /// Promote `peer` to a held tunnel — a [`Tunnel`](super::Tunnel) exists —
+    /// counting one more holder. A held slot never ages out; it goes when its
+    /// last holder does.
+    ///
+    /// An inbound slot keeps its charge on the **Unidentified Allowance**: a
+    /// stream exists from the `ST_SYN` on, which proves nothing. Only a slot
+    /// our own dial opened is free of it.
     ///
     /// Prefer [`HeldSlot::hold`], which pairs this with the
     /// [`release_held`](Self::release_held) that must follow.
     pub fn held(&mut self, peer: PeerEndpoint, now: Instant) {
-        match self.slots.get_mut(&peer) {
-            Some(entry) if entry.slot == TunnelSlot::Held => {
+        let prior = self.slot(peer);
+        if prior == Some(TunnelSlot::Held) {
+            if let Some(entry) = self.slots.get_mut(&peer) {
                 entry.holders = entry.holders.saturating_add(1);
             }
-            _ => {
-                let mut entry = SlotEntry::new(TunnelSlot::Held, now);
-                entry.holders = 1;
-                self.insert(peer, entry);
-            }
+            return;
+        }
+        let mut entry = SlotEntry::new(TunnelSlot::Held, now);
+        entry.holders = 1;
+        entry.unidentified = prior != Some(TunnelSlot::Dialing);
+        self.insert(peer, entry);
+    }
+
+    /// A hello read on `peer`'s tunnel, or our own dial to it completed: the
+    /// endpoint stops spending the **Unidentified Allowance**.
+    pub fn identified(&mut self, peer: PeerEndpoint) {
+        if let Some(entry) = self.slots.get_mut(&peer)
+            && std::mem::take(&mut entry.unidentified)
+        {
+            self.uncharge(peer.ip());
         }
     }
 
@@ -259,36 +283,40 @@ impl TunnelRegistry {
         self.slots.is_empty()
     }
 
-    /// Whether one more `Opening` slot for `ip` fits under both caps.
-    fn has_opening_room(&self, ip: IpAddr) -> bool {
-        self.opening_total < OPENING_MAX
-            && self.opening.get(&ip).copied().unwrap_or(0) < OPENING_PER_IP
+    /// Whether one more unidentified endpoint at `ip` fits the allowance.
+    fn has_room(&self, ip: IpAddr) -> bool {
+        self.unidentified_total < UNIDENTIFIED_MAX
+            && self.unidentified.get(&ip).copied().unwrap_or(0) < UNIDENTIFIED_PER_IP
     }
 
-    /// Put `entry` at `peer`, replacing whatever was there, with the opening
-    /// counts kept in step.
+    /// Put `entry` at `peer`, replacing whatever was there, with the allowance
+    /// kept in step.
     fn insert(&mut self, peer: PeerEndpoint, entry: SlotEntry) {
         self.remove(peer);
-        if entry.slot == TunnelSlot::Opening {
-            *self.opening.entry(peer.ip()).or_default() += 1;
-            self.opening_total += 1;
+        if entry.unidentified {
+            *self.unidentified.entry(peer.ip()).or_default() += 1;
+            self.unidentified_total += 1;
         }
         self.slots.insert(peer, entry);
     }
 
-    /// Forget `peer`'s slot, with the opening counts kept in step.
+    /// Forget `peer`'s slot, with the allowance kept in step.
     fn remove(&mut self, peer: PeerEndpoint) {
         let Some(entry) = self.slots.remove(&peer) else {
             return;
         };
-        if entry.slot != TunnelSlot::Opening {
-            return;
+        if entry.unidentified {
+            self.uncharge(peer.ip());
         }
-        self.opening_total = self.opening_total.saturating_sub(1);
-        if let Some(count) = self.opening.get_mut(&peer.ip()) {
+    }
+
+    /// Give one unidentified endpoint at `ip` back to the allowance.
+    fn uncharge(&mut self, ip: IpAddr) {
+        self.unidentified_total = self.unidentified_total.saturating_sub(1);
+        if let Some(count) = self.unidentified.get_mut(&ip) {
             *count = count.saturating_sub(1);
             if *count == 0 {
-                self.opening.remove(&peer.ip());
+                self.unidentified.remove(&ip);
             }
         }
     }
@@ -300,6 +328,7 @@ impl SlotEntry {
             slot,
             since,
             holders: 0,
+            unidentified: false,
         }
     }
 
@@ -348,7 +377,12 @@ impl DialingSlot {
     /// this claim for exactly as long as the returned [`HeldSlot`] does.
     pub fn held(mut self) -> HeldSlot {
         self.release_on_drop = false;
-        HeldSlot::hold(&self.registry, self.peer)
+        let slot = HeldSlot::hold(&self.registry, self.peer);
+        self.registry
+            .lock()
+            .expect("the NAT-T tunnel registry is never poisoned")
+            .identified(self.peer);
+        slot
     }
 }
 

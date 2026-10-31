@@ -97,7 +97,7 @@ async fn adopted_callback(
     let (evt_tx, _evt_rx) = mpsc::channel(16);
     tokio::spawn(triage_inbound_connection(
         accepted.expect("rmule accepts the callback"),
-        None,
+        crate::adapters::InboundOrigin::Socket,
         cmd_rx,
         evt_tx,
         awaited.clone(),

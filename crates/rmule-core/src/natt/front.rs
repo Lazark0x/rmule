@@ -264,12 +264,13 @@ enum Risen {
     DialSettled { peer: UserHash },
     /// A tunnel's peer session ended, so the path it rode is no longer held.
     Closed { at: Ipv4Endpoint },
-    /// A Tunnel's own hello named `peer`, resolving an accepted path this
-    /// front could not attribute by address alone — several pending peers
-    /// behind one NAT-remapped address. Reported from
+    /// A download's claim on `peer` landed, on whichever road. Reported from
     /// downstream, once something reads the hello, through the same sender
     /// [`path_guard::PunchedPathGuard`] closes with.
     Identified { peer: UserHash },
+    /// The hello of a Tunnel a peer opened named `peer` at `at`: the first
+    /// thing that names anybody on it (ADR-0091, security rule 12).
+    TunnelIdentified { at: PeerEndpoint, peer: UserHash },
     /// The download that claimed `peer` let go — its slot lapsed, or the
     /// callback beside the punch landed first — so the attempt has no
     /// claimant left to raise a Tunnel for.
@@ -295,6 +296,13 @@ impl NattRisenSender {
         let _ = self.0.try_send(Risen::Identified { peer });
     }
 
+    /// An accepted Tunnel's hello named `peer` at `at`. `try_send` for the
+    /// reason [`Self::identified`] gives; a lost report leaves the endpoint
+    /// spending the Unidentified Allowance until its Tunnel ends.
+    pub(crate) fn tunnel_identified(&self, at: PeerEndpoint, peer: UserHash) {
+        let _ = self.0.try_send(Risen::TunnelIdentified { at, peer });
+    }
+
     /// The download that claimed `peer` retracted its claim:
     /// report it so the front ends the attempt rather than dialing on for
     /// nobody. `try_send` for the reason [`Self::identified`] gives; a lost
@@ -315,6 +323,9 @@ impl NattRisenSender {
             while let Some(risen) = risen_rx.recv().await {
                 let reported = match risen {
                     Risen::Identified { peer } => ReportedToFront::Identified(peer),
+                    Risen::TunnelIdentified { at, peer } => {
+                        ReportedToFront::TunnelIdentified(at, peer)
+                    }
                     Risen::Abandoned { peer } => ReportedToFront::Abandoned(peer),
                     _ => continue,
                 };
@@ -333,6 +344,8 @@ impl NattRisenSender {
 pub(crate) enum ReportedToFront {
     /// [`NattRisenSender::identified`].
     Identified(UserHash),
+    /// [`NattRisenSender::tunnel_identified`].
+    TunnelIdentified(PeerEndpoint, UserHash),
     /// [`NattRisenSender::abandoned`].
     Abandoned(UserHash),
 }

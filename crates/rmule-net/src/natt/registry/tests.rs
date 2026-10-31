@@ -44,7 +44,7 @@ fn an_opening_packet_from_an_unexpected_ip_is_dropped() {
 
 /// A flood of openers — spoofed from every port of one expected address and
 /// from unexpected ones — leaves another expected address admissible: one IP
-/// holds at most `OPENING_PER_IP` opening slots and a stranger holds none.
+/// holds at most `UNIDENTIFIED_PER_IP` opening slots and a stranger holds none.
 #[test]
 fn a_flood_past_the_cap_keeps_a_live_expectation_admissible() {
     let now = Instant::now();
@@ -53,7 +53,7 @@ fn a_flood_past_the_cap_keeps_a_live_expectation_admissible() {
     let opened = (1000..2000)
         .filter(|port| registry.admit(at(1, *port), true, expected_pair, now) == Admission::Opened)
         .count();
-    assert_eq!(opened, OPENING_PER_IP);
+    assert_eq!(opened, UNIDENTIFIED_PER_IP);
     for last in 10..=250 {
         assert_eq!(
             registry.admit(at(last, 4672), true, expected_pair, now),
@@ -74,13 +74,13 @@ fn the_node_wide_cap_holds_until_the_tick_prunes_the_lapsed_window() {
     let mut registry = TunnelRegistry::new();
     let mut opened = 0;
     for last in 1..=250 {
-        for port in 0..OPENING_PER_IP as u16 {
+        for port in 0..UNIDENTIFIED_PER_IP as u16 {
             if registry.admit(at(last, 5000 + port), true, expected, now) == Admission::Opened {
                 opened += 1;
             }
         }
     }
-    assert_eq!(opened, OPENING_MAX);
+    assert_eq!(opened, UNIDENTIFIED_MAX);
     assert_eq!(
         registry.admit(at(251, 4672), true, expected, now),
         Admission::Drop
@@ -272,4 +272,55 @@ fn a_dial_over_a_held_path_leaves_the_tunnel_admitted() {
         registry.lock().unwrap().slot(endpoint(1)),
         Some(TunnelSlot::Held)
     );
+}
+
+/// `librqbit-utp` hands a stream over at the `ST_SYN`, so an accepted slot has
+/// proved nothing: SYNs from one expected IP on fresh ports stop at the
+/// allowance however fast the accept pump turns them into tunnels.
+#[test]
+fn an_accepted_tunnel_keeps_its_charge() {
+    let now = Instant::now();
+    let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
+    let mut tunnels = Vec::new();
+    for port in 1..=(UNIDENTIFIED_PER_IP as u16 * 3) {
+        let peer = at(1, port);
+        let admission = registry
+            .lock()
+            .expect("registry")
+            .admit(peer, true, expected, now);
+        if admission == Admission::Opened {
+            tunnels.push(HeldSlot::hold(&registry, peer));
+        }
+    }
+    assert_eq!(tunnels.len(), UNIDENTIFIED_PER_IP);
+    let admit = |port| {
+        registry
+            .lock()
+            .expect("registry")
+            .admit(at(1, port), true, expected, now)
+    };
+    assert_eq!(admit(100), Admission::Drop, "the allowance is spent");
+
+    registry.lock().expect("registry").identified(at(1, 1));
+    assert_eq!(admit(101), Admission::Opened, "a hello gave one back");
+
+    tunnels.pop();
+    assert_eq!(admit(102), Admission::Opened, "a dead tunnel gave one back");
+    assert_eq!(admit(103), Admission::Drop);
+}
+
+/// Our own dial spends none of it, even when a stranger's frame raced it.
+#[test]
+fn a_dialed_tunnel_spends_no_allowance() {
+    let now = Instant::now();
+    let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
+    let tunnels: Vec<HeldSlot> = (1..=(UNIDENTIFIED_PER_IP as u16 + 1))
+        .map(|port| DialingSlot::open(&registry, at(1, port)).held())
+        .collect();
+    let opened = registry
+        .lock()
+        .expect("registry")
+        .admit(at(1, 200), true, expected, now);
+    assert_eq!(opened, Admission::Opened);
+    drop(tunnels);
 }

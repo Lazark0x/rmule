@@ -13,9 +13,8 @@
 use std::time::Instant;
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_primitives::UserHash;
 
-use super::AdmittedPeer;
+use super::{AdmittedPeer, InboundOrigin};
 use crate::adapters::kad_runtime::SharedKadPump;
 use crate::adapters::serve_runtime::test_connection::answer_test_connection;
 use crate::awaited_testers::AwaitedServer;
@@ -37,9 +36,9 @@ pub(crate) struct AcceptGates {
 /// One connection at the gates, before anything decided its fate.
 pub(super) struct Arrival {
     pub(super) conn: PeerConnection,
-    /// The target a NAT-T punch raised this stream toward, carried through to
-    /// the triage (see [`AdmittedPeer`]).
-    pub(super) dialed_toward: Option<UserHash>,
+    /// What the NAT-T front knows about this stream, carried through to the
+    /// triage (see [`AdmittedPeer`]).
+    pub(super) origin: InboundOrigin,
     /// A **Test Connection** (ADR-0046): a plain dial the listener admitted
     /// under `Required` only because a reachability test is awaited from its
     /// address. It meets the same gates, is answered by
@@ -73,7 +72,7 @@ impl AcceptGates {
     pub(super) async fn pass(&self, arrival: Arrival) -> Option<AdmittedPeer> {
         let Arrival {
             conn,
-            dialed_toward,
+            origin,
             test_connection,
             awaited_server,
         } = arrival;
@@ -120,7 +119,7 @@ impl AcceptGates {
         }
         Some(AdmittedPeer {
             conn,
-            dialed_toward,
+            origin,
             awaited_server,
         })
     }

@@ -75,7 +75,7 @@ pub(crate) use port_mapping::{
     DurablePortMappingPreferences, PortMappingControl, PortMappingHandle, PortMappingPreferences,
     SharedPeerPin, await_listener_mapping, spawn_port_mapping,
 };
-pub(crate) use serve_runtime::SharedTunnelAdmit;
+pub(crate) use serve_runtime::{InboundOrigin, SharedTunnelAdmit};
 // The admit channel's payload and the router behind it, named where a test
 // drives the inbound path without a bound listener; the production path
 // reaches both through the serve adapter.

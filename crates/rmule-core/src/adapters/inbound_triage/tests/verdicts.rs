@@ -23,6 +23,7 @@ use crate::adapters::tests::{dialed_serve_ctx, loopback_blocking_ip_filter};
 use crate::adapters::{AdoptionBrief, AwaitedInboundHandle, SharedTunnelAdmit};
 use crate::ban_store::SharedBanStore;
 use crate::ip_filter::SharedIpFilter;
+use crate::natt::front::ReportedToFront;
 
 use super::*;
 
@@ -306,6 +307,58 @@ async fn an_unclaimed_connection_takes_the_serve_road() {
                 if identity.user_hash() == hash(0xAB)
         ),
         "an unclaimed path is an ordinary inbound peer"
+    );
+}
+
+/// An accepted Tunnel has no claim to land on, so without its own report the
+/// front would never hear whom it named: the hello is reported with the
+/// endpoint it read on (ADR-0091, security rule 12). A stream this node aimed
+/// has nothing to report.
+#[tokio::test]
+async fn an_accepted_tunnels_hello_reports_its_endpoint_to_the_front() {
+    let awaited = AwaitedInbound::default();
+    let (risen, mut reported) = crate::natt::front::NattRisenSender::test_pair();
+    awaited.install_risen(risen);
+    let serving = async || {
+        serving_node(
+            &awaited,
+            SharedBanStore::default(),
+            SharedIpFilter::default(),
+        )
+        .await
+    };
+
+    let (mut serve, admit) = serving().await;
+    let _dialed = punched_path_toward(&admit, hash(0xCD), hash(0xCD)).await;
+    assert!(first_serve_event(&mut serve).await.is_some());
+    assert!(
+        reported.try_recv().is_err(),
+        "a dialed path reports nothing"
+    );
+
+    let (mut serve, admit) = serving().await;
+    let peer = FakePeer::bind().await;
+    let addr = peer.addr();
+    let _serving = peer.spawn(PeerScript {
+        hello_user_hash: hash(0xAB),
+        ..PeerScript::serving(file().file_hash, vec![0u8; 4096])
+    });
+    let stream = TcpStream::connect(SocketAddr::V4(addr))
+        .await
+        .expect("the counterparty is listening");
+    let endpoint = PeerEndpoint::V4(Ipv4Endpoint::new(*addr.ip(), addr.port()));
+    admit
+        .admit_accepted_tunnel(stream, endpoint, PeerStreamRole::Dialer)
+        .await
+        .expect("a serving node admits the path");
+    assert!(first_serve_event(&mut serve).await.is_some());
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), reported.recv()).await,
+        Ok(Some(ReportedToFront::TunnelIdentified(
+            endpoint,
+            hash(0xAB)
+        )))
     );
 }
 

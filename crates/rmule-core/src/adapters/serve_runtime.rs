@@ -30,7 +30,7 @@ pub use connection::{ServeConnection, ServeInput, ServeOutput};
 pub use dial_back::{DialBack, DialBackOutcome};
 
 use accept::{AcceptGates, spawn_accept_pump};
-pub(crate) use accept::{AdmittedPeer, SharedTunnelAdmit};
+pub(crate) use accept::{AdmittedPeer, InboundOrigin, SharedTunnelAdmit};
 use dial_back::DialBackRoad;
 use follower::SessionFollower;
 
@@ -521,7 +521,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // already answered by its own driver.
         let AdmittedPeer {
             conn,
-            dialed_toward,
+            origin,
             awaited_server,
         } = self.accept_rx.as_mut()?.recv().await?;
         let peer = conn.peer_endpoint();
@@ -532,7 +532,7 @@ impl ServeRuntimeService for RuntimeServeRuntimeService {
         // connection as a download worker instead of serving it.
         let triage = triage_inbound_connection(
             conn,
-            dialed_toward,
+            origin,
             command_rx,
             event_tx,
             self.awaited_inbound.clone(),
