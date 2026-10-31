@@ -18,7 +18,8 @@
 //! continue the stream.
 
 use rmule_primitives::{
-    ENM_OBFUSCATION, MAGICVALUE_SYNC, ObfuscationKeys, ObfuscationRole, UserHash, derive_peer_keys,
+    ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_SYNC, ObfuscationRole, ObfuscationStream, UserHash,
+    derive_peer_keys,
 };
 
 /// Encrypted opening header before `PaddingLen` is known: sync(4) + methods(1)
@@ -50,7 +51,6 @@ pub enum PeerObfuscationStep {
 /// Sans-I/O peer obfuscation handshake, one per connection.
 pub struct PeerObfuscation {
     flow: Flow,
-    keys: Option<ObfuscationKeys>,
     /// Responder key basis until the initiator's random key arrives.
     own_hash: UserHash,
     /// The responder's reply padding, consumed when it replies.
@@ -58,8 +58,7 @@ pub struct PeerObfuscation {
     /// Undecrypted inbound (only holds the marker+rk prefix for a responder
     /// before keys exist).
     raw: Vec<u8>,
-    /// Decrypted handshake bytes accumulated so far.
-    dec: Vec<u8>,
+    stream: ObfuscationStream,
 }
 
 enum Flow {
@@ -101,11 +100,10 @@ impl PeerObfuscation {
         opening.append(&mut block);
         let this = Self {
             flow: Flow::InitiatorAwaitReply,
-            keys: Some(keys),
             own_hash: target,
             reply_padding: Vec::new(),
             raw: Vec::new(),
-            dec: Vec::new(),
+            stream: ObfuscationStream::keyed(keys),
         };
         (this, opening)
     }
@@ -117,11 +115,10 @@ impl PeerObfuscation {
     pub fn respond(own: UserHash, reply_padding: &[u8]) -> Self {
         Self {
             flow: Flow::ResponderAwaitKey,
-            keys: None,
             own_hash: own,
             reply_padding: reply_padding.to_vec(),
             raw: Vec::new(),
-            dec: Vec::new(),
+            stream: ObfuscationStream::default(),
         }
     }
 
@@ -135,25 +132,25 @@ impl PeerObfuscation {
                     return PeerObfuscationStep::NeedMore;
                 }
                 let rk = [self.raw[1], self.raw[2], self.raw[3], self.raw[4]];
-                self.keys = Some(derive_peer_keys(
+                self.stream.set_keys(derive_peer_keys(
                     &self.own_hash,
                     rk,
                     ObfuscationRole::Responder,
                 ));
                 let mut rest = self.raw.split_off(5);
                 self.raw.clear();
-                self.decrypt_into_dec(&mut rest);
+                self.stream.absorb(&mut rest);
                 self.flow = Flow::ResponderReadOpening;
                 self.parse_opening()
             }
             Flow::ResponderReadOpening => {
                 let mut chunk = input.to_vec();
-                self.decrypt_into_dec(&mut chunk);
+                self.stream.absorb(&mut chunk);
                 self.parse_opening()
             }
             Flow::InitiatorAwaitReply => {
                 let mut chunk = input.to_vec();
-                self.decrypt_into_dec(&mut chunk);
+                self.stream.absorb(&mut chunk);
                 self.parse_reply()
             }
         }
@@ -161,36 +158,24 @@ impl PeerObfuscation {
 
     /// Encrypt app bytes we send, continuing the send stream past the handshake.
     pub fn transform_send(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(buf);
-        }
+        self.stream.transform_send(buf);
     }
 
     /// Decrypt app bytes we receive, continuing the recv stream.
     pub fn transform_recv(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.recv.apply(buf);
-        }
-    }
-
-    /// Decrypt a chunk with the recv stream and append the plaintext to `dec`.
-    fn decrypt_into_dec(&mut self, chunk: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.recv.apply(chunk);
-        }
-        self.dec.extend_from_slice(chunk);
+        self.stream.transform_recv(buf);
     }
 
     /// Responder: parse the decrypted opening; on completion, build the reply.
     fn parse_opening(&mut self) -> PeerObfuscationStep {
-        match self.handshake_len(OPENING_HEADER_LEN) {
-            HeaderScan::NeedMore => PeerObfuscationStep::NeedMore,
-            HeaderScan::BadSync => {
+        match self.stream.scan(OPENING_HEADER_LEN) {
+            HandshakeScan::NeedMore => PeerObfuscationStep::NeedMore,
+            HandshakeScan::BadSync => {
                 self.flow = Flow::Failed;
                 PeerObfuscationStep::Failed
             }
-            HeaderScan::Complete(total) => {
-                let leftover = self.dec[total..].to_vec();
+            HandshakeScan::Complete(total) => {
+                let leftover = self.stream.leftover(total);
                 let write = self.build_reply();
                 self.flow = Flow::Done;
                 PeerObfuscationStep::Done { write, leftover }
@@ -200,38 +185,20 @@ impl PeerObfuscation {
 
     /// Initiator: parse the decrypted reply; no bytes to write back.
     fn parse_reply(&mut self) -> PeerObfuscationStep {
-        match self.handshake_len(REPLY_HEADER_LEN) {
-            HeaderScan::NeedMore => PeerObfuscationStep::NeedMore,
-            HeaderScan::BadSync => {
+        match self.stream.scan(REPLY_HEADER_LEN) {
+            HandshakeScan::NeedMore => PeerObfuscationStep::NeedMore,
+            HandshakeScan::BadSync => {
                 self.flow = Flow::Failed;
                 PeerObfuscationStep::Failed
             }
-            HeaderScan::Complete(total) => {
-                let leftover = self.dec[total..].to_vec();
+            HandshakeScan::Complete(total) => {
+                let leftover = self.stream.leftover(total);
                 self.flow = Flow::Done;
                 PeerObfuscationStep::Done {
                     write: Vec::new(),
                     leftover,
                 }
             }
-        }
-    }
-
-    /// Validate the sync magic and, once the padding length byte (the last byte
-    /// of the fixed header) is readable, compute the full handshake length.
-    fn handshake_len(&self, header_len: usize) -> HeaderScan {
-        if self.dec.len() >= 4 && self.dec[..4] != MAGICVALUE_SYNC.to_le_bytes() {
-            return HeaderScan::BadSync;
-        }
-        if self.dec.len() < header_len {
-            return HeaderScan::NeedMore;
-        }
-        let padding_len = self.dec[header_len - 1] as usize;
-        let total = header_len + padding_len;
-        if self.dec.len() < total {
-            HeaderScan::NeedMore
-        } else {
-            HeaderScan::Complete(total)
         }
     }
 
@@ -243,19 +210,9 @@ impl PeerObfuscation {
         block.push(ENM_OBFUSCATION);
         block.push(self.reply_padding.len() as u8);
         block.extend_from_slice(&self.reply_padding);
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(&mut block);
-        }
+        self.stream.transform_send(&mut block);
         block
     }
-}
-
-/// Which stage the incremental header scan reached.
-enum HeaderScan {
-    NeedMore,
-    BadSync,
-    /// The full handshake message is `total` decrypted bytes long.
-    Complete(usize),
 }
 
 #[cfg(test)]

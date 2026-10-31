@@ -44,7 +44,7 @@ use crab_nat::{
     GatewayAddress, InternetProtocol, PortMappingOptions, PortMappingType, TimeoutConfig, natpmp,
     pcp,
 };
-use rmule_primitives::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint};
+use rmule_primitives::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, splitmix64};
 
 use super::epoch::{EpochTracker, EpochVerdict};
 use super::{
@@ -602,11 +602,9 @@ const fn join(address: IpAddr, port: u16) -> PeerEndpoint {
 /// quality bar is diffusion, not secrecy: what makes the nonce a capability is
 /// the caller's secret, not this function.
 fn mix(value: u64) -> u32 {
-    let mut z = value.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    let mut state = value;
     // The shift leaves 32 significant bits, so the narrowing is exact.
-    ((z ^ (z >> 31)) >> 32) as u32
+    (splitmix64(&mut state) >> 32) as u32
 }
 
 #[cfg(test)]

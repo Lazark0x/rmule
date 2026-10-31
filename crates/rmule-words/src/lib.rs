@@ -109,9 +109,6 @@ impl PartialEq<&str> for Sentence {
 mod tests {
     #[test]
     fn plain_leaves_nothing_that_acts_on_a_terminal() {
-        assert_eq!(
-            super::plain("a\x1b[2Jb\u{9b}31m\u{202e}c\nd"),
-            "a[2Jb31mcd"
-        );
+        assert_eq!(super::plain("a\x1b[2Jb\u{9b}31m\u{202e}c\nd"), "a[2Jb31mcd");
     }
 }

@@ -147,10 +147,9 @@ fn a_frame_past_stocks_ceiling_closes_at_its_header() {
     session.handle_bytes(&header(2_000_002));
     let outputs = drain(|| session.poll_output());
     assert!(
-        outputs.iter().any(|output| matches!(
-            output,
-            Output::Close(CloseReason::ProtocolViolation(_))
-        )),
+        outputs
+            .iter()
+            .any(|output| matches!(output, Output::Close(CloseReason::ProtocolViolation(_)))),
         "{outputs:?}"
     );
 }

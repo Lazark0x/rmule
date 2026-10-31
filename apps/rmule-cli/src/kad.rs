@@ -209,7 +209,9 @@ pub async fn run_join(
     say!("{}", format_census(&census, start.elapsed()));
     say!(
         "kad: done datagrams_in={} datagrams_out={} non_ipv4_dropped={}",
-        summary.datagrams_in, summary.datagrams_out, summary.non_ipv4_dropped
+        summary.datagrams_in,
+        summary.datagrams_out,
+        summary.non_ipv4_dropped
     );
     Ok(())
 }

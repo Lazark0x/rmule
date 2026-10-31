@@ -12,9 +12,7 @@
 //! asker's own part status after the hash whenever the session's
 //! [`ExtendedRequests`] level is at least 1.
 
-use rmule_primitives::{
-    Ed2kText, FileHash, Packet, WireReader, WireTruncated, write_wire_string,
-};
+use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, WireTruncated, write_wire_string};
 use thiserror::Error;
 
 use crate::file::{PartBitmap, PartBitmapDecodeError};

@@ -31,6 +31,7 @@ mod secure_ident;
 mod server;
 pub mod session;
 mod source;
+mod splitmix;
 mod tag;
 mod text;
 mod wire_reader;
@@ -66,9 +67,9 @@ pub use link::{
     LinkSourceExpiry, LinkSources,
 };
 pub use obfuscation::{
-    DH_PRIME_SIZE, ENM_OBFUSCATION, MAGICVALUE_REQUESTER, MAGICVALUE_SERVER, MAGICVALUE_SYNC,
-    ObfuscationDhKeypair, ObfuscationKeys, ObfuscationRole, Rc4, derive_peer_keys,
-    derive_server_keys, is_plaintext_marker,
+    DH_PRIME_SIZE, ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_REQUESTER, MAGICVALUE_SERVER,
+    MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationKeys, ObfuscationRole, ObfuscationStream,
+    Rc4, derive_peer_keys, derive_server_keys, is_plaintext_marker,
 };
 pub use packed_frame::{SkipReason, inflate, pack_if_smaller};
 pub use packet::{FrameCeiling, Packet, PacketProtocol};
@@ -88,6 +89,7 @@ pub use source::{
     PeerSource, SightedBuddy, SourceClaim, SourceCryptOptions, SourceListTail, SourceLookupTarget,
     SourceRoad, SourceSighting,
 };
+pub use splitmix::splitmix64;
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
 pub use text::{Ed2kText, WIRE_STRING_MAX, write_wire_string};
 pub use wire_reader::{WireReader, WireTruncated};

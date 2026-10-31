@@ -118,6 +118,96 @@ pub struct ObfuscationKeys {
     pub recv: Rc4,
 }
 
+/// The sync word a handshake's every encrypted block opens with.
+const HANDSHAKE_SYNC_LEN: usize = 4;
+
+/// How far the decrypted handshake has come.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandshakeScan {
+    /// More bytes are needed.
+    NeedMore,
+    /// The sync word is wrong, so the keys are: the handshake failed.
+    BadSync,
+    /// The block with its padding is this many decrypted bytes long.
+    Complete(usize),
+}
+
+/// A TCP obfuscation leg's two streams and the handshake bytes decrypted so far:
+/// what peer and server links share below their own message orders.
+#[derive(Default)]
+pub struct ObfuscationStream {
+    keys: Option<ObfuscationKeys>,
+    decrypted: Vec<u8>,
+}
+
+impl ObfuscationStream {
+    /// A leg holding its keys from the start.
+    #[must_use]
+    pub fn keyed(keys: ObfuscationKeys) -> Self {
+        Self {
+            keys: Some(keys),
+            decrypted: Vec::new(),
+        }
+    }
+
+    /// Take the keys the handshake derived.
+    pub fn set_keys(&mut self, keys: ObfuscationKeys) {
+        self.keys = Some(keys);
+    }
+
+    /// Encrypt bytes we send, the send stream running on past the handshake.
+    pub fn transform_send(&mut self, buf: &mut [u8]) {
+        if let Some(keys) = self.keys.as_mut() {
+            keys.send.apply(buf);
+        }
+    }
+
+    /// Decrypt bytes we receive, the recv stream running on past the handshake.
+    pub fn transform_recv(&mut self, buf: &mut [u8]) {
+        if let Some(keys) = self.keys.as_mut() {
+            keys.recv.apply(buf);
+        }
+    }
+
+    /// Decrypt `chunk` in place and hold it as handshake bytes.
+    pub fn absorb(&mut self, chunk: &mut [u8]) {
+        self.transform_recv(chunk);
+        self.decrypted.extend_from_slice(chunk);
+    }
+
+    /// Forget the handshake bytes held.
+    pub fn clear(&mut self) {
+        self.decrypted.clear();
+    }
+
+    /// Check the sync word and, once the padding length byte (the fixed
+    /// header's last) is readable, size the block.
+    #[must_use]
+    pub fn scan(&self, header_len: usize) -> HandshakeScan {
+        let held = &self.decrypted;
+        if held.len() >= HANDSHAKE_SYNC_LEN
+            && held[..HANDSHAKE_SYNC_LEN] != MAGICVALUE_SYNC.to_le_bytes()
+        {
+            return HandshakeScan::BadSync;
+        }
+        if held.len() < header_len {
+            return HandshakeScan::NeedMore;
+        }
+        let total = header_len + usize::from(held[header_len - 1]);
+        if held.len() < total {
+            HandshakeScan::NeedMore
+        } else {
+            HandshakeScan::Complete(total)
+        }
+    }
+
+    /// The application bytes that trailed a handshake of `total` bytes.
+    #[must_use]
+    pub fn leftover(&self, total: usize) -> Vec<u8> {
+        self.decrypted[total..].to_vec()
+    }
+}
+
 /// Derive the peer (client-to-client) obfuscation key pair from the target's
 /// **User Hash**, the 4-byte random key exchanged in the clear, and our role.
 /// `send = RC4-drop1024(MD5(user_hash ‖ send_magic ‖ random_key))`, where the

@@ -18,8 +18,8 @@
 //! `rmule-net`.
 
 use rmule_primitives::{
-    DH_PRIME_SIZE, ENM_OBFUSCATION, MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationKeys,
-    ObfuscationRole, derive_server_keys,
+    DH_PRIME_SIZE, ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_SYNC, ObfuscationDhKeypair,
+    ObfuscationRole, ObfuscationStream, derive_server_keys,
 };
 
 /// Client's first message up to its padding: marker(1) + `G^A`(96) +
@@ -66,11 +66,10 @@ pub enum ServerObfuscationStep {
 pub struct ServerObfuscation {
     flow: Flow,
     keypair: ObfuscationDhKeypair,
-    keys: Option<ObfuscationKeys>,
     /// This side's padding for the encrypted block it sends.
     padding: Vec<u8>,
     raw: Vec<u8>,
-    dec: Vec<u8>,
+    stream: ObfuscationStream,
 }
 
 enum Flow {
@@ -100,10 +99,9 @@ impl ServerObfuscation {
         let this = Self {
             flow: Flow::ClientAwaitServerHello,
             keypair,
-            keys: None,
             padding: padding.to_vec(),
             raw: Vec::new(),
-            dec: Vec::new(),
+            stream: ObfuscationStream::default(),
         };
         (this, opening)
     }
@@ -115,10 +113,9 @@ impl ServerObfuscation {
         Self {
             flow: Flow::ServerAwaitClientHello,
             keypair: ObfuscationDhKeypair::generate(),
-            keys: None,
             padding: padding.to_vec(),
             raw: Vec::new(),
-            dec: Vec::new(),
+            stream: ObfuscationStream::default(),
         }
     }
 
@@ -134,16 +131,17 @@ impl ServerObfuscation {
                 let mut peer_public = [0u8; DH_PRIME_SIZE];
                 peer_public.copy_from_slice(&self.raw[..DH_PRIME_SIZE]);
                 let secret = self.keypair.agree(&peer_public);
-                self.keys = Some(derive_server_keys(&secret, ObfuscationRole::Initiator));
+                self.stream
+                    .set_keys(derive_server_keys(&secret, ObfuscationRole::Initiator));
                 let mut rest = self.raw.split_off(DH_PRIME_SIZE);
                 self.raw.clear();
-                self.decrypt_into_dec(&mut rest);
+                self.stream.absorb(&mut rest);
                 self.flow = Flow::ClientReadServerEnc;
                 self.parse_server_block()
             }
             Flow::ClientReadServerEnc => {
                 let mut chunk = input.to_vec();
-                self.decrypt_into_dec(&mut chunk);
+                self.stream.absorb(&mut chunk);
                 self.parse_server_block()
             }
             Flow::ServerAwaitClientHello => {
@@ -156,19 +154,20 @@ impl ServerObfuscation {
                 let mut peer_public = [0u8; DH_PRIME_SIZE];
                 peer_public.copy_from_slice(&self.raw[1..=DH_PRIME_SIZE]);
                 let secret = self.keypair.agree(&peer_public);
-                self.keys = Some(derive_server_keys(&secret, ObfuscationRole::Responder));
+                self.stream
+                    .set_keys(derive_server_keys(&secret, ObfuscationRole::Responder));
                 let write = self.build_server_hello();
                 // The whole opening is in, its padding included, and the
                 // client sends nothing more before this answer: reset the
                 // buffers for its reply.
                 self.raw.clear();
-                self.dec.clear();
+                self.stream.clear();
                 self.flow = Flow::ServerAwaitClientReply;
                 ServerObfuscationStep::NeedMore { write }
             }
             Flow::ServerAwaitClientReply => {
                 let mut chunk = input.to_vec();
-                self.decrypt_into_dec(&mut chunk);
+                self.stream.absorb(&mut chunk);
                 self.parse_client_reply()
             }
         }
@@ -176,35 +175,24 @@ impl ServerObfuscation {
 
     /// Encrypt app bytes we send (post-handshake).
     pub fn transform_send(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(buf);
-        }
+        self.stream.transform_send(buf);
     }
 
     /// Decrypt app bytes we receive (post-handshake).
     pub fn transform_recv(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.recv.apply(buf);
-        }
-    }
-
-    fn decrypt_into_dec(&mut self, chunk: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.recv.apply(chunk);
-        }
-        self.dec.extend_from_slice(chunk);
+        self.stream.transform_recv(buf);
     }
 
     /// Client: parse the server's encrypted block; on completion, build the reply.
     fn parse_server_block(&mut self) -> ServerObfuscationStep {
-        match self.scan(SERVER_HEADER_LEN) {
-            Scan::NeedMore => ServerObfuscationStep::NeedMore { write: Vec::new() },
-            Scan::BadSync => {
+        match self.stream.scan(SERVER_HEADER_LEN) {
+            HandshakeScan::NeedMore => ServerObfuscationStep::NeedMore { write: Vec::new() },
+            HandshakeScan::BadSync => {
                 self.flow = Flow::Failed;
                 ServerObfuscationStep::Failed
             }
-            Scan::Complete(total) => {
-                let leftover = self.dec[total..].to_vec();
+            HandshakeScan::Complete(total) => {
+                let leftover = self.stream.leftover(total);
                 let write = self.build_client_reply();
                 self.flow = Flow::Done;
                 ServerObfuscationStep::Done { write, leftover }
@@ -214,38 +202,20 @@ impl ServerObfuscation {
 
     /// Server: parse the client's encrypted reply.
     fn parse_client_reply(&mut self) -> ServerObfuscationStep {
-        match self.scan(CLIENT_HEADER_LEN) {
-            Scan::NeedMore => ServerObfuscationStep::NeedMore { write: Vec::new() },
-            Scan::BadSync => {
+        match self.stream.scan(CLIENT_HEADER_LEN) {
+            HandshakeScan::NeedMore => ServerObfuscationStep::NeedMore { write: Vec::new() },
+            HandshakeScan::BadSync => {
                 self.flow = Flow::Failed;
                 ServerObfuscationStep::Failed
             }
-            Scan::Complete(total) => {
-                let leftover = self.dec[total..].to_vec();
+            HandshakeScan::Complete(total) => {
+                let leftover = self.stream.leftover(total);
                 self.flow = Flow::Done;
                 ServerObfuscationStep::Done {
                     write: Vec::new(),
                     leftover,
                 }
             }
-        }
-    }
-
-    /// Validate the sync magic and, once the padding length byte is readable,
-    /// compute the full encrypted-block length.
-    fn scan(&self, header_len: usize) -> Scan {
-        if self.dec.len() >= 4 && self.dec[..4] != MAGICVALUE_SYNC.to_le_bytes() {
-            return Scan::BadSync;
-        }
-        if self.dec.len() < header_len {
-            return Scan::NeedMore;
-        }
-        let padding_len = self.dec[header_len - 1] as usize;
-        let total = header_len + padding_len;
-        if self.dec.len() < total {
-            Scan::NeedMore
-        } else {
-            Scan::Complete(total)
         }
     }
 
@@ -261,9 +231,7 @@ impl ServerObfuscation {
         block.push(ENM_OBFUSCATION);
         block.push(padding.len() as u8);
         block.extend_from_slice(padding);
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(&mut block);
-        }
+        self.stream.transform_send(&mut block);
         out.append(&mut block);
         out
     }
@@ -276,19 +244,9 @@ impl ServerObfuscation {
         block.push(ENM_OBFUSCATION);
         block.push(padding.len() as u8);
         block.extend_from_slice(padding);
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(&mut block);
-        }
+        self.stream.transform_send(&mut block);
         block
     }
-}
-
-/// Which stage the incremental header scan reached.
-enum Scan {
-    NeedMore,
-    BadSync,
-    /// The full encrypted block is `total` decrypted bytes.
-    Complete(usize),
 }
 
 #[cfg(test)]
