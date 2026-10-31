@@ -149,6 +149,7 @@ where
                         ));
                     }
                     Ok(()) => {
+                        served::part_written(ctx.runner).await;
                         queue.extend(ctx.state.on_persist_result(now(), part_index, peer, Ok(())))
                     }
                 }

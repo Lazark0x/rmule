@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmule_primitives::{Ed2kFileLink, FileHash};
 
-use super::copy::{Copied, copy_hashed, sync_directory};
-use super::{land_free, on_pool, refused, remove_quietly, stopped, tell};
+use super::copy::{Copied, copy_hashed};
+use super::{land_free, refused, remove_quietly, stopped, sync_landing, tell};
 use crate::DownloadPaths;
 use crate::content::copy_path;
 use crate::download::runner::RunnerContext;
@@ -63,11 +63,7 @@ pub(super) async fn copy_into_place<S, P>(
         }
     }
     drop(turn);
-    if let Some(directory) = destination.parent().map(Path::to_path_buf)
-        && let Err(error) = on_pool(move || sync_directory(&directory)).await
-    {
-        tracing::warn!(%error, "the destination's directory could not be synced");
-    }
+    sync_landing(runner, &destination).await;
     Ok(destination)
 }
 

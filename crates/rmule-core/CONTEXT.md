@@ -741,7 +741,7 @@ The parts whose recorded part hash equals the whole set's. These are the only by
 _Avoid_: downloaded range, gap list
 
 **Part File Identity**:
-What a read of a **Served Download**'s part file is checked against before it reads (ADR-0113): the file key (device and inode, on Windows volume serial number and file index), the length and the modification time, taken from the **Held Part File** handle at pause or from the handle the **Offer Check** read through. The key is always compared, the length and time only while no run writes the file; a mismatch sends nothing and empties the **Verified Range**. Kept in memory only.
+What a read of a **Served Download**'s part file is checked against before it reads (ADR-0113): the file key (device and inode, on Windows volume serial number and file index), the length and the modification time, taken from the **Held Part File** handle at pause or from the handle the **Offer Check** read through; while a run writes, its key alone, read after each part, since exFAT renumbers a file at its first write. The key is always compared, the length and time only while no run writes the file; a mismatch sends nothing and empties the **Verified Range**. Kept in memory only.
 _Avoid_: part file fingerprint, stored identity
 
 **Offer Check**:

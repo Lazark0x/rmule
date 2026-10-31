@@ -77,6 +77,19 @@ pub(crate) trait CompletionFs: Send + Sync + 'static {
 
     /// Delete `path`; one already gone is no refusal.
     fn remove(&self, path: &Path) -> Result<(), Refusal>;
+
+    /// Put the bytes of the file at `path` on the disk.
+    fn sync_file(&self, path: &Path) -> io::Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .sync_all()
+    }
+
+    /// Put a rename into `directory` on the disk, where the platform allows.
+    fn sync_directory(&self, directory: &Path) -> io::Result<()> {
+        super::copy::sync_directory(directory)
+    }
 }
 
 /// The operating system's own: the exclusive rename of `rmule-os`, and on a

@@ -206,6 +206,35 @@ fn persist(bytes: &[u8], part_index: u32) -> Decision {
     }
 }
 
+/// exFAT renumbers a file at its first write, so the key read at the lease's
+/// start names no file by the first read after it. By hand: no file system CI
+/// mounts does this.
+#[tokio::test]
+#[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume"]
+async fn a_first_write_that_renumbers_the_file_leaves_the_served_key_true() {
+    let volume = std::env::var_os("RMULE_TEST_VOLUME").expect("RMULE_TEST_VOLUME");
+    let dir = tempfile::tempdir_in(volume).unwrap();
+    let bytes = content();
+    let link = rmule_testkit::file_link("served.bin", &bytes);
+    let cell = ServedDownloads::default();
+    let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
+    lease_started(&runner, record.id()).await;
+    let at_start = cell.served(link.file_hash).unwrap().identity.unwrap().key;
+    let (state, part) = working(&link, &record);
+    let mut ctx = ctx_of(&runner, &link, &record, state);
+
+    let mut queue = VecDeque::from([persist(&bytes, part)]);
+    enact_drain(&mut queue, &mut ctx).await.unwrap();
+
+    let written = cell.served(link.file_hash).unwrap().identity.unwrap().key;
+    let at_path = FileKey::at(record.paths().part_path()).unwrap();
+    eprintln!("the key moved: {}", at_start != at_path);
+    assert_eq!(
+        written, at_path,
+        "a read after the write finds the file it names"
+    );
+}
+
 #[tokio::test]
 async fn a_persisted_part_is_in_the_range_before_the_next_decision_is_enacted() {
     let dir = tempfile::tempdir().unwrap();

@@ -6,8 +6,8 @@
 //! no name ask,
 //! reask or status the run sends names a part the serve side lacks. The
 //! **Part File Identity** is read from the held handle: its key at the
-//! lease's start, its key, length and time as a pause or the completion
-//! move lets the handle go. A run with no lease — a download of one part —
+//! lease's start and after every part written, its key, length and time as
+//! a pause or the completion move lets the handle go. A run with no lease — a download of one part —
 //! writes nothing.
 
 use std::path::Path;
@@ -33,6 +33,19 @@ pub(super) async fn lease_started<S, P>(runner: &RunnerContext<S, P>, download_i
         lease.record_identity(identity);
     }
     rule_recorded_range(runner, download_id);
+}
+
+/// A part landed: the identity of the file the run holds, read after the
+/// write. exFAT gives an empty file a made-up number and its first write a
+/// real one, so a key kept from before a write names no file by the read
+/// that follows it (ADR-0113), as `content/held.rs` keeps none at all.
+pub(super) async fn part_written<S, P>(runner: &RunnerContext<S, P>) {
+    let Some(lease) = &runner.served else {
+        return;
+    };
+    if let Some(identity) = held_identity(runner).await {
+        lease.record_identity(identity);
+    }
 }
 
 /// Rule the Verified Range from the parts the store records against `set`.

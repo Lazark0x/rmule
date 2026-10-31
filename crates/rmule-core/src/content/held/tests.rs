@@ -130,9 +130,24 @@ async fn a_first_write_that_renumbers_the_file_is_no_replacement() {
     assert_eq!(held.check().await, Ok(()));
 }
 
+/// The directory a by-hand measurement runs in, on `RMULE_TEST_VOLUME`.
+fn on_test_volume() -> tempfile::TempDir {
+    let volume = std::env::var_os("RMULE_TEST_VOLUME").expect("RMULE_TEST_VOLUME");
+    tempfile::tempdir_in(volume).unwrap()
+}
+
 #[tokio::test]
 async fn a_path_gone_with_the_file_whole_is_no_loss() {
-    let dir = tempfile::tempdir().unwrap();
+    path_gone_with_the_file_whole(&tempfile::tempdir().unwrap()).await;
+}
+
+#[tokio::test]
+#[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume"]
+async fn a_path_gone_with_the_file_whole_is_no_loss_on_the_test_volume() {
+    path_gone_with_the_file_whole(&on_test_volume()).await;
+}
+
+async fn path_gone_with_the_file_whole(dir: &tempfile::TempDir) {
     let parent = dir.path().join("mounted");
     std::fs::create_dir(&parent).unwrap();
     let (mut held, _) = held_with_one_part(&parent).await;
@@ -148,6 +163,86 @@ async fn a_path_gone_with_the_file_whole_is_no_loss() {
         PART,
         "nothing was written into the file"
     );
+}
+
+/// exFAT keeps no link count of its own: what a removed file reads decides
+/// whether the run says `Gone` or stops and lets the next hold say it.
+#[tokio::test]
+#[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume"]
+async fn a_removed_part_file_on_the_test_volume_keeps_or_drops_by_its_links() {
+    let dir = on_test_volume();
+    let (held, path) = held_with_one_part(dir.path()).await;
+    std::fs::remove_file(&path).unwrap();
+
+    let found = held.check().await;
+    eprintln!("a removed file reads {found:?}");
+    assert!(matches!(
+        found,
+        Err(HeldCheckFailed::Changed(PartFileChange::Gone) | HeldCheckFailed::PathAbsent)
+    ));
+    assert!(matches!(
+        HeldPartFile::hold(&path, PART.len() as u64).await,
+        Err(HeldWriteError::Changed(PartFileChange::Gone))
+    ));
+}
+
+/// A nearly full volume stops the write before it can answer `ENOSPC` or
+/// `EINVAL`, and with space back the same handle writes on.
+#[tokio::test]
+#[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume with room to fill"]
+async fn a_volume_under_the_floor_refuses_the_part_and_takes_it_with_space_back() {
+    use std::io::Write as _;
+    let dir = on_test_volume();
+    let (mut held, _) = held_with_one_part(dir.path()).await;
+    let ballast_path = dir.path().join("ballast");
+    let mut ballast = std::fs::File::create(&ballast_path).unwrap();
+    let block = vec![0_u8; 1024 * 1024];
+    while rmule_os::volume::free_bytes(dir.path()).unwrap() >= 2 * block.len() as u64 {
+        ballast.write_all(&block).unwrap();
+    }
+    ballast.sync_all().unwrap();
+
+    let part = vec![7_u8; 1024];
+    let refused = held.write_part(PART.len() as u64, &part).await;
+    assert!(
+        matches!(refused, Err(HeldWriteError::OutOfSpace { .. })),
+        "{refused:?}"
+    );
+
+    drop(ballast);
+    std::fs::remove_file(&ballast_path).unwrap();
+    held.write_part(PART.len() as u64, &part).await.unwrap();
+}
+
+/// Every file made from a name at the cap fits: the part file, the probe's
+/// and the copy's, the number included.
+#[tokio::test]
+async fn a_name_at_its_cap_fits_every_file_made_from_it() {
+    names_fit(tempfile::tempdir().unwrap().path());
+}
+
+#[tokio::test]
+#[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume"]
+async fn a_name_at_its_cap_fits_every_file_made_from_it_on_the_test_volume() {
+    names_fit(on_test_volume().path());
+}
+
+fn names_fit(dir: &Path) {
+    use rmule_primitives::{FileHash, SafeFileName};
+    let hash = FileHash::from_bytes([1; FileHash::BYTE_LEN]);
+    let long = format!("{}.mkv", "a".repeat(600));
+    let name = SafeFileName::clean(&long, &hash);
+    let numbered = crate::free_name::numbered(name.as_str(), 99_999);
+    let final_path = name.path_in(dir);
+    let part = dir.join(format!("{numbered}.part"));
+    for path in [
+        final_path.clone(),
+        part.clone(),
+        crate::content::copy_path(&dir.join(&numbered)),
+    ] {
+        std::fs::write(&path, b"fits").unwrap();
+    }
+    std::fs::write(sparse::probe_path(&part).unwrap(), b"fits").unwrap();
 }
 
 #[tokio::test]

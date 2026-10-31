@@ -310,11 +310,15 @@ async fn move_into_place<S, P>(
         .diagnostics
         .completion_step(download_id, CompletionStep::Moving);
     make_directory(&destination).await?;
+    sync_part_file(runner, part_path).await?;
     let mut backoff = Backoff::new();
     let mut waiting = false;
     loop {
         match land_free(runner, download_id, row, part_path, &mut destination).await? {
-            Ok(()) => return Ok(row.landed_at(destination)),
+            Ok(()) => {
+                sync_landing(runner, &destination).await;
+                return Ok(row.landed_at(destination));
+            }
             Err(Refusal::InUse { os_code }) => {
                 if !waiting {
                     waiting = true;
@@ -342,6 +346,46 @@ async fn move_into_place<S, P>(
                 return Err(DownloadFailure::CompletedFileNotMoved { os_code });
             }
         }
+    }
+}
+
+/// Put the finished bytes on the disk before their name moves: nothing
+/// rechecks a `Completed` file (ADR-0115, step 3). A volume with no sync to
+/// give, or a program holding the file, leaves the rename to answer; a sync
+/// that failed leaves the file unproven, and the move stops with the part
+/// file and every verified part kept.
+async fn sync_part_file<S, P>(
+    runner: &RunnerContext<S, P>,
+    part_path: &Path,
+) -> Result<(), DownloadFailure> {
+    let fs = Arc::clone(&runner.rt.completion_fs);
+    let path = part_path.to_path_buf();
+    let Err(error) = on_pool(move || fs.sync_file(&path)).await else {
+        return Ok(());
+    };
+    let unsupported = matches!(
+        error.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+    );
+    if unsupported || matches!(Refusal::of(&error), Refusal::InUse { .. }) {
+        tracing::info!(%error, "the finished file was not synced before its rename");
+        return Ok(());
+    }
+    tracing::warn!(%error, "the finished file could not be synced");
+    Err(DownloadFailure::CompletedFileNotMoved {
+        os_code: error.raw_os_error(),
+    })
+}
+
+/// Put the rename that landed at `destination` on the disk. The file is in
+/// place whatever this answers.
+async fn sync_landing<S, P>(runner: &RunnerContext<S, P>, destination: &Path) {
+    let Some(directory) = destination.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let fs = Arc::clone(&runner.rt.completion_fs);
+    if let Err(error) = on_pool(move || fs.sync_directory(&directory)).await {
+        tracing::warn!(%error, "the destination's directory could not be synced");
     }
 }
 
