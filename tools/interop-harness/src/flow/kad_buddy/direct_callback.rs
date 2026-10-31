@@ -334,6 +334,7 @@ pub fn run_kad_direct_callback(options: KadDirectCallbackOptions<'_>) -> Result<
             &tap.pcap_path(),
             KAD_DIRECT_CALLBACK_WIRE_ROWS,
             &ipv4_string(amule_ip),
+            RMULE_SERVE_TCP_PORT,
             "kad-direct-callback",
         )?;
         collect_kad_node_logs(&docker, base.layout, &nodes);

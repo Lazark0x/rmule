@@ -49,7 +49,7 @@ pub(crate) const KAD_CORE_BUDDY_WIRE_ROWS: &[BuddyWireRow] = &[
     },
     BuddyWireRow {
         key: "amule_buddy_tcp_syn_rmule_tap",
-        label: "buddy TCP dial to the serve listener",
+        label: "buddy TCP dial to the buddy's listener",
         filter: WireFilter::packets_static(
             "tcp and src host {a} and dst port {p} and tcp[tcpflags] & tcp-syn != 0",
         ),

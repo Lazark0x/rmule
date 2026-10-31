@@ -246,6 +246,9 @@ impl Legs {
             Asker::Rmule(callback) if party.stock_buddy && callback.started() => {
                 stock_buddy::judge(&judged, callback.dir(), callback.address_v4())
             }
+            Asker::Reask(Some(leg)) if party.stock_buddy => {
+                stock_buddy::judge(&judged, &leg.downloader_dir(), leg.downloader_v4())
+            }
             _ => Ok(()),
         };
         let walked = self

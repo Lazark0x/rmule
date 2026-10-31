@@ -76,6 +76,8 @@ const UDP_OPEN_LINE: &str = "New Kad Firewallstate (UDP): Open";
 /// The Callback Pace's 65 s between two `0x52` to one IP, with the tap's
 /// slack: stock's window is strictly more than 60 s.
 const CALLBACK_SPACING_SECS: std::ops::RangeInclusive<f64> = 64.0..=69.0;
+/// `PacketTracking.cpp:222`, for the opcode the Callback Pace spaces.
+const FLOOD_LINE: &str = "Request flood detected for opcode 0x52";
 /// How soon aMule dials after the `0x99` that names it.
 const DIAL_BACK_SECS: f64 = 5.0;
 
@@ -135,12 +137,14 @@ struct Road<'a> {
     relays: &'a [(f64, [u8; 16])],
     /// The firewalled node's SYNs onto the downloader.
     dials: &'a [f64],
+    /// `Request flood detected` lines the stock buddy logged for `0x52`.
+    floods: usize,
 }
 
 impl Road<'_> {
     /// The named claims, keyed on the Kad ID the row's source takes as its
     /// buddy's. An empty road holds none of them.
-    fn claims(&self, buddy_id: [u8; 16]) -> [(&'static str, bool); 5] {
+    fn claims(&self, buddy_id: [u8; 16]) -> [(&'static str, bool); 6] {
         let primary = self.requests.first();
         let fallback = self.requests.get(1);
         let silent = match (primary, fallback) {
@@ -174,6 +178,15 @@ impl Road<'_> {
             (
                 "the-fallback-0x52-reads-the-row-byte-for-byte",
                 fallback.is_some_and(|(_, check)| *check == buddy_id),
+            ),
+            (
+                "the-stock-buddy-relayed-the-fallback-past-its-flood-guard",
+                self.floods == 0
+                    && fallback.is_some_and(|(retried, _)| {
+                        self.relays
+                            .iter()
+                            .any(|(at, check)| at >= retried && *check == buddy_id)
+                    }),
             ),
             ("the-source-dialed-back-on-the-fallback", dialed),
         ]
@@ -224,10 +237,20 @@ pub(crate) fn judge(judged: &Judged<'_>, downloader_dir: &Path, downloader_v4: &
     .filter_map(|frame| Some((frame.at, check(&frame.bytes, RELAY_CHECK_AT)?)))
     .collect();
 
+    let log = judged
+        .layout
+        .kad_node_logs_dir("stock-buddy")
+        .join("amule-logfile.log");
+    let floods = fs::read_to_string(&log)
+        .with_context(|| format!("read {}", log.display()))?
+        .matches(FLOOD_LINE)
+        .count();
+
     let claims = Road {
         requests: &requests,
         relays: &relays,
         dials: &dials,
+        floods,
     }
     .claims(KAD_CORE_BUDDY_RMULE_KAD_ID);
     let pass = claims.iter().all(|(_, holds)| *holds);
@@ -245,6 +268,7 @@ pub(crate) fn judge(judged: &Judged<'_>, downloader_dir: &Path, downloader_v4: &
     for (index, at) in dials.iter().enumerate() {
         writeln!(out, "dial_back_syn_{index} = {at:.3}")?;
     }
+    writeln!(out, "flood_lines_0x52 = {floods}")?;
     // A later road's first `0x52`, the row's held reading after `adopt`.
     writeln!(
         out,
@@ -290,6 +314,7 @@ mod tests {
             requests: &[(100.0, other_layout(ID)), (165.1, ID)],
             relays: &[(100.0, other_layout(ID)), (165.1, ID)],
             dials: &[165.2],
+            floods: 0,
         }
         .claims(ID);
         assert_eq!(held(&claims).len(), claims.len());
@@ -303,6 +328,7 @@ mod tests {
             requests: &[(100.0, other_layout(ID)), (165.1, ID)],
             relays: &[(100.0, other_layout(ID)), (165.1, ID)],
             dials: &[100.5, 165.2],
+            floods: 0,
         }
         .claims(ID);
         assert!(!held(&claims).contains(&claims[1].0));
@@ -314,8 +340,34 @@ mod tests {
             requests: &[(100.0, other_layout(ID)), (130.1, ID)],
             relays: &[(100.0, other_layout(ID))],
             dials: &[130.2],
+            floods: 1,
         }
         .claims(ID);
         assert!(!held(&claims).contains(&claims[2].0));
+    }
+
+    /// The relay's own count of the drop: run `1793423850`'s failure.
+    #[test]
+    fn a_flood_line_at_the_relay_breaks_the_relay_claim() {
+        let claims = Road {
+            requests: &[(100.0, other_layout(ID)), (165.1, ID)],
+            relays: &[(100.0, other_layout(ID)), (165.1, ID)],
+            dials: &[165.2],
+            floods: 1,
+        }
+        .claims(ID);
+        assert!(!held(&claims).contains(&claims[4].0));
+    }
+
+    #[test]
+    fn a_fallback_the_relay_never_wrote_breaks_the_relay_claim() {
+        let claims = Road {
+            requests: &[(100.0, other_layout(ID)), (165.1, ID)],
+            relays: &[(100.0, other_layout(ID))],
+            dials: &[165.2],
+            floods: 0,
+        }
+        .claims(ID);
+        assert!(!held(&claims).contains(&claims[4].0));
     }
 }

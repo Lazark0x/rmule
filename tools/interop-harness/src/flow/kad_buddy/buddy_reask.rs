@@ -307,6 +307,16 @@ impl ReaskLeg {
         })
     }
 
+    /// The downloader tap's host directory.
+    pub(crate) fn downloader_dir(&self) -> PathBuf {
+        self.dir.join("downloader")
+    }
+
+    /// The downloader's fake-public address.
+    pub(crate) fn downloader_v4(&self) -> &str {
+        &self.downloader_v4
+    }
+
     /// Count the leg's rows off the four taps, lift the three bodies, and
     /// write `kad-buddy-reask-verdict.toml`.
     ///
@@ -357,7 +367,7 @@ impl ReaskLeg {
             )?;
             rows.push((*key, *label, count));
         }
-        let downloader_dir = self.dir.join("downloader");
+        let downloader_dir = self.downloader_dir();
         for (key, label, filter) in DOWNLOADER_ROWS {
             let count = count_offline(
                 docker,
@@ -395,6 +405,9 @@ impl ReaskLeg {
                 .map_or(0, |(_, _, count)| *count)
         };
         let login_id = login_client_id(&downloader_log);
+        // A stock buddy drops the eMule reading, so its road takes the
+        // primary and the fallback; rmule's buddy answers the first.
+        let callbacks_on_the_road = if judged.stock_buddy { 2 } else { 1 };
         let claims = [
             (
                 "both-holders-took-the-amules-upload-slots",
@@ -439,7 +452,7 @@ impl ReaskLeg {
             (
                 "no-direct-0x90-and-no-tcp-reask",
                 count("reask_ping_0x90_out") == 0
-                    && count("callback_req_0x52_out") == 1
+                    && count("callback_req_0x52_out") == callbacks_on_the_road
                     && !downloader_log.contains("download.source_reasked_over_tcp"),
             ),
         ];

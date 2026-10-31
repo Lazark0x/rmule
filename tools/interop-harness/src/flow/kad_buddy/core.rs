@@ -80,7 +80,7 @@ use crate::flow::logs::{collect_kad_logs, collect_kad_node_logs};
 use crate::flow::mesh::{
     KAD_RMULE_UDP_PORT, KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec, start_kad_node,
 };
-use crate::rmule::CONTAINER_RUN_ROOT;
+use crate::rmule::{CONTAINER_RUN_ROOT, RMULE_SERVE_TCP_PORT};
 
 pub use crate::flow::kad_buddy::core_options::{BuddyReaskServer, KadCoreBuddyOptions};
 pub(crate) use crate::flow::kad_buddy::core_options::{
@@ -698,12 +698,19 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
 
         // Harvest before teardown: the pcap rows first (the sidecar still holds
         // the file), then both sides' own logs.
+        // rmule listens on its serve port; a stock buddy on the Kad node's.
+        let buddy_tcp_port = if options.stock_buddy {
+            KAD_TCP_PORT
+        } else {
+            RMULE_SERVE_TCP_PORT
+        };
         let mut rows = harvest_wire_rows(
             &docker,
             &names.capture,
             &tap.pcap_path(),
             KAD_CORE_BUDDY_WIRE_ROWS,
             &ipv4_string(amule_ip),
+            buddy_tcp_port,
             "kad-core-buddy",
         )?;
         // The body, not just the count: a fixture is bytes. Lifted from the
@@ -716,6 +723,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 &storer_tap.pcap_path(),
                 KAD_CORE_BUDDY_STORER_ROWS,
                 &ipv4_string(amule_ip),
+                buddy_tcp_port,
                 "kad-core-buddy",
             )?);
             lift_publish_body(
