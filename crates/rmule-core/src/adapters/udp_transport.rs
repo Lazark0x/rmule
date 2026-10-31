@@ -13,7 +13,7 @@ use rmule_primitives::Ipv4Endpoint;
 /// `&mut`) so the engine can receive while every sender sends on the one
 /// socket. Sending is fire-and-forget; a non-answering server is harmless over
 /// UDP. The transport knows no server-UDP port rule: the
-/// [`ServerUdpSeal`] names every
+/// [`ServerUdpSeal`](crate::server_udp::ServerUdpSeal) names every
 /// destination.
 pub(crate) trait ServerUdpTransport: Send + Sync + 'static {
     /// Send one datagram, as given, to `to`.
