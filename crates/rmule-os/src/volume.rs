@@ -49,9 +49,9 @@ pub fn is_fat(dir: &Path) -> io::Result<bool> {
     #[cfg(target_os = "linux")]
     {
         // `MSDOS_SUPER_MAGIC` (`linux/magic.h`): vfat and msdos alike.
-        const MSDOS_SUPER_MAGIC: i64 = 0x4d44;
+        const MSDOS_SUPER_MAGIC: u64 = 0x4d44;
         let found = rustix::fs::statfs(dir).map_err(io::Error::from)?;
-        Ok(i64::from(found.f_type) == MSDOS_SUPER_MAGIC)
+        Ok(u64::try_from(found.f_type).is_ok_and(|kind| kind == MSDOS_SUPER_MAGIC))
     }
     #[cfg(target_os = "macos")]
     {

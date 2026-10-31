@@ -261,6 +261,8 @@ async fn a_part_file_longer_than_the_file_lands_no_trailing_bytes() {
 /// A parent directory renamed leaves the handle reading a whole file: no part
 /// is lost, the run pauses and says why, and with the directory back a resume
 /// goes on from what it held (ADR-0094, "A volume's refusal is a Volume Stop").
+/// Windows refuses to rename a directory holding an open file.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_path_gone_over_a_whole_file_pauses_with_every_part_kept() {
     let mut leg = Leg::waiting_with_part_zero_in("mounted").await;
