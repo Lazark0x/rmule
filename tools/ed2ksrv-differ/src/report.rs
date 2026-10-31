@@ -254,7 +254,7 @@ impl Report {
         out.push_str("ed2ksrv differential decoding report\n");
         out.push_str("===================================\n\n");
         out.push_str(
-            "Oracle : andrey23127/ed2k-server @ 878fc830f60dde3907811baede83bb2ece42e19b\n\
+            "Oracle : andrey23127/ed2k-server @ e74aca7009cc1c235d039db43fa669bd88710cf3\n\
              \x20        unpatched and pinned — ADR-0045 amendment 2026-08-02.\n\
              Parity : aMule 2.3.3 stays the reference. A divergence below means\n\
              \x20        \"adjudicate this\", never \"rmule is wrong\".\n\n",
