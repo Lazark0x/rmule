@@ -84,6 +84,29 @@ fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback
     assert!(released(&ended, key), "then the road ends: {ended:?}");
 }
 
+/// The primary `0x52` left and drew nothing, so the road invited: a fallback
+/// spelling refused at our end changes neither, and the key is spent at the
+/// road's end, as any lapse with its invitation out
+/// (`BaseClient.cpp:1340-1346`).
+#[test]
+fn a_refused_fallback_spelling_spends_the_key_its_primary_invited() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
+    assert_eq!(asks(&lapsed), vec![(PRIMARY.word_swapped(), true)]);
+
+    let refused = state.on_traversal_retired(
+        t0() + CALLBACK_TIMEOUT,
+        key,
+        crate::diagnostics::NattRetirement::CallbackNotSent,
+    );
+    assert!(released(&refused, key), "{refused:?}");
+
+    let again = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    assert!(asks(&again).is_empty(), "{again:?}");
+}
+
 /// The **Callback Pace** holds the fallback, which the stock window shuts at
 /// the end of the primary's wait: it is deferred, and its wait counts from
 /// when it leaves, so the road does not end on a `0x52` the buddy has not yet

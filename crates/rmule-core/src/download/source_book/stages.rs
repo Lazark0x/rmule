@@ -490,14 +490,15 @@ impl SourceBook {
     /// One that ends with nowhere to go is spent under its Low-ID key, as stock
     /// dead-lists a client whose callback lapsed (`BaseClient.cpp:1340-1346`).
     /// A road that ends as the punch asked nobody to dial us, so it spends
-    /// nothing.
+    /// nothing, unless a fallback spelling was earned: only a primary `0x52`
+    /// that left earns one, whatever became of it.
     pub(crate) fn end_callback(&mut self, key: CallbackKey, dial: DialPosition) -> Option<Release> {
         let id = self.aliases.key(key)?;
         let record = self.records.get(&id)?;
         let Stage::CallbackPending(pending) = &record.stage else {
             return None;
         };
-        let invited = pending.road != LowIdRoad::Punch;
+        let invited = pending.road != LowIdRoad::Punch || pending.fallback_spelling_sent;
         let candidate = record.candidate?;
         if !self.half_closed(id, &candidate)
             && let Some(half) = choose_dial(None, candidate.ipv6, dial)
