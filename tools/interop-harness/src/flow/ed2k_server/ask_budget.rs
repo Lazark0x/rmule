@@ -9,6 +9,12 @@
 //! ask with. The counterparty under test is Lugdunum: a tap in its namespace
 //! records rmule's asks and its `OP_FOUNDSOURCES`, read per hash, and every
 //! FIN or RST on rmule's server link.
+//!
+//! The same tap keeps rmule's server-UDP datagrams. `--downloads 40` against
+//! ed2k-server draws the Server Pace's round: `udp-rounds.txt` holds rmule's
+//! datagrams with their spacing and the files each asked for (at most one
+//! datagram a second, 35 files a server, `DownloadQueue.cpp:868-958`). The TCP
+//! verdict's fifteen and a sixteenth are read only at sixteen downloads.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -22,17 +28,34 @@ use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT};
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
-use crate::flow::ed2k_server::search_wire::SUBNET;
 use crate::flow::pcap;
 
+mod udp_rounds;
+
+/// The bench network's prefix: `RMULE_BENCH_ED2KSRV_SECOND_SUBNET` moves
+/// ed2k-server, and this flow's bodies with it, so a Kad bench can run beside.
+fn prefix() -> &'static str {
+    if std::env::var_os("RMULE_BENCH_ED2KSRV_SECOND_SUBNET").is_some() {
+        "198.51.100"
+    } else {
+        "203.0.113"
+    }
+}
+
 /// rmule's static address on the bench network.
-const RMULE_IP: &str = "203.0.113.71";
+fn rmule_ip() -> String {
+    format!("{}.71", prefix())
+}
+
 /// The fake sharer's static address, the one its listener binds.
-const SHARER_IP: &str = "203.0.113.72";
+fn sharer_ip() -> String {
+    format!("{}.72", prefix())
+}
 const PCAP: &str = "lugdunum.pcap";
 /// The fake sharer, shared with the sx1-gate leg.
 const FAKE_SOURCE: &str = include_str!("../peer/sx1_gate/fake_source.py");
-const DOWNLOADS: u8 = 16;
+/// How many downloads the TCP budget's verdict is written for.
+pub const DOWNLOADS: u8 = 16;
 /// The run outlasts the 300 s window and the sixteenth answer.
 const DOWNLOAD_SECS: u64 = 380;
 const FAKE_SECS: u64 = DOWNLOAD_SECS + 40;
@@ -66,11 +89,13 @@ pub struct AskBudgetOptions<'a> {
     pub probe_image: &'a str,
     /// The tcpdump capture-sidecar image.
     pub capture_image: &'a str,
+    /// How many downloads rmule starts.
+    pub downloads: u8,
 }
 
-/// The sixteen file hashes, upper-case hex, distinct and asymmetric.
-fn hashes() -> Vec<String> {
-    (0..DOWNLOADS)
+/// `count` file hashes, upper-case hex, distinct and asymmetric.
+fn hashes(count: u8) -> Vec<String> {
+    (0..count)
         .map(|i| format!("B7{i:02X}3E91C04D5A26F8E1B3C7D9A05F{:02X}", 0x40 + i))
         .collect()
 }
@@ -86,10 +111,11 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
     let root = options.layout.root().join("ask-budget");
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     fs::write(root.join("fake_source.py"), FAKE_SOURCE).context("write fake_source.py")?;
-    let hashes = hashes();
+    let hashes = hashes(options.downloads);
 
-    let result = (|| -> Result<String> {
-        bench.create_network(options.layout, Some(SUBNET))?;
+    let result = (|| -> Result<()> {
+        let subnet = format!("{}.0/24", prefix());
+        bench.create_network(options.layout, Some(&subnet))?;
         bench.start_eserver_in_network(
             options.layout,
             options.server_image,
@@ -98,7 +124,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
         )?;
         let server = bench.names.server_container_name.clone();
         let tap = format!("{server}-tap");
-        let bpf = format!("tcp port {ED2K_SERVER_PORT}");
+        let bpf = format!("tcp port {ED2K_SERVER_PORT} or udp");
         let sidecar = CaptureSidecar {
             image: options.capture_image,
             name: &tap,
@@ -115,7 +141,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             .detach()
             .name(&fake)
             .network(bench.names.network_name.clone())
-            .ip(SHARER_IP)
+            .ip(sharer_ip())
             .volume(&root, "/w")
             .entrypoint("python3")
             .arg("/w/fake_source.py")
@@ -123,7 +149,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             .arg(FAKE_SECS.to_string())
             .arg(bench.names.server_endpoint())
             .arg(hashes.join(","))
-            .arg(SHARER_IP);
+            .arg(sharer_ip());
         bench.start_extra(&fake, container, "run the fake sharer")?;
         // The offer reaches the server before rmule asks it.
         std::thread::sleep(Duration::from_secs(5));
@@ -161,23 +187,20 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             &mut bench,
             options.rmule_tools_image,
             &rmule,
-            RMULE_IP,
+            &rmule_ip(),
             &root,
             &args,
         )?;
         bench.stop_extra(&fake);
         bench.stop_extra(&tap);
-        score(&root.join(PCAP), &hashes)
+        write_verdicts(&root, &hashes)
     })();
 
     if result.is_err() {
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
-    print!("{verdict}");
-    Ok(())
+    result
 }
 
 /// Score a retained run dir's tap again, without driving the flow, and
@@ -185,18 +208,27 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
 ///
 /// # Errors
 /// If the pcap cannot be read or the verdict written.
-pub fn rescore_ask_budget(run_dir: &std::path::Path) -> Result<()> {
+pub fn rescore_ask_budget(run_dir: &std::path::Path, downloads: u8) -> Result<()> {
     let root = run_dir.join("ask-budget");
-    let verdict = score(&root.join(PCAP), &hashes())?;
+    write_verdicts(&root, &hashes(downloads))
+}
+
+/// Write `verdict.txt` and `udp-rounds.txt` from the tap under `root`.
+fn write_verdicts(root: &std::path::Path, hashes: &[String]) -> Result<()> {
+    let verdict = score(&root.join(PCAP), hashes)?;
     fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
     print!("{verdict}");
+    let datagrams = pcap::udp4_datagrams(&root.join(PCAP))?;
+    let rounds = udp_rounds::score(&datagrams, rmule_ip().parse()?);
+    fs::write(root.join("udp-rounds.txt"), &rounds).context("write the UDP rounds")?;
+    print!("{rounds}");
     Ok(())
 }
 
 /// Read the tap: rmule's asks per hash and time, Lugdunum's answers per hash,
 /// and who closed rmule's server link first.
 fn score(pcap_path: &std::path::Path, hashes: &[String]) -> Result<String> {
-    let rmule: Ipv4Addr = RMULE_IP.parse()?;
+    let rmule: Ipv4Addr = rmule_ip().parse()?;
     let capture = pcap::tcp_capture(&pcap::records(pcap_path)?)?;
     let hash_of = |payload: &[u8]| payload.get(..16).map(hex_upper);
     let mut asks: Vec<(f64, String)> = Vec::new();

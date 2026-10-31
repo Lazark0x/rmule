@@ -236,6 +236,7 @@ pub fn run_kad_required_check(options: KadRequiredCheckOptions<'_>) -> Result<()
                 },
                 &names.rmule,
                 crate::rmule::KadStimulusKnobs {
+                    extra_files: &[],
                     static_ip: &ipv4_string(rmule_ip),
                     kad_id_hex: &hex_lower(&KAD_REQUIRED_RMULE_KAD_ID),
                     udp_port: KAD_RMULE_UDP_PORT,

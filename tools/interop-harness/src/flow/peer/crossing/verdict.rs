@@ -22,6 +22,7 @@ use crate::flow::pcap::{TcpCapture, records, tcp_capture, udp4_datagrams};
 
 mod dead_dial;
 mod first_dial;
+mod session_cap;
 
 /// The flow's own dir under the run dir.
 pub(crate) const ROOT_DIR: &str = "peer-crossing";
@@ -45,6 +46,8 @@ const GRANT_AFTER_HELLO_SECS: f64 = 1.0;
 pub(crate) struct Marks {
     /// Serve legs: when X, holding rmule's slot, was stopped.
     pub(crate) holder_stopped_at: Option<f64>,
+    /// The session-cap leg: X's address, whose link the kick crosses.
+    pub(crate) holder: Option<Ipv4Addr>,
     /// When the raced aMule was told to open its own link (its `Add`).
     pub(crate) returned_at: Option<f64>,
     /// When each hold was lifted, in lifting order.
@@ -370,6 +373,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         )
     };
     let claims = match at.shape.leg {
+        CrossingLeg::ServeSessionCap => {
+            session_cap::claims(&capture, at.rmule, at.marks.holder, &links)
+        }
         CrossingLeg::ServeDeadDial => dead_dial::dead_dial_claims(&rows, dial, own),
         CrossingLeg::KnoDialsFirst => first_dial::claims(
             &rows,

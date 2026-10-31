@@ -38,10 +38,13 @@ use crate::flow::logs::{
     collect_amule_logfile, collect_amule_logs, collect_rmule_logs, collect_server_logs,
 };
 use crate::flow::pcap::udp4_datagrams;
-use crate::rmule::{DownloadCrypt, RmuleClientContainer, release_held_download};
+use crate::rmule::{
+    CONTAINER_RUN_ROOT, DownloadCrypt, RmuleClientContainer, release_held_download,
+};
 
 mod hand_over;
 mod known_sources;
+mod pause_cycles;
 pub(crate) mod standing;
 mod verdict;
 
@@ -139,6 +142,9 @@ pub struct PeerUdpReaskEmitOptions<'a> {
     /// to this many KiB/s at the grant, and wait up to the window for both
     /// downloads (needs `two_downloads`).
     pub hand_over_upload_kib: Option<u64>,
+    /// Pause and resume the download this many times once rmule is queued,
+    /// and score the sharer's logfile for its ban line.
+    pub pause_cycles: Option<u32>,
 }
 
 /// The peer-UDP **reask EMIT** flow (flow L emit-leg, ADR-0057).
@@ -371,19 +377,37 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                 .prebuild_command(&bench.docker)?,
             "prebuild rmule-tools for the download container",
         )?;
-        let download = options
-            .rmule_client_container
-            .download_start_detached_command(
-                bench.staging(options.layout),
-                &rmule_name,
-                &bench.names.server_endpoint(),
-                &link_refs,
-                true,
-                DownloadCrypt {
-                    peer_crypt: options.peer_crypt,
-                    peer_crypt_flip: options.peer_crypt_flip,
-                },
-            )?;
+        let download = if options.pause_cycles.is_some() {
+            options
+                .rmule_client_container
+                .download_start_detached_with_args(
+                    bench.staging(options.layout),
+                    &rmule_name,
+                    &bench.names.server_endpoint(),
+                    &link_refs,
+                    true,
+                    &[
+                        "--stamp-events".to_owned(),
+                        "--pause-gate".to_owned(),
+                        format!("{CONTAINER_RUN_ROOT}/{}", pause_cycles::GATE),
+                        "--pause-toggle".to_owned(),
+                    ],
+                )?
+        } else {
+            options
+                .rmule_client_container
+                .download_start_detached_command(
+                    bench.staging(options.layout),
+                    &rmule_name,
+                    &bench.names.server_endpoint(),
+                    &link_refs,
+                    true,
+                    DownloadCrypt {
+                        peer_crypt: options.peer_crypt,
+                        peer_crypt_flip: options.peer_crypt_flip,
+                    },
+                )?
+        };
         bench.start_rmule_container(download, "run rmule download container")?;
 
         // Passive tap on rmule's own netns: every serve-TCP + UDP datagram, AND
@@ -442,9 +466,12 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                 },
             )?;
         } else {
+            let spent = options.pause_cycles.map_or(Ok(Duration::ZERO), |cycles| {
+                pause_cycles::drive(options.layout.root(), cycles)
+            })?;
             sit_tap_window(
                 "peer_udp_reask_emit",
-                Duration::from_secs(options.reask_window_secs),
+                Duration::from_secs(options.reask_window_secs).saturating_sub(spent),
             );
         }
 
@@ -536,6 +563,9 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
             options.layout,
             &bench.names.server_container_name,
         )?;
+        if options.pause_cycles.is_some() {
+            collect_amule_logfile(&bench.docker, options.layout, "sharer", &sharer);
+        }
 
         // Score the retained tap: the verdict file is what a re-score reads.
         verdict::write(
@@ -562,6 +592,21 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
                     rmule: rmule_ip.trim().parse().context("rmule address")?,
                     sharer: sharer_ip.trim().parse().context("sharer address")?,
                 },
+            )?;
+        }
+        if let Some(cycles) = options.pause_cycles {
+            pause_cycles::write(
+                options.layout.root(),
+                &standing::StandingRun {
+                    pcap: &capture_dir.join("emit-reask.pcap"),
+                    rmule: rmule_ip.trim().parse().context("rmule address")?,
+                    sharer: sharer_ip.trim().parse().context("sharer address")?,
+                },
+                cycles,
+                &options
+                    .layout
+                    .kad_node_logs_dir("sharer")
+                    .join("amule-logfile.log"),
             )?;
         }
         if options.hand_over_upload_kib.is_some() {

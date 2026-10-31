@@ -188,6 +188,8 @@ pub struct KadCoreBuddyOptions<'a> {
     /// [`callback_downloader`](Self::callback_downloader) or
     /// [`buddy_reask`](Self::buddy_reask).
     pub stock_buddy: bool,
+    /// Further small files rmule shares, read for `0x21` floods at stock.
+    pub shared_files: usize,
 }
 
 /// The `ed2ksrv` the buddy reask leg's downloader logs in to.

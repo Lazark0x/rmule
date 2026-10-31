@@ -90,6 +90,11 @@ const WAIT_FILE: &str = "gift.bin";
 const WAIT_LINK: &str = "gift.ed2k.txt";
 /// X's download cap, KiB/s: slow enough to hold rmule's slot.
 const X_KIB: u32 = 2;
+/// X's download cap on the session-cap leg, KiB/s: its 10 MiB takes minutes,
+/// so W stands queued before X reaches them.
+const SESSION_X_KIB: u32 = 64;
+/// How long the session-cap leg waits for X's kick once W is queued.
+const SESSION_KICK_BOUND: Duration = Duration::from_secs(420);
 /// S's upload cap, KiB/s: rmule's 1 MiB download takes about 16 s.
 const SEED_MAX_UPLOAD_KIB: &str = "64";
 const STOP_GRACE_SECS: u64 = 10;
@@ -142,6 +147,9 @@ pub enum CrossingLeg {
     /// shares and dials first (rmule's UDP on its TCP port number, which is
     /// where kno's uTP aims).
     KnoDialsFirst,
+    /// X passes rmule's 10 MiB session with W waiting: X is told `0x57`, then
+    /// ranked `0x60` on the same link, and W takes the slot. No race.
+    ServeSessionCap,
 }
 
 impl CrossingLeg {
@@ -157,6 +165,7 @@ impl CrossingLeg {
                 | Self::LowIdReturn
                 | Self::ServeDeadDial
                 | Self::ServeIdentifying
+                | Self::ServeSessionCap
         )
     }
 
@@ -539,6 +548,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             "prebuild rmule-tools for the download container",
         )?;
         let reask = shape.leg == CrossingLeg::ServeReask;
+        let session_cap = shape.leg == CrossingLeg::ServeSessionCap;
         let reask_secs = file_reask_secs(options.amule_env);
         let waits = if reask { reask_secs } else { shape.idle_secs };
         let deadline = 4 * options.timeout_secs + waits + 4 * shape.hold_secs;
@@ -627,7 +637,7 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
                     &holder,
                     &slot_at_rmule,
                     SLOT_FILE,
-                    (Some(X_KIB), false),
+                    (Some(if session_cap { SESSION_X_KIB } else { X_KIB }), false),
                 )?;
             }
             wait_for_container_log(
@@ -648,6 +658,28 @@ pub fn run_peer_crossing(options: PeerCrossingOptions<'_>) -> Result<()> {
             wait_for_container_log(&bench.docker, &rmule_name, "serve.peer_queued", timeout)?;
             let asked_at = queued_at(&bench, &rmule_name)?;
             let waiter_ip = container_ip(&bench, &waiter)?;
+            if session_cap {
+                marks.holder = Some(container_ip(&bench, &holder)?);
+                wait_for_container_log(
+                    &bench.docker,
+                    &rmule_name,
+                    "serve.upload_slot_released",
+                    SESSION_KICK_BOUND,
+                )?;
+                std::thread::sleep(Duration::from_secs(shape.watch_secs));
+                marks.watch_ended_at = Some(verdict::unix_now());
+                verdict::Topology {
+                    rmule: rmule_ip,
+                    peer: waiter_ip,
+                    shape,
+                    marks,
+                }
+                .write(&root)?;
+                collect_rmule_logs(&bench.docker, options.layout, &rmule_name)?;
+                collect_amule_role_logs(&bench.docker, options.layout, "w", &waiter)?;
+                collect_amule_role_logs(&bench.docker, options.layout, "x", &holder)?;
+                return Ok(());
+            }
             // Set now: no hold touches W's queued link (rmule's end is its
             // listener), and X must stop well inside the 100 s an aMule
             // downloader waits for a packet (`DownloadClient.cpp:1189`).

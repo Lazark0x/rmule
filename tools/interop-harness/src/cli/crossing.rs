@@ -56,6 +56,9 @@ pub(crate) enum LegArg {
     /// kno, knowing rmule from a hello and holding no link to it, dials first
     /// (run with `--amule-image rmule/interop-amule-kno:local`).
     KnoDialsFirst,
+    /// X passes rmule's 10 MiB session with W waiting: `0x57`, `0x60`, and W
+    /// takes the slot.
+    ServeSessionCap,
 }
 
 impl From<LegArg> for CrossingLeg {
@@ -70,6 +73,7 @@ impl From<LegArg> for CrossingLeg {
             LegArg::DownloadYield => Self::DownloadYield,
             LegArg::DownloadCrossed => Self::DownloadCrossed,
             LegArg::KnoDialsFirst => Self::KnoDialsFirst,
+            LegArg::ServeSessionCap => Self::ServeSessionCap,
         }
     }
 }

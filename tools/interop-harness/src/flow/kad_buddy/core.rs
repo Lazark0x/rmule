@@ -150,6 +150,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
              --callback-walk, --publisher-open and --kad-crypt"
         );
     }
+    crate::flow::kad_buddy::shared_files::stage(base.layout, options.shared_files)?;
     let near_file_kad_id = if options.publish_source {
         let link = fs::read_to_string(base.layout.synthetic_ed2k_file())
             .with_context(|| format!("read {}", base.layout.synthetic_ed2k_file().display()))?;
@@ -372,6 +373,9 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 },
                 &names.rmule,
                 crate::rmule::KadStimulusKnobs {
+                    extra_files: &crate::flow::kad_buddy::shared_files::container_paths(
+                        options.shared_files,
+                    ),
                     static_ip: &ipv4_string(rmule_ip),
                     kad_id_hex: &hex_lower(&rmule_kad_id),
                     udp_port: KAD_RMULE_UDP_PORT,
@@ -749,6 +753,14 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         }
         collect_kad_node_logs(&docker, base.layout, &nodes);
         collect_kad_logs(&docker, base.layout, "rmule", &names.rmule)?;
+        if options.shared_files > 0 {
+            crate::flow::kad_buddy::shared_files::write(
+                base.layout,
+                &tap.host_dir.join(tap.pcap_file),
+                rmule_ip.into(),
+                options.shared_files,
+            )?;
+        }
         let third = match (&legs, &party) {
             (Some(legs), Some(party)) => legs.judge(
                 party,

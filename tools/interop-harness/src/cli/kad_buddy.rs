@@ -307,6 +307,12 @@ pub(crate) struct KadCoreBuddyArgs {
     /// `--file-content incompressible` and a file of several parts.
     #[arg(long)]
     pub(crate) buddy_reask: bool,
+    /// Share this many further small files from rmule and read the stock
+    /// nodes' logfiles for their `0x21` flood lines
+    /// (`kad-shared-files-verdict.toml`; needs the debug aMule image with
+    /// `--amule-env AMULE_KAD_VERBOSE=1`).
+    #[arg(long, default_value_t = 0)]
+    pub(crate) shared_files: usize,
     /// The `ed2ksrv` image `--buddy-reask` runs.
     #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
     pub(crate) ed2ksrv_image: String,
@@ -450,6 +456,7 @@ pub(crate) fn kad_core_buddy(args: KadCoreBuddyArgs) -> Result<()> {
             config: &args.ed2ksrv_config,
         }),
         stock_buddy: args.stock_buddy,
+        shared_files: args.shared_files,
     })
 }
 

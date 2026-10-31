@@ -259,6 +259,7 @@ pub fn run_kad_direct_callback(options: KadDirectCallbackOptions<'_>) -> Result<
                 },
                 &names.rmule,
                 crate::rmule::KadStimulusKnobs {
+                    extra_files: &[],
                     static_ip: &ipv4_string(rmule_ip),
                     kad_id_hex: &hex_lower(&KAD_DIRECT_CALLBACK_RMULE_KAD_ID),
                     udp_port: KAD_RMULE_UDP_PORT,

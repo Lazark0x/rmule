@@ -219,6 +219,12 @@ pub(crate) struct PeerUdpReaskEmitArgs {
     /// session (`--file-size 4194304`).
     #[arg(long, requires = "two_downloads", conflicts_with = "known_sources")]
     pub(crate) hand_over_upload_kib: Option<u64>,
+    /// Pause and resume the download this many times once rmule is queued,
+    /// inside the sharer's 590 s, and read the sharer's logfile for its ban
+    /// line (needs the debug aMule image with
+    /// `--amule-env AMULE_DEBUG_PEER_CATEGORIES=1`).
+    #[arg(long, conflicts_with_all = ["hand_over_upload_kib", "peer_crypt", "peer_crypt_flip"])]
+    pub(crate) pause_cycles: Option<u32>,
     /// Test hook for the ED2K hash command.
     #[arg(long, hide = true)]
     pub(crate) ed2k_hash_command: Option<PathBuf>,
@@ -369,6 +375,7 @@ pub(crate) fn peer_udp_reask_emit(args: PeerUdpReaskEmitArgs) -> Result<()> {
         peer_crypt: args.peer_crypt.as_deref(),
         peer_crypt_flip: &args.peer_crypt_flip,
         hand_over_upload_kib: args.hand_over_upload_kib,
+        pause_cycles: args.pause_cycles,
     })
 }
 

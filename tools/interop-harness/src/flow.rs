@@ -41,13 +41,13 @@ pub use self::bootstrap::{
     run_http_bootstrap_goldens, run_v2_nodes_dat_harvest,
 };
 pub use self::ed2k_server::{
-    AnnounceSwitchOptions, AskBudgetOptions, BenchSmokeOptions, CryptPingPortOptions,
-    DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, RmuleClientAction, SearchSpacingOptions,
-    SearchWireOptions, SearchWireServer, ServerCycleOptions, ServerLoginCryptOptions,
-    ServerSkeletonOptions, SweepFollowsListOptions, rescore_ask_budget, run_announce_switch,
-    run_ask_budget, run_bench_smoke, run_crypt_ping_port, run_late_port_test, run_search_spacing,
-    run_search_wire, run_server_cycle, run_server_login_crypt, run_server_skeleton,
-    run_sweep_follows_list,
+    ASK_BUDGET_DOWNLOADS, AnnounceSwitchOptions, AskBudgetOptions, BenchSmokeOptions,
+    CryptPingPortOptions, DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, RmuleClientAction,
+    SearchSpacingOptions, SearchWireOptions, SearchWireServer, ServerCycleOptions,
+    ServerLoginCryptOptions, ServerSkeletonOptions, SweepFollowsListOptions, rescore_ask_budget,
+    run_announce_switch, run_ask_budget, run_bench_smoke, run_crypt_ping_port, run_late_port_test,
+    run_search_spacing, run_search_wire, run_server_cycle, run_server_login_crypt,
+    run_server_skeleton, run_sweep_follows_list,
 };
 pub use self::ed2k_server::{HolepunchFailOptions, run_holepunch_fail, score_holepunch_fail};
 pub use self::ed2k_server::{OwnSourceOptions, run_own_source};
