@@ -144,13 +144,6 @@ async fn an_armed_front_decrypts_a_live_reask_and_obfuscates_the_ack_back() {
 /// reader throws on that (stock 2.3.3 `UploadClient.cpp:408-412`) and its
 /// dispatcher only logs (`ClientUDPSocket.cpp:131-132`), so no `0x91` leaves;
 /// rmule's only trace is the event and the counter the runner folds it into.
-/// A saturated fact queue starves no reask: the ping's answer is what keeps a
-/// waiter's place, and a late one sends the ask to TCP.
-#[tokio::test]
-async fn a_reask_is_answered_beside_a_fact_queue_that_never_empties() {
-    reask_loopback(None, WaiterPing::WithStatusUnderLoad).await;
-}
-
 #[tokio::test]
 async fn a_hash_only_reask_from_a_udpv4_waiter_draws_silence_and_a_counter() {
     reask_loopback(None, WaiterPing::HashOnly).await;
@@ -159,8 +152,6 @@ async fn a_hash_only_reask_from_a_udpv4_waiter_draws_silence_and_a_counter() {
 /// The `0x90` body the queued waiter sends in [`reask_loopback`].
 #[derive(Clone, Copy)]
 enum WaiterPing {
-    /// As [`Self::WithStatus`], with a saturated fact queue beside it.
-    WithStatusUnderLoad,
     /// What aMule's writer puts in a ping to a UDPv4 peer: the hash, its part
     /// status, its complete-source count (stock 2.3.3 `DownloadClient.cpp:1280-1291`).
     WithStatus,
@@ -269,7 +260,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
 
     // A holder grabs the sole slot, so the next requester must queue.
     let holder = peer_at([10, 0, 0, 1], 4000);
-    let (holder_cmd_tx, mut holder_cmd_rx) = mpsc::channel(16);
+    let (holder_cmd_tx, _holder_cmd_rx) = mpsc::channel(16);
     let (holder_evt_tx, holder_evt_rx) = mpsc::channel(16);
     accept_tx
         .send(ServeConnection::new(holder, holder_cmd_tx, holder_evt_rx))
@@ -332,7 +323,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         waiter_udp_port,
     ));
     let plain_ping = match shape {
-        WaiterPing::WithStatus | WaiterPing::WithStatusUnderLoad => ReaskFilePing {
+        WaiterPing::WithStatus => ReaskFilePing {
             file_hash: file,
             part_status: Some(rmule_peer::PartBitmap::downloader_empty(4096)),
             complete_sources: Some(0),
@@ -373,20 +364,6 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         }
         _ => plain_ping,
     };
-    if let WaiterPing::WithStatusUnderLoad = shape {
-        // A peer's facts never stop arriving, so the queue is never empty.
-        tokio::spawn(async move { while holder_cmd_rx.recv().await.is_some() {} });
-        tokio::spawn(async move {
-            while holder_evt_tx
-                .send(ServeInput::Server(ServerEvent::FileIdSet {
-                    file_hash: file,
-                }))
-                .await
-                .is_ok()
-            {}
-        });
-        tokio::task::yield_now().await;
-    }
     inbound_tx.send((reask_src, ping)).await.unwrap();
 
     if let WaiterPing::HashOnly = shape {

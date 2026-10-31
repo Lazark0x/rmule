@@ -326,13 +326,25 @@ impl App {
         let chrome_state = &self.chrome;
         let theme = &self.theme;
         let views = &mut self.views;
-        tui.draw(|frame| {
-            let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
-            views.draw(chrome_state.active, frame, content, state, theme, now);
-            chrome::draw_overlays(frame, chrome_state, theme);
+        off_the_workers(|| {
+            tui.draw(|frame| {
+                let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
+                views.draw(chrome_state.active, frame, content, state, theme, now);
+                chrome::draw_overlays(frame, chrome_state, theme);
+            })
         })?;
         self.dirty = false;
         Ok(())
+    }
+}
+
+/// Run a terminal write, which lasts as long as the terminal does (Ctrl-S, a
+/// stalled ssh), off the runtime's workers: the node's tasks share them.
+fn off_the_workers<T>(write: impl FnOnce() -> T) -> T {
+    let flavor = tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor());
+    match flavor {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(write),
+        _ => write(),
     }
 }
 
@@ -358,6 +370,27 @@ mod tests {
                 .push(crate::golden::render_to_lines(80, 24, render));
             Ok(())
         }
+    }
+
+    /// A stalled terminal keeps its own task, not a worker: on a runtime of
+    /// one worker the node's other tasks still run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_stalled_terminal_holds_no_runtime_worker() {
+        let (stalled, is_stalled) = tokio::sync::oneshot::channel();
+        let (released, release) = std::sync::mpsc::channel();
+        let drawn = tokio::spawn(async move {
+            let (stalled, release) = (stalled, release);
+            off_the_workers(move || {
+                let _ = stalled.send(());
+                release.recv_timeout(Duration::from_secs(2))
+            })
+        });
+        tokio::spawn(async move {
+            let _ = is_stalled.await;
+            let _ = released.send(());
+        });
+
+        assert_eq!(drawn.await.expect("draw task"), Ok(()));
     }
 
     #[test]

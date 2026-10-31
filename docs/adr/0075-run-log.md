@@ -28,9 +28,9 @@ in an ordinary session. It is written at one of two levels, chosen by the prefer
 - **The vocabulary and the sink live in core** (`rmule_core::run_log`), beside the events
   they project: `Record`, `Kind` and its class, `Level`, each event's `record()` and each
   reason's code table, and the file, opened as `RunLog::open(data_dir, level)` beside the
-  other durable files of the data directory. A front end writes the records of the events
-  it receives and owns only its own words for the operator. Core writes the reachability
-  trail itself: each level is read from its one owner when that owner's change notice
+  other durable files of the data directory. Core writes the record of every event as it
+  sends it (ADR-0069), so the log outlives any reader of the stream, and a front end owns
+  only its own words for the operator. Core writes the reachability trail too: each level is read from its one owner when that owner's change notice
   wakes, and a level that moved is written once, a wake that moved nothing never. Core's
   events have no `Display`: where core's own `tracing` names an event, it writes the
   event's record rendered at the full level, a free-form line like any other.

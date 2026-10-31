@@ -26,8 +26,8 @@ _Avoid_: workspace, home, profile dir
 **Run Log**:
 Core's `rmule.log` in the **Data Directory** (ADR-0075), opened by a command
 that runs a core (`add`) at the level the *Full run log* preference
-(`run_log_full`, shared with `rmule`) sets: the records of the events the
-command receives, and the reachability trail core writes itself. With the
+(`run_log_full`, shared with `rmule`) sets: core writes the record of every
+event it sends and the reachability trail. With the
 global `--verbose` flag every record is also written to stderr as the file
 holds it; stderr otherwise carries only the command's own lines.
 _Avoid_: debug output, trace, verbose log

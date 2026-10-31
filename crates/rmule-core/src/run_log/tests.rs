@@ -35,6 +35,20 @@ fn write_each(events: impl IntoIterator<Item = CoreEvent>, handle: &LevelHandle)
     }
 }
 
+/// The Outbox writes every event as it is sent, so the log does not depend on
+/// a reader, or on anything a reader is doing.
+#[test]
+fn an_event_no_reader_takes_is_in_the_log() {
+    let log = written(Level::Lean, |handle| {
+        let (outbox, stream) = crate::service::outbox(handle.clone());
+        drop(stream);
+        outbox.send(CoreEvent::Quitting {
+            step: crate::QuitStep::Search,
+        });
+    });
+    assert!(log.contains("step=search"), "{log}");
+}
+
 /// A peer at a full address, for lines that print one.
 fn peer_at(a: u8, b: u8, c: u8, d: u8, port: u16) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::new(a, b, c, d), port))
