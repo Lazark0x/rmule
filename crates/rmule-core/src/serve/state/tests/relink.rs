@@ -203,6 +203,51 @@ fn claiming_v4() -> HelloFacts {
     }
 }
 
+/// One client's two links, one address, two ephemeral ports.
+fn two_links() -> (PeerEndpoint, PeerEndpoint) {
+    (
+        peer_at([172, 19, 0, 5], 51318),
+        peer_at([172, 19, 0, 5], 50288),
+    )
+}
+
+/// Leaving a slot tracks the client, proof or none (`UploadQueue.cpp:525`), so
+/// it comes back under another hash into the ban
+/// (`BaseClient.cpp:686-689`).
+#[test]
+fn a_slot_holder_back_under_another_hash_is_banned_with_no_proof() {
+    let file = hash(0x31);
+    let t = Instant::now();
+    let (first, second) = two_links();
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    identify(&mut state, first, user(0x0B), t);
+    let _ = slot_request(&mut state, first, file, t);
+    let _ = state.on_conn_event(t, first, disconnected(), &no_modifiers());
+
+    let back = hello_of(&mut state, second, user(0x0C));
+    assert!(
+        back.contains(&ServeDecision::Ban { peer: second }),
+        "{back:?}"
+    );
+}
+
+/// A waiter that never held a slot or proved a key is tracked by nothing, in
+/// stock as here: a new hash is a new client.
+#[test]
+fn a_waiter_back_under_another_hash_is_a_new_client() {
+    let file = hash(0x31);
+    let t = Instant::now();
+    let (first, second) = two_links();
+    let mut state = waiting(file, first, t);
+    let _ = state.on_conn_event(t, first, disconnected(), &no_modifiers());
+
+    let back = hello_of(&mut state, second, user(0x0C));
+    assert!(
+        !back.contains(&ServeDecision::Ban { peer: second }),
+        "{back:?}"
+    );
+}
+
 /// A hello naming `user(0x0B)` and `v6_peer(3, _)`'s address as its IPv6.
 fn naming_v6() -> HelloFacts {
     HelloFacts {

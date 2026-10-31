@@ -12,6 +12,7 @@ use rmule_primitives::{AccountingKey, PeerEndpoint};
 
 use crate::WaiterLeaveCause;
 use crate::service::{GrantRoad, ServeEvent};
+use crate::upload_queue::Promotion;
 
 use super::{ServeDecision, ServeState};
 
@@ -34,7 +35,7 @@ impl ServeState {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
         self.last_ask.remove(&peer);
-        let promotion = self.queue.release(peer, now, modifiers);
+        let promotion = self.leave_queue(peer, now, modifiers);
         let mut decisions = vec![
             ServeDecision::Send {
                 peer,
@@ -58,6 +59,31 @@ impl ServeState {
     /// dialed, which is one (ADR-0055 divergence 7).
     pub(super) fn spares(&self, peer: PeerEndpoint) -> bool {
         self.asker.our_source || self.dialed.contains_key(&peer)
+    }
+
+    /// `peer` leaves the queue at `now`, tracked if it leaves a slot.
+    pub(super) fn leave_queue(
+        &mut self,
+        peer: PeerEndpoint,
+        now: Instant,
+        modifiers: &HashMap<PeerEndpoint, f64>,
+    ) -> Promotion {
+        self.track_holder(now, peer);
+        self.queue.release(peer, now, modifiers)
+    }
+
+    /// `peer`'s place is tracked under its hello's User Hash if it holds a
+    /// slot: stock tracks every client leaving one, proof or none
+    /// (`UploadQueue.cpp:525`), so it comes back under another hash into the
+    /// ban (`BaseClient.cpp:686-689`). A waiter is not tracked here.
+    pub(super) fn track_holder(&mut self, now: Instant, peer: PeerEndpoint) {
+        if !self.queue.is_granted(peer) {
+            return;
+        }
+        if let Some(identity) = self.identities.get(&peer) {
+            self.hashes
+                .note(now, peer.ip(), identity.tcp_port(), identity.user_hash());
+        }
     }
 
     /// One ask of `peer` on its **Ask Pace**; `true` when it bans the asker.
@@ -97,7 +123,7 @@ impl ServeState {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
         self.last_ask.remove(&peer);
-        let promotion = self.queue.release(peer, now, modifiers);
+        let promotion = self.leave_queue(peer, now, modifiers);
         let mut decisions = self.promotion_decisions(promotion);
         if held_slot {
             decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));

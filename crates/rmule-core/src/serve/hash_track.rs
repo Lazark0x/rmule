@@ -1,6 +1,7 @@
 //! The **Hash Track**: which User Hash each client's place last proved a key
-//! under, so a client coming back under another is seen (aMule's tracked client
-//! list, `ClientList.cpp:494-503`, `BaseClient.cpp:780-792`). A place is an
+//! under or left a slot under, so a client coming back under another is seen
+//! (aMule's tracked client list, `ClientList.cpp:494-503`,
+//! `UploadQueue.cpp:525`, `BaseClient.cpp:2130`). A place is an
 //! address and a listen port. An entry lasts stock's two hours and the table is
 //! bounded, its oldest entry going first; a serve or process restart empties it.
 
@@ -23,7 +24,7 @@ pub(in crate::serve) struct HashTrack {
 }
 
 impl HashTrack {
-    /// The place `ip`:`port` proved `user_hash` at `now`.
+    /// The place `ip`:`port` stood for `user_hash` at `now`.
     pub(in crate::serve) fn note(
         &mut self,
         now: Instant,
@@ -50,7 +51,7 @@ impl HashTrack {
     }
 
     /// Whether `ip`:`port` names `user_hash` inside the two hours after it
-    /// proved another (`CClientList::ComparePriorUserhash`).
+    /// was tracked under another (`CClientList::ComparePriorUserhash`).
     pub(in crate::serve) fn changed(
         &self,
         now: Instant,

@@ -404,7 +404,7 @@ impl ServeState {
                     .retain(|(range_peer, _), _| *range_peer != peer);
                 let was_granted = self.queue.is_granted(peer);
                 let was_waiting = !was_granted && self.queue.contains(peer);
-                let promotion = self.queue.release(peer, now, modifiers);
+                let promotion = self.leave_queue(peer, now, modifiers);
                 let mut decisions = self.promotion_decisions(promotion);
                 if was_granted {
                     decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
@@ -569,6 +569,7 @@ impl ServeState {
                 // A waiting peer keeps its queue position across disconnect —
                 // disconnected standing (ADR-0057); only a granted peer frees
                 // a slot. The transfer flow is wiped either way.
+                self.track_holder(now, peer);
                 let disconnect = self.queue.on_disconnect(peer, now, modifiers);
                 // A waiter that retains standing keeps its identity for reask
                 // matching; a released or fully-gone peer sheds it.

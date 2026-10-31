@@ -30,7 +30,9 @@ const MAX_TRACKED: usize = 4096;
 
 /// A client as the score knows it: its User Hash from one address scope, so
 /// the clients behind one NAT do not share a score. A client that changes its
-/// hash to shed a score meets the hash-change ban instead.
+/// hash on a link, or at a place tracked by a key proof or a slot it left, sheds
+/// its score into the hash-change ban; a waiter that did neither is a new
+/// client under the new hash, as a new client object is in stock.
 type Asker = (AccountingKey, UserHash);
 
 #[derive(Debug)]

@@ -367,7 +367,7 @@ impl ServeState {
                 continue;
             }
             let unlinked = self.queue.is_unlinked(held);
-            let promotion = self.queue.release(held, now, modifiers);
+            let promotion = self.leave_queue(held, now, modifiers);
             decisions.extend(self.promotion_decisions(promotion));
             decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
                 peer: held,

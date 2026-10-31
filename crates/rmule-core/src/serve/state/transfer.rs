@@ -110,7 +110,7 @@ impl ServeState {
     ) -> Vec<ServeDecision> {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
-        let promotion = self.queue.release(peer, now, modifiers);
+        let promotion = self.leave_queue(peer, now, modifiers);
         let mut decisions = vec![
             ServeDecision::Emit(ServeEvent::BlockAskRefused {
                 peer,
@@ -312,7 +312,7 @@ impl ServeState {
             }
         };
         for peer in waiters {
-            note_moves(self.queue.release(peer, now, modifiers).reranked);
+            note_moves(self.leave_queue(peer, now, modifiers).reranked);
             decisions.push(not_found(peer, file_hash));
             decisions.push(ServeDecision::Emit(ServeEvent::WaiterLeft {
                 peer,
@@ -324,7 +324,7 @@ impl ServeState {
                 .retain(|(range_peer, _), _| *range_peer != peer);
             decisions.push(not_found(peer, file_hash));
             decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
-            let mut promotion = self.queue.release(peer, now, modifiers);
+            let mut promotion = self.leave_queue(peer, now, modifiers);
             note_moves(std::mem::take(&mut promotion.reranked));
             decisions.extend(self.promotion_decisions(promotion));
         }

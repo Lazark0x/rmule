@@ -179,7 +179,7 @@ impl ServeState {
         cause: DialBackEnd,
         modifiers: &HashMap<PeerEndpoint, f64>,
     ) -> Vec<ServeDecision> {
-        let promotion = self.queue.release(waiter, now, modifiers);
+        let promotion = self.leave_queue(waiter, now, modifiers);
         self.shed_link_state(waiter);
         let mut decisions = vec![ServeDecision::Emit(ServeEvent::UploadDialBackFailed {
             peer: waiter,

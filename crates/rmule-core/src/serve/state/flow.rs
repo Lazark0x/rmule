@@ -257,7 +257,7 @@ impl ServeState {
             if silent && flow.is_drained() {
                 self.served_ranges
                     .retain(|(range_peer, _), _| *range_peer != peer);
-                let promotion = self.queue.release(peer, now, modifiers);
+                let promotion = self.leave_queue(peer, now, modifiers);
                 decisions.push(ServeDecision::Emit(ServeEvent::UploadSlotReleased { peer }));
                 decisions.extend(self.promotion_decisions(promotion));
                 decisions.push(ServeDecision::Disconnect { peer });
