@@ -32,7 +32,7 @@ use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
-use crate::words::download::{ETA_TOO_SLOW, completing_status, eta_time};
+use crate::words::download::{ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
 
@@ -500,12 +500,22 @@ impl TransfersView {
     }
 }
 
+/// Whether `status` is a running download's and every source its run knows
+/// holds no part the file lacks.
+pub(super) fn swarm_exhausted(status: DownloadStatus, diag: Option<&DownloadDiagnostics>) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Waiting | DownloadStatus::Downloading
+    ) && diag.is_some_and(DownloadDiagnostics::every_source_needs_nothing)
+}
+
 /// A download's status as its cell words it: a download with no network
 /// while core re-makes the operator's session waits for that, not for
 /// nothing; one waiting with no server session while Kad runs says Kad is
-/// who asks; a completing one says what its move waits for or has copied,
-/// from its diagnostics row. Each wording keeps the rank of the status it
-/// words.
+/// who asks; a running one no known source can feed says so, whatever it
+/// last waited on; a completing one says what its move waits for or has
+/// copied, from its diagnostics row. Each wording keeps the rank of the
+/// status it words.
 pub(super) fn status_text(
     status: DownloadStatus,
     row: Option<&DownloadRow>,
@@ -516,6 +526,7 @@ pub(super) fn status_text(
         (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
             "Reconnecting".to_string()
         }
+        _ if swarm_exhausted(status, diag) => NO_NEEDED_PARTS_STATUS.to_string(),
         (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
         (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),
         _ => status_label(status).to_string(),

@@ -209,6 +209,7 @@ fn the_source_activity_counts_each_source_once_by_its_activity() {
             asking: 1,
             queued: 1,
             transferring: 1,
+            needing_nothing: 0,
         }
     );
 }

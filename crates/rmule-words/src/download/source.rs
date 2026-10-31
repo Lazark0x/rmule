@@ -40,8 +40,20 @@ pub fn source_activity_words(known: u32, activity: SourceActivity) -> String {
         asking,
         queued,
         transferring,
+        ..
     } = activity;
     format!("{known} known: {asking} asking, {queued} queued, {transferring} transferring")
+}
+
+/// The status cell of a running download that no known source can feed:
+/// short enough for the column's eleven cells.
+pub const NO_NEEDED_PARTS_STATUS: &str = "No parts";
+
+/// Why that download stands still: `held` of its `total` parts, and no known
+/// source with any other.
+#[must_use]
+pub fn no_needed_parts_words(held: u32, total: u32) -> String {
+    format!("no known source holds a part this file lacks; {held} of {total} parts held")
 }
 
 /// What a download waiting for a connection needs to move on (ADR-0097): no

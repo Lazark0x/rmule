@@ -39,10 +39,11 @@ pub use part_file::{
 };
 pub use source::link_turn_words;
 pub use source::{
-    HANDED_OVER, NO_NETWORK_WAIT, NO_NETWORK_WAIT_NOTE, REMEMBER_PEERS_NOTE,
-    REMEMBER_PEERS_REFUSED, REMEMBERED, ceiling_lowered, dial_end_words, ignored_reask_reply_words,
-    phase_words, release_words, remember_peers_receipt, retirement_words, seeds_loaded,
-    source_activity_words, source_purge_reason_words, source_wait_words, waiting_for_sources,
+    HANDED_OVER, NO_NEEDED_PARTS_STATUS, NO_NETWORK_WAIT, NO_NETWORK_WAIT_NOTE,
+    REMEMBER_PEERS_NOTE, REMEMBER_PEERS_REFUSED, REMEMBERED, ceiling_lowered, dial_end_words,
+    ignored_reask_reply_words, no_needed_parts_words, phase_words, release_words,
+    remember_peers_receipt, retirement_words, seeds_loaded, source_activity_words,
+    source_purge_reason_words, source_wait_words, waiting_for_sources,
 };
 use source::{low_id_source_words, purged_source_words};
 

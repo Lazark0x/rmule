@@ -54,6 +54,11 @@ fn a_worker_holding_nothing_we_lack_is_retired_no_needed_parts() {
     );
     assert_eq!(spawned(&retired), vec![peer(2)], "its slot is backfilled");
     assert!(state.remote_queued().any(|at| at == peer(1)));
+    assert_eq!(
+        state.source_activity().needing_nothing,
+        1,
+        "the operator's level counts it"
+    );
     assert!(!state.sources.is_spent(peer(1)));
 
     assert!(pinged(&state.on_tick(t0() + udp_due())).is_empty());

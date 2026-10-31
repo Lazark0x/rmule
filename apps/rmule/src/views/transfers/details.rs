@@ -10,7 +10,7 @@ use rmule_core::DownloadId;
 use rmule_primitives::FileHash;
 
 use super::chunks::chunk_bar;
-use super::downloads::{diag_counts, diag_parts, origin_label};
+use super::downloads::{diag_counts, diag_parts, origin_label, swarm_exhausted};
 use super::sort::DownloadLine;
 use super::{Overlay, TransfersView, selected_id};
 use crate::rates::format_rate;
@@ -20,7 +20,7 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
 use crate::words::download::{
-    completion_progress, on_disk, source_activity_words, source_wait_words,
+    completion_progress, no_needed_parts_words, on_disk, source_activity_words, source_wait_words,
 };
 use crate::wrap::labeled_lines;
 
@@ -130,17 +130,21 @@ impl TransfersView {
                 );
                 lines.extend(detail_rows("failed", &why, value_w, theme));
             }
-            // A row whose run waits says on what (ADR-0051's amendment).
+            // A row whose run waits says on what (ADR-0051's amendment); one
+            // no known source can feed says that first.
             if let Some(row) = row {
                 let wait = match (row.status, row.source_wait) {
-                    (_, Some(reason)) => Some(source_wait_words(reason)),
+                    (status, _) if swarm_exhausted(status, diag) => {
+                        Some(no_needed_parts_words(counts.verified, total_parts))
+                    }
+                    (_, Some(reason)) => Some(source_wait_words(reason).to_string()),
                     (crate::state::DownloadStatus::NoConnection, None) => {
-                        Some(crate::state::NO_NETWORK_WAIT)
+                        Some(crate::state::NO_NETWORK_WAIT.to_string())
                     }
                     _ => None,
                 };
                 if let Some(wait) = wait {
-                    lines.extend(detail_rows("waiting", wait, value_w, theme));
+                    lines.extend(detail_rows("waiting", &wait, value_w, theme));
                 }
             }
             // A completing row says what its move does, and what its copy has
@@ -203,6 +207,68 @@ mod tests {
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
         assert!(screen.contains("no source left to try"), "{screen}");
+    }
+
+    /// Every source of the active run retired holding nothing it lacks: the
+    /// status cell and the details say so, with the parts held and total,
+    /// whatever the run last waited on.
+    #[test]
+    fn golden_every_source_holds_no_needed_part() {
+        let mut view = TransfersView::new();
+        let mut state = three_downloads();
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        diag.known_sources = 3;
+        diag.source_activity = rmule_core::diagnostics::SourceActivity {
+            queued: 3,
+            needing_nothing: 3,
+            ..Default::default()
+        };
+        state
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row")
+            .source_wait = Some(rmule_core::SourceWait::OnStanding);
+        assert_golden("transfers_no_needed_parts", GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        view.overlay = Overlay::Details;
+        assert_golden(
+            "transfers_no_needed_parts_details",
+            GOLDEN_W,
+            GOLDEN_H,
+            |frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &Theme::default_dark(), now());
+            },
+        );
+    }
+
+    /// One source still able to feed the file leaves the row its own status.
+    #[test]
+    fn one_source_that_may_hold_a_needed_part_keeps_the_rows_status() {
+        let mut view = TransfersView::new();
+        let mut state = three_downloads();
+        let diag = state
+            .diagnostics
+            .downloads
+            .get_mut(&download_id(1))
+            .expect("the active download's row");
+        diag.known_sources = 3;
+        diag.source_activity = rmule_core::diagnostics::SourceActivity {
+            queued: 3,
+            needing_nothing: 2,
+            ..Default::default()
+        };
+        let screen = crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        assert!(!screen.contains("No parts"), "{screen}");
     }
 
     /// The details modal over the active download, its On disk levels set.

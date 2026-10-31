@@ -346,6 +346,8 @@ pub struct SourceActivity {
     pub queued: u32,
     /// Holding a granted slot.
     pub transferring: u32,
+    /// How many of the `queued` hold no part the file lacks.
+    pub needing_nothing: u32,
 }
 
 /// A completion move's step and the bytes its copy has written, as levels
@@ -374,6 +376,14 @@ pub struct SourceDialEnd {
 }
 
 impl DownloadDiagnostics {
+    /// Whether the run knows sources and none of them holds a part the file
+    /// lacks: the swarm has nothing to give it.
+    #[must_use]
+    pub const fn every_source_needs_nothing(&self) -> bool {
+        self.source_activity.needing_nothing > 0
+            && self.source_activity.needing_nothing == self.known_sources
+    }
+
     /// Tally [`Self::parts`] in one pass (ADR-0079). O(parts); a consumer
     /// wanting several of the three reads them from one call.
     #[must_use]

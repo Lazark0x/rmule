@@ -359,7 +359,8 @@ impl SourceBook {
     /// The book's sources by **Source Activity** (ADR-0116): every dial,
     /// callback in flight and worker `granted` does not name is asking, but a
     /// worker ranked without a grant, holding its link, is queued, as every
-    /// RemoteQueued record is; every worker `granted` names is transferring.
+    /// RemoteQueued record is, those holding no part we lack counted again
+    /// apart; every worker `granted` names is transferring.
     pub(crate) fn activity(
         &self,
         granted: impl Fn(PeerEndpoint) -> bool,
@@ -378,6 +379,13 @@ impl SourceBook {
                 Stage::Pooled(_) => continue,
             };
             *tally = tally.saturating_add(1);
+            if matches!(record.stage, Stage::RemoteQueued(_) | Stage::RoadHeld)
+                && record
+                    .standing
+                    .is_some_and(|standing| !standing.needs_parts())
+            {
+                activity.needing_nothing = activity.needing_nothing.saturating_add(1);
+            }
         }
         activity
     }

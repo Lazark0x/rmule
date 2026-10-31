@@ -181,6 +181,7 @@ pub(crate) fn three_downloads() -> UiState {
         asking: 1,
         queued: 3,
         transferring: 1,
+        needing_nothing: 0,
     };
 
     let mut download_bps = BTreeMap::new();
