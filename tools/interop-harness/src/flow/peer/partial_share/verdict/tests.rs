@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 
 use super::super::marks::Trail;
 use super::super::wire::{Close, Item, Open, Said, Status, Wire};
-use super::{Body, Claim, Knobs, Run, STRADDLE, Stimulus, TopologyFile, Verdict, claims};
+use super::{Body, Claim, Knobs, Run, STRADDLE, Stimulus, TopologyFile, Verdict, claims, overall};
 use crate::flow::ed2k_server::search_wire::server_tap::OfferedRow;
 
 const STREAM: [u8; 16] = [0x11; 16];
@@ -336,4 +336,42 @@ fn a_peer_met_inbound_must_be_dialled_at_its_address() {
         dialled(Ipv4Addr::new(1, 0, 0, 16)).claim(NAME).verdict,
         Verdict::Fail
     );
+}
+
+/// A row is proof only when every claim the run owes held: all `NOT-RUN` judged
+/// nothing, an owed claim left undrawn stops at `OBSERVED`, a claim nothing
+/// owes neither helps nor hurts, and a link the scorer could not read fails
+/// the run however its claims read, since an absence claim would pass on it.
+#[test]
+fn a_partial_share_pass_needs_every_owed_claim_and_a_read_wire() {
+    let claim = |verdict, owed| Claim::new("a", verdict, "").owed(owed);
+    let pass = claim(Verdict::Pass, true);
+    let spare = claim(Verdict::NotRun, false);
+    assert_eq!(overall(&[spare.clone()], 0), Verdict::Observed);
+    assert_eq!(
+        overall(&[pass.clone(), claim(Verdict::NotRun, true)], 0),
+        Verdict::Observed
+    );
+    assert_eq!(overall(&[pass.clone(), spare.clone()], 0), Verdict::Pass);
+    assert_eq!(overall(&[pass.clone(), spare], 1), Verdict::Fail);
+    assert_eq!(
+        overall(&[pass, claim(Verdict::Fail, false)], 0),
+        Verdict::Fail
+    );
+}
+
+/// The claims a run's knobs drive are the claims it owes: a pause run owes the
+/// pause and not the prober's, and the observation-only rows are never owed.
+#[test]
+fn the_knobs_decide_which_claims_a_run_owes() {
+    let mut fixture = Fixture::new(TRAIL);
+    fixture.topology.knobs.prober = true;
+    let owed = |name: &str| fixture.claim(name).owed;
+    assert!(owed("every-status-is-the-verified-range"));
+    assert!(owed(
+        "before-the-first-part-a-probe-is-answered-with-no-part"
+    ));
+    assert!(!owed("a-pause-keeps-the-slot-the-queue-and-the-offer"));
+    assert!(!owed("a-source-ask-is-answered-from-the-download-pool"));
+    assert!(!owed("stock-amule-takes-the-count-0-complete-form"));
 }

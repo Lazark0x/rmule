@@ -128,6 +128,8 @@ pub(crate) struct Claim {
     pub(crate) name: &'static str,
     pub(crate) verdict: Verdict,
     pub(crate) detail: String,
+    /// Whether this run's knobs drive the claim, so its `PASS` is owed.
+    pub(crate) owed: bool,
 }
 
 impl Claim {
@@ -136,7 +138,14 @@ impl Claim {
             name,
             verdict,
             detail: detail.into(),
+            owed: false,
         }
+    }
+
+    /// The claim, with whether the run owes its `PASS`.
+    pub(crate) fn owed(mut self, owed: bool) -> Self {
+        self.owed = owed;
+        self
     }
 
     /// `PASS` when `failures` is empty, else `FAIL` naming them.
@@ -273,11 +282,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
             .context("the stream file's part count")?,
     };
     let claims = claims(&run);
-    let verdict = if claims.iter().any(|claim| claim.verdict == Verdict::Fail) {
-        Verdict::Fail
-    } else {
-        Verdict::Pass
-    };
+    let verdict = overall(&claims, wire.unread_links);
     let file = VerdictFile {
         verdict,
         file_hash: &topology.file_hash,
@@ -298,26 +303,46 @@ pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     Ok(verdict)
 }
 
-/// Every claim, in ADR order.
+/// The run's verdict from its claims: `FAIL` on a claim that fell or a link the
+/// scorer could not read, where an absence claim would take silence for proof;
+/// `PASS` when every claim the run owes held; `OBSERVED` otherwise.
+pub(crate) fn overall(claims: &[Claim], unread_links: usize) -> Verdict {
+    let mut owed = claims.iter().filter(|claim| claim.owed).peekable();
+    if unread_links > 0 || claims.iter().any(|claim| claim.verdict == Verdict::Fail) {
+        Verdict::Fail
+    } else if owed.peek().is_some() && owed.all(|claim| claim.verdict == Verdict::Pass) {
+        Verdict::Pass
+    } else {
+        Verdict::Observed
+    }
+}
+
+/// Every claim, in ADR order, each marked with whether this run's knobs drive
+/// it. The two observation rows are never owed: stock aMule asks neither on
+/// demand, so they record what it did.
 pub(crate) fn claims(run: &Run<'_>) -> Vec<Claim> {
+    let knobs = &run.topology.knobs;
+    let stimuli = knobs.prober && knobs.straddle;
+    let reaches_a_waiter = knobs.queued && knobs.dial_downloaders;
+    let leaves_a_waiter = knobs.queued && !knobs.dial_downloaders && !knobs.drop_reask_acks;
     vec![
-        answers::pre_part_probe(run),
-        answers::pre_part_slot_ask(run),
-        answers::status_is_the_verified_range(run),
-        answers::amule_keeps_rmule(run),
-        answers::hash_set(run),
-        uploads::verified_bytes_only(run),
-        uploads::straddle(run),
-        offers::sentinels(run),
-        known_source::reask_ack(run),
-        uploads::completion(run),
+        answers::pre_part_probe(run).owed(knobs.prober),
+        answers::pre_part_slot_ask(run).owed(stimuli),
+        answers::status_is_the_verified_range(run).owed(true),
+        answers::amule_keeps_rmule(run).owed(true),
+        answers::hash_set(run).owed(true),
+        uploads::verified_bytes_only(run).owed(true),
+        uploads::straddle(run).owed(stimuli),
+        offers::sentinels(run).owed(true),
+        known_source::reask_ack(run).owed(leaves_a_waiter),
+        uploads::completion(run).owed(!knobs.pause),
         known_source::source_exchange(run),
-        uploads::pause(run),
-        offers::restart(run),
+        uploads::pause(run).owed(knobs.pause),
+        offers::restart(run).owed(knobs.restart),
         answers::complete_form(run),
-        links::rides_the_askers_link(run),
-        links::relinked_waiter_keeps_its_place(run),
-        links::dialled_at_its_address(run),
+        links::rides_the_askers_link(run).owed(knobs.dial_downloaders),
+        links::relinked_waiter_keeps_its_place(run).owed(reaches_a_waiter),
+        links::dialled_at_its_address(run).owed(knobs.prober && knobs.dial_downloaders),
     ]
 }
 
