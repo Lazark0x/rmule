@@ -43,6 +43,7 @@
 
 use rmule_primitives::{
     AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, WireTruncated,
+    write_wire_string,
 };
 use thiserror::Error;
 
@@ -378,10 +379,7 @@ impl MultiPacketAnswer {
             match item {
                 AnswerItem::Name(name) => {
                     payload.push(PeerOpcode::ReqFileNameAnswer.as_u8());
-                    let bytes = name.as_bytes();
-                    let len = u16::try_from(bytes.len()).expect("name length exceeds u16");
-                    payload.extend_from_slice(&len.to_le_bytes());
-                    payload.extend_from_slice(bytes);
+                    write_wire_string(&mut payload, name.as_bytes());
                 }
                 AnswerItem::Status(bitmap) => {
                     payload.push(PeerOpcode::FileStatus.as_u8());

@@ -3,7 +3,7 @@
 //! spelling, values in the integer and string types the wire defines, and
 //! decoding is byte-faithful so a round trip re-emits what arrived.
 
-use crate::{Ed2kText, PrimitiveError, Result, WireReader};
+use crate::{Ed2kText, PrimitiveError, Result, WireReader, write_wire_string};
 
 /// `TAGTYPE_HASH` — 16 raw bytes with no length prefix. The IPv6 dialect's
 /// four address tags all ride it (ADR-0087), and writing one of them as
@@ -301,13 +301,13 @@ impl Tag {
             },
             TagNameKind::Text(name) => {
                 encoded.push(tag_type);
-                write_len_prefixed_bytes(&mut encoded, name.as_bytes());
+                write_wire_string(&mut encoded, name.as_bytes());
             }
         }
 
         match &self.value {
             TagValue::String(value) => {
-                write_len_prefixed_bytes(&mut encoded, value.as_bytes());
+                write_wire_string(&mut encoded, value.as_bytes());
             }
             TagValue::U64(value) => encoded.extend_from_slice(&value.to_le_bytes()),
             TagValue::U32(value) => encoded.extend_from_slice(&value.to_le_bytes()),
@@ -489,11 +489,4 @@ fn decode_utf8(bytes: &[u8], reason: &'static str) -> Result<String> {
     std::str::from_utf8(bytes)
         .map(str::to_owned)
         .map_err(|_| PrimitiveError::InvalidTag { reason })
-}
-
-fn write_len_prefixed_bytes(encoded: &mut Vec<u8>, bytes: &[u8]) {
-    let bytes = &bytes[..bytes.len().min(usize::from(u16::MAX))];
-    let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
-    encoded.extend_from_slice(&len.to_le_bytes());
-    encoded.extend_from_slice(bytes);
 }

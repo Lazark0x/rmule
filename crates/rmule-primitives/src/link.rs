@@ -12,7 +12,7 @@ pub use sources::{LinkPeer, LinkPeerHost, LinkSourceExpiry, LinkSources};
 
 use crate::{
     AichRootHash, Ed2kText, FileHash, Ipv6Endpoint, PartHash, PartHashSet, PrimitiveError, Result,
-    ServerEndpoint, is_usable_tag_identity,
+    ServerEndpoint, WIRE_STRING_MAX, is_usable_tag_identity,
 };
 
 /// The eD2k listen port an `s6=` entry means when it names none — the
@@ -470,10 +470,13 @@ fn parse_part_hashes(input: &str) -> Result<Vec<PartHash>> {
 /// Percent-decode the raw bytes of a file-name field. Strict UTF-8 is
 /// *not* required — real ED2K links in the wild carry Windows-1252 /
 /// mojibake names; the raw bytes are preserved as [`Ed2kText`] and a
-/// lossy UTF-8 projection is the UI's responsibility.
+/// lossy UTF-8 projection is the UI's responsibility. Bounded by what a name
+/// can ever be on the wire, whatever length a stranger wrote.
 fn decode_file_name(input: &str) -> Result<Ed2kText> {
     Ok(Ed2kText::from_bytes(
-        percent_decode_str(input).collect::<Vec<u8>>(),
+        percent_decode_str(input)
+            .take(WIRE_STRING_MAX)
+            .collect::<Vec<u8>>(),
     ))
 }
 

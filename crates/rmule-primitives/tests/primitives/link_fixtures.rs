@@ -285,3 +285,20 @@ fn the_hint_cap_spans_the_ipv6_and_the_classic_tokens() {
     assert_eq!(file.sources.peers().len(), 24);
     assert_eq!(peer_text(&file.sources.peers()[23]), "198.51.100.24:4662");
 }
+
+/// A name past what any wire string can carry is cut at that length, the one
+/// rule `Tag::encode` holds, however long the link.
+#[test]
+fn a_links_name_is_bounded_by_the_wire_string() {
+    let link = format!(
+        "ed2k://|file|{}|1000|{}|/",
+        "a".repeat(70_000),
+        "0".repeat(32)
+    );
+
+    let Ok(Ed2kLink::File(file)) = Ed2kLink::parse(&link) else {
+        panic!("the link parses");
+    };
+
+    assert_eq!(file.name.as_bytes().len(), 65_535);
+}

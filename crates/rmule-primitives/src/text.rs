@@ -4,6 +4,20 @@
 use std::fmt;
 use std::str::Utf8Error;
 
+/// The longest string the wire's sixteen-bit length carries. It is a wire limit,
+/// never an invariant: a link's name is any length a stranger wrote, and text a
+/// counterparty sent can outgrow the length once it is rendered as UTF-8.
+pub const WIRE_STRING_MAX: usize = 65535;
+
+/// Append `bytes` as a wire string, sixteen-bit length first, cut at
+/// [`WIRE_STRING_MAX`] as aMule cuts it (`SafeFile.cpp:361-372`).
+pub fn write_wire_string(out: &mut Vec<u8>, bytes: &[u8]) {
+    let bytes = &bytes[..bytes.len().min(WIRE_STRING_MAX)];
+    let len = u16::try_from(bytes.len()).unwrap_or(u16::MAX);
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(bytes);
+}
+
 /// Wire-faithful eD2k text value.
 ///
 /// Server-emitted strings are not guaranteed UTF-8 — legacy banners and

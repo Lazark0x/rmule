@@ -41,6 +41,7 @@
 
 use rmule_primitives::{
     Ed2kFileClass, Ed2kText, KeywordQuery, Packet, PacketProtocol, WireReader, WireTruncated,
+    write_wire_string,
 };
 
 use crate::{Ed2kError, Opcode, Result};
@@ -313,9 +314,7 @@ fn write_term(payload: &mut Vec<u8>, term: &SearchTerm) {
 }
 
 fn write_len_prefixed_text(payload: &mut Vec<u8>, value: &Ed2kText) {
-    let len = u16::try_from(value.as_bytes().len()).expect("search text exceeds u16");
-    payload.extend_from_slice(&len.to_le_bytes());
-    payload.extend_from_slice(value.as_bytes());
+    write_wire_string(payload, value.as_bytes());
 }
 
 /// Maximum search-expression nesting depth a decode accepts. Matches the

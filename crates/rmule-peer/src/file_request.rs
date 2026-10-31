@@ -12,7 +12,9 @@
 //! asker's own part status after the hash whenever the session's
 //! [`ExtendedRequests`] level is at least 1.
 
-use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, WireTruncated};
+use rmule_primitives::{
+    Ed2kText, FileHash, Packet, WireReader, WireTruncated, write_wire_string,
+};
 use thiserror::Error;
 
 use crate::file::{PartBitmap, PartBitmapDecodeError};
@@ -310,9 +312,7 @@ impl ReqFileNameAnswer {
         let name = self.file_name.as_bytes();
         let mut payload = Vec::with_capacity(FileHash::BYTE_LEN + 2 + name.len());
         payload.extend_from_slice(self.file_hash.as_bytes());
-        let len = u16::try_from(name.len()).expect("file name length exceeds u16");
-        payload.extend_from_slice(&len.to_le_bytes());
-        payload.extend_from_slice(name);
+        write_wire_string(&mut payload, name);
         Packet::new(
             PeerOpcode::ReqFileNameAnswer.protocol(),
             PeerOpcode::ReqFileNameAnswer.as_u8(),

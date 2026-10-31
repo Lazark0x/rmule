@@ -45,7 +45,9 @@
 
 use std::net::Ipv4Addr;
 
-use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WireReader, WireTruncated};
+use rmule_primitives::{
+    ClientId, Ed2kText, Packet, PacketProtocol, WireReader, WireTruncated, write_wire_string,
+};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -111,9 +113,7 @@ impl Message {
     pub fn encode_packet(&self) -> Packet {
         let text = self.text.as_bytes();
         let mut payload = Vec::with_capacity(2 + text.len());
-        let len = u16::try_from(text.len()).expect("chat message length exceeds u16");
-        payload.extend_from_slice(&len.to_le_bytes());
-        payload.extend_from_slice(text);
+        write_wire_string(&mut payload, text);
         Packet::new(
             PeerOpcode::Message.protocol(),
             PeerOpcode::Message.as_u8(),

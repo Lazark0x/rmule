@@ -89,5 +89,5 @@ pub use source::{
     SourceRoad, SourceSighting,
 };
 pub use tag::{HASH_TAG_LEN, Tag, TagName, TagNameEncoding, TagValue};
-pub use text::Ed2kText;
+pub use text::{Ed2kText, WIRE_STRING_MAX, write_wire_string};
 pub use wire_reader::{WireReader, WireTruncated};

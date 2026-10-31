@@ -151,3 +151,28 @@ fn answer_items_equal_what_the_standalone_codecs_decode_for_the_same_data() {
     );
     assert!(bundle.unknown_sub.is_none());
 }
+
+/// A link's name past the sixteen-bit length, served: every name answer cuts
+/// it as `Tag::encode` does, on the session's own task.
+#[test]
+fn a_name_past_the_wire_length_is_cut_at_it_in_both_answers() {
+    let name = Ed2kText::from_bytes(vec![b'a'; 70_000]);
+    let file_hash = hash();
+
+    let standalone = ReqFileNameAnswer {
+        file_hash,
+        file_name: name.clone(),
+    }
+    .encode_packet();
+    let bundled = MultiPacketAnswer {
+        file_hash,
+        items: vec![AnswerItem::Name(name)],
+        unknown_sub: None,
+    }
+    .encode_packet();
+
+    assert_eq!(standalone.payload()[16..18], [0xFF, 0xFF]);
+    assert_eq!(standalone.payload().len(), 16 + 2 + 65_535);
+    assert_eq!(bundled.payload()[17..19], [0xFF, 0xFF]);
+    assert_eq!(bundled.payload().len(), 16 + 1 + 2 + 65_535);
+}
