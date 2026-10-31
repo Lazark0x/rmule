@@ -162,7 +162,9 @@ before completion, and the finished file is never pre-sized either.
   is core's. Module `descriptors` holds `raise_descriptor_limit()`, which raises the process's
   soft open-descriptor limit toward its hard limit (no higher than `OPEN_MAX` on macOS) and answers
   the limit in force, none on Windows; the Connection Ceiling the binaries derive from it is
-  ADR-0116's.
+  ADR-0116's. Module `tcp_send` holds `send_progress`, one reading of how far a TCP stream's
+  written bytes have got: the bytes the kernel still holds on Linux and macOS, the bytes
+  acknowledged on Windows, none where the system refuses; what a reading means is ADR-0031's.
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
   std, and the exclusive rename on Linux and macOS through `rustix`'s `renameat_with` with
   `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`), and the
@@ -170,8 +172,9 @@ before completion, and the finished file is never pre-sized either.
   waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
   three Windows calls (`DeviceIoControl` with `FSCTL_SET_SPARSE` and with `FSCTL_SET_ZERO_DATA`,
   `GetFileInformationByHandleEx` with `FileStandardInfo`), the Windows exclusive rename
-  (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` or `MOVEFILE_COPY_ALLOWED`), `WSAIoctl`, and
-  the default-app lookups ADR-0114 lists. `libc`, `rustix` and
+  (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` or `MOVEFILE_COPY_ALLOWED`), `WSAIoctl`, the
+  three send-side readings (`rustix`'s typed `ioctl` with `SIOCOUTQ`, `libc`'s `getsockopt` with
+  `SO_NWRITE`, `WSAIoctl` with `SIO_TCP_INFO`), and the default-app lookups ADR-0114 lists. `libc`, `rustix` and
   `windows-sys` are already in the dependency graph: no crate is added.
 - **How the compiler and the guards hold it.** The crate's own lint table repeats
   `[workspace.lints]` but relaxes `unsafe_code` to `deny`; every other crate keeps `forbid`, which

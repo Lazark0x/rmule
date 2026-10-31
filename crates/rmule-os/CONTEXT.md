@@ -1,6 +1,6 @@
 # rmule-os
 
-The operating-system calls rmule needs that std does not expose, kept in a crate of their own so every other crate keeps `unsafe_code = "forbid"` (ADR-0111). It owns no socket and no file: `rmule-net` binds every socket and hands each unconnected UDP one here once, at the bind; `rmule-core` opens every part file and lends the handle here for one call; the TUI asks it which app opens an extension. It decides nothing — what to punch and what a reading means are core's.
+The operating-system calls rmule needs that std does not expose, kept in a crate of their own so every other crate keeps `unsafe_code = "forbid"` (ADR-0111). It owns no socket and no file: `rmule-net` binds every socket, hands each unconnected UDP one here once, at the bind, and lends a stalled TCP stream here for one reading; `rmule-core` opens every part file and lends the handle here for one call; the TUI asks it which app opens an extension. It decides nothing — what to punch and what a reading means are core's.
 
 ## Language
 

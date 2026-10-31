@@ -12,7 +12,8 @@ publish.workspace = true
 rmule-ed2k = { path = "../rmule-ed2k" }
 rmule-kad = { path = "../rmule-kad" }
 # The Windows ICMP-reset switch `family::bind_udp` sets on every unconnected
-# UDP socket (`rmule_os::winsock`); a no-op elsewhere.
+# UDP socket (`rmule_os::winsock`), a no-op elsewhere, and the send-side reading
+# the driver's write clock takes on a stalled socket (`rmule_os::tcp_send`).
 rmule-os = { path = "../rmule-os" }
 rmule-peer = { path = "../rmule-peer" }
 rmule-primitives = { path = "../rmule-primitives" }
