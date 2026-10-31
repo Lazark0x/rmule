@@ -9,8 +9,9 @@ use rmule_net::portmap::{MappingError, MappingProtocol};
 use rmule_primitives::AddressFamily;
 
 use crate::address_learning::{SharedAddressLearning, SocketRole};
+use crate::port_mapping::mapper::rerace::RERACE_INTERVAL;
 use crate::port_mapping::{
-    MappingCommand, MappingResult, PortMapper, PortMappingConfig, ProbeAnswer,
+    GrantAnswer, MappingCommand, MappingResult, PortMapper, PortMappingConfig, ProbeAnswer,
 };
 
 use super::{
@@ -204,4 +205,61 @@ fn a_past_due_row_held_by_a_re_add_is_no_wake() {
         mapper.next_wake().is_some_and(|wake| wake > past_due),
         "fired rows moved up their rung"
     );
+}
+
+#[test]
+fn a_reset_on_the_incumbents_renewal_during_a_re_race_re_adds_the_set() {
+    // PCP holds a shifted TCP port, so UPnP is raced again while PCP renews.
+    let t0 = Instant::now();
+    let mut mapper = PortMapper::new(
+        PortMappingConfig {
+            protocols: MappingProtocol::Pcp.mask_bit() | MappingProtocol::Upnp.mask_bit(),
+            ..PortMappingConfig::default()
+        },
+        bound_v4_store(),
+        7,
+    );
+    mapper.start(t0);
+    let _ = drain(&mut mapper);
+    probed(MappingProtocol::Pcp, &[AddressFamily::V4], t0, &mut mapper);
+    probe_absent(MappingProtocol::Upnp, t0, &mut mapper);
+    answer_maps(&mut mapper, t0, |mapping| {
+        if mapping.role == SocketRole::Tcp {
+            granted(mapping.internal_port + 1)
+        } else {
+            granted(mapping.internal_port)
+        }
+    });
+    let _ = drain(&mut mapper);
+    let rerace = t0 + RERACE_INTERVAL;
+    mapper.tick(rerace);
+    let _ = drain(&mut mapper);
+
+    let renewed = mapper.diagnostics()[0].mapping;
+    mapper.on_result(
+        MappingResult::Mapped {
+            protocol: MappingProtocol::Pcp,
+            mapping: renewed,
+            outcome: granted(renewed.internal_port).map(|grant| GrantAnswer {
+                epoch_reset: true,
+                ..grant
+            }),
+        },
+        rerace,
+    );
+
+    let mut when = rerace;
+    for _ in 0..3 {
+        mapper.tick(when);
+        when += Duration::from_millis(100);
+    }
+    let readds = maps(&drain(&mut mapper));
+    assert_eq!(readds.len(), 2, "the whole held set goes back: {readds:?}");
+    assert!(readds.iter().all(|command| matches!(
+        command,
+        MappingCommand::Map {
+            protocol: MappingProtocol::Pcp,
+            ..
+        }
+    )));
 }

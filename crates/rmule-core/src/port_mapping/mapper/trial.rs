@@ -47,9 +47,10 @@ impl PortMapper {
         if let Err(error) = &outcome {
             self.errors.insert(mapping, error.clone());
         }
+        // A reset is a fact about the gateway, whatever this answer turns out
+        // to belong to below.
         if let Ok(grant) = &outcome
             && grant.epoch_reset
-            && matches!(self.phase, Phase::Mapped)
         {
             self.queue_readds(now);
         }
