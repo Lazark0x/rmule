@@ -196,3 +196,36 @@ async fn a_held_part_file_has_its_link_beside_it() {
     assert_eq!(linked[0].link, link);
     assert_eq!(linked[0].part_path, paths.part_path());
 }
+
+/// A run that starts again keeps what an earlier one learned: a line without
+/// the set could prove none of the parts verified under it.
+#[tokio::test]
+async fn a_run_start_writes_the_set_a_peer_gave_an_earlier_run() {
+    let (runner, _held) = context();
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = vec![0x6D; rmule_primitives::ED2K_PART_SIZE as usize + 1];
+    let proven = rmule_testkit::file_link("set.bin", &bytes);
+    let hashes = proven.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    let bare = rmule_primitives::Ed2kFileLink {
+        part_hash_set: None,
+        ..proven.clone()
+    };
+    let paths = DownloadPaths::from_final_path(dir.path().join("set.bin"));
+    let store = &runner.rt.store;
+    let id = store
+        .create_download(&bare, None, &paths, None)
+        .unwrap()
+        .id();
+    store.record_provisional_part_hashes(id, &hashes).unwrap();
+    hold_part_file(&runner, id).await.unwrap();
+
+    let line = crate::content::part_link::beside(paths.part_path()).unwrap();
+    for _ in 0..500 {
+        if line.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let linked = crate::content::part_link::linked_parts(dir.path());
+    assert_eq!(linked[0].link.part_hash_set, proven.part_hash_set);
+}

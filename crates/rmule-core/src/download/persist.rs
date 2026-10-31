@@ -20,7 +20,7 @@
 //! pause, keep every verified part and reach no verdict.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use ed2k::digest::Digest;
@@ -49,6 +49,17 @@ pub(super) enum PersistError {
     Ended(DownloadFailure),
 }
 
+/// Say once that a failed write stopped the store (ADR-0083).
+pub(crate) async fn tell_store_stop(
+    store: &crate::store::download::DurableDownloadRepository,
+    evt_tx: &mpsc::Sender<CoreEvent>,
+) {
+    if store.store_stop_to_tell() {
+        tracing::warn!("a failed write stopped the store until the next start");
+        send_download_event(evt_tx, DownloadEvent::StoreStopped).await;
+    }
+}
+
 /// The store refused `what`: the run ends on it, and the cause goes to the Run
 /// Log, since `StoreFailed` is all the operator's sentence can name.
 pub(crate) fn store_failed(what: &'static str) -> impl Fn(CoreError) -> DownloadFailure {
@@ -61,11 +72,35 @@ pub(crate) fn store_failed(what: &'static str) -> impl Fn(CoreError) -> Download
 /// Keep the link beside the part file, off the run's way (ADR-0083). A line
 /// that fails costs only the rescue it would have allowed.
 fn keep_link_line(part_path: PathBuf, link: String) {
-    tokio::task::spawn_blocking(move || {
-        if let Err(error) = part_link::keep(&part_path, &link) {
-            tracing::warn!(%error, "the line beside a part file could not be written");
+    tokio::task::spawn_blocking(move || keep_or_warn(&part_path, &link));
+}
+
+fn keep_or_warn(part_path: &Path, link: &str) {
+    if let Err(error) = part_link::keep(part_path, link) {
+        tracing::warn!(%error, "the line beside a part file could not be written");
+    }
+}
+
+/// The line a run starts with: the set a peer gave an earlier run when the
+/// store holds one, or the link when no line stands, which must not replace
+/// one that says more.
+fn line_for_the_run<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    record: &crate::DurableDownloadRecord,
+) {
+    match runner.rt.store.provisional_part_hashes(download_id) {
+        Ok(hashes) if !hashes.is_empty() => hash_set_learned(runner, download_id, &hashes),
+        _ => {
+            let part_path = record.paths().part_path().to_path_buf();
+            let link = record.canonical_link().to_owned();
+            tokio::task::spawn_blocking(move || {
+                if part_link::beside(&part_path).is_some_and(|line| !line.exists()) {
+                    keep_or_warn(&part_path, &link);
+                }
+            });
         }
-    });
+    }
 }
 
 /// The run learned its Part Hash Set: the line says so, since a part is
@@ -131,7 +166,7 @@ pub(super) async fn hold_part_file<S, P>(
                 ));
             }
             *held = Some(file.recorded_in(runner.rt.store.store_directory()));
-            keep_link_line(part_path.to_path_buf(), record.canonical_link().to_owned());
+            line_for_the_run(runner, download_id, &record);
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
             if runner.hole_probed.swap(true, Ordering::SeqCst) {
@@ -563,6 +598,7 @@ pub(crate) async fn record_failure(
             "the store could not record why the download failed",
         );
         send_download_event(evt_tx, DownloadEvent::FailureNotRecorded { download_id });
+        tell_store_stop(store, evt_tx).await;
     }
 }
 

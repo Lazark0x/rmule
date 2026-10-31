@@ -552,7 +552,9 @@ impl SharedFile {
             path: entry.path.clone(),
             name: entry.name.clone(),
             source: entry.source,
-            modified: entry.modified,
+            // serde refuses a time before the epoch, and the file must not
+            // stay unshared for its date: no stamp is what it rehashes on.
+            modified: entry.modified.filter(|at| *at >= SystemTime::UNIX_EPOCH),
             identity: None,
         }
     }
@@ -588,6 +590,8 @@ fn part_hashes_of(txn: &impl Readable, key: FileKey) -> Result<Vec<PartHash>, Co
 mod pinned {
     use std::time::{Duration, UNIX_EPOCH};
 
+    use rmule_store::Packed;
+
     use super::*;
     use crate::store::assert_pinned;
 
@@ -613,6 +617,20 @@ mod pinned {
         assert_pinned(&ShareSource::Explicit, "00");
         assert_pinned(&ShareSource::CompletedDownload, "01");
         assert_pinned(&ShareSource::DownloadDirectory, "02");
+    }
+
+    #[test]
+    fn a_file_dated_before_the_epoch_still_packs() {
+        let entry = SharedFileEntry {
+            file_hash: FileHash::from_bytes([7; 16]),
+            file_size: 300,
+            path: "/s/old.bin".into(),
+            name: "old.bin".into(),
+            part_hashes: Vec::new(),
+            source: ShareSource::Explicit,
+            modified: Some(UNIX_EPOCH - Duration::from_secs(1)),
+        };
+        assert!(Packed::pack(&SharedFile::of(&entry)).is_ok());
     }
 
     #[test]

@@ -304,7 +304,13 @@ fn keep_a_copy(path: &Path, found: u32) -> Result<(), StoreError> {
     partial.push(".partial");
     let partial = PathBuf::from(partial);
     let copied = std::fs::copy(path, &partial)
-        .and_then(|_| std::fs::File::open(&partial)?.sync_all())
+        // Windows flushes only through a handle open for writing.
+        .and_then(|_| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&partial)?
+                .sync_all()
+        })
         .and_then(|()| std::fs::rename(&partial, &copy));
     copied.map_err(|source| StoreError::NotCopied { copy, source })
 }

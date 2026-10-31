@@ -166,7 +166,11 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     }
     let interface_refresh = spawn_interface_refresh(&wiring.shared_server_session);
     let share_flush = share_flush::ShareFlush::start(&wiring.registry, &diagnostics);
-    let credit_flush = credit_flush::CreditFlush::start(wiring.credit.clone());
+    let credit_flush = credit_flush::CreditFlush::start(
+        wiring.credit.clone(),
+        Arc::clone(&wiring.store),
+        evt_tx.clone(),
+    );
     // The Address Learning rows a snapshot reports (ADR-0084) are read from
     // the store, never copied into the diagnostics state: one writer, one
     // truth, and a row that cannot drift from the verdict it describes.

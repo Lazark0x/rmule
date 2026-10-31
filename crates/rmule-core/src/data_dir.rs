@@ -106,7 +106,16 @@ fn resolve_by(
     })
 }
 
-/// Keep the directory and every file directly in it to this user: 0700 and
+/// The files of rmule's own that hold an identity or a peer: the store and
+/// its copies, the Run Log and its twin, the credit and contact exports. A
+/// file the operator put here is theirs to mode.
+#[cfg(unix)]
+fn is_rmule_file(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    name.starts_with("rmule.") || name == "clients.met" || name == "nodes.dat"
+}
+
+/// Keep the directory and rmule's own files in it to this user: 0700 and
 /// 0600, repairing what an older install left. A part file needs no mode of
 /// its own, since the directory it lies below already refuses others. A
 /// symbolic link is left alone: its mode is not the file's. A volume that
@@ -137,7 +146,7 @@ fn private_modes(dir: &Path) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let metadata = entry.metadata()?;
-        if metadata.is_file() {
+        if metadata.is_file() && is_rmule_file(&entry.file_name()) {
             hold(&entry.path(), &metadata, 0o600)?;
         }
     }
@@ -166,7 +175,10 @@ mod tests {
         let store = dir.path().join("rmule.redb");
         let elsewhere = tempfile::NamedTempFile::new().unwrap();
         set(elsewhere.path(), 0o644);
-        symlink(elsewhere.path(), dir.path().join("link")).unwrap();
+        symlink(elsewhere.path(), dir.path().join("rmule.link")).unwrap();
+        let theirs = dir.path().join("notes.txt");
+        std::fs::write(&theirs, b"").unwrap();
+        set(&theirs, 0o644);
         std::fs::write(&store, b"").unwrap();
         set(&store, 0o644);
         set(dir.path(), 0o755);
@@ -176,6 +188,7 @@ mod tests {
         assert_eq!(mode(dir.path()) & 0o777, 0o700);
         assert_eq!(mode(&store) & 0o777, 0o600);
         assert_eq!(mode(elsewhere.path()) & 0o777, 0o644);
+        assert_eq!(mode(&theirs) & 0o777, 0o644);
     }
 
     fn from<'a>(vars: &'a [(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + 'a {

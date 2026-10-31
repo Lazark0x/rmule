@@ -1,10 +1,11 @@
 //! The stored encoding of a download row: its part path and the live enums it
 //! embeds, pinned byte for byte.
 
-use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash};
+use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, PartHash, UserHash};
 
-use super::DownloadRow;
+use super::{DistrustedPeerRow, DownloadRow, ProvisionalPartHashRow, VerifiedPartRow};
 use crate::DownloadPaths;
+use crate::store::assert_pinned;
 
 fn row() -> DownloadRow {
     let file = Ed2kFileLink {
@@ -123,4 +124,22 @@ fn a_kad_aich_root_encodes_its_variant_then_its_root() {
         hex(&postcard::to_allocvec(&Some(KadAichRoot::Contested)).unwrap()),
         "0101"
     );
+}
+
+#[test]
+fn the_part_rows_keep_their_bytes() {
+    let part = VerifiedPartRow {
+        offset: 300,
+        len: 1,
+        part_hash: PartHash::from_bytes([9; 16]),
+    };
+    assert_pinned(&part, &format!("ac0201{}", "09".repeat(16)));
+    let provisional = ProvisionalPartHashRow {
+        part_hash: PartHash::from_bytes([9; 16]),
+    };
+    assert_pinned(&provisional, &"09".repeat(16));
+    let distrusted = DistrustedPeerRow {
+        user_hash: [7; UserHash::BYTE_LEN],
+    };
+    assert_pinned(&distrusted, &"07".repeat(UserHash::BYTE_LEN));
 }

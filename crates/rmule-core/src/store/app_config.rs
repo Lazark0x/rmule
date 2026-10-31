@@ -384,3 +384,29 @@ impl AppConfigStore for DurableAppConfig {
         self.ensure_secret(Preference::KadUdpKey)
     }
 }
+
+#[cfg(test)]
+mod pinned {
+    use super::*;
+    use crate::store::assert_pinned;
+
+    #[test]
+    fn the_identity_records_keep_their_bytes() {
+        let client = ClientIdentityRecord {
+            user_hash: UserHash::from_bytes([7; UserHash::BYTE_LEN]),
+            nickname: Ed2kText::from_bytes(b"me".to_vec()),
+            tcp_port: 300,
+            protocol_version: 60,
+        };
+        assert_pinned(&client, &format!("{}026d65ac023c", "07".repeat(16)));
+        let kad = KadIdentityRecord {
+            kad_id: [9; KadId::BYTE_LEN],
+            udp_port: 300,
+        };
+        assert_pinned(&kad, &format!("{}ac02", "09".repeat(KadId::BYTE_LEN)));
+        let key = SecureIdentKeyRecord {
+            private_key: vec![0xAB, 0xCD],
+        };
+        assert_pinned(&key, "02abcd");
+    }
+}

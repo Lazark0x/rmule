@@ -505,6 +505,7 @@ where
                 );
                 self.reject(CoreCommandRejectReason::DownloadStoreFailed)
                     .await;
+                crate::download::persist::tell_store_stop(&self.wiring.store, &self.evt_tx).await;
                 return;
             }
         }
@@ -615,11 +616,6 @@ where
     /// insufficient file (`DownloadQueue.cpp:1267-1269`), so a resume does not
     /// stop again. A row no longer paused left the wait.
     pub(super) async fn resume_for_space(&mut self) {
-        // A stopped store cannot resume anything, and nothing else says so.
-        if self.wiring.store.store_stop_to_tell() {
-            tracing::warn!("a failed write stopped the store until the next start");
-            send_download_event(&self.evt_tx, DownloadEvent::StoreStopped).await;
-        }
         for download_id in self.activities.awaiting_space() {
             let paused = self
                 .wiring

@@ -1,13 +1,19 @@
 //! The **credit ring**'s minute: what moved in memory goes to the Durable Store
 //! on the blocking pool, never on a loop that accrues it (ADR-0083). The bound:
 //! a crash loses at most [`CREDIT_FLUSH_INTERVAL`] of accrual, and however busy
-//! the transfers the store sees one transaction a minute.
+//! the transfers the store sees one transaction a minute. The same minute
+//! says a store a failed write stopped (ADR-0083), whichever seam it failed on.
+
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::content::on_pool;
 use crate::credit::SharedCreditStore;
+use crate::download::persist::tell_store_stop;
+use crate::service::CoreEvent;
+use crate::store::download::DurableDownloadRepository;
 
 /// How often what moved is written.
 const CREDIT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
@@ -21,7 +27,11 @@ pub(super) struct CreditFlush {
 
 impl CreditFlush {
     /// Start writing `credit` once a minute.
-    pub(super) fn start(credit: SharedCreditStore) -> Self {
+    pub(super) fn start(
+        credit: SharedCreditStore,
+        store: Arc<DurableDownloadRepository>,
+        evt_tx: mpsc::Sender<CoreEvent>,
+    ) -> Self {
         let (stop, mut stopped) = mpsc::channel::<()>(1);
         let periodic = tokio::spawn(async move {
             let mut tick = tokio::time::interval(CREDIT_FLUSH_INTERVAL);
@@ -33,6 +43,7 @@ impl CreditFlush {
                         if let Err(error) = on_pool(move || credit.checkpoint()).await {
                             tracing::warn!(%error, "credit flush failed; retried next time");
                         }
+                        tell_store_stop(&store, &evt_tx).await;
                     }
                     _ = stopped.recv() => return,
                 }
