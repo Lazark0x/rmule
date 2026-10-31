@@ -228,11 +228,11 @@ async fn buddy_relays_and_pong_ride_the_held_inbound_link_not_a_fresh_dial() {
 
 /// The buddy relay accepts the served buddy's ID in either
 /// `TAG_BUDDYHASH` spelling — the requester's `0x52` names it word-swapped,
-/// the eMule 0.70b / eMuleAI reading — and relays it **unchanged**, exactly
-/// as aMule does, over the real held link; counted apart from the ordinary
-/// correct-spelling relay (`buddy_relays_swapped_spelling_total`).
+/// the eMule 0.70b / eMuleAI reading — and relays it under the registered
+/// ID every source's check takes (ADR-0061), over the real held link; counted
+/// apart from the ordinary relay (`buddy_relays_swapped_spelling_total`).
 #[tokio::test]
-async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
+async fn a_swapped_spelling_0x52_relays_the_registered_id_and_is_counted_apart() {
     let buddy_id = rmule_kad::KadId::from_bytes([
         0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD,
         0xEF,
@@ -264,8 +264,7 @@ async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
 
     // The requester's 0x52 names the served buddy's ID word-swapped: still
     // relayed — rmule's own check accepts the swapped spelling of the buddy
-    // it serves — and relayed **verbatim**, in the spelling the requester
-    // claimed, never corrected.
+    // it serves — and relayed as the ID the buddy registered.
     assert_eq!(
         slot.relay_kad_callback(buddy_id.word_swapped(), requester, file_hash),
         RelayDisposition::Sent
@@ -275,8 +274,8 @@ async fn a_swapped_spelling_0x52_relays_unchanged_and_is_counted_apart() {
         .expect("the swapped-spelling 0x99 arrived within 2s");
     assert_eq!(
         &payload[..16],
-        buddy_id.word_swapped().as_bytes(),
-        "relayed unchanged, in the spelling the requester claimed"
+        buddy_id.as_bytes(),
+        "relayed under the registered ID"
     );
     assert_eq!(
         diagnostics
