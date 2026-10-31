@@ -21,7 +21,7 @@ members = [
 # use its parsers as a decode oracle. That pulls ~180 crates (axum, tower, clap,
 # a C-compiled jemalloc) which nothing else here needs, so the differ is its own
 # workspace and is built and gated separately — see its manifest.
-exclude = ["tools/ed2ksrv-differ"]
+exclude = ["fuzz", "tools/ed2ksrv-differ"]
 
 [workspace.package]
 version = "0.2.0"

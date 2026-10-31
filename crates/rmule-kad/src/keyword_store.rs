@@ -148,8 +148,8 @@ pub const KEYWORD_DUPLICATE_GUARD_THRESHOLD: usize = KEYWORD_PER_KEYWORD_CAP - 5
 
 /// The bytes of publishers' names and verbatim tags the index holds. Past it a
 /// publish is refused as a full index. An honest row is a few hundred bytes, so
-/// this sits above the row cap's honest fill; a row of tags can be 16 MiB, so the
-/// row cap alone is gigabytes. **Divergence (documented):** aMule has only the row
+/// this sits above the row cap's honest fill; a row can be a whole 64 KiB datagram,
+/// so the row cap alone is gigabytes. **Divergence (documented):** aMule has only the row
 /// caps. aMule is the wire's truth here, not the bar for what a stranger may cost.
 pub const KEYWORD_BYTE_BUDGET: usize = 64 * 1024 * 1024;
 

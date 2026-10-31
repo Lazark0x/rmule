@@ -61,9 +61,9 @@ fn a_republish_under_a_new_name_past_the_cap_holds_nothing_more() {
     assert_eq!(store.held_bytes(), full);
 }
 
-/// A row of 252 tags at 65,535 bytes each is 16 MiB: the row cap alone is
-/// gigabytes. Past the budget a publish is refused as a full index, and the
-/// sweep gives the bytes back.
+/// Past the budget a publish is refused as a full index, and the sweep gives
+/// the bytes back. The rows here are wider than a datagram's, so the budget
+/// fills in a few publishes.
 #[test]
 fn the_index_refuses_past_its_byte_budget_and_the_sweep_returns_the_bytes() {
     let mut store = KeywordStore::new();

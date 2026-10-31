@@ -199,6 +199,11 @@ While you develop, point the binaries at a scratch data directory: `--data-dir`
 on `rmule-cli`, or `RMULE_DATA` for `rmule`. A work-in-progress build should
 never touch your real downloads or identity.
 
+Fuzz targets on everything a stranger can send live in `fuzz/`, a package of its
+own built with a nightly toolchain:
+
+    cargo +nightly fuzz run peer_session -- -max_total_time=60
+
 ## The interop bench
 
 Wire behaviour is proven against real software: stock aMule and real eD2k

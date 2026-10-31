@@ -58,7 +58,7 @@ storer parses and evaluates full trees.
   ([Entry.cpp#L594](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/kademlia/Entry.cpp#L594)).
 - **Bounded in bytes, past aMule:** a name keeps 1,024 bytes, an entry 64 names, and the
   index 64 MiB of names and verbatim tags; past that a publish is refused as a full index.
-  Rows alone bound nothing: one row of verbatim tags can be 16 MiB.
+  Rows alone bound nothing: one row can fill a 64 KiB datagram.
 - **Caps and load:** 60 000 keyword entries (`KADEMLIAMAXENTRIES`), 50 000 sources per
   keyword (`KADEMLIAMAXINDEX`), a duplicate-source guard at 45 000
   ([Indexed.cpp#L482](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/kademlia/Indexed.cpp#L482)).
