@@ -11,9 +11,7 @@
 //! Distinct from **Source Discovery Policy**, the per-download *selection* of
 //! channels; the engine is the shared mechanism they run on. Concerns that are
 //! not discovery live elsewhere: the **Kad Publisher** is its own
-//! registry-driven Core task (`kad_sources`), and the global-callback relay
-//! rides the server-UDP transport adapter (`adapters`) that owns the socket. The
-//! engine has exactly two concerns — ask cadence and answer routing.
+//! registry-driven Core task (`kad_sources`). The engine has exactly two concerns — ask cadence and answer routing.
 
 use std::collections::HashMap;
 use std::future::Future;

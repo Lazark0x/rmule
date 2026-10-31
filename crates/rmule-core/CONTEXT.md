@@ -1448,8 +1448,7 @@ RAII deregistration guard — generic over a **Discovery Channel** adapter. Two
 adapters exist: the server-UDP global sweep (ADR-0051) and the Kad channel
 (ADR-0043). Distinct from **Source Discovery Policy**, which is the per-download
 *selection* of channels; the engine is the shared mechanism they run on. Share
-publishing is not discovery (see **Kad Publisher**); the global-callback relay is
-transport plumbing owned by the server-UDP adapter, not the engine.
+publishing is not discovery (see **Kad Publisher**).
 _Avoid_: discovery task twins (the retired GlobalSourceDiscovery/KadSourceDiscovery copies), source lookup (the eD2k TCP exchange), scheduler
 
 **Kad Publisher**:
@@ -1601,11 +1600,7 @@ An inbound **server-UDP** datagram dropped because rmule never asked in that
 **Unanswerable Family Datagram**: there the per-opcode body decides, here one
 reason covers the whole surface. Server-UDP is strictly request/response with
 rmule always the requester, servers resolve A-first, and the send half reaches
-only an IPv4 literal — so an IPv6 datagram answers nothing rmule sent. The one
-body that could never widen anyway is `OP_GLOBCALLBACKREQUEST` (`0x9C`), which
-writes *rmule's own* contact in 32 bits for the server to relay to a firewalled
-third party: **Ed2k Wire Form**'s omission rule applies, and for a request whose
-entire content is that address, omitting is dropping. Traced, not counted — a
+only an IPv4 literal — so an IPv6 datagram answers nothing rmule sent. Traced, not counted — a
 datagram from a family we never asked in is unsolicited, not a dialect gap.
 _Avoid_: unanswerable datagram (that is the client surface), v6 server (a
 v6-only server is reachable over TCP, just never asked over UDP)

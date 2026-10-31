@@ -87,7 +87,6 @@ mod upload_slot_queue;
 // Callback: reaching a Low-ID source through the server, directly and globally.
 mod callback_loopback;
 mod direct_callback_route;
-mod global_callback_loopback;
 mod server_callback_serve;
 
 // Kad: source discovery without a server in the loop.

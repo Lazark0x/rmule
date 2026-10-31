@@ -18,7 +18,7 @@ use crate::adapters::CallbackKey;
 use crate::callback::BuddyContact;
 use crate::dialable::{DialPosition, choose_dial};
 use crate::download::spent_names::Spend;
-use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
+use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoad, LowIdRoute};
 
 impl SourceBook {
     /// Whether a fill would find a next dial: a High-ID record pooled, or a
@@ -447,12 +447,15 @@ impl SourceBook {
     /// dialable half another channel proved: then it goes first in that lane.
     /// One that ends with nowhere to go is spent under its Low-ID key, as stock
     /// dead-lists a client whose callback lapsed (`BaseClient.cpp:1340-1346`).
+    /// A road that ends as the punch asked nobody to dial us, so it spends
+    /// nothing.
     pub(crate) fn end_callback(&mut self, key: CallbackKey, dial: DialPosition) -> Option<Release> {
         let id = self.aliases.key(key)?;
         let record = self.records.get(&id)?;
-        if !matches!(record.stage, Stage::CallbackPending(_)) {
+        let Stage::CallbackPending(pending) = &record.stage else {
             return None;
-        }
+        };
+        let invited = pending.road != LowIdRoad::Punch;
         let candidate = record.candidate?;
         if !self.half_closed(id, &candidate)
             && let Some(half) = choose_dial(None, candidate.ipv6, dial)
@@ -476,8 +479,10 @@ impl SourceBook {
         if let Some(first) = dialable {
             return Some(self.back_to(id, Lane::HighId, Some(first)));
         }
-        self.blocks
-            .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
+        if invited {
+            self.blocks
+                .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
+        }
         self.remove(id);
         Some(Release::Gone)
     }

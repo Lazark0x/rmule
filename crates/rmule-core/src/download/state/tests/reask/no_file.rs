@@ -100,7 +100,7 @@ fn a_called_back_source_that_lacks_the_file_is_not_called_back_again() {
         low_id: low(7),
         kad_port: None,
     };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let mut state = logged_into(server, 1);
     let _ = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
     let _ = state.on_callback_connected(t0(), key, peer(9));
 
@@ -109,16 +109,16 @@ fn a_called_back_source_that_lacks_the_file_is_not_called_back_again() {
     assert!(
         !answered.iter().any(|d| matches!(
             d,
-            Decision::RequestGlobalCallback { .. } | Decision::RequestCallback { .. }
+            Decision::RequestCallback { .. }
         )),
         "it is not called back again: {answered:?}"
     );
 
     let again = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
     assert!(
-        !again.iter().any(
-            |d| matches!(d, Decision::RequestGlobalCallback { low_id, .. } if *low_id == low(7))
-        ),
+        !again
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7))),
         "a sighting of its id is refused: {again:?}"
     );
 }

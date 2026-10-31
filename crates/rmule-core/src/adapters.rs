@@ -89,7 +89,6 @@ pub(crate) use serve_runtime::AdmittedPeer;
 pub(crate) use udp_ports_advert::SharedUdpPortsAdvert;
 pub(crate) use udp_transport::{
     RuntimeClientUdpTransport, SERVER_UDP_OBFUSCATION_PORT_OFFSET, SERVER_UDP_PORT_OFFSET,
-    relay_global_callbacks,
 };
 
 // Seam fixtures; `hello_wire` is shared with the firewalled front's tests,

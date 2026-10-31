@@ -354,6 +354,29 @@ fn connected_key(low_id: ClientId) -> CallbackKey {
 
 /// A one-part download with explicit High-ID + Low-ID candidate pools and a
 /// callback-capability flag (ADR-0039).
+/// A state logged into `server` on a High ID: the one road a global row of
+/// that server has.
+fn logged_into(server: Ipv4Endpoint, peer_concurrency: usize) -> DownloadState {
+    state_from(
+        file_hash_only_content(ONE_PART),
+        SourcingPosture {
+            callback_capability: CallbackCapability::of(
+                true,
+                Some(crate::own_identity::ConnectedSession {
+                    server: Some(server),
+                    client_id: rmule_primitives::ClientId::from_u32(0x0A00_0001),
+                }),
+                false,
+            ),
+            ..QUIET_POSTURE
+        },
+        peer_concurrency,
+        no_facts(),
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
 fn callback_state(
     high: Vec<PeerEndpoint>,
     low_ids: Vec<SourceSighting>,

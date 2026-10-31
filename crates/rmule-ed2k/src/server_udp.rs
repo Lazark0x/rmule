@@ -12,17 +12,15 @@
 //!
 //! ## Layout
 //!
-//! One submodule per exchange: `sources` (0x9A/0x94/0x9B), `callback`
-//! (0x9C), `status` (0x96/0x97), `description` (0xA2/0xA3) and `search`
-//! (0x98/0x92/0x90 and 0x99). Every codec re-exports through here.
+//! One submodule per exchange: `sources` (0x9A/0x94/0x9B), `status`
+//! (0x96/0x97), `description` (0xA2/0xA3) and `search` (0x98/0x92/0x90 and
+//! 0x99). Every codec re-exports through here.
 
-mod callback;
 mod description;
 mod search;
 mod sources;
 mod status;
 
-pub use self::callback::GlobCallbackRequest;
 pub use self::description::{ServerDescReq, ServerDescRes, ServerDescTags};
 pub use self::search::{GlobSearchReq, GlobSearchRes, GlobSearchVariant};
 pub use self::sources::{GlobFoundSources, GlobGetSources, GlobGetSources2};

@@ -192,10 +192,9 @@ impl SharedSelfReach {
         self.own.user_hash()
     }
 
-    /// The live session's self-facts as the High-ID family reads them —
-    /// for a reader that also needs *which* id (a global callback's
-    /// requester contact), so it asks the same owner rather than a second
-    /// handle.
+    /// The live session's self-facts as the High-ID family reads them, for
+    /// a reader that also needs *which* id or server, so it asks the same
+    /// owner rather than a second handle.
     pub(crate) fn session(&self) -> Option<ConnectedSession> {
         self.own.connected_session()
     }

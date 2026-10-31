@@ -1,11 +1,11 @@
 //! Discovered sources joining the candidate pool: server-UDP global sources
-//! (ADR-0051) dialing High-ID and holding a per-server callback for Low-ID,
-//! and Kad sources (ADR-0043), which carry no callback route at all.
+//! (ADR-0051) dialing High-ID and holding a remote server's Low-ID without a
+//! road, and Kad sources (ADR-0043), which carry no callback route at all.
 
 use super::*;
 
 #[test]
-fn global_sightings_dial_high_id_and_holds_low_id_for_a_per_server_callback() {
+fn global_sightings_dial_high_id_and_open_no_road_for_a_remote_servers_low_id() {
     use rmule_primitives::{ClientId, PeerSource};
     // Callback-capable, empty pools, room for two workers.
     let server = source_server(9);
@@ -22,22 +22,12 @@ fn global_sightings_dial_high_id_and_holds_low_id_for_a_per_server_callback() {
             .any(|d| matches!(d, Decision::Spawn { peer: p, .. } if *p == peer(5))),
         "High-ID global source must be dialed: {decisions:?}"
     );
-    // ADR-0051: the Low-ID global source is usable — held as a callback candidate
-    // tagged with *its own* source-server, requesting a per-server callback
-    // (not the connected-server `RequestCallback`, which would mis-route).
-    assert!(
-        decisions.iter().any(|d| matches!(d,
-            Decision::RequestGlobalCallback { low_id, source_server, .. }
-                if *low_id == low(7) && *source_server == server)),
-        "Low-ID global source must request a per-server callback: {decisions:?}"
-    );
-    // Its slot-release deadline is the brain's next wake.
-    assert_eq!(state.next_wake(), Some(t0() + CALLBACK_TIMEOUT));
+    // No client asks a server it is not logged into (ADR-0051).
     assert!(
         !decisions
             .iter()
             .any(|d| matches!(d, Decision::RequestCallback { .. })),
-        "a global Low-ID source must not use the connected-server callback"
+        "a global Low-ID source has no callback: {decisions:?}"
     );
 }
 
@@ -245,7 +235,7 @@ fn a_kad_buddy_row_becomes_a_punchable_candidate_and_never_a_server_callback() {
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::RequestCallback { .. } | Decision::RequestGlobalCallback { .. }
+            Decision::RequestCallback { .. }
         )),
         "no server can be asked to relay for a Kad row: {decisions:?}"
     );
@@ -273,7 +263,6 @@ fn a_kad_buddy_row_without_the_natt_bit_opens_no_road_for_a_low_id_downloader() 
         !decisions.iter().any(|d| matches!(
             d,
             Decision::RequestCallback { .. }
-                | Decision::RequestGlobalCallback { .. }
                 | Decision::RequestBuddyCallback { .. }
                 | Decision::FallToNatTraversal { .. }
         )),
@@ -309,8 +298,7 @@ fn global_sightings_open_no_road_for_a_bare_low_id_global_without_callback_capab
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::RequestGlobalCallback { .. }
-                | Decision::RequestCallback { .. }
+            Decision::RequestCallback { .. }
                 | Decision::FallToNatTraversal { .. }
         )),
         "a Low-ID global source stays unusable when rmule cannot be called back: {decisions:?}"
@@ -356,7 +344,7 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::RequestCallback { .. } | Decision::RequestGlobalCallback { .. }
+            Decision::RequestCallback { .. }
         )),
         "an IPv6 source needs no broker: {decisions:?}"
     );

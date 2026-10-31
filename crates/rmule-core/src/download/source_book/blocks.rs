@@ -10,7 +10,8 @@
 //! could not even start all read the same — nothing answers at that endpoint
 //! now. A peer that answered the hello and closed before its file answer is
 //! spent the same way (`BaseClient.cpp:1288-1293`), and so is a callback that
-//! lapsed unanswered, under its Low-ID key. A worker whose file request was
+//! lapsed unanswered with its invitation out, under its Low-ID key: that is the
+//! source's re-ask clock past its record. A worker whose file request was
 //! answered reached a live peer and never spends, save one that said it lacks
 //! the file: its record is spent under every name it holds — endpoints, Low-ID
 //! key, User Hashes — as aMule dead-lists it (ADR-0090). A `CryptIncompatible`

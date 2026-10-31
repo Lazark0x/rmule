@@ -151,19 +151,6 @@ pub(crate) enum Decision {
         /// holds it back.
         on_a_link: bool,
     },
-    /// Ask a Low-ID **global** source's own `source_server` — over UDP, with no
-    /// TCP session — to relay a callback (ADR-0051, ADR-0039 generalized
-    /// per-server). The runner enacts it via the discovery UDP socket and
-    /// files the server-relayed road under `{ server: Some(source_server), low_id }`;
-    /// the called-back peer dials in (`connected_server = source_server`) and is
-    /// adopted. The held slot's deadline sits on the candidate's record.
-    RequestGlobalCallback {
-        low_id: ClientId,
-        source_server: Ipv4Endpoint,
-        /// Whether the connection carries a source ask (ADR-0108): the
-        /// peer's ask facts, read at the decision.
-        want_sources: bool,
-    },
     /// Ask `candidate`'s Kad buddy to relay a callback (ADR-0061 route 4).
     /// The runner registers a **dial-back** claim under the
     /// candidate's User Hash — the one name the target's hello will report,
@@ -373,11 +360,12 @@ impl LowIdRoad {
             && candidate.user_hash.is_some()
         {
             Some(Self::DirectUdp)
-        // A Kad-row candidate has no *server* callback however capable we are:
-        // it is in no server's namespace (`LowIdCandidate::from_kad`).
-        // Its buddy relays one instead — when the dial-back can be matched to
+        // Only our own server relays: aMule's `IsLocalServer` branch
+        // (`BaseClient.cpp:1533`), and no client asks another server to. A
+        // Kad-row candidate is in no server's namespace, so it has no server
+        // callback however capable we are. Its buddy relays one instead — when the dial-back can be matched to
         // this download, which only the target's User Hash can do.
-        } else if capability.server_relays() && !candidate.from_kad {
+        } else if capability.server_relays() && candidate.on_server(capability.server()) {
             Some(Self::Callback)
         } else if callable && candidate.buddy.is_some() && candidate.user_hash.is_some() {
             Some(Self::BuddyCallback)
@@ -507,8 +495,7 @@ pub(crate) struct DownloadState {
     /// the downloads queued at a peer re-asks it, and the peer's clock.
     standings: StandingSeat,
     /// The diagnostics slot every callback in flight holds (ADR-0039 /
-    /// ADR-0051) — connected-server (`CallbackKey.server` = `None`) and
-    /// per-server global alike — until the inbound peer is adopted
+    /// ADR-0051) until the inbound peer is adopted
     /// ([`Self::on_callback_connected`]) or its road ends. How far the road has
     /// run and its deadlines ride the candidate's **Source Book** record; the
     /// runner's **Awaited Inbound** registrations key on the same

@@ -35,10 +35,10 @@ pub(crate) struct CallbackLanding {
 
 impl DownloadState {
     /// Resolve the key an adopted connection was handed over under to the
-    /// pending callback it satisfies (ADR-0039 / ADR-0051). A per-server
-    /// *global* callback keyed by the reported server is preferred over the
-    /// *connected-server* form (keyed `None`), because the wire cannot say which
-    /// relayed the peer — it reports the server it is logged into either way.
+    /// pending callback it satisfies (ADR-0039 / ADR-0051). A callback
+    /// keyed by the reported server is preferred over one minted with no server
+    /// known (keyed `None`), because the wire cannot say which it answers: the
+    /// peer reports the server it is logged into either way.
     /// The runner reads this in its accept-router arm, then drives
     /// [`Self::on_callback_connected`] with the key.
     pub(crate) fn match_inbound_callback(&self, reported: CallbackKey) -> Option<CallbackKey> {
@@ -95,8 +95,7 @@ impl DownloadState {
         out
     }
     /// Adopt a called-back Low-ID peer that has dialed in and identified (ADR-0039 /
-    /// ADR-0051), matched by [`Self::match_inbound_callback`] to `key` — connected-server
-    /// (`server: None`) or per-server global (`Some`), one path now. Its
+    /// ADR-0051), matched by [`Self::match_inbound_callback`] to `key`. Its
     /// record keeps its candidate and key beside the worker. **Bind without
     /// assign**: register the peer on the slot its callback held, still
     /// short of its handshake, and do *not* assign a part. The peer dialed in and emits

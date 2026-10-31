@@ -53,9 +53,10 @@ use crate::address_learning::SharedAddressLearning;
 /// same posture the references take with `clientid == 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConnectedSession {
-    /// The server, in the form a peer's hello encodes — `None` when its host
-    /// is not an IPv4 literal, in which case no peer can be *proven* to share
-    /// it (neither can we prove it of ourselves).
+    /// The server, in the form a peer's hello encodes: the IPv4 address the
+    /// login reached, a server listed by name included. `None` for a session
+    /// reached over IPv6, in which case no peer can be *proven* to share it
+    /// (neither can we prove it of ourselves).
     pub(crate) server: Option<Ipv4Endpoint>,
     /// The id the server assigned us at login.
     pub(crate) client_id: ClientId,

@@ -110,7 +110,6 @@ fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
             d,
             Decision::FallToNatTraversal { .. }
                 | Decision::RequestCallback { .. }
-                | Decision::RequestGlobalCallback { .. }
         )),
         "no server is asked and nothing can punch an aMule row: {decisions:?}"
     );

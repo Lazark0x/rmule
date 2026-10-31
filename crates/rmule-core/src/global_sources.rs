@@ -9,22 +9,19 @@
 //! The socket's receive side is not read here (ADR-0051): the
 //! [`ServerUdpEngine`](crate::server_udp) owns it and demuxes by opcode, and
 //! this channel consumes the engine's `0x9B` inbox. Asks go out through the
-//! **Server-UDP Seal** (fire-and-forget sends need no demux), and the runner's
-//! per-server Low-ID callbacks (ADR-0051) likewise leave through it in
-//! `adapters::relay_global_callbacks` — so this adapter is purely ask forming
-//! + answer receive.
+//! **Server-UDP Seal** (fire-and-forget sends need no demux), so this adapter
+//! is purely ask forming + answer receive.
 //!
 //! It asks only while a server session is up (ADR-0051's amendment), as
 //! aMule's `SendNextUDPPacket` does (`DownloadQueue.cpp:870`): the answers
-//! are used through session facts — our own client ID, and the public contact
-//! a Low-ID source's callback carries.
+//! are used through session facts — our own client ID.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use rmule_ed2k::{GlobFoundSources, GlobGetSources, GlobGetSources2};
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, ServerUdpFlags,
+    FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, ServerUdpFlags,
     SourceLookupTarget,
 };
 use tokio::sync::mpsc;
@@ -48,27 +45,6 @@ pub(crate) type GlobalSourceRegistry = DiscoveryRegistry<GlobalAnswer>;
 /// Managed Server List, minus the dead and the IP-filtered (ADR-0051). Empty
 /// while no live server is listed — the sweeps then have nothing to query.
 pub(crate) type SharedServerList = Arc<Mutex<Vec<ServerEndpoint>>>;
-
-/// A runner's request to relay a per-server Low-ID callback (ADR-0051): send
-/// `OP_GLOBCALLBACKREQUEST` to `source_server`, carrying rmule's own `requester`
-/// contact and the target `low_id`. The server-UDP transport owns the socket, so
-/// the runner reaches it through this channel — drained by
-/// `adapters::relay_global_callbacks`, not the discovery engine.
-#[derive(Clone, Debug)]
-pub(crate) struct GlobCallbackSend {
-    /// rmule's own public IP + advertised TCP listen port (where the peer dials).
-    pub(crate) requester: Ipv4Endpoint,
-    /// The target source's server-assigned Low-ID.
-    pub(crate) low_id: ClientId,
-    /// The source-server to ask, by the standard endpoint its answer was
-    /// tagged with.
-    pub(crate) source_server: Ipv4Endpoint,
-}
-
-/// The runner → callback-relay channel for [`GlobCallbackSend`] (ADR-0051). Cloned to
-/// each download's runner; the Core actor holds one so the relay's recv stays
-/// open.
-pub(crate) type GlobalCallbackSender = mpsc::Sender<GlobCallbackSend>;
 
 /// The global **Discovery Channel** adapter: asks through a [`ServerUdpSeal`],
 /// receives from the [`ServerUdpEngine`](crate::server_udp)'s `0x9B` inbox.
@@ -131,7 +107,7 @@ impl<T: ServerUdpTransport> GlobalDiscoveryChannel<T> {
     /// The engine hands the datagram over tagged with that endpoint, mapped
     /// back from whichever server port it came from (standard port + 4, or
     /// the obfuscation port for a sealed answer). A Low-ID source's
-    /// per-server callback keys on it, which is what a called-back aMule
+    /// namespace is keyed on it, which is what a called-back aMule
     /// peer reports as its `connected_server` (`BaseClient.cpp:1168-1169`
     /// writes `GetCurrentServer()->GetPort()`, the standard port, never the
     /// one it dialed). A datagram may pack several packets (one per file),
@@ -226,7 +202,7 @@ mod tests {
     use crate::source_discovery::{Discoverable, SourceDiscovery};
     use rmule_ed2k::Opcode;
     use rmule_primitives::{
-        Packet, PacketProtocol, ServerCryptDirection, decrypt_datagram_server,
+        ClientId, Packet, PacketProtocol, ServerCryptDirection, decrypt_datagram_server,
         encrypt_datagram_server,
     };
 
@@ -374,8 +350,8 @@ mod tests {
         assert_eq!(routed.len(), 1);
         assert_eq!(routed[0].client_id(), source.client_id());
         // The answering server's TCP endpoint (UDP source 4665 − 4) is threaded
-        // through to the sink — the key a Low-ID source's per-server callback
-        // matches against a called-back peer's reported `connected_server`.
+        // through to the sink — the namespace of a Low-ID source's id, matched
+        // against a called-back peer's reported `connected_server`.
         assert_eq!(
             server,
             Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4661)
@@ -388,8 +364,7 @@ mod tests {
     /// A server whose UDP key we hold — learned under the address we still
     /// hold, UDP obfuscation advertised — is asked sealed at its obfuscation
     /// port and answers sealed from it. The answer's sources still name the
-    /// server by its standard endpoint: the key a Low-ID source's callback
-    /// goes to.
+    /// server by its standard endpoint: the namespace of a Low-ID source.
     #[tokio::test]
     async fn a_keyed_server_is_asked_sealed_and_its_sealed_answer_names_its_standard_endpoint() {
         const KEY: u32 = 0x05A6_8835;

@@ -77,7 +77,6 @@ fn context(registry: &AwaitedInbound) -> CallbackContext {
                 own,
                 crate::natt::front::SharedNattFront::default(),
             ),
-            our_tcp_port: 4662,
         },
         mpsc::channel(4).0,
         mpsc::channel(4).0,

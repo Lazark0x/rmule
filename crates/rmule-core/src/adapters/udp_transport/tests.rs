@@ -8,9 +8,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rmule_ed2k::GlobCallbackRequest;
 use rmule_primitives::{
-    AddressFamily, ClientEncryptKey, ClientId, DatagramSenderAddress, FileHash, Ipv4Endpoint,
+    AddressFamily, ClientEncryptKey, DatagramSenderAddress, FileHash, Ipv4Endpoint,
     Ipv6Endpoint, PeerEndpoint, UserHash, encrypt_datagram_client,
 };
 use tokio::sync::mpsc;
@@ -19,7 +18,6 @@ use tokio::time::timeout;
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{PeerUdpCrypt, os_datagram_nonce};
 use crate::diagnostics::DiagnosticsState;
-use crate::global_sources::GlobCallbackSend;
 use crate::own_identity::SharedOwnIdentity;
 
 use super::*;
@@ -178,47 +176,4 @@ impl ServerUdpTransport for RecordingTransport {
     async fn recv(&self) -> Option<(Vec<u8>, Ipv4Endpoint)> {
         std::future::pending().await
     }
-}
-
-/// The global-callback relay rides the server-UDP transport that owns the
-/// socket: a runner's `GlobCallbackSend` becomes an
-/// `OP_GLOBCALLBACKREQUEST` UDP-sent to the source-server, carrying rmule's
-/// own contact and the target low id.
-#[tokio::test]
-async fn relays_a_global_callback_send_to_the_source_server() {
-    let (sent_tx, mut sent_rx) = mpsc::channel(4);
-    let transport = RecordingTransport { sent_tx };
-    let (callback_tx, callback_rx) = mpsc::channel(4);
-    let task = tokio::spawn(relay_global_callbacks(
-        crate::server_udp::tests::plain_seal(transport),
-        callback_rx,
-    ));
-
-    let requester = Ipv4Endpoint::new(std::net::Ipv4Addr::new(9, 9, 9, 9), 5000);
-    let source_server = Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4661);
-    let low_id = ClientId::from_u32(0x1234);
-    callback_tx
-        .send(GlobCallbackSend {
-            requester,
-            low_id,
-            source_server,
-        })
-        .await
-        .unwrap();
-
-    let (server, datagram) = timeout(Duration::from_secs(2), sent_rx.recv())
-        .await
-        .expect("a callback datagram was sent within 2s")
-        .expect("transport stayed open");
-    // Sent to the source-server's UDP port, its standard port + 4.
-    assert_eq!(
-        server,
-        Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4665)
-    );
-    // A no-length UDP datagram carrying OP_GLOBCALLBACKREQ for rmule's own
-    // contact + the target low id.
-    let decoded = GlobCallbackRequest::decode_udp(&datagram).expect("OP_GLOBCALLBACKREQ");
-    assert_eq!(decoded, GlobCallbackRequest::new(requester, low_id));
-
-    task.abort();
 }

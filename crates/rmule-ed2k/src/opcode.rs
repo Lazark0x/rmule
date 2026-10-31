@@ -43,7 +43,6 @@ opcodes! {
         GlobSearchRes = 0x99,
         GlobGetSources = 0x9A,
         GlobFoundSources = 0x9B,
-        GlobCallbackRequest = 0x9C,
         ServerNattKeepalive = 0x9F,
         ServerDescReq = 0xA2,
         ServerDescRes = 0xA3,

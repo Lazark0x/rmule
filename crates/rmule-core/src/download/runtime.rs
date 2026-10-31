@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, mpsc};
 use crate::callback::DownloadReach;
 use crate::client_udp::ClientUdpSend;
 use crate::credit::SharedCreditStore;
-use crate::global_sources::{GlobalCallbackSender, GlobalSourceRegistry};
+use crate::global_sources::GlobalSourceRegistry;
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::server_session::SharedServerSession;
@@ -69,11 +69,6 @@ pub(crate) struct SharedRuntime<S, P> {
     /// `(file_hash, sink)` so the discovery task routes server-UDP-found sources
     /// to this download.
     pub(crate) global_source_registry: GlobalSourceRegistry,
-    /// The runner → discovery-task channel for per-server Low-ID callbacks (ADR-0051): a
-    /// `RequestGlobalCallback` is enacted by sending the encode inputs here (the
-    /// discovery owns the UDP socket). Read by the `RequestGlobalCallback`
-    /// enactment arm.
-    pub(crate) global_callback_tx: GlobalCallbackSender,
     /// The core-owned Kad source registry (ADR-0043): the runner registers
     /// `(file_hash → (size, sink))` so the Kad discovery task routes projected
     /// sources to this download. Registered unconditionally — with Kad

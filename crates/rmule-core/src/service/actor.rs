@@ -36,13 +36,13 @@ use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, RuntimeServerUdpTransport, ServeRuntimeService,
-    SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService, relay_global_callbacks,
+    SharedDialedServeSink, SharedUdpPortsAdvert, SourceLookupService,
 };
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::credit::SharedCreditStore;
 use crate::global_sources::{
-    GlobCallbackSend, GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList,
+    GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList,
 };
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;

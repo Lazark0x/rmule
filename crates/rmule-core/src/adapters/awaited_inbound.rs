@@ -66,14 +66,13 @@ use registrations::{CallbackRoad, ClaimRoad, Landing, LetGo, Registrations, Road
 ///   The sans-I/O brain does not hold that endpoint (a runtime fact, like the
 ///   clock), so it leaves `None`; the runner resolves it to the live connected
 ///   server when it files the callback here.
-/// - `Some(server)` — a *per-server global* callback (ADR-0051): the source-server that
-///   answered `OP_GLOBFOUNDSOURCES` and relays the callback.
+/// - `Some(server)` — the server that assigned the id and relays the callback.
 ///
 /// The key a callback is filed under here is always the concrete endpoint the
 /// inbound peer reports (the runner has resolved any `None`) — a `None` there
-/// could never match an inbound hello. It stays `Option` because a DNS-named
-/// server's hello encodes `0.0.0.0:0` → `None`; such a callback simply
-/// degrades to the timeout.
+/// could never match an inbound hello. It stays `Option` because a session reached
+/// over IPv6 has no 32-bit server to report: `0.0.0.0:0` → `None`; such a
+/// callback simply degrades to the timeout.
 ///
 /// `kad_port` is `Some` for a **Kad source row** alone, which is in no
 /// server's namespace: `low_id` is then read from the address its publisher

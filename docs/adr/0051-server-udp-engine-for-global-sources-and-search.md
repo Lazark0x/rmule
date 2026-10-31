@@ -88,9 +88,9 @@ snapshots it when it starts; a server added mid-sweep joins the next one.
   High-ID sources go straight into the candidate pool (ADR-0030). Low-ID sources go into
   the Source Book's global Low-ID lane as Low-ID Candidate records tagged with their
   source server (`source_server: Some(..)`), apart from the connected server's pool, so a
-  callback is never asked of the wrong server. Such a record stays until a road opens: our
-  session reaches its server, or it names a buddy or a NAT-T bit. A bare one with neither
-  has no road and no callback, and leaves as aMule's does.
+  callback is never asked of the wrong server. Such a record waits in its lane until a road
+  opens: we log into its server, or it names a buddy or a NAT-T bit. No server but our own
+  is asked to relay a callback.
 - A download is **armed** whenever the swept list is non-empty. An armed download with
   no usable source waits (`DownloadEvent::WaitingForSources`) instead of failing with
   `NoUsableSources`, indefinitely and cancellably, as eMule does. The event carries a

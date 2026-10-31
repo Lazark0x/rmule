@@ -6,13 +6,8 @@ use std::future::Future;
 use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex};
 
-use rmule_ed2k::GlobCallbackRequest;
 use rmule_net::family::{RECEIVE_ERROR_BACKOFF, ReceiveErrorBudget, ReceiveErrorOutcome};
 use rmule_primitives::Ipv4Endpoint;
-use tokio::sync::mpsc;
-
-use crate::global_sources::GlobCallbackSend;
-use crate::server_udp::ServerUdpSeal;
 
 /// Datagram transport for the server-UDP socket (ADR-0051). `&self` (not
 /// `&mut`) so the engine can receive while every sender sends on the one
@@ -40,23 +35,6 @@ impl<T: ServerUdpTransport> ServerUdpTransport for Arc<T> {
 
     fn recv(&self) -> impl Future<Output = Option<(Vec<u8>, Ipv4Endpoint)>> + Send {
         (**self).recv()
-    }
-}
-
-/// The global-callback relay (ADR-0051): the socket-side consumer
-/// of the runner's per-server callback channel. Each [`GlobCallbackSend`] a
-/// download's runner emits becomes an `OP_GLOBCALLBACKREQUEST` sent to the
-/// source-server through the seal, carrying rmule's own contact and the target
-/// Low-ID. Ends when every callback sender drops (Core shutting down).
-pub(crate) async fn relay_global_callbacks<T: ServerUdpTransport>(
-    seal: ServerUdpSeal<T>,
-    mut callback_rx: mpsc::Receiver<GlobCallbackSend>,
-) {
-    while let Some(send) = callback_rx.recv().await {
-        let datagram = GlobCallbackRequest::new(send.requester, send.low_id)
-            .encode_packet()
-            .encode_udp();
-        seal.send(send.source_server, datagram).await;
     }
 }
 
@@ -253,7 +231,7 @@ impl crate::client_udp::ClientUdpTransport for RuntimeClientUdpTransport {
 /// (aMule `ServerUDPSocket.cpp` — `SendPacket` targets `host->GetPort() + 4`, and
 /// the receive side reads each answer's source as `port - 4`). The managed server
 /// list holds TCP ports, so the **Server-UDP Seal** sends every plain server-UDP
-/// datagram (source queries and per-server callbacks alike) to that port + 4.
+/// datagram (source queries among them) to that port + 4.
 /// Cite-and-rewrite only (ADR-0004).
 pub(crate) const SERVER_UDP_PORT_OFFSET: u16 = 4;
 

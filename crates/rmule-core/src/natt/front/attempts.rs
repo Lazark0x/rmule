@@ -165,9 +165,8 @@ pub enum AttemptRetirement {
     /// The candidate's invitation never left: the buddy's `0x52`
     /// had no buddy or no listener port to name, the direct `0x95` had no
     /// bound client-UDP send half, listener, user hash or Kad UDP endpoint, or
-    /// the server's relay (`OP_CALLBACKREQUEST`, or the global
-    /// `OP_GLOBCALLBACKREQUEST`) had no live session, no requester endpoint,
-    /// or a send nothing took. Ends the invitation road as
+    /// the server's relay (`OP_CALLBACKREQUEST`) had no live session or a send
+    /// nothing took. Ends the invitation road as
     /// [`Self::KadNotRunning`] does.
     CallbackNotSent,
 }

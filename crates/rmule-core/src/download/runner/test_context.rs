@@ -76,7 +76,6 @@ pub(in crate::download) fn runner_context<S, P>(
     let store = rmule_testkit::memory_store();
     let (evt_tx, evt_rx) = mpsc::channel(8);
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
-    let (global_callback_tx, _global_callback_rx) = mpsc::channel(4);
     let (download_reach_tx, download_reach_rx) = mpsc::channel(4);
     let (in_place_tx, in_place_rx) = mpsc::channel(4);
     let rt = Arc::new(SharedRuntime {
@@ -101,7 +100,6 @@ pub(in crate::download) fn runner_context<S, P>(
         source_lookup_timeout: Duration::from_secs(5),
         callback_timeout: Duration::from_secs(30),
         global_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        global_callback_tx,
         kad_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),
         reask_reply_sink: Arc::default(),
         client_udp_tx: None,
@@ -186,7 +184,6 @@ pub(super) fn loop_ctx<'a, S, P>(
                     crate::own_identity::SharedOwnIdentity::default(),
                     crate::natt::front::SharedNattFront::default(),
                 ),
-                our_tcp_port: 4662,
             },
             adopt_tx,
             retire_tx,

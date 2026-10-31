@@ -409,7 +409,6 @@ where
     // punch a Rendezvous coordinator introduces (ADR-0091 rung 1).
     let callback_facts = CallbackFacts {
         reach: runner.rt.reach.clone(),
-        our_tcp_port: request.identity.tcp_port(),
     };
     let callback_capability = callback_facts.sample();
     let dial = runner.dial_position();

@@ -29,7 +29,15 @@ fn answered_after_callback(
     inbound: PeerEndpoint,
     now: Instant,
 ) -> CallbackKey {
-    let Some(NextDial::Callback { candidate, .. }) = dial(book) else {
+    let on_a = CallbackCapability::of(
+        true,
+        Some(crate::own_identity::ConnectedSession {
+            server: Some(SERVER_A),
+            client_id: ClientId::from_u32(0x0A00_0001),
+        }),
+        false,
+    );
+    let Some(NextDial::Callback { candidate, .. }) = book.next_dial(&on_a, ours()) else {
         panic!("a callable downloader calls the Low ID back");
     };
     let key = candidate.key();

@@ -17,7 +17,6 @@ use crate::download::persist::{PersistError, persist_streamed_part};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
 use crate::error::DownloadFailure;
-use crate::global_sources::GlobCallbackSend;
 use crate::peer_roster::PeerRelation;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
@@ -322,47 +321,6 @@ where
                         );
                         session.request_callback(low_id).await
                     }
-                    None => false,
-                };
-                if !sent {
-                    queue.extend(never_left(ctx, key));
-                }
-            }
-            Decision::RequestGlobalCallback {
-                low_id,
-                source_server,
-                want_sources,
-            } => {
-                // Per-server (global) callback (ADR-0051): file the server-relayed road
-                // under `{ server: Some(source_server), low_id }` (already concrete — the
-                // called-back peer dials in reporting `connected_server =
-                // source_server`), then ask the discovery task to UDP-send
-                // OP_GLOBCALLBACKREQUEST to that server carrying rmule's own contact.
-                // Filing precedes the send so an unusually fast dial-back always
-                // finds it.
-                let key = CallbackKey {
-                    server: Some(source_server),
-                    low_id,
-                    kad_port: None,
-                };
-                let brief = AdoptionBrief {
-                    file: ctx.file.clone(),
-                    own_status: ctx.state.our_part_status(),
-                    want_sources,
-                };
-                ctx.callbacks.await_callback(key, brief);
-                let sent = match ctx.callbacks.facts.requester() {
-                    Some(requester) => ctx
-                        .runner
-                        .rt
-                        .global_callback_tx
-                        .send(GlobCallbackSend {
-                            requester,
-                            low_id,
-                            source_server,
-                        })
-                        .await
-                        .is_ok(),
                     None => false,
                 };
                 if !sent {

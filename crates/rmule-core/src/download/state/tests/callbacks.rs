@@ -141,7 +141,7 @@ fn a_candidate_with_neither_callback_nor_coordinator_still_starves_the_download(
     assert!(
         !discovered.iter().any(|d| matches!(
             d,
-            Decision::RequestGlobalCallback { .. } | Decision::FallToNatTraversal { .. }
+            Decision::RequestCallback { .. } | Decision::FallToNatTraversal { .. }
         )),
         "no road is open to it, so neither road is taken: {discovered:?}"
     );
@@ -163,8 +163,8 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
         low_id: low(7),
         kad_port: None,
     };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    // Requests a per-server callback for low(7), holding slot 0.
+    let mut state = logged_into(server, 1);
+    // Requests a callback for low(7), holding slot 0.
     let _ = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
 
     let adopted = state.on_callback_connected(t0(), key, peer(9)).decisions;
@@ -195,49 +195,49 @@ fn an_adopted_global_callback_peer_binds_then_its_connected_event_assigns_it() {
     );
 }
 
+/// A source that stayed silent keeps its clock past its record (stock 2.3.3
+/// `PartFile.cpp:1470-1484`, `FILEREASKTIME`): the next sighting of its id,
+/// a server answer's or a UDP round's, does not call it again until the
+/// block has run out.
 #[test]
-fn a_lapsed_global_callback_frees_its_slot_for_the_next_candidate() {
+fn a_silent_low_id_is_not_called_back_again_until_its_block_runs_out() {
     use rmule_primitives::PeerSource;
-    // One slot, two Low-ID globals from the same server: the first callback is
-    // requested; on timeout the freed slot drives a callback for the second.
     let server = source_server(9);
+    let row = || vec![PeerSource::new(low(7), 4662)];
+    let calls = |decisions: &[Decision]| {
+        decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { low_id, .. } if *low_id == low(7)))
+    };
     let key = CallbackKey {
         server: Some(server),
         low_id: low(7),
         kad_port: None,
     };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let first = via_global(
-        &mut state,
-        server,
-        vec![PeerSource::new(low(7), 4662), PeerSource::new(low(8), 4662)],
+    let mut state = logged_into(server, 1);
+    assert!(calls(&via_global(&mut state, server, row())));
+    let _ = state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK);
+    let _ = state.on_traversal_retired(
+        t0() + CALLBACK_SILENCE_FALLBACK,
+        key,
+        crate::diagnostics::NattRetirement::NotEnactable,
     );
+    let ended = state.on_tick(t0() + CALLBACK_TIMEOUT);
     assert!(
-        first.iter().any(|d| matches!(
-            d,
-            Decision::RequestGlobalCallback { low_id, .. } if *low_id == low(7)
-        )),
-        "the first Low-ID global is called back: {first:?}"
+        ended
+            .iter()
+            .any(|d| matches!(d, Decision::EndCallback { key: k } if *k == key)),
+        "{ended:?}"
     );
 
-    let next = state.on_tick(t0() + CALLBACK_TIMEOUT);
+    let again = via_global(&mut state, server, row());
+    assert!(!calls(&again), "the road went silent: {again:?}");
 
-    // The lapse retracts the routing entry (EndCallback) and the freed
-    // slot drives a callback for the next candidate.
-    assert!(
-        next.iter().any(|d| matches!(
-            d,
-            Decision::EndCallback { key: k } if *k == key
-        )),
-        "a lapsed global callback retracts its routing entry: {next:?}"
-    );
-    assert!(
-        next.iter().any(|d| matches!(
-            d,
-            Decision::RequestGlobalCallback { low_id, .. } if *low_id == low(8)
-        )),
-        "a lapsed global callback frees the slot for the next candidate: {next:?}"
-    );
+    for period in 1..=3 {
+        let _ = state.on_tick(t0() + CALLBACK_TIMEOUT + FILE_REASK_TIME * period);
+    }
+    let after = via_global(&mut state, server, row());
+    assert!(calls(&after), "the block ran out: {after:?}");
 }
 
 #[test]
@@ -451,42 +451,6 @@ fn a_held_callback_starts_its_silence_when_it_leaves() {
     assert_eq!(
         state.next_wake(),
         Some(t0() + leaves_in + CALLBACK_SILENCE_FALLBACK),
-    );
-}
-
-/// A legacy candidate — one no coordinator could introduce us to — arms
-/// nothing extra and waits out its thirty seconds exactly as before. A global
-/// source is the shape that can be one: its server is not ours to ask.
-#[test]
-fn a_legacy_candidate_arms_no_fallback_and_lapses_at_its_own_deadline() {
-    use rmule_primitives::PeerSource;
-    let server = source_server(9);
-    let key = CallbackKey {
-        server: Some(server),
-        low_id: low(7),
-        kad_port: None,
-    };
-    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
-    let requested = via_global(&mut state, server, vec![PeerSource::new(low(7), 4662)]);
-    assert!(
-        requested
-            .iter()
-            .any(|d| matches!(d, Decision::RequestGlobalCallback { .. })),
-        "{requested:?}"
-    );
-    assert_eq!(
-        state.next_wake(),
-        Some(t0() + CALLBACK_TIMEOUT),
-        "no coordinator can introduce us, so nothing fires at 12 s"
-    );
-
-    // And the lapse it does have behaves exactly as it did before rung 1.
-    let lapsed = state.on_tick(t0() + CALLBACK_TIMEOUT);
-    assert!(
-        lapsed
-            .iter()
-            .any(|d| matches!(d, Decision::EndCallback { key: k } if *k == key)),
-        "the lapse retracts its routing entry: {lapsed:?}"
     );
 }
 

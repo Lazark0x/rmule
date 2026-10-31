@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
-use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
+use rmule_primitives::PeerEndpoint;
 
 use crate::DownloadFailure;
 use crate::adapters::CallbackKey;
@@ -87,22 +87,13 @@ impl DownloadState {
         };
         let period = reask_period(self.callback_capability.reachable());
         match (self.standings.fill_gate(&place, now, period), dial) {
-            (FillGate::OnALink(role), NextDial::Callback { candidate, road })
-                if *road != LowIdRoad::Callback || self.relayed_elsewhere(candidate).is_some() =>
+            (FillGate::OnALink(role), NextDial::Callback { road, .. })
+                if *road != LowIdRoad::Callback =>
             {
                 FillGate::Parks(role)
             }
             (gate, _) => gate,
         }
-    }
-
-    /// The server that relays `candidate`'s callback, when that is not ours:
-    /// a global answer's, or our former server's (ADR-0051).
-    fn relayed_elsewhere(&self, candidate: &LowIdCandidate) -> Option<Ipv4Endpoint> {
-        let ours = self.callback_capability.server();
-        candidate
-            .source_server
-            .filter(|_| !candidate.on_server(ours))
     }
 
     /// A diagnostics slot number for a new worker or road: the lowest one a
@@ -311,23 +302,12 @@ impl DownloadState {
         }
         let ours = self.callback_capability.server();
         if road == LowIdRoad::Callback {
-            match self.relayed_elsewhere(&candidate) {
-                // The id is ours, or was minted with no server known: our
-                // session relays it, aMule's `IsLocalServer` branch.
-                None => out.push(Decision::RequestCallback {
-                    low_id: candidate.low_id,
-                    server: candidate.source_server,
-                    want_sources,
-                    on_a_link,
-                }),
-                // Another server assigned it — a global answer, or our former
-                // server: that server relays it (ADR-0051).
-                Some(source_server) => out.push(Decision::RequestGlobalCallback {
-                    low_id: candidate.low_id,
-                    source_server,
-                    want_sources,
-                }),
-            }
+            out.push(Decision::RequestCallback {
+                low_id: candidate.low_id,
+                server: candidate.source_server,
+                want_sources,
+                on_a_link,
+            });
         }
         match road {
             LowIdRoad::DirectUdp | LowIdRoad::Callback | LowIdRoad::BuddyCallback => {

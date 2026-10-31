@@ -7,8 +7,8 @@ use super::*;
 
 /// Bring up the server-UDP front on the one bound socket, shared by an `Arc`.
 /// Every send leaves through one **Server-UDP Seal** over it: the discovery
-/// channel's asks, the global-callback relay's `OP_GLOBCALLBACKREQUEST`, each
-/// search's sweep, the status probes and the engine's `0xA2`. The receive
+/// channel's asks, each search's sweep, the status probes and the engine's
+/// `0xA2`. The receive
 /// side has one owner (ADR-0051): the server-UDP
 /// engine demuxes each datagram by opcode — `0x9B` feeds the discovery
 /// channel's inbox, `0x99` the search forwarder's, and `0x97` plus the `0xA3`
@@ -23,13 +23,12 @@ pub(super) fn spawn_server_udp_front(
     obfuscation: &crate::obfuscation_policy::SharedObfuscationPolicy,
     server_facts: &ServerFacts,
     own_identity: &SharedOwnIdentity,
-    global_callback_rx: mpsc::Receiver<GlobCallbackSend>,
     global_source_servers: &SharedServerList,
     global_source_registry: &GlobalSourceRegistry,
     diagnostics: crate::diagnostics::DiagnosticsState,
     live_searches: &LiveSearches,
 ) -> ServerUdpFront {
-    let mut tasks = Vec::with_capacity(5);
+    let mut tasks = Vec::with_capacity(4);
     // The status chain's per-server state (ADR-0052): the sweep registers
     // outstanding challenges here, and a gated `0x97` populates the capability
     // store the `0x94` upgrade and search variant selection read — then
@@ -47,10 +46,6 @@ pub(super) fn spawn_server_udp_front(
         server_facts.clone(),
         crate::client_udp::os_datagram_nonce,
     );
-    tasks.push(tokio::spawn(relay_global_callbacks(
-        seal.clone(),
-        global_callback_rx,
-    )));
     let (server_udp_engine, inboxes) = ServerUdpEngine::new(
         Arc::clone(&transport),
         seal.clone(),

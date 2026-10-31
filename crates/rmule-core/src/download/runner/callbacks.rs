@@ -31,9 +31,8 @@ use super::CallbackFacts;
 /// The runner-side Low-ID callback enactment state (ADR-0039 / ADR-0051 /
 /// ADR-0091), owned by `apply_peer_workers_download` for the download's life:
 /// - `facts`: the live facts behind the **Callback Capability** — sampled
-///   for the brain on the loop's tick, the source of rmule's own contact
-///   for a per-server global callback's `OP_GLOBCALLBACKREQUEST` payload, and
-///   the live session a key minted with no server resolves against.
+///   for the brain on the loop's tick, and the live session a key minted
+///   with no server resolves against.
 /// - `held_tx`: where the Callback Pace says it holds a road's `0x52`.
 /// - `retire_tx`: the road not taken — where the NAT-T front reports that the
 ///   **Traversal Attempt** beside a callback retired, tagged with its key

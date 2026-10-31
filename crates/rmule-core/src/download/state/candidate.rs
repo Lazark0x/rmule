@@ -38,11 +38,11 @@ pub(crate) struct LowIdCandidate {
     pub(crate) low_id: ClientId,
     /// The server that assigned the id, whose namespace it belongs to: the
     /// server we were logged into when a server answer or a source exchange
-    /// named it, or the server that answered a per-server global lookup
+    /// named it, or the server that answered a global lookup
     /// (ADR-0051). A low id means something only beside it, as aMule keeps
     /// `m_dwServerIP`/`m_nServerPort` on every source (stock 2.3.3
-    /// `ClientList.cpp:283-297`). `None` when no IPv4-literal server was known
-    /// at the sighting: then the id is read against whichever server we are on
+    /// `ClientList.cpp:283-297`). `None` when no IPv4 server was known at the
+    /// sighting, as on a session reached over IPv6: then the id is read against whichever server we are on
     /// when its callback is asked (ADR-0039 — the runner resolves it), and it
     /// is never a name its facts outlive the record under. Whether it is on
     /// *our* server ([`Self::on_server`]) is asked at each decision, because

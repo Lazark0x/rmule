@@ -132,7 +132,7 @@ fn an_ipv6_only_source_pools_on_no_channel_while_we_hold_no_ipv6() {
 /// A Low-ID row has no address to judge and passes the filter on every
 /// channel; the channel decides whose server calls it back.
 #[test]
-fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server() {
+fn a_low_id_row_passes_the_filter_and_only_our_own_server_calls_it_back() {
     let filter = blocking(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
     let row = SourceSighting::plain(
         PeerSource::new(low(7), 4662),
@@ -144,34 +144,21 @@ fn a_low_id_row_passes_the_filter_and_is_called_back_through_its_channels_server
         assert_eq!(taken.tally.admitted, 1, "{channel:?}");
         let asked = taken.decisions.iter().find_map(|decision| match decision {
             Decision::RequestCallback { low_id, .. } => Some(connected_key(*low_id)),
-            Decision::RequestGlobalCallback {
-                low_id,
-                source_server,
-                ..
-            } => Some(CallbackKey {
-                server: Some(*source_server),
-                low_id: *low_id,
-                kad_port: None,
-            }),
             _ => None,
         });
         let expected = match channel {
-            Channel::Global(server) => CallbackKey {
-                server: Some(server),
-                low_id: low(7),
-                kad_port: None,
-            },
-            _ => connected_key(low(7)),
+            Channel::Global(_) => None,
+            _ => Some(connected_key(low(7))),
         };
-        assert_eq!(asked, Some(expected), "{channel:?}: {:?}", taken.decisions);
+        assert_eq!(asked, expected, "{channel:?}: {:?}", taken.decisions);
     }
 }
 
 /// A source-exchange row's Low ID is read in the namespace of the server the
 /// row itself names (stock 2.3.3 `PartFile.cpp:2771`, `:2815`), never ours:
 /// one our server assigned is called back through our server, and one the
-/// server we left assigned — a link that outlived our server move — through
-/// that server.
+/// server we left assigned — a link that outlived our server move — has no
+/// road.
 #[test]
 fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
     let ours = source_server(1);
@@ -210,25 +197,17 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
                     low_id: *low_id,
                     kad_port: None,
                 }),
-                Decision::RequestGlobalCallback {
-                    low_id,
-                    source_server,
-                    ..
-                } => Some(CallbackKey {
-                    server: Some(*source_server),
-                    low_id: *low_id,
-                    kad_port: None,
-                }),
                 _ => None,
             })
             .collect();
+        let expected = (named == ours).then_some(CallbackKey {
+            server: Some(ours),
+            low_id: low(7),
+            kad_port: None,
+        });
         assert_eq!(
             asked,
-            vec![CallbackKey {
-                server: Some(named),
-                low_id: low(7),
-                kad_port: None
-            }],
+            Vec::from_iter(expected),
             "a row naming {named}"
         );
     }

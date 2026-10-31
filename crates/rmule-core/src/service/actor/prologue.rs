@@ -141,10 +141,6 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The level keeps it the managed list minus the dead and the IP-filtered
     // (ADR-0051, ADR-0052).
     diagnostics.install_swept_servers(Arc::clone(&global_source_servers), wiring.ip_filter.clone());
-    // The runner → callback-relay channel for per-server Low-ID callbacks
-    // (ADR-0051). The download runtime holds `global_callback_tx` (cloned to
-    // each runner) so the relay's recv stays open for the actor's lifetime.
-    let (global_callback_tx, global_callback_rx) = mpsc::channel(32);
     let kad_source_registry: KadSourceRegistry = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let own_identity = wiring.shared_server_session.own_identity().clone();
     // A late Kad helper test names no server to report through, so the
@@ -218,7 +214,6 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                 &wiring.hello_adverts.obfuscation,
                 &server_facts,
                 &own_identity,
-                global_callback_rx,
                 &global_source_servers,
                 &global_source_registry,
                 diagnostics.clone(),
@@ -481,7 +476,6 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             awaited_inbound: wiring.awaited_inbound.clone(),
             peer_links: wiring.peer_links.clone(),
             global_source_registry,
-            global_callback_tx,
             kad_source_registry: kad_source_registry.clone(),
             reask_reply_sink,
             client_udp_tx: client_udp_reply_tx.clone(),
