@@ -12,6 +12,8 @@
 //!   file-name extension with, for the TUI's Preview.
 //! - [`descriptors`]: the process's open-descriptor limit, raised once at a
 //!   binary's start and read back for the Connection Ceiling.
+//! - [`tcp_send`]: how far a TCP stream's sent bytes have got, which the
+//!   driver's write clock reads on a socket that took no write.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`
@@ -26,4 +28,5 @@ pub mod default_app;
 pub mod descriptors;
 pub mod fs;
 pub mod sparse;
+pub mod tcp_send;
 pub mod winsock;

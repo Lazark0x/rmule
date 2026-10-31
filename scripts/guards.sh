@@ -349,6 +349,9 @@ src/sparse/windows.rs:set_sparse
 src/sparse/windows.rs:punch_hole
 src/sparse/windows.rs:allocated_bytes
 src/fs/windows.rs:rename_exclusive
+src/tcp_send/linux.rs:held
+src/tcp_send/macos.rs:held
+src/tcp_send/windows.rs:acked
 src/default_app/macos.rs:drop
 src/default_app/macos.rs:cf_string
 src/default_app/macos.rs:content_type
