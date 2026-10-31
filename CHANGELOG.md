@@ -8,8 +8,7 @@ All notable changes to rmule are recorded here. The format follows
 
 ### Transfers
 
-- Part files are sparse where the file system allows, and a download keeps its
-  place across a restart without re-reading what it verified.
+- Part files are sparse where the file system allows.
 - Parts are fetched by availability inside a streaming window, down to the
   block, with a bounded end game.
 - A file is shared from its first verified part, and a queued or paused

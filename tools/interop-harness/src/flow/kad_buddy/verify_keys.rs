@@ -144,7 +144,7 @@ pub(crate) fn assert_kad_verify_keys(
              ack_marker_masked = {}\n\
              ack_marker_literal = \"0x{marker:02X}\"\n\
              ack_self_id_matches_amule = {id_matches}\n\
-             ack_tag_count = {tag_count:?}\n\
+             {}\
              ack_receiver_verify_key = \"{:?}\"\n\
              ack_sender_verify_key = \"{:?}\"\n\
              rmule_key_handed_to_amule = {our_key_for_amule}\n",
@@ -154,6 +154,7 @@ pub(crate) fn assert_kad_verify_keys(
                 .join(" "),
             raw.len(),
             marker & 0x03,
+            ack_tag_row(tag_count),
             facts.receiver_verify_key,
             facts.sender_verify_key,
         );
@@ -218,4 +219,26 @@ pub(crate) fn assert_kad_verify_keys(
         );
     }
     Ok(())
+}
+
+/// The ACK's tag count as a TOML row, `-1` when the datagram held none.
+fn ack_tag_row(tag_count: Option<u8>) -> String {
+    format!("ack_tag_count = {}\n", tag_count.map_or(-1, i32::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ack_tag_row;
+
+    /// The row lands in the verdict file, so it has to be TOML: a Rust `Some`
+    /// made the file unreadable to anything but a person.
+    #[test]
+    fn the_ack_tag_count_is_a_toml_number() {
+        let read = |count| {
+            let table: toml::Table = ack_tag_row(count).parse().expect("a TOML row");
+            table["ack_tag_count"].as_integer()
+        };
+        assert_eq!(read(Some(0)), Some(0));
+        assert_eq!(read(None), Some(-1));
+    }
 }
