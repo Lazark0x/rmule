@@ -581,6 +581,9 @@ mod queued_roster {
         let now = std::time::Instant::now();
         let _ = ctx
             .state
+            .on_worker_event(now, queued, PeerWorkerEvent::every_part(1_000));
+        let _ = ctx
+            .state
             .on_worker_event(now, queued, PeerWorkerEvent::Queued { rank: 3 });
         let _ = ctx
             .state
@@ -648,6 +651,9 @@ mod queued_roster {
         );
         connected(&mut ctx.state, queued);
         let now = std::time::Instant::now();
+        let _ = ctx
+            .state
+            .on_worker_event(now, queued, PeerWorkerEvent::every_part(1_000));
         let _ = ctx
             .state
             .on_worker_event(now, queued, PeerWorkerEvent::Queued { rank: 3 });

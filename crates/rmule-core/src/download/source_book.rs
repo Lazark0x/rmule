@@ -291,16 +291,16 @@ impl SourceBook {
     }
 
     /// The live worker at `endpoint` closed after the hello with its file
-    /// request unanswered and no standing: stock's `DS_CONNECTED` close, dead
-    /// and removed (`BaseClient.cpp:1288-1293`). The record is spent, and its
-    /// candidate goes with it, so no road reopens it. Whether it was.
+    /// request unanswered and no slot ask out: stock's `DS_CONNECTED` close,
+    /// dead and removed (`BaseClient.cpp:1288-1293`). A rank moves no download
+    /// state (`DownloadClient.cpp:1213-1218`), so a standing it earned goes
+    /// too. The record is spent, and its candidate goes with it, so no road
+    /// reopens it. Whether it was.
     pub(crate) fn closed_unanswered(&mut self, endpoint: PeerEndpoint) -> bool {
         let Some(record) = self.live_record_mut(endpoint) else {
             return false;
         };
-        if record.standing.is_some() {
-            return false;
-        }
+        record.standing = None;
         let candidate = record.candidate.take();
         let spend = if candidate.is_some() {
             Spend::DeadLowId

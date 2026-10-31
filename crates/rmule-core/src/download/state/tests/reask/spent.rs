@@ -45,6 +45,55 @@ fn a_peer_closing_after_the_hello_is_spent_for_stocks_thirty_minutes() {
     assert_eq!(sighted_at(&mut state, t0() + window), vec![peer(1)]);
 }
 
+/// A queued peer asked again over TCP is `DS_CONNECTED` again
+/// (`BaseClient.cpp:1700-1704`), so one that closes after the hello is dead as
+/// any other: its standing goes with it and the period brings no dial.
+#[test]
+fn a_queued_peer_closing_after_the_hello_is_spent() {
+    let mut state = started(
+        &[peer(1)],
+        SourcingPosture {
+            client_udp: false,
+            ..live_posture()
+        },
+    );
+    queue_and_hang_up(&mut state, peer(1), false, 5);
+    let asked = t0() + FILE_REASK_TIME;
+    assert_eq!(spawned(&state.on_tick(asked)), vec![peer(1)]);
+    let _ = state.on_worker_event(asked, peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(asked, peer(1), PeerWorkerEvent::Disconnected);
+
+    assert_eq!(state.known_sources(), 0);
+    let next = state.on_tick(asked + FILE_REASK_TIME);
+    assert!(spawned(&next).is_empty(), "{next:?}");
+    assert!(sighted_at(&mut state, asked + MINUTE * 29).is_empty());
+    assert_eq!(sighted_at(&mut state, asked + MINUTE * 30), vec![peer(1)]);
+}
+
+/// A rank moves no download state (`DownloadClient.cpp:1213-1218`): a peer
+/// that ranks us and closes before its file answer is still `DS_CONNECTED`.
+#[test]
+fn a_peer_closing_with_a_rank_and_no_file_answer_is_spent() {
+    let mut state = one_source();
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let rank = PeerWorkerEvent::Queued { rank: 5 };
+    let _ = state.on_worker_event(t0(), peer(1), rank);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    assert_eq!(state.known_sources(), 0);
+    assert!(sighted_at(&mut state, t0() + MINUTE * 29).is_empty());
+}
+
+/// A worker that took a grant left the ask, and a close takes it back to the
+/// queue as `DS_DOWNLOADING` (`BaseClient.cpp:1283-1284`).
+#[test]
+fn a_granted_peer_closing_before_its_file_answer_is_not_spent() {
+    let mut state = one_source();
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Connected);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::SlotGranted);
+    let _ = state.on_worker_event(t0(), peer(1), PeerWorkerEvent::Disconnected);
+    assert_eq!(state.known_sources(), 1);
+}
+
 /// A peer that answered its file request and then closed is alive and owes
 /// nothing: it never spends.
 #[test]

@@ -353,10 +353,12 @@ impl DownloadState {
         self.aich_stated.remove(&peer);
         let holds_slot = self.slot_asks.holds_slot(peer);
         let granted = self.slot_asks.granted(peer);
+        let asked = self.slot_asks.left_the_ask(peer);
         self.delivery.remove(&peer);
         if let Some(slot) = self.worker_slots.remove(&peer) {
-            // A worker that hangs up, times out its slot wait or was ranked
-            // without a grant keeps its standing (ADR-0057, ADR-0116). A source whose Advertised Parts hold
+            // A worker that asked its slot and hangs up, times out its slot
+            // wait or was ranked without a grant keeps its standing (ADR-0057,
+            // ADR-0116). A source whose Advertised Parts hold
             // nothing we lack keeps that mark on its standing, or earns one
             // at rank 0, and reasks at twice the period, over TCP (aMule
             // `DS_NONEEDEDPARTS`, ADR-0112). One that gave back a granted
@@ -399,9 +401,11 @@ impl DownloadState {
                 // node, is spent under every name its record holds, whichever
                 // road reached it (ADR-0090).
                 // One that closed after the hello with its file request
-                // unanswered is dead, as stock's `DS_CONNECTED` close has it.
+                // unanswered and no slot ask out is dead, as stock's
+                // `DS_CONNECTED` close has it.
                 if reason == PeerRetirementReason::PeerDisconnected
                     && !failed
+                    && !asked
                     && self.sources.worker_parts(peer).is_none()
                 {
                     self.sources.closed_unanswered(peer);

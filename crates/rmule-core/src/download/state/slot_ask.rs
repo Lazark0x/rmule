@@ -58,6 +58,13 @@ impl SlotAsks {
         self.by_worker.get(&peer) == Some(&SlotAsk::Granted)
     }
 
+    /// Whether `peer`'s worker is past its file ask: its slot ask left or a
+    /// grant came, what ends stock's `DS_CONNECTED`
+    /// (`DownloadClient.cpp:169`).
+    pub(super) fn left_the_ask(&self, peer: PeerEndpoint) -> bool {
+        self.by_worker.contains_key(&peer)
+    }
+
     /// Whether `peer` holds a slot at its uploader: granted on its own ask,
     /// or given unasked with no ask of its own out yet.
     pub(super) fn holds_slot(&self, peer: PeerEndpoint) -> bool {
