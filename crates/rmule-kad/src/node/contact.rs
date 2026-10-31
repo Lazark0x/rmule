@@ -10,8 +10,12 @@ use std::time::Duration;
 use rmule_primitives::Informant;
 
 use super::{AwaitingAck, KadEvent, KadNode, KadNodeDiagnostic, PendingProbe, ReceivedKey};
-use crate::messages::{Kad2Message, Kad2NodeInfo, MISC_OPTIONS_ACK_REQUEST};
+use crate::messages::{
+    Kad2Message, Kad2NodeInfo, MISC_OPTIONS_ACK_REQUEST, MISC_OPTIONS_TCP_FIREWALLED,
+    MISC_OPTIONS_UDP_FIREWALLED,
+};
 use crate::opcode::{KADEMLIA2_HELLO_RES, KADEMLIA2_HELLO_RES_ACK};
+use crate::reachability::UdpVerdict;
 use crate::udp_key::{KadUdpKey, udp_verify_key};
 use crate::{
     KadContact, KadContactState, KadId, KadInstant, KadNodeEndpoint, KadRoutingTable,
@@ -59,11 +63,7 @@ impl KadNode {
         key: ReceivedKey,
     ) {
         let known = self.routing.get(info.id).is_some();
-        let added_or_updated = self.store(
-            now,
-            self.contact_from_hello(from, info, key),
-            Informant::Party(IpAddr::V4(from.ip())),
-        );
+        let added_or_updated = self.store_hello_sender(now, from, info, key);
         // aMule's `AddContact2(update = true)`: a hello from a contact already
         // held marks it alive; a first admission stays fresh, so the small
         // timer greets it back once (`RoutingZone.cpp:584`).
@@ -88,7 +88,7 @@ impl KadNode {
         }
         self.send(
             from,
-            &Kad2Message::HelloRes(self.hello_res_info(request_ack)),
+            &Kad2Message::HelloRes(self.hello_res_info(request_ack, info.version)),
         );
         // aMule piggybacks the firewall check on the hello it just answered
         // (`Process2HelloRequest`), after its extern-port ping.
@@ -139,10 +139,11 @@ impl KadNode {
         // recheck (`ClientTCPSocket.cpp#L376`), deferred with it.
         // The probe answer marks the contact alive (aMule `SetAlive`, via the
         // same `update = true` path); one evicted meanwhile re-enters fresh.
-        if self
-            .routing
-            .upsert(now, self.contact_from_hello(from, info, key))
-            == KadRoutingUpdate::Updated
+        if info.misc_options & MISC_OPTIONS_UDP_FIREWALLED == 0
+            && self
+                .routing
+                .upsert(now, self.contact_from_hello(from, info, key))
+                == KadRoutingUpdate::Updated
         {
             self.routing.mark_alive(now, info.id);
         }
@@ -278,6 +279,26 @@ impl KadNode {
         .with_udp_key(self.learned_key(key))
     }
 
+    /// Store a hello's sender, unless it says it is UDP firewalled: such a node
+    /// cannot answer the peers we would hand it to (`AddContact2`,
+    /// `KademliaUDPListener.cpp:486-495`). The hello is still answered.
+    fn store_hello_sender(
+        &mut self,
+        now: KadInstant,
+        from: KadNodeEndpoint,
+        info: &Kad2NodeInfo,
+        key: ReceivedKey,
+    ) -> bool {
+        if info.misc_options & MISC_OPTIONS_UDP_FIREWALLED != 0 {
+            return false;
+        }
+        self.store(
+            now,
+            self.contact_from_hello(from, info, key),
+            Informant::Party(IpAddr::V4(from.ip())),
+        )
+    }
+
     /// A counterparty's sender key as a storable [`KadUdpKey`], bound to this
     /// node's current public IP — empty when unarmed or when the datagram
     /// carried none.
@@ -394,29 +415,60 @@ impl KadNode {
             deadline: now + Self::PROBE_TIMEOUT,
             evict_on_timeout,
         });
-        self.send(endpoint, &Kad2Message::HelloReq(self.hello_info()));
+        let version = self.routing.get(expected).map(KadContact::version);
+        let hello = self.hello_info(version.unwrap_or(Self::KAD_VERSION));
+        self.send(endpoint, &Kad2Message::HelloReq(hello));
     }
 
-    /// This node as a hello payload (UDP port advertised via the `0xFC` tag),
-    /// carrying no misc-options — the `HELLO_REQ` form (a request never asks for
-    /// an ack, ADR-0064).
-    fn hello_info(&self) -> Kad2NodeInfo {
+    /// This node as a hello payload (`SendMyDetails`,
+    /// `KademliaUDPListener.cpp:122-145`). The `0xFC` tag states the intern port
+    /// only once a UDP check proved it reachable: until then the peer stores the
+    /// port it saw, the only one a NAT in the path leaves right. `0xF2` tells a
+    /// v8 peer what we are, so a UDP-firewalled node is not stored and handed
+    /// out. A request never asks for an ack (ADR-0064).
+    fn hello_info(&self, peer_version: u8) -> Kad2NodeInfo {
+        let mut misc_options = 0;
+        if peer_version >= Self::ACK_REQUEST_MIN_VERSION {
+            if self.own_udp_firewalled() {
+                misc_options |= MISC_OPTIONS_UDP_FIREWALLED;
+            }
+            if self.reachability.tcp_firewalled {
+                misc_options |= MISC_OPTIONS_TCP_FIREWALLED;
+            }
+        }
         Kad2NodeInfo {
-            udp_port_tag: Some(self.config.udp_port),
+            udp_port_tag: self.proven_intern_port(),
+            misc_options,
             ..self.header_info()
         }
     }
 
     /// This node as a `HELLO_RES` payload: the hello info plus misc-options bit 2
-    /// when this response asks the peer for a `0x22` verify ACK (role A). The
-    /// firewalled bits are fed by ADR-0058 `Reachability`; rmule assumes an open
-    /// node, so they stay clear.
-    fn hello_res_info(&self, request_ack: bool) -> Kad2NodeInfo {
-        let mut info = self.hello_info();
+    /// when this response asks the peer for a `0x22` verify ACK (role A).
+    fn hello_res_info(&self, request_ack: bool, peer_version: u8) -> Kad2NodeInfo {
+        let mut info = self.hello_info(peer_version);
         if request_ack {
             info.misc_options |= MISC_OPTIONS_ACK_REQUEST;
         }
         info
+    }
+
+    /// aMule's `IsFirewalledUDP(true)`: the driver's seam, or this node's own
+    /// tester. An unfinished test reads open, as stock's last state starts.
+    pub(super) fn own_udp_firewalled(&self) -> bool {
+        self.reachability.udp_firewalled
+            || self
+                .udp_firewall
+                .as_ref()
+                .is_some_and(|tester| matches!(tester.verdict(), UdpVerdict::Firewalled))
+    }
+
+    /// The intern port, once a helper's answer reached it (aMule's
+    /// `SetUseExternKadPort(false)`, `UDPFirewallTester.cpp:146-148`).
+    fn proven_intern_port(&self) -> Option<u16> {
+        let tester = self.udp_firewall.as_ref()?;
+        matches!(tester.verdict(), UdpVerdict::Open { port } if port == self.config.udp_port)
+            .then_some(self.config.udp_port)
     }
 
     /// This node as a bootstrap-response header (no tag list on the wire).

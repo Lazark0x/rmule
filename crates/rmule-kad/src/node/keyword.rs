@@ -168,7 +168,7 @@ impl KadNode {
         match self.keyword_store.publish_batch(
             now,
             self.config.id,
-            self.reachability.udp_firewalled,
+            self.own_udp_firewalled(),
             from.ip(),
             keyword,
             files,

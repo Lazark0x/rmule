@@ -121,6 +121,12 @@ pub enum KadNodeDiagnostic {
         /// Its opcode.
         opcode: u8,
     },
+    /// A source publish arrived while this node is UDP firewalled: not stored,
+    /// not acked.
+    PublishRefusedFirewalled {
+        /// The publisher.
+        from: KadNodeEndpoint,
+    },
     /// A `PublishSource` command for a target that is already registered;
     /// the existing registration (and its cadence) is kept.
     DuplicatePublish {

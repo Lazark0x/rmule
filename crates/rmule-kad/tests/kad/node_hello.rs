@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use rmule_kad::{
     Kad2Message, Kad2NodeInfo, KadContactState, KadEvent, KadNode, KadNodeDiagnostic,
-    KadNodeEndpoint,
+    KadNodeEndpoint, KadReachability, MISC_OPTIONS_TCP_FIREWALLED, MISC_OPTIONS_UDP_FIREWALLED,
 };
 use rmule_primitives::session::drain;
 use rmule_testkit::kad_node::{
@@ -44,7 +44,7 @@ fn hello_req_stores_the_sender_as_responded_and_answers_hello_res() {
                 id: id(0xAA),
                 tcp_port: 4662,
                 version: 8,
-                udp_port_tag: Some(4672),
+                udp_port_tag: None,
                 misc_options: 0,
             })
         )]
@@ -241,4 +241,74 @@ fn the_kad_version_the_peer_hello_advertises_is_the_one_this_node_speaks() {
             .kad_version(),
         KadNode::KAD_VERSION
     );
+}
+
+fn answered_hello(node: &mut KadNode, peer: u8, version: u8) -> Kad2NodeInfo {
+    deliver(
+        node,
+        T0,
+        endpoint(peer, 4704),
+        &Kad2Message::HelloReq(Kad2NodeInfo {
+            version,
+            ..info(peer, Some(4704))
+        }),
+    );
+    let outputs = drain(|| node.poll_output());
+    sent_messages(&outputs)
+        .into_iter()
+        .find_map(|(_, message)| match message {
+            Kad2Message::HelloRes(info) => Some(info),
+            _ => None,
+        })
+        .expect("the hello is answered")
+}
+
+#[test]
+fn a_firewalled_node_says_so_in_its_hello_to_a_v8_peer_and_only_there() {
+    let mut node = node();
+    node.set_reachability(KadReachability {
+        udp_firewalled: true,
+        tcp_firewalled: true,
+        buddy_connected: false,
+    });
+    assert_eq!(
+        answered_hello(&mut node, 4, 8).misc_options,
+        MISC_OPTIONS_UDP_FIREWALLED | MISC_OPTIONS_TCP_FIREWALLED
+    );
+    assert_eq!(answered_hello(&mut node, 5, 7).misc_options, 0);
+}
+
+#[test]
+fn a_udp_firewalled_sender_is_answered_and_never_stored() {
+    let mut node = node();
+    deliver(
+        &mut node,
+        T0,
+        endpoint(4, 4704),
+        &Kad2Message::HelloReq(Kad2NodeInfo {
+            misc_options: MISC_OPTIONS_UDP_FIREWALLED,
+            ..info(0x40, None)
+        }),
+    );
+    let outputs = drain(|| node.poll_output());
+    assert!(node.routing_table().get(id(0x40)).is_none());
+    assert!(matches!(
+        sent_messages(&outputs).as_slice(),
+        [(_, Kad2Message::HelloRes(_))]
+    ));
+}
+
+#[test]
+fn a_tcp_firewalled_sender_is_still_stored() {
+    let mut node = node();
+    deliver(
+        &mut node,
+        T0,
+        endpoint(4, 4704),
+        &Kad2Message::HelloReq(Kad2NodeInfo {
+            misc_options: MISC_OPTIONS_TCP_FIREWALLED,
+            ..info(0x40, None)
+        }),
+    );
+    assert!(node.routing_table().get(id(0x40)).is_some());
 }

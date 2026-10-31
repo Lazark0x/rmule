@@ -5,17 +5,20 @@
 use std::time::Duration;
 
 use rmule_kad::{
-    Kad2Message, KadCommand, KadContact, KadEvent, KadId, KadInstant, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput, KadSelfCheck,
-    UdpFirewallHelper, UserHash,
+    Kad2Message, Kad2NodeInfo, KadCommand, KadContact, KadEvent, KadId, KadInstant, KadNode,
+    KadNodeConfig, KadNodeDiagnostic, KadNodeEndpoint, KadNodeStart, KadObfuscation, KadOutput,
+    KadPublishedSource, KadSelfCheck, MISC_OPTIONS_UDP_FIREWALLED, UdpFirewallHelper, UserHash,
+    decode_exact,
 };
 use rmule_primitives::Ipv4Endpoint;
 use rmule_primitives::session::drain;
 use rmule_primitives::{ClientEncryptKey, encrypt_datagram_client};
 use rmule_testkit::kad_node::{
     OUR_INTERN_UDP, OWN_IP, T0, crypt_node, crypt_start, datagrams, deliver, diagnostics, endpoint,
-    events, fixed_nonce, host_ip, id, node, our_key_for, self_checking_node, sent_messages, start,
+    events, fixed_nonce, hello_req_from, host_ip, id, node, our_key_for, self_checking_node,
+    sent_messages, start,
 };
+use rmule_testkit::kad_source::publish_datagram;
 
 /// End the **Extern Port Round** the way core's verdict does, so the helper
 /// gate is open and these legs exercise the helper rules alone
@@ -485,6 +488,76 @@ fn one_positive_0x62_opens_the_udp_verdict() {
                 port: OUR_INTERN_UDP
             }
         ]
+    );
+}
+
+/// What a hello answer states about this node, after the check's verdict.
+fn hello_answer(node: &mut KadNode) -> Kad2NodeInfo {
+    node.handle_datagram(
+        T0,
+        endpoint(9, 4709),
+        &hello_req_from(id(0x90), endpoint(9, 4709)),
+    );
+    datagrams(&drain(|| node.poll_output()))
+        .iter()
+        .find_map(|(_, bytes)| {
+            let rmule_kad::KadDecoded::Plain(envelope) = decode_exact(bytes).ok()? else {
+                return None;
+            };
+            match Kad2Message::decode(&envelope) {
+                Ok(Kad2Message::HelloRes(info)) => Some(info),
+                _ => None,
+            }
+        })
+        .expect("the hello is answered")
+}
+
+#[test]
+fn the_hello_tags_the_intern_port_only_once_a_helper_reached_it() {
+    let mut node = self_checking_node();
+    settle_extern_port(&mut node);
+    node.offer_udp_firewall_helper(udp_helper(1, 8));
+    drain(|| node.poll_output());
+    assert_eq!(hello_answer(&mut node).udp_port_tag, None);
+
+    node.handle_datagram(T0, endpoint(1, 12345), &[0xE4, 0x62, 0x00, 0x40, 0x12]);
+    drain(|| node.poll_output());
+    assert_eq!(hello_answer(&mut node).udp_port_tag, Some(OUR_INTERN_UDP));
+}
+
+#[test]
+fn the_check_s_own_firewalled_verdict_reaches_the_hello_and_the_source_storer() {
+    let mut node = self_checking_node();
+    settle_extern_port(&mut node);
+    node.offer_udp_firewall_helper(udp_helper(1, 8));
+    node.offer_udp_firewall_helper(udp_helper(2, 8));
+    drain(|| node.poll_output());
+    assert_eq!(hello_answer(&mut node).misc_options, 0);
+
+    node.consume_udp_firewall_failure(T0, host_ip(1));
+    node.consume_udp_firewall_failure(T0, host_ip(2));
+    drain(|| node.poll_output());
+    assert_eq!(
+        hello_answer(&mut node).misc_options,
+        MISC_OPTIONS_UDP_FIREWALLED
+    );
+
+    node.handle_datagram(
+        T0,
+        endpoint(9, 4709),
+        &publish_datagram(
+            id(0xAA),
+            [0x11; 16],
+            KadPublishedSource {
+                source_type: Some(1),
+                tcp_port: Some(4662),
+                ..KadPublishedSource::default()
+            },
+        ),
+    );
+    assert!(
+        datagrams(&drain(|| node.poll_output())).is_empty(),
+        "no false ack"
     );
 }
 

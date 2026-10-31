@@ -79,7 +79,7 @@ fn hello_req_bytes() -> Vec<u8> {
         id: KadId::from_bytes(OWN_ID),
         tcp_port: 4662,
         version: KadNode::KAD_VERSION,
-        udp_port_tag: Some(4672),
+        udp_port_tag: None,
         misc_options: 0,
     })
     .encode()

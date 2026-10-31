@@ -66,6 +66,12 @@ impl KadNode {
         source_id: [u8; 16],
         source: &KadPublishedSource,
     ) {
+        // A UDP-firewalled storer cannot be found to serve the row, so it takes
+        // none and says nothing (`KademliaUDPListener.cpp:1299`).
+        if self.own_udp_firewalled() {
+            self.emit_diagnostic(KadNodeDiagnostic::PublishRefusedFirewalled { from });
+            return;
+        }
         // aMule's tolerance gate with its LAN bypass: private-range senders
         // (the mesh tiers and the private capture harness) are always
         // acceptable; everyone else must publish near this node's ID.
