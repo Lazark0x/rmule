@@ -431,16 +431,38 @@ async fn a_re_dials_burst_carries_the_stance_its_introduction_stated() {
     assert!(burst.iter().all(|send| send.crypt_target == Some(stated)));
 }
 
-/// A held burst's attempt holds the stance the reach's source record stated.
+/// A held burst's attempt holds the stance the reach's source record stated:
+/// the owner's word is all the front has until a hello, and a hint states none.
 #[tokio::test]
 async fn a_held_burst_carries_the_stance_its_reach_stated() {
     let mut harness = Harness::new();
     let target = hash(0x44);
     let stated = PeerUdpCryptTarget::new(target, requires_crypt());
-    let due = held_toward(&mut harness, target, at(9, 31999)).await;
-    harness.front.crypt_targets.state(target, requires_crypt());
+    let t0 = Instant::now();
+    let mut command = rendezvous_toward(target);
+    let NattCommand::Traverse {
+        owner: Some(owner), ..
+    } = &mut command
+    else {
+        unreachable!("the rung names its owner");
+    };
+    owner.crypt = Some(requires_crypt());
+    harness.front.on_command(command, t0).await;
+    harness.drained();
+    let heard = t0 + Duration::from_millis(240);
+    harness
+        .front
+        .on_datagram(
+            PeerEndpoint::V4(buddy()),
+            hint_naming(target, at(9, 31999)),
+            heard,
+        )
+        .await;
 
-    harness.front.release_held(due).await;
+    harness
+        .front
+        .release_held(heard + Duration::from_millis(120))
+        .await;
 
     let burst = harness.drained();
     assert!(!burst.is_empty());
