@@ -236,13 +236,22 @@ current family reads, and read in both**:
   lapses with no dial-back, rmule sends **one** more `0x52` under the fallback (same buddy,
   file and port) and re-arms the wait; never both at once. Only for a buddy with a known
   endpoint: a buddy named by ID alone gets no second Callback Walk.
+- **A source keeps the reading that answered.** A dial-back after the fallback makes the
+  fallback the ID the source's record holds, so every later road leads with it, the other
+  reading becomes that road's fallback, and a sighting of the same row does not move it
+  back. It lasts as long as the buddy does: a different ID starts at the primary again.
+  aMule 3.2.0 keeps its layout per client the same way (`BaseClient.cpp:2136-2150`, cleared
+  at `:3546-3547`). Its own `0x94` stays raw (`DownloadClient.cpp:1380`), leaning on a
+  buddy that takes either layout, which a stock buddy does not.
 - A relayed `0x99` whose check inverts to our Kad ID in either layout is ours. An open
   node accepts either layout of its registered buddy on a `0x52` and a `0x94`, and relays
   a `0x52` under the ID it registered, which any source's check takes: an older client's
   exact check included, so one current buddy repairs every pair. aMule 3.2.0's buddy does
   the same (`KadBuddyCallback.h`).
-- rmule's own `0x94`, a reask or a rendezvous, names the buddy by the row's ID in
-  big-endian bytes, the form a buddy of any family stored.
+- rmule's own `0x94`, a reask or a rendezvous, names the buddy by the held reading in
+  big-endian bytes, the form a buddy of any family stored. A row a stock aMule through
+  3.1.0 wrote is read through the fallback, and only that reading's bytes pass its buddy's
+  exact check (`ClientUDPSocket.cpp:151`).
 - A stock aMule through 3.1.0 reading our row reads the other layout. Its `0x52` still
   arrives, because no buddy of its age filters that field and our `0x99` check takes
   either; its `0x94` through a buddy of its age is dropped, and it falls back to a
