@@ -79,14 +79,12 @@ impl PeerSession {
                 RequestItem::AichRoot => BundledAsk::AichRoot,
                 // A plain `Sources` sub carries no version (`0`, SX1 path);
                 // `Sources2` carries the SX2 `<ver>` the serve pick reads.
-                RequestItem::Sources => {
-                    self.note_source_ask(req.file_hash, 0);
-                    BundledAsk::Sources
-                }
-                RequestItem::Sources2 { version, .. } => {
-                    self.note_source_ask(req.file_hash, *version);
-                    BundledAsk::Sources
-                }
+                RequestItem::Sources => BundledAsk::Sources {
+                    form: self.served_sources_version(0),
+                },
+                RequestItem::Sources2 { version, .. } => BundledAsk::Sources {
+                    form: self.served_sources_version(*version),
+                },
             });
         }
         self.core

@@ -57,22 +57,17 @@ pub enum PeerError {
     /// `OP_SENDINGPART` on an ungranted slot.
     #[error("no serve slot granted for the requested file")]
     ServeSlotNotGranted,
-    /// Core answered a source ask for a file the peer never asked sources
-    /// about on this connection, so no wire form was negotiated for it. The
-    /// answer is dropped; nothing rides the wire.
-    #[error("sources answered for a file the peer never asked about")]
-    SourcesNotAsked,
 }
 
 impl PeerError {
-    /// Whether the refused command was a serving one: a block or a source
-    /// answer the serve half issued. The link outlives such a refusal, so a
+    /// Whether the refused command was a serving one: a block the serve half
+    /// issued. The link outlives such a refusal, so a
     /// download sharing it has nothing to react to; a refused download
     /// command ([`Self::SlotBusy`], [`Self::FileSizeMismatch`]) is the
     /// downloader's own.
     #[must_use]
     pub const fn is_serving_refusal(&self) -> bool {
-        matches!(self, Self::ServeSlotNotGranted | Self::SourcesNotAsked)
+        matches!(self, Self::ServeSlotNotGranted)
     }
 }
 

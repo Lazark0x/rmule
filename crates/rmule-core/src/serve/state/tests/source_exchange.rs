@@ -2,6 +2,10 @@
 //! clients, and the reask window that throttles a repeat ask.
 
 use super::*;
+
+/// The form an ask carries is the session's; core echoes it untouched.
+const FORM: rmule_peer::ServedSourcesVersion =
+    rmule_peer::ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V3);
 mod claimants_and_bundles;
 mod status_filtering;
 
@@ -50,7 +54,10 @@ fn identify_source_naming(
 }
 
 fn sx_request(file_hash: FileHash) -> ServeInput {
-    ServeInput::Server(ServerEvent::SourcesRequested { file_hash })
+    ServeInput::Server(ServerEvent::SourcesRequested {
+        file_hash,
+        form: FORM,
+    })
 }
 
 #[test]
@@ -130,6 +137,7 @@ fn a_source_exchange_request_answers_from_the_engaged_high_id_upload_clients() {
             peer: requester,
             command: ServerCommand::AnswerSources {
                 file_hash: file,
+                form: FORM,
                 sources: vec![expected_a, expected_b],
             },
         },],
@@ -268,6 +276,7 @@ fn a_low_id_client_that_named_an_ipv6_is_served_over_it() {
             peer: asker,
             command: ServerCommand::AnswerSources {
                 file_hash: file,
+                form: FORM,
                 sources: vec![expected],
             },
         },],
@@ -315,6 +324,7 @@ fn a_high_id_client_that_named_an_ipv6_is_served_with_both_addresses() {
             peer: asker,
             command: ServerCommand::AnswerSources {
                 file_hash: file,
+                form: FORM,
                 sources: vec![expected],
             },
         }),
@@ -375,6 +385,7 @@ fn a_revised_ipv6_is_the_one_an_answer_offers() {
             peer: asker,
             command: ServerCommand::AnswerSources {
                 file_hash: file,
+                form: FORM,
                 sources: vec![expected],
             },
         }),

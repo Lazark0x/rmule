@@ -4,6 +4,10 @@
 
 use super::*;
 
+/// The form an ask carries is the session's; core echoes it untouched.
+const FORM: rmule_peer::ServedSourcesVersion =
+    rmule_peer::ServedSourcesVersion::Sx1(rmule_peer::SourceExchangeVersion::V3);
+
 #[test]
 fn a_partial_shares_exchange_answers_from_its_runs_pool_and_leaves_out_an_unknown_status() {
     use crate::served_downloads::ExchangePool;
@@ -32,12 +36,16 @@ fn a_partial_shares_exchange_answers_from_its_runs_pool_and_leaves_out_an_unknow
         ask(
             &mut state,
             p,
-            ServerEvent::SourcesRequested { file_hash: file }
+            ServerEvent::SourcesRequested {
+                file_hash: file,
+                form: FORM,
+            }
         ),
         [send(
             p,
             ServerCommand::AnswerSources {
                 file_hash: file,
+                form: FORM,
                 sources: vec![source(1)],
             },
         )]
@@ -54,7 +62,10 @@ fn a_download_not_offered_answers_no_exchange() {
         ask(
             &mut state,
             p,
-            ServerEvent::SourcesRequested { file_hash: file }
+            ServerEvent::SourcesRequested {
+                file_hash: file,
+                form: FORM,
+            }
         ),
         []
     );

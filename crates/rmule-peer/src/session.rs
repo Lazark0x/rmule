@@ -60,7 +60,6 @@ use crate::capability::{MiscOptions1, MiscOptions2, UdpPortsAdvert};
 use crate::handshake::{PeerHandshakeContext, SecureIdentConfig};
 use crate::hello::{Hello, PeerHelloBody};
 use crate::software::SoftwareEvidence;
-use crate::source_exchange::ServedSourcesVersion;
 
 use self::download::{CompressedBlocksInFlight, FileFlow};
 use self::multipacket::PendingMultipacketAnswer;
@@ -120,12 +119,6 @@ pub struct PeerSession {
     /// drained by [`Self::try_flush_multipacket_answer`] once every sub-item the
     /// bundle actually asked for has answered.
     served_multipacket: HashMap<FileHash, PendingMultipacketAnswer>,
-    /// The wire form each file's latest source ask is answered in (ADR-0055),
-    /// picked from the asker's advert when the ask arrived and kept here so
-    /// core answers with sources alone. Overwritten by the next ask for the
-    /// same file and taken by the answer, so it holds only asks still owed
-    /// one: a second answer to one ask is refused like an unasked one.
-    served_sources: HashMap<FileHash, ServedSourcesVersion>,
     /// The remote peer's advertised `MiscOptions1`, read from its hello
     /// (`None` for a non-eMule / pre-extended peer). Gates whether we may
     /// send it compressed parts, and whether we bundle our own file requests
@@ -224,7 +217,6 @@ impl PeerSession {
             served_slot: None,
             block_on_its_way: None,
             served_multipacket: HashMap::new(),
-            served_sources: HashMap::new(),
             peer_misc_options: None,
             peer_misc_options2: None,
             peer_identity: None,

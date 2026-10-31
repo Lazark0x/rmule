@@ -459,7 +459,7 @@ fn server_toml(event: &ServerEvent) -> String {
             "type = \"TransferCancelled\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),
-        ServerEvent::SourcesRequested { file_hash } => format!(
+        ServerEvent::SourcesRequested { file_hash, .. } => format!(
             "type = \"SourcesRequested\"\nfile_hash = \"{}\"\n",
             file_hash.to_hex_upper(),
         ),

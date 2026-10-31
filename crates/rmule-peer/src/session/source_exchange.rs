@@ -7,7 +7,7 @@
 
 use rmule_primitives::{FileHash, PeerSource, SourceSighting};
 
-use super::{PeerError, PeerEvent, PeerSession, ServerEvent};
+use super::{PeerEvent, PeerSession, ServerEvent};
 use crate::RequesterEvent;
 use crate::capability::{MiscOptions1, MiscOptions2};
 use crate::multipacket::RequestItem;
@@ -179,27 +179,22 @@ impl PeerSession {
     /// since it holds the requester's advertised SX capability
     /// (`peer_misc_options`'s SX1 nibble, `peer_misc_options2`'s
     /// `SupportsSourceEx2`) plus the request's `requested` version byte, and
-    /// keeps it for the answer; core applies its pools, filters and per-peer
+    /// the form rides the ask; core applies its pools, filters and per-peer
     /// throttle to decide the list. `requested` is `0` for a plain
     /// `OP_REQUESTSOURCES` / `Sources` sub, or the SX2 `<ver>` byte of an
     /// `OP_REQUESTSOURCES2` / `Sources2` sub.
     pub(super) fn on_sources_requested(&mut self, file_hash: FileHash, requested: u8) {
-        self.note_source_ask(file_hash, requested);
+        let form = self.served_sources_version(requested);
         self.core
             .push_event(PeerEvent::Server(ServerEvent::SourcesRequested {
                 file_hash,
+                form,
             }));
-    }
-
-    /// Keep the wire form `file_hash`'s answer goes out in.
-    pub(super) fn note_source_ask(&mut self, file_hash: FileHash, requested: u8) {
-        let version = self.served_sources_version(requested);
-        self.served_sources.insert(file_hash, version);
     }
 
     /// The wire form a source ask carrying `requested` is answered in, picked
     /// from the asker's advertised source-exchange capability.
-    fn served_sources_version(&self, requested: u8) -> ServedSourcesVersion {
+    pub(super) fn served_sources_version(&self, requested: u8) -> ServedSourcesVersion {
         let nibble = self
             .peer_misc_options
             .map_or(0, MiscOptions1::source_exchange_version);
@@ -209,28 +204,28 @@ impl PeerSession {
         ServedSourcesVersion::negotiate(nibble, supports_sx2, requested, self.peer_mod_misc())
     }
 
-    /// Frame core's chosen source list as the answer opcode negotiated when
-    /// the ask arrived and put it on the wire (ADR-0055). `Sx1` →
+    /// Frame core's chosen source list in `form`, the answer opcode negotiated
+    /// when the ask arrived, and put it on the wire (ADR-0055). `Sx1` →
     /// `OP_ANSWERSOURCES` (`0x82`), `Sx2` → `OP_ANSWERSOURCES2` (`0x84`), both
     /// at the negotiated entry version's stride (the hybrid-id `>= v3`
     /// "uniform id rule" rides the codec). The framed answer is
     /// pack-attempted above `PEER_PACK_THRESHOLD` (354 bytes, ADR-0053): a
     /// popular file's long list ships as a `0xD4` packed frame; a short one
     /// stays plain. A list the entry form leaves empty sends nothing, aMule's
-    /// `NULL` reply, and an answer to a file the peer never asked about is
-    /// rejected.
-    pub(super) fn answer_sources(&mut self, file_hash: FileHash, sources: Vec<SourceSighting>) {
-        let Some(version) = self.served_sources.remove(&file_hash) else {
-            self.reject(PeerError::SourcesNotAsked);
-            return;
-        };
+    /// `NULL` reply.
+    pub(super) fn answer_sources(
+        &mut self,
+        file_hash: FileHash,
+        form: ServedSourcesVersion,
+        sources: Vec<SourceSighting>,
+    ) {
         // `HasEd2kWireForm` (ADR-0087): a classic entry has one 32-bit id
         // field and no address block, so a native-IPv6 source is **omitted**
         // rather than written as its sentinel or a zero — either would name a
         // source the reader cannot resolve, and a zero would send it down a
         // callback nobody can broker. ExtSX records are the only shape that
         // can carry one.
-        let entries = match version {
+        let entries = match form {
             ServedSourcesVersion::Sx1(_) | ServedSourcesVersion::Sx2(_) => classic_entries(sources),
             ServedSourcesVersion::Ext { .. } => sources
                 .into_iter()
@@ -241,8 +236,8 @@ impl PeerSession {
             return;
         }
         let count = entries.len();
-        let entry_version = version.entry_version();
-        let packet = match version {
+        let entry_version = form.entry_version();
+        let packet = match form {
             ServedSourcesVersion::Sx1(_) => crate::source_exchange::AnswerSources {
                 file_hash,
                 sources: entries,

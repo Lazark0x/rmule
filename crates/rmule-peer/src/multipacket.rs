@@ -109,7 +109,10 @@ pub enum BundledAsk {
     AichRoot,
     /// `OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2` (`0x81` / `0x83`), answered
     /// out of band.
-    Sources,
+    Sources {
+        /// The wire form an answer goes out in, echoed on `AnswerSources`.
+        form: crate::source_exchange::ServedSourcesVersion,
+    },
 }
 
 /// One item inside an unframed `OP_MULTIPACKETANSWER` reply stream — the

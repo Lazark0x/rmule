@@ -9,6 +9,7 @@ use crate::file::PartBitmap;
 use crate::hash_set::HashSetAnswer;
 
 use super::super::PeerSession;
+use crate::source_exchange::ServedSourcesVersion;
 
 /// What we answer the peer.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,7 +117,7 @@ pub enum ServerCommand {
     },
     /// Answer a peer's source-exchange request (ADR-0055) with the
     /// filtered, capped `sources` core picked from its pools. The session
-    /// frames them in the wire form it chose when the ask arrived:
+    /// frames them in `form`, the wire form it chose when the ask arrived:
     /// `OP_ANSWERSOURCES` (`0x82`) or `OP_ANSWERSOURCES2` (`0x84`), classic
     /// entries or ExtSX records, pack-attempted above `PEER_PACK_THRESHOLD`
     /// (354 bytes, ADR-0053). A classic answer leaves out every source with
@@ -125,6 +126,8 @@ pub enum ServerCommand {
     AnswerSources {
         /// The file the sources are for.
         file_hash: FileHash,
+        /// The wire form the ask carried, echoed.
+        form: ServedSourcesVersion,
         /// The rows to answer with, already filtered and capped by core.
         sources: Vec<SourceSighting>,
     },
@@ -208,9 +211,13 @@ impl PeerSession {
                 end,
                 stream,
             } => self.send_deflated_block(file_hash, start, end, stream),
-            ServerCommand::AnswerSources { file_hash, sources } => {
+            ServerCommand::AnswerSources {
+                file_hash,
+                form,
+                sources,
+            } => {
                 if self.require_identified() {
-                    self.answer_sources(file_hash, sources);
+                    self.answer_sources(file_hash, form, sources);
                 }
             }
         }

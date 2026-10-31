@@ -7,6 +7,7 @@ use rmule_primitives::{AichRootHash, FileHash};
 use crate::file_request::PartStatusTail;
 use crate::multipacket::{BundleCut, BundledAsk};
 use crate::parts::PartRanges;
+use crate::source_exchange::ServedSourcesVersion;
 
 /// What the peer asked of us. Core answers with
 /// [`ServerCommand`](crate::ServerCommand)s, or with nothing.
@@ -89,12 +90,16 @@ pub enum ServerEvent {
     /// The remote peer asked us for more sources of `file_hash`
     /// (`OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2`, ADR-0055). The session has
     /// already picked the wire form the answer goes out in from the asker's
-    /// advertised source-exchange capability and keeps it; core applies its
-    /// pools, filters and per-peer throttle and answers with `AnswerSources`,
+    /// advertised source-exchange capability and keeps nothing: `form` rides
+    /// the ask, so a file nobody answers leaves no state on the link, as in
+    /// aMule (`ClientTCPSocket.cpp:1433-1494`). Core applies its pools, filters
+    /// and per-peer throttle and answers with `AnswerSources`, echoing `form`,
     /// or with nothing when throttled or the pool is empty.
     SourcesRequested {
         /// The file sources were asked for.
         file_hash: FileHash,
+        /// The wire form an answer goes out in, echoed on `AnswerSources`.
+        form: ServedSourcesVersion,
     },
     /// Our answer to a source-exchange ask went out carrying `count` sources.
     /// The session reports it because only the session knows how many the

@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use rmule_peer::{PartBitmap, ServerCommand};
+use rmule_peer::{PartBitmap, ServedSourcesVersion, ServerCommand};
 use rmule_primitives::{FileHash, PeerEndpoint};
 
 use super::{ServeDecision, ServeState};
@@ -61,6 +61,7 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         file_hash: FileHash,
+        form: ServedSourcesVersion,
     ) -> Vec<ServeDecision> {
         let Some((kind, pool)) = self.lookup(file_hash).and_then(|found| found.exchange()) else {
             return Vec::new();
@@ -120,7 +121,11 @@ impl ServeState {
         }
         vec![ServeDecision::Send {
             peer,
-            command: ServerCommand::AnswerSources { file_hash, sources },
+            command: ServerCommand::AnswerSources {
+                file_hash,
+                form,
+                sources,
+            },
         }]
     }
 }

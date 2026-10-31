@@ -372,7 +372,7 @@ fn an_amule_bundle_with_its_part_status_still_routes_the_source_ask() {
                 if *file_hash == hash()
                     && matches!(
                         asks.as_slice(),
-                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources]
+                        [BundledAsk::Name { part_status: Some(status) }, BundledAsk::Sources { .. }]
                             if *status == PartBitmap::decode(1, &[0]).unwrap()
                     )
         )),

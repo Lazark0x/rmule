@@ -394,7 +394,10 @@ async fn a_refused_lookup_ends_empty_and_the_session_stays_up() {
         .await
         .unwrap();
 
-    let outcome = refused.await.unwrap().expect("the ask ends, the link does not");
+    let outcome = refused
+        .await
+        .unwrap()
+        .expect("the ask ends, the link does not");
     assert!(outcome.sources.is_empty());
     assert!(handle.is_alive(), "the session outlives the refusal");
     assert!(!parked.is_finished(), "the other file's ask is still out");
@@ -426,10 +429,19 @@ async fn no_refused_command_ends_the_session() {
     );
 
     let refusals = [
-        (Ed2kCommandKind::RequestServerList, CommandRejectReason::NotLoggedIn),
-        (Ed2kCommandKind::QueryMoreResults, CommandRejectReason::NotLoggedIn),
+        (
+            Ed2kCommandKind::RequestServerList,
+            CommandRejectReason::NotLoggedIn,
+        ),
+        (
+            Ed2kCommandKind::QueryMoreResults,
+            CommandRejectReason::NotLoggedIn,
+        ),
         (Ed2kCommandKind::Search, CommandRejectReason::NotLoggedIn),
-        (Ed2kCommandKind::RequestCallback, CommandRejectReason::NotLoggedIn),
+        (
+            Ed2kCommandKind::RequestCallback,
+            CommandRejectReason::NotLoggedIn,
+        ),
         (
             Ed2kCommandKind::RequestHolepunch,
             CommandRejectReason::UnsupportedServerCapability {

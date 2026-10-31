@@ -165,8 +165,8 @@ impl ServeState {
                 }
                 BundledAsk::SetReqId => decisions.extend(self.answer_file_status(peer, file_hash)),
                 BundledAsk::AichRoot => decisions.extend(self.answer_aich_root(peer, file_hash)),
-                BundledAsk::Sources => {
-                    decisions.extend(self.answer_source_exchange(now, peer, file_hash));
+                BundledAsk::Sources { form } => {
+                    decisions.extend(self.answer_source_exchange(now, peer, file_hash, form));
                 }
             }
         }
@@ -416,8 +416,8 @@ impl ServeState {
             ServerEvent::AichFileHashRequested { file_hash } => {
                 self.answer_aich_root(peer, file_hash)
             }
-            ServerEvent::SourcesRequested { file_hash } => {
-                self.answer_source_exchange(now, peer, file_hash)
+            ServerEvent::SourcesRequested { file_hash, form } => {
+                self.answer_source_exchange(now, peer, file_hash, form)
             }
             // The session's report of what the framed answer carried; the
             // brain's own list may hold sources the wire form omits.

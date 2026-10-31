@@ -1,9 +1,9 @@
 //! Session-level source-exchange **serve** side (ADR-0055). A
 //! peer's `OP_REQUESTSOURCES` / `OP_REQUESTSOURCES2` (standalone
 //! or a multipacket `Sources`/`Sources2` sub) surfaces as
-//! [`ServerEvent::SourcesRequested`]; the session keeps the aMule-exact serve
-//! wire form it picked from the asker's advert, and core's `AnswerSources`
-//! command frames `OP_ANSWERSOURCES` (`0x82`) or `OP_ANSWERSOURCES2` (`0x84`)
+//! [`ServerEvent::SourcesRequested`], carrying the aMule-exact serve wire form
+//! the session picked from the asker's advert, and core's `AnswerSources`
+//! command echoes it to frame `OP_ANSWERSOURCES` (`0x82`) or `OP_ANSWERSOURCES2` (`0x84`)
 //! in it — pack-attempted above `PEER_PACK_THRESHOLD` (354 bytes, ADR-0053).
 //! The pool / filter / per-peer throttle brain is core-side (`rmule-core`
 //! `serve::source_exchange`); this file pins the wire.
@@ -12,9 +12,9 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::{
     AnswerSources, AnswerSources2, BundledAsk, HelloAnswer, MiscOptions1, MiscOptions2,
-    ModMiscOptions, MultiPacketRequest, NoticeEvent, PeerCommand, PeerError, PeerEvent,
-    PeerHelloBody, PeerOutput, PeerSession, RequestItem, RequestSources2, RequestSourcesPacket,
-    ServerCommand, ServerEvent, SourceExchangeVersion,
+    ModMiscOptions, MultiPacketRequest, NoticeEvent, PeerCommand, PeerEvent, PeerHelloBody,
+    PeerOutput, PeerSession, RequestItem, RequestSources2, RequestSourcesPacket,
+    ServedSourcesVersion, ServerCommand, ServerEvent, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -105,20 +105,21 @@ fn sx2_ask(file_hash: FileHash, version: u8) -> Vec<u8> {
     .encode()
 }
 
-/// The file a standalone or bundled source ask in `outputs` named.
-fn sources_requested(outputs: &[PeerOutput]) -> Option<FileHash> {
+/// The file a standalone or bundled source ask in `outputs` named, with the
+/// wire form its answer goes out in.
+fn sources_requested(outputs: &[PeerOutput]) -> Option<(FileHash, ServedSourcesVersion)> {
     outputs.iter().find_map(|o| match o {
-        PeerOutput::Event(PeerEvent::Server(ServerEvent::SourcesRequested { file_hash })) => {
-            Some(*file_hash)
+        PeerOutput::Event(PeerEvent::Server(ServerEvent::SourcesRequested { file_hash, form })) => {
+            Some((*file_hash, *form))
         }
         PeerOutput::Event(PeerEvent::Server(ServerEvent::FileBundleRequested {
             file_hash,
             asks,
             ..
-        })) => asks
-            .iter()
-            .any(|ask| matches!(ask, BundledAsk::Sources))
-            .then_some(*file_hash),
+        })) => asks.iter().find_map(|ask| match ask {
+            BundledAsk::Sources { form } => Some((*file_hash, *form)),
+            _ => None,
+        }),
         _ => None,
     })
 }
@@ -143,13 +144,11 @@ fn ask_then_answer(
 ) -> Vec<PeerOutput> {
     session.handle_bytes(ask);
     let asked = drain(|| session.poll_output());
-    assert_eq!(
-        sources_requested(&asked),
-        Some(file_hash),
-        "the ask surfaced"
-    );
+    let (asked_about, form) = sources_requested(&asked).expect("the ask surfaced");
+    assert_eq!(asked_about, file_hash);
     session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
         file_hash,
+        form,
         sources,
     }));
     drain(|| session.poll_output())
@@ -268,26 +267,6 @@ fn a_bundled_sources_sub_is_answered_like_the_standalone_ask() {
 }
 
 #[test]
-fn an_answer_to_a_file_never_asked_about_is_rejected_and_sends_nothing() {
-    let mut session = identified(classic(3, false));
-    session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
-        file_hash: file_hash(0x47),
-        sources: vec![high_id_source(0x0203_0405, 4662)],
-    }));
-    let out = drain(|| session.poll_output());
-    assert!(
-        !out.iter().any(|o| matches!(o, PeerOutput::Write(_))),
-        "no wire form was negotiated, so nothing is framed"
-    );
-    assert!(out.iter().any(|o| matches!(
-        o,
-        PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
-            reason: PeerError::SourcesNotAsked
-        }))
-    )));
-}
-
-#[test]
 fn the_pack_threshold_gates_the_answersources_emit() {
     // v1 payload = 16 (hash) + 2 (count) + count*12. 28 sources → 354 bytes
     // (at the threshold, stays plain); 29 → 366 (over it, packed 0xD4).
@@ -372,35 +351,27 @@ fn a_native_ipv6_source_is_omitted_from_a_classic_answer_never_zeroed() {
     );
 }
 
-/// One ask is owed one answer: the negotiated form is spent when the answer
-/// goes out, so a link that asks about many files over its life does not keep
-/// a form per file, and a repeat answer is refused as unasked.
+/// aMule answers each ask as it arrives and keeps nothing between
+/// (`ClientTCPSocket.cpp:1433-1494`), so the form rides the ask: two asks for
+/// one file each go out as they were asked, whatever order core answers in.
 #[test]
-fn an_answered_ask_is_forgotten_and_a_second_answer_is_refused() {
-    let mut session = identified(classic(1, false));
+fn two_asks_for_one_file_are_each_answered_in_the_form_they_asked_in() {
+    let mut session = identified(classic(3, true));
     let fh = file_hash(0x5D);
-    let first = ask_then_answer(
-        &mut session,
-        &plain_ask(fh),
-        fh,
-        vec![high_id_source(0x0203_0405, 4662)],
-    );
-    assert_eq!(sources_answered(&first), Some(1));
-    session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
-        file_hash: fh,
-        sources: vec![high_id_source(0x0203_0405, 4662)],
-    }));
-    let second = drain(|| session.poll_output());
-    assert!(
-        second.iter().any(|o| matches!(
-            o,
-            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::CommandRejected {
-                reason: PeerError::SourcesNotAsked
-            }))
-        )),
-        "the repeat answer is refused: {second:?}"
-    );
-    assert!(!second.iter().any(|o| matches!(o, PeerOutput::Write(_))));
+    session.handle_bytes(&plain_ask(fh));
+    let (_, plain) = sources_requested(&drain(|| session.poll_output())).expect("the plain ask");
+    session.handle_bytes(&sx2_ask(fh, 4));
+    let (_, sx2) = sources_requested(&drain(|| session.poll_output())).expect("the SX2 ask");
+
+    for (form, opcode) in [(plain, 0x82), (sx2, 0x84)] {
+        session.handle_command(PeerCommand::Server(ServerCommand::AnswerSources {
+            file_hash: fh,
+            form,
+            sources: vec![high_id_source(0x0203_0405, 4662)],
+        }));
+        let out = drain(|| session.poll_output());
+        assert_eq!(answer_packet(&out).opcode(), opcode, "{out:?}");
+    }
 }
 
 /// A classic answer the framing limit leaves empty is aMule's `NULL` reply:

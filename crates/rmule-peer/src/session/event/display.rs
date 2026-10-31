@@ -265,7 +265,7 @@ impl fmt::Display for ServerEvent {
                 "peer transfer_cancelled file_hash={}",
                 file_hash.to_hex_upper()
             ),
-            ServerEvent::SourcesRequested { file_hash } => write!(
+            ServerEvent::SourcesRequested { file_hash, .. } => write!(
                 f,
                 "peer sources_requested file_hash={}",
                 file_hash.to_hex_upper()
