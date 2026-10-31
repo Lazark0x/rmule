@@ -260,7 +260,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
             own_tcp_port,
         };
         let enactor = pump::Enactor {
-            sources_tx,
+            sources: pump::SourcesOut::new(sources_tx),
             dial_back,
             buddy_service,
             ban_store: adapters.ban_store.clone(),

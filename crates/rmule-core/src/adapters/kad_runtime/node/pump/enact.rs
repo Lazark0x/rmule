@@ -6,7 +6,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
 
 use super::buddy_service::FindBuddyAsk;
@@ -32,7 +31,7 @@ pub(super) enum Enacted {
 /// sources its samples read.
 pub(crate) struct Enactor {
     /// The discovery task's answers.
-    pub(crate) sources_tx: mpsc::Sender<(FileHash, crate::kad_sources::KadAnswer)>,
+    pub(crate) sources: super::SourcesOut,
     pub(crate) dial_back: DialBack,
     pub(crate) buddy_service: BuddyService,
     pub(crate) ban_store: crate::ban_store::SharedBanStore,
@@ -116,7 +115,7 @@ impl Enactor {
                 return Enacted::Answer(KadPumpInput::Delivered(command, delivery));
             }
             KadPumpEffect::Sources { file_hash, answer } => {
-                if self.sources_tx.send((file_hash, answer)).await.is_err() {
+                if self.sources.offer((file_hash, answer)).is_err() {
                     return Enacted::SourcesClosed;
                 }
             }

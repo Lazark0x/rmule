@@ -107,7 +107,7 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
             tokio::select! {
                 _ = tick.tick() => self.sweep().await,
                 answered = self.channel.next_answer() => match answered {
-                    Some((file_hash, answer)) => self.route(file_hash, answer).await,
+                    Some((file_hash, answer)) => self.route(file_hash, answer),
                     None => return, // the channel stopped
                 },
             }
@@ -140,8 +140,10 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
 
     /// Route one answer to the matching download's sink. A closed sink (the
     /// download exiting) is fine — the runner's deregistration races this send
-    /// harmlessly.
-    async fn route(&self, file_hash: FileHash, answer: C::Answer) {
+    /// harmlessly. So is a full one: this task reads for every download, so
+    /// one run behind on its sources gives up this answer rather than hold
+    /// the others', and the file's next ask finds them again.
+    fn route(&self, file_hash: FileHash, answer: C::Answer) {
         let sink = self
             .registry
             .lock()
@@ -149,7 +151,7 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
             .get(&file_hash)
             .map(|download| download.sink.clone());
         if let Some(sink) = sink {
-            let _ = sink.send(answer).await;
+            let _ = sink.try_send(answer);
         }
     }
 }
@@ -289,6 +291,65 @@ mod tests {
             .expect("channel open");
         assert_eq!(second, vec![SourceLookupTarget::new(file_hash, 4096)]);
 
+        task.abort();
+    }
+
+    /// One answer per entry in `answers`, then nothing.
+    struct ScriptedAnswers {
+        answers: tokio::sync::Mutex<mpsc::UnboundedReceiver<(FileHash, u8)>>,
+    }
+
+    impl DiscoveryChannel for ScriptedAnswers {
+        type Answer = u8;
+
+        async fn ask(&self, _: &[SourceLookupTarget]) {}
+
+        async fn next_answer(&self) -> Option<(FileHash, u8)> {
+            self.answers.lock().await.recv().await
+        }
+    }
+
+    /// A run that has stopped reading its sink holds up its own sources and
+    /// nobody else's: every other download's answers go on arriving.
+    #[tokio::test]
+    async fn a_full_sink_holds_up_no_other_download() {
+        let stuck = FileHash::from_bytes([0x71; FileHash::BYTE_LEN]);
+        let moving = FileHash::from_bytes([0x72; FileHash::BYTE_LEN]);
+        let (stuck_tx, _stuck_rx) = mpsc::channel(1);
+        let (moving_tx, mut moving_rx) = mpsc::channel(1);
+        let registry: DiscoveryRegistry<u8> = Arc::new(Mutex::new(HashMap::new()));
+        registry
+            .lock()
+            .unwrap()
+            .insert(stuck, entry(1, stuck_tx, SourceCount::default()));
+        registry
+            .lock()
+            .unwrap()
+            .insert(moving, entry(1, moving_tx, SourceCount::default()));
+        let (answers_tx, answers) = mpsc::unbounded_channel();
+        let channel = ScriptedAnswers {
+            answers: tokio::sync::Mutex::new(answers),
+        };
+        let task = tokio::spawn(
+            SourceDiscovery::new(
+                channel,
+                registry,
+                Duration::from_secs(3600),
+                AskClock::shared(Duration::from_secs(3600)),
+                u32::MAX,
+            )
+            .run(),
+        );
+
+        // The second answer finds the stuck run's one slot full.
+        answers_tx.send((stuck, 1)).unwrap();
+        answers_tx.send((stuck, 2)).unwrap();
+        answers_tx.send((moving, 3)).unwrap();
+
+        let answer = tokio::time::timeout(Duration::from_secs(2), moving_rx.recv())
+            .await
+            .expect("discovery reads past the full sink");
+        assert_eq!(answer, Some(3));
         task.abort();
     }
 
