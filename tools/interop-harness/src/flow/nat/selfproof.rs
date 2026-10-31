@@ -49,6 +49,7 @@ use crate::flow::taps::{
     Attachment, PerAttachmentTaps, TapRole, TapRow, TapsRecord, write_taps_record,
 };
 use crate::nat::{NatType, NatTypeProof, PinnedPortReach};
+use crate::verdict::Verdict;
 
 /// The flow's name in every artifact it writes.
 const FLOW: &str = "natgw-selfproof";
@@ -109,7 +110,7 @@ struct LegVerdict {
 struct SelfProofVerdict {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     /// Present only on a skip, and then it names the missing capability and
     /// what could therefore not be measured.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,15 +304,19 @@ fn drive(bench: &mut Bench, options: &NatGatewaySelfProofOptions<'_>) -> Result<
 /// port, or whose pinned pair misbehaved, is a bench every later NAT verdict
 /// would cite as proven, so it is `FAIL`, never `OBSERVED`. No leg at all
 /// measured nothing and reads `OBSERVED`.
-fn label_legs(legs: impl IntoIterator<Item = bool>) -> &'static str {
+fn label_legs(legs: impl IntoIterator<Item = bool>) -> Verdict {
     let mut any = false;
     for held in legs {
         if !held {
-            return "FAIL";
+            return Verdict::Fail;
         }
         any = true;
     }
-    if any { "PASS" } else { "OBSERVED" }
+    if any {
+        Verdict::Pass
+    } else {
+        Verdict::Observed
+    }
 }
 
 /// The three bridges one run makes, all of them outliving every leg.
@@ -604,7 +609,7 @@ fn write_skip(layout: &RunLayout, doctor: &DoctorReport, skip: &SkipReason) -> R
         layout,
         &SelfProofVerdict {
             flow: FLOW,
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             skip_reason: Some(skip.reason.clone()),
             wan_subnet: subnet_cidr(0)?,
             lan_subnet: NAT_LAN_SUBNET.to_owned(),
@@ -620,19 +625,19 @@ fn write_verdict(layout: &RunLayout, verdict: &SelfProofVerdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize natgw-selfproof verdict")?;
     let path = layout.root().join("natgw-selfproof-verdict.toml");
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::label_legs;
+    use super::{Verdict, label_legs};
 
     /// A gateway that probed as another type used to read `OBSERVED`, which
     /// `natgw-selfproof`'s wrapper accepted; it is a failed self-proof.
     #[test]
     fn a_leg_that_failed_an_axis_fails_the_self_proof() {
-        assert_eq!(label_legs([true, true, true, true]), "PASS");
-        assert_eq!(label_legs([true, false, true, true]), "FAIL");
-        assert_eq!(label_legs([]), "OBSERVED");
+        assert_eq!(label_legs([true, true, true, true]), Verdict::Pass);
+        assert_eq!(label_legs([true, false, true, true]), Verdict::Fail);
+        assert_eq!(label_legs([]), Verdict::Observed);
     }
 }

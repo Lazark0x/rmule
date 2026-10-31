@@ -22,6 +22,7 @@ use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{TcpCapture, records, tcp_capture};
 use crate::flow::peer::udp_reask_emit::{SECOND_FILE, SECOND_LINK};
 use crate::rmule::RMULE_SERVE_TCP_PORT;
+use crate::verdict::Verdict;
 
 const VERDICT: &str = "peer-lowid-sharer-asks-verdict.toml";
 /// Under the flow's dir: what only rmule shares.
@@ -121,10 +122,10 @@ fn callback(capture: &TcpCapture, addresses: &Addresses) -> Option<(SocketAddr, 
 }
 
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     records: &'a [String],
     claim: &'a [Claim],
@@ -134,7 +135,7 @@ struct Verdict<'a> {
 ///
 /// # Errors
 /// If the addresses, the tap, the link or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let addresses: Addresses = read_toml(&root.join(ADDRESSES))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
@@ -206,7 +207,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         ),
     ];
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-lowid-sharer-asks",
         verdict,
         detail,
@@ -214,7 +215,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         claim: &claims,
     })
     .context("serialize the verdict")?;
-    fs::write(run_dir.join(VERDICT), &text).context("write the verdict")?;
+    crate::verdict::write(&run_dir.join(VERDICT), &text)?;
     println!("{text}");
     Ok(verdict)
 }

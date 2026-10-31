@@ -30,6 +30,7 @@ use crate::flow::nat::natt::NattFlow;
 use crate::flow::nat::natt::verdict::{NattVerdict, WireRow, write};
 use crate::flow::pinned_image::AMULE_KNO;
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
+use crate::verdict::Verdict;
 
 /// Every tap records all IP traffic on the body's own attachment. A NAT-T
 /// exchange is a TCP hello and a UDP `0xB2` conversation at once, so a
@@ -314,7 +315,7 @@ fn finish(
             claim: claims,
         },
     )?;
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "{} did not hold every claim the bench can drive; see {}-verdict.toml",
             flow.name(),
@@ -337,7 +338,7 @@ fn write_skip(
         layout.root(),
         &NattVerdict {
             flow: flow.name(),
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             detail: "the bench lacks a capability this flow needs; nothing was measured."
                 .to_owned(),
             note: String::new(),

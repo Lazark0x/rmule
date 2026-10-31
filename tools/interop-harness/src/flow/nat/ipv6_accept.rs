@@ -31,6 +31,7 @@ use crate::fake_public::{MAX_NODES_PER_SUBNET, fake_public_address, subnet_cidr}
 use crate::fake_public_v6::FakePublicV6Plan;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::pinned_image::{AMULE_KNO, EMULEQT, PinnedImage};
+use crate::verdict::Verdict;
 
 /// The flow's name in every artifact it writes.
 const FLOW: &str = "ipv6-net-accept";
@@ -148,7 +149,7 @@ pub(crate) struct BodyAcceptance {
 struct AcceptVerdict {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     skip_reason: Option<String>,
     wan_subnet_v4: String,
@@ -285,7 +286,11 @@ fn drive(bench: &mut Bench, options: &Ipv6NetAcceptOptions<'_>) -> Result<()> {
     let all_accepted = !rows.is_empty() && rows.iter().all(|row| row.classification == "accepted");
     let verdict = AcceptVerdict {
         flow: FLOW,
-        verdict: if all_accepted { "PASS" } else { "OBSERVED" },
+        verdict: if all_accepted {
+            Verdict::Pass
+        } else {
+            Verdict::Observed
+        },
         skip_reason: None,
         wan_subnet_v4: subnet_v4,
         wan_subnet_v6: plan.subnet(),
@@ -451,7 +456,7 @@ fn write_skip(
         layout,
         &AcceptVerdict {
             flow: FLOW,
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             skip_reason: Some(skip.reason.clone()),
             wan_subnet_v4: subnet_v4.to_owned(),
             wan_subnet_v6: subnet_v6.to_owned(),
@@ -465,7 +470,7 @@ fn write_verdict(layout: &RunLayout, verdict: &AcceptVerdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize ipv6-net-accept verdict")?;
     let path = layout.root().join("ipv6-net-accept-verdict.toml");
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]

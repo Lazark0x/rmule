@@ -18,6 +18,8 @@ use super::plan::{
     TCP_RECORDS, inline_misread,
 };
 
+use crate::verdict::Verdict;
+
 /// One sink dial as the verdict records it: aMule naming the endpoint it
 /// decoded out of a source record.
 #[derive(Debug, Serialize)]
@@ -45,7 +47,7 @@ pub(crate) struct WireRow {
 pub(crate) struct SentinelVerdict {
     #[serde(rename = "scenario")]
     pub(crate) flow: &'static str,
-    pub(crate) verdict: &'static str,
+    pub(crate) verdict: Verdict,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) skip_reason: Option<String>,
     /// What this verdict does and does not claim, spelled out every time so a

@@ -17,6 +17,7 @@ use crate::flow::evidence::{
     read_verdict_log,
 };
 use crate::flow::identity::{hex_lower, ipv4_string};
+use crate::verdict::Verdict;
 
 /// Judge the inversion from rmule's own tap + events log (Kad Stimulus Node
 /// doctrine: aMule's bytes are the evidence, rmule's are not).
@@ -165,11 +166,14 @@ pub(crate) fn assert_kad_inverted_keyword(
     ));
     report.push_str(&format!(
         "verdict = \"{}\"\n",
-        if search_captured { "PASS" } else { "FAIL" }
+        if search_captured {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
     ));
-    let verdict_path = layout.kad_dir().join("kad-inverted-keyword-verdict.txt");
-    fs::write(&verdict_path, &report)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    let verdict_path = layout.kad_dir().join("kad-inverted-keyword-verdict.toml");
+    crate::verdict::write(&verdict_path, &report)?;
     println!("{report}");
     println!("verdict written to {}", verdict_path.display());
 

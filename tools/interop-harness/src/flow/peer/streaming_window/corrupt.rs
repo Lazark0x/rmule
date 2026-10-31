@@ -27,6 +27,7 @@ use crate::flow::bench::{AMULE_PEER_TCP_PORT, Bench, run_checked};
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{Ed2kFrame, tcp_streams};
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT};
+use crate::verdict::Verdict;
 
 /// The verdict file this leg writes beside the flow's own.
 pub(crate) const VERDICT: &str = "peer-streaming-window-corrupt-verdict.toml";
@@ -232,10 +233,10 @@ struct Rows {
 }
 
 #[derive(Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     rows: &'a Rows,
     claim: &'a [Claim],
@@ -251,7 +252,7 @@ pub(crate) fn write(
     corrupt: &CorruptSeed,
     hash: &[u8; 16],
     copy_claim: Claim,
-) -> Result<&'static str> {
+) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let seed = topology
         .seeds
@@ -348,7 +349,7 @@ pub(crate) fn write(
         distrusted: distrusted.iter().map(role_of).collect(),
     };
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-streaming-window-corrupt",
         verdict,
         detail,
@@ -357,7 +358,7 @@ pub(crate) fn write(
     })
     .context("serialize the corrupt verdict")?;
     let path = run_dir.join(VERDICT);
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

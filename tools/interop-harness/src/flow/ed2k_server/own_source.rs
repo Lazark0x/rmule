@@ -29,6 +29,7 @@ use crate::flow::gate::wait_for_container_log;
 use crate::flow::identity::parse_ed2k_file_hash;
 use crate::flow::nat::synthetic::write_hashed;
 use crate::flow::pcap;
+use crate::verdict::{self, Verdict};
 
 /// rmule's static address on the bench network.
 const RMULE_IP: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 73);
@@ -64,7 +65,7 @@ pub struct OwnSourceOptions<'a> {
     pub capture_image: &'a str,
 }
 
-/// Run the leg and write `own-source/verdict.txt`.
+/// Run the leg and write `own-source/own-source-verdict.toml`.
 ///
 /// # Errors
 /// If a body cannot be started or a tap read.
@@ -80,7 +81,7 @@ pub fn run_own_source(options: OwnSourceOptions<'_>) -> Result<()> {
     fs::create_dir_all(&shared_dir).with_context(|| format!("create {}", shared_dir.display()))?;
     let file = write_hashed(&shared_dir, FILE_BYTES)?;
 
-    let result = (|| -> Result<String> {
+    let result = (|| -> Result<(Verdict, String)> {
         bench.create_network(options.layout, Some(SUBNET))?;
         bench.start_eserver_in_network(
             options.layout,
@@ -197,9 +198,9 @@ pub fn run_own_source(options: OwnSourceOptions<'_>) -> Result<()> {
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
-    print!("{verdict}");
+    let (verdict, report) = result?;
+    verdict::write_report(&root, "own-source", verdict, &report)?;
+    print!("verdict={verdict}\n{report}");
     Ok(())
 }
 
@@ -211,7 +212,7 @@ fn names_rmule(sources: &[u8]) -> bool {
 }
 
 /// Read both taps into the verdict.
-fn score(root: &Path, hash: &[u8; 16]) -> Result<String> {
+fn score(root: &Path, hash: &[u8; 16]) -> Result<(Verdict, String)> {
     let rmule = IpAddr::V4(RMULE_IP);
     let server = pcap::tcp_capture(&pcap::records(&root.join(SERVER_PCAP))?)?;
     let (mut answers, mut naming) = (0, 0);
@@ -236,14 +237,20 @@ fn score(root: &Path, hash: &[u8; 16]) -> Result<String> {
         .map(|open| open.source.port())
         .collect();
     // The control is one dial, so one distinct port is the control alone.
-    let verdict = match (naming, dials.len()) {
-        (_, 0) => "BLOCKED: the control's dial is not on the loopback tap",
-        (0, _) => "NOT-DRAWN: no answer named rmule",
-        (_, 1) => "PASS",
-        _ => "FAIL: rmule dialed its own listener",
+    let (verdict, reading) = match (naming, dials.len()) {
+        (_, 0) => (
+            Verdict::Blocked,
+            "the control's dial is not on the loopback tap",
+        ),
+        (0, _) => (Verdict::NotDrawn, "no answer named rmule"),
+        (_, 1) => (Verdict::Pass, "rmule left its own listener alone"),
+        _ => (Verdict::Fail, "rmule dialed its own listener"),
     };
-    Ok(format!(
-        "verdict={verdict}\nanswers={answers}\nanswers_naming_rmule={naming}\n\
-         loopback_dial_ports={dials:?}\n"
+    Ok((
+        verdict,
+        format!(
+            "{reading}\nanswers={answers}\nanswers_naming_rmule={naming}\n\
+             loopback_dial_ports={dials:?}\n"
+        ),
     ))
 }

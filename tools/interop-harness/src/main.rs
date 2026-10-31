@@ -521,6 +521,7 @@ impl HarnessCommand {
             Self::PeerUdpReaskEmitScore(args) => Some(&args.run_dir),
             Self::PeerStreamingWindowScore(args) => Some(&args.run_dir),
             Self::PeerPartialShareScore(args) => Some(&args.run_dir),
+            Self::AskBudget(args) => args.rescore.as_deref(),
             _ => None,
         }
     }
@@ -547,6 +548,10 @@ impl HarnessCommand {
                 | Self::PeerUdpReaskEmitScore(_)
                 | Self::PeerStreamingWindowScore(_)
                 | Self::PeerPartialShareScore(_)
+                | Self::AskBudget(crate::cli::ask_budget::AskBudgetArgs {
+                    rescore: Some(_),
+                    ..
+                })
         )
     }
 }

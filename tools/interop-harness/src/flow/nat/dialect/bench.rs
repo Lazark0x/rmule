@@ -29,6 +29,7 @@ use crate::flow::nat::dialect::{Ipv6Flow, WAN_SUBNET_INDEX, WAN_V6_NET};
 use crate::flow::nat::synthetic::{SyntheticFile, write_hashed};
 use crate::flow::pinned_image::{AMULE_KNO, EMULEQT};
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
+use crate::verdict::Verdict;
 
 /// Every tap records all IP traffic on the body's own attachment. A dialect
 /// exchange is TCP hello and UDP reask at once, so a protocol-narrowed filter
@@ -345,7 +346,7 @@ fn drive(bench: &mut Bench, options: &Ipv6DialectOptions<'_>) -> Result<()> {
             claim: claims,
         },
     )?;
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "{} did not hold every claim the bench can drive; see {}-verdict.toml",
             flow.name(),
@@ -748,7 +749,7 @@ fn write_skip(
         layout.root(),
         &Ipv6Verdict {
             flow: flow.name(),
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             detail: "the bench lacks a capability this flow needs; nothing was measured."
                 .to_owned(),
             note: String::new(),

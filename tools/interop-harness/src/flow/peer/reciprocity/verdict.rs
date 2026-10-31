@@ -10,6 +10,7 @@
 //! frames S sent on the connection that ask opened (ADR-0116).
 
 use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
@@ -148,10 +149,10 @@ pub(crate) struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     shape: ReciprocityShape,
     rows: &'a Rows,
@@ -163,7 +164,7 @@ struct Verdict<'a> {
 ///
 /// # Errors
 /// If the topology, a tap, the staged file or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let at: Topology = read_toml(&root.join(TOPOLOGY))?;
     let rmule_tap = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
@@ -282,7 +283,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         format!("output.bin {} bytes, equal {}", copy.1, copy.0),
     ));
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -292,7 +293,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the verdict")?;
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

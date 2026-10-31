@@ -64,7 +64,7 @@ fn kad_smoke_starts_two_stock_nodes_on_fake_public_and_reports_connected() {
 
     let runs = run_dirs(run_root.path());
     assert_eq!(runs.len(), 1);
-    let verdict = std::fs::read_to_string(runs[0].join("kad/kad-smoke-verdict.txt")).unwrap();
+    let verdict = std::fs::read_to_string(runs[0].join("kad/kad-smoke-verdict.toml")).unwrap();
     assert!(verdict.contains("kad_connected = true"), "{verdict}");
     assert!(verdict.contains("stock_amule = true"), "{verdict}");
     assert!(verdict.contains("subnet = \"203.0.113.0/24\""), "{verdict}");

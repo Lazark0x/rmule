@@ -33,6 +33,7 @@ use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERV
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
 use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, start_ed2ksrv};
 use crate::flow::pcap;
+use crate::verdict::{self, Verdict};
 
 mod udp_rounds;
 
@@ -146,7 +147,7 @@ fn hashes(count: u8) -> Vec<String> {
         .collect()
 }
 
-/// Run the leg and write `ask-budget/verdict.txt`.
+/// Run the leg and write `ask-budget/ask-budget-verdict.toml`.
 pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
     let mut bench = Bench::new(
         options.container_runtime,
@@ -281,7 +282,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
 }
 
 /// Score a retained run dir's tap again, without driving the flow, and
-/// rewrite its `ask-budget/verdict.txt`.
+/// rewrite its `ask-budget/ask-budget-verdict.toml`.
 ///
 /// # Errors
 /// If the pcap cannot be read or the verdict written.
@@ -290,11 +291,11 @@ pub fn rescore_ask_budget(run_dir: &Path, downloads: u8, view: RoundsView) -> Re
     write_verdicts(&root, &hashes(downloads), view)
 }
 
-/// Write `verdict.txt` and `udp-rounds.txt` from the taps under `root`.
+/// Write the verdict and `udp-rounds.txt` from the taps under `root`.
 fn write_verdicts(root: &Path, hashes: &[String], view: RoundsView) -> Result<()> {
-    let verdict = score(&root.join(PCAP), hashes)?;
-    fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
-    print!("{verdict}");
+    let (verdict, report) = score(&root.join(PCAP), hashes)?;
+    verdict::write_report(root, "ask-budget", verdict, &report)?;
+    print!("verdict={verdict} {report}");
     let mut datagrams = Vec::new();
     for tap in view.taps() {
         let path = root.join(tap);
@@ -319,7 +320,7 @@ fn write_verdicts(root: &Path, hashes: &[String], view: RoundsView) -> Result<()
 
 /// Read the tap: rmule's asks per hash and time, Lugdunum's answers per hash,
 /// and who closed rmule's server link first.
-fn score(pcap_path: &Path, hashes: &[String]) -> Result<String> {
+fn score(pcap_path: &Path, hashes: &[String]) -> Result<(Verdict, String)> {
     let rmule: Ipv4Addr = rmule_ip().parse()?;
     let capture = pcap::tcp_capture(&pcap::records(pcap_path)?)?;
     let hash_of = |payload: &[u8]| payload.get(..16).map(hex_upper);
@@ -393,9 +394,8 @@ fn score(pcap_path: &Path, hashes: &[String]) -> Result<String> {
         && server_closes == 0
         && links == 1;
     let mut out = format!(
-        "verdict={} asks={} distinct_hashes={} burst_within_{BURST_SECS}s={burst} \
+        "asks={} distinct_hashes={} burst_within_{BURST_SECS}s={burst} \
          sixteenth_at={} answered={answered}/{} server_closes={server_closes} rmule_links={links}\n",
-        if pass { "PASS" } else { "FAIL" },
         asks.len(),
         first_ask.len(),
         late.map_or_else(|| "none".to_owned(), |at| format!("{at:.3}")),
@@ -412,7 +412,8 @@ fn score(pcap_path: &Path, hashes: &[String]) -> Result<String> {
             answer.map_or(0, |(_, count)| *count),
         );
     }
-    Ok(out)
+    let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
+    Ok((verdict, out))
 }
 
 fn hex_upper(bytes: &[u8]) -> String {

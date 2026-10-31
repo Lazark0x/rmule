@@ -3,6 +3,8 @@
 
 use super::HelperLinks;
 
+use crate::verdict::Verdict;
+
 /// What a run saw, gathered before it is judged.
 pub(super) struct Facts<'a> {
     /// The sharing helper's address.
@@ -47,11 +49,11 @@ impl DialedLinkVerdict {
 
     /// The label the verdict file holds.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self) -> Verdict {
         match self {
-            Self::Pass => "PASS",
-            Self::Observed => "OBSERVED",
-            Self::Fail => "FAIL",
+            Self::Pass => Verdict::Pass,
+            Self::Observed => Verdict::Observed,
+            Self::Fail => Verdict::Fail,
         }
     }
 
@@ -64,7 +66,7 @@ impl DialedLinkVerdict {
             .strip_suffix('"')?;
         [Self::Pass, Self::Observed, Self::Fail]
             .into_iter()
-            .find(|verdict| verdict.label() == label)
+            .find(|verdict| verdict.label().word() == label)
     }
 }
 

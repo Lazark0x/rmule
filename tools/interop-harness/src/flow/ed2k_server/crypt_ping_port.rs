@@ -27,6 +27,7 @@ use crate::flow::bench::{
     Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT, run_checked,
 };
 use crate::flow::pcap::{records, udp_payloads, udp4_datagrams, udp4_ports};
+use crate::verdict::{self, Verdict};
 
 mod sealed;
 
@@ -59,7 +60,7 @@ pub struct CryptPingPortOptions<'a> {
     pub sealed: bool,
 }
 
-/// Run the leg and write `crypt-ping-port/verdict.txt`.
+/// Run the leg and write `crypt-ping-port/crypt-ping-port-verdict.toml`.
 pub fn run_crypt_ping_port(options: CryptPingPortOptions<'_>) -> Result<()> {
     let mut bench = Bench::new(
         options.container_runtime,
@@ -74,7 +75,7 @@ pub fn run_crypt_ping_port(options: CryptPingPortOptions<'_>) -> Result<()> {
         .collect();
     fs::write(root.join("crypt-ping.bin"), share).context("write the shared file")?;
 
-    let result = (|| -> Result<String> {
+    let result = (|| -> Result<(Verdict, String)> {
         bench.create_network(options.layout, Some(SUBNET))?;
         bench.start_eserver_in_network(
             options.layout,
@@ -145,28 +146,28 @@ pub fn run_crypt_ping_port(options: CryptPingPortOptions<'_>) -> Result<()> {
         if !logs.contains("server.connected") {
             bail!("rmule never logged in to Lugdunum");
         }
-        let mut verdict = verdict(&root.join(PCAP))?;
+        let (verdict, mut report) = verdict(&root.join(PCAP))?;
         if options.sealed {
             let datagrams = udp4_datagrams(&root.join(PCAP))?;
-            verdict.push(' ');
-            verdict.push_str(&sealed::read_sealed(&datagrams, ED2K_SERVER_PORT + 12));
+            report.push(' ');
+            report.push_str(&sealed::read_sealed(&datagrams, ED2K_SERVER_PORT + 12));
         }
-        Ok(verdict)
+        Ok((verdict, report))
     })();
 
     if result.is_err() {
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), format!("{verdict}\n")).context("write verdict")?;
-    println!("{verdict}");
+    let (verdict, report) = result?;
+    verdict::write_report(&root, "crypt-ping-port", verdict, &report)?;
+    println!("verdict={verdict} {report}");
     Ok(())
 }
 
 /// Read the tap: the crypt ping (to TCP+12), the answer to its source port,
 /// and what rmule sent the server afterwards.
-fn verdict(pcap: &std::path::Path) -> Result<String> {
+fn verdict(pcap: &std::path::Path) -> Result<(Verdict, String)> {
     let obfuscation_port = ED2K_SERVER_PORT + 12;
     let ports = udp4_ports(pcap)?;
     let payloads = udp_payloads(pcap)?;
@@ -195,17 +196,20 @@ fn verdict(pcap: &std::path::Path) -> Result<String> {
     };
     let fallback = after(0x96);
     let described = after(0xA2);
-    let outcome = if answer_port.is_some() && !fallback {
-        "ANSWERED-AND-READ"
+    let (outcome, reading) = if answer_port.is_some() && !fallback {
+        (Verdict::Pass, "ANSWERED-AND-READ")
     } else if answer_port.is_some() {
-        "ANSWERED-NOT-READ"
+        (Verdict::Fail, "ANSWERED-NOT-READ")
     } else {
-        "UNANSWERED"
+        (Verdict::Observed, "UNANSWERED")
     };
-    Ok(format!(
-        "verdict={outcome} ping_bytes={} answer_from_port={} plain_fallback_within_25s={fallback} \
-         description_request={described}",
-        ping.len(),
-        answer_port.map_or_else(|| "none".to_owned(), |port| port.to_string()),
+    Ok((
+        outcome,
+        format!(
+            "{reading} ping_bytes={} answer_from_port={} plain_fallback_within_25s={fallback} \
+             description_request={described}",
+            ping.len(),
+            answer_port.map_or_else(|| "none".to_owned(), |port| port.to_string()),
+        ),
     ))
 }

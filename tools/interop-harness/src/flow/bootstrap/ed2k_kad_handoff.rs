@@ -222,11 +222,10 @@ pub fn run_ed2k_kad_handoff(options: Ed2kKadHandoffOptions<'_>) -> Result<()> {
             if joined { "\"PASS\"" } else { "\"FAIL\"" },
             observed.replace('"', "'")
         );
-        fs::write(
-            options.layout.root().join("ed2k-kad-handoff-verdict.toml"),
+        crate::verdict::write(
+            &options.layout.root().join("ed2k-kad-handoff-verdict.toml"),
             &verdict,
-        )
-        .context("write ed2k-kad-handoff verdict")?;
+        )?;
         println!("{observed}");
         println!("ed2k-kad-handoff joined={joined}");
 

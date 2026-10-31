@@ -8,6 +8,7 @@ use super::{Addresses, BYTE_EQUAL, DIALED, NO_DIRECT_DIAL, Observed, RELAYED, cl
 use crate::fixture::{at, frame, open};
 use crate::flow::nat::claims::{Claim, label};
 use crate::flow::pcap::Ed2kFrame;
+use crate::verdict::Verdict;
 
 const RMULE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 70);
 const DOWNLOADER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 31);
@@ -97,7 +98,7 @@ fn outcome<'a>(claims: &'a [Claim], name: &str) -> &'a str {
 #[test]
 fn the_relayed_dial_back_that_carried_the_file_passes() {
     let (claims, rows) = claims(&addresses(), &passing());
-    assert_eq!(label(&claims).0, "PASS", "{claims:#?}");
+    assert_eq!(label(&claims).0, Verdict::Pass, "{claims:#?}");
     assert_eq!(rows.rmule_id, i64::from(LOW_ID));
     assert_eq!(rows.relayed_requester, requester().to_string());
     assert!(!rows.relay_carried_crypt_extension);
@@ -121,7 +122,7 @@ fn a_relay_rmule_never_answered_fails() {
     assert_eq!(outcome(&claims, RELAYED), "held");
     assert_eq!(outcome(&claims, DIALED), "absent");
     assert_eq!(outcome(&claims, BYTE_EQUAL), "absent");
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
 }
 
 /// A downloader that reached rmule's listener directly means the forced Low ID
@@ -160,5 +161,5 @@ fn an_obfuscated_dialed_link_blocks_its_link_claims() {
         outcome(&claims, "rmule-spoke-first-on-the-dialed-link"),
         "blocked"
     );
-    assert_eq!(label(&claims).0, "OBSERVED");
+    assert_eq!(label(&claims).0, Verdict::Observed);
 }

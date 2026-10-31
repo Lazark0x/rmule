@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 use std::net::Ipv4Addr;
 
 use crate::flow::pcap::Udp4Datagram;
+use crate::verdict::Verdict;
 
 /// eD2k's server protocol byte.
 const OP_EDONKEYPROT: u8 = 0xE3;
@@ -109,7 +110,7 @@ pub(super) fn score(
         "udp_rounds={} taps={} servers_asked={} datagrams={} ask_datagrams={} \
          sealed_asks={sealed} plain_pings={pings} min_gap_secs={} \
          files_to_busiest_server={most}\n",
-        if pass { "PASS" } else { "FAIL" },
+        if pass { Verdict::Pass } else { Verdict::Fail },
         taps.join("+"),
         per_server.len(),
         ours.len(),

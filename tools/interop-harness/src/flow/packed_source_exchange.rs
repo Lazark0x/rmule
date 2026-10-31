@@ -20,6 +20,7 @@ use crate::flow::bench::{AMULE_PEER_TCP_PORT, Bench, Eserver, run_checked};
 use crate::flow::gate::wait_for_container_log;
 use crate::flow::logs::{collect_amule_logs, retain_artifact};
 use crate::rmule::{Registrant, RmuleClientContainer};
+use crate::verdict::Verdict;
 
 /// A user-defined subnet so each registrant gets a **distinct static IP**:
 /// Lugdunum assigns High-ID per source IP and Low-IDs (then drops, ADR-0040)
@@ -329,9 +330,9 @@ struct PackedSxVerdict {
 
 fn write_packed_sx_verdict(layout: &RunLayout, verdict: &PackedSxVerdict) -> Result<()> {
     let verdict_label = if verdict.answer_packed {
-        "PASS"
+        Verdict::Pass
     } else {
-        "FAIL"
+        Verdict::Fail
     };
     let text = format!(
         "scenario = \"packed-source-exchange\"\n\
@@ -354,7 +355,7 @@ fn write_packed_sx_verdict(layout: &RunLayout, verdict: &PackedSxVerdict) -> Res
         verdict_label,
     );
     let path = layout.root().join("packed-source-exchange-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     println!(
         "packed-source-exchange verdict written to {}",

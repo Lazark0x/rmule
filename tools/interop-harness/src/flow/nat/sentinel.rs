@@ -25,12 +25,12 @@ pub(crate) mod plan;
 pub(crate) mod verdict;
 
 use std::ffi::OsString;
-use std::fs;
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
 use crate::artifacts::RunLayout;
+use crate::verdict::Verdict;
 
 pub use self::legacy::LegacyDrive;
 use self::legacy::LegacyObservation;
@@ -131,7 +131,7 @@ fn assemble(
     container_runtime: &str,
     reader_probe: &[String],
     reader_lines: Vec<String>,
-    gate_label: &'static str,
+    gate_label: Verdict,
     skip_reason: Option<String>,
     observation: Option<LegacyObservation>,
 ) -> SentinelVerdict {
@@ -171,9 +171,9 @@ fn assemble(
 
     let judged = judge_legacy(&observation);
     let overall = match judged.label {
-        "STRIDE-MISREAD" => "PASS",
-        "UNEXPECTED-READ" => "FAIL",
-        _ => "OBSERVED",
+        "STRIDE-MISREAD" => Verdict::Pass,
+        "UNEXPECTED-READ" => Verdict::Fail,
+        _ => Verdict::Observed,
     };
     SentinelVerdict {
         flow: FLOW,
@@ -243,12 +243,12 @@ fn announce(verdict: &SentinelVerdict) {
 /// The gate's whole decision, pulled out of the I/O so it is unit-testable
 /// without a [`RunLayout`]: `present` (already measured by [`probe_reader`])
 /// picks `PASS` with no skip reason, or `SKIPPED` naming `detail`.
-fn gate(present: bool, detail: &str) -> (&'static str, Option<String>) {
+fn gate(present: bool, detail: &str) -> (Verdict, Option<String>) {
     if present {
-        return ("PASS", None);
+        return (Verdict::Pass, None);
     }
     (
-        "SKIPPED",
+        Verdict::Skipped,
         Some(format!(
             "the sentinel-safe reader could not be confirmed present: {detail}. Standing the \
              topology up without it would record 'rmule did not parse the sentinel' for a \
@@ -305,7 +305,7 @@ fn write_verdict(layout: &RunLayout, verdict: &SentinelVerdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize sentinel verdict")?;
     let path = layout.root().join("sentinel-sources-legacy-verdict.toml");
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn a_present_reader_passes_the_gate_with_no_skip_reason() {
         let (verdict, skip_reason) = gate(true, "`rmule-tools ed2k sentinel-probe` succeeded");
-        assert_eq!(verdict, "PASS");
+        assert_eq!(verdict, Verdict::Pass);
         assert!(skip_reason.is_none(), "a PASS names no skip reason");
     }
 
@@ -325,7 +325,7 @@ mod tests {
             false,
             "no --sentinel-reader-probe configured on this branch",
         );
-        assert_eq!(verdict, "SKIPPED");
+        assert_eq!(verdict, Verdict::Skipped);
         let reason = skip_reason.expect("an absent reader must name why");
         assert!(
             reason.contains("no --sentinel-reader-probe configured on this branch"),
@@ -363,8 +363,8 @@ mod tests {
     #[test]
     fn a_gate_only_verdict_says_the_legacy_leg_did_not_run() {
         let probe = vec!["true".to_owned()];
-        let verdict = assemble("docker", &probe, Vec::new(), "PASS", None, None);
-        assert_eq!(verdict.verdict, "PASS");
+        let verdict = assemble("docker", &probe, Vec::new(), Verdict::Pass, None, None);
+        assert_eq!(verdict.verdict, Verdict::Pass);
         assert_eq!(verdict.legacy_leg, "NOT-RUN");
         assert!(
             verdict.note.contains("legacy leg was NOT run"),

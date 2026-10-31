@@ -53,6 +53,7 @@ use crate::flow::kad_buddy::callback::{DOWNLOADER_PCAP, Judged};
 use crate::flow::kad_buddy::core::KAD_CORE_BUDDY_RMULE_KAD_ID;
 use crate::flow::pcap::{tcp4_syns, udp4_datagrams};
 use crate::flow::wire_filter::{OP_EMULEPROT, WireFilter, lift_ed2k_frames};
+use crate::verdict::Verdict;
 
 /// Stock helpers the stock buddy's world needs: its second TCP tester and
 /// two fresh UDP helpers.
@@ -258,7 +259,7 @@ pub(crate) fn judge(judged: &Judged<'_>, downloader_dir: &Path, downloader_v4: &
     let mut out = format!(
         "# kad-core-buddy --stock-buddy: rmule's reading of a stock row through a stock relay.\n\
          verdict = \"{}\"\n",
-        if pass { "PASS" } else { "FAIL" }
+        if pass { Verdict::Pass } else { Verdict::Fail }
     );
     for (key, seen) in [("request_0x52", &requests), ("relay_0x99", &relays)] {
         for (index, (at, check)) in seen.iter().enumerate() {
@@ -283,7 +284,7 @@ pub(crate) fn judge(judged: &Judged<'_>, downloader_dir: &Path, downloader_v4: &
         writeln!(out, "\"{name}\" = {holds}")?;
     }
     let path = judged.layout.kad_dir().join("kad-stock-buddy-verdict.toml");
-    fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &out)?;
     println!("kad-stock-buddy verdict={}", pass);
     if !pass {
         let failing: Vec<&str> = claims

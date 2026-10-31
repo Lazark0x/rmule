@@ -18,6 +18,7 @@ use crate::flow::bench::{Bench, Eserver};
 use crate::flow::bootstrap::AMULE_CONFIG_DIR;
 use crate::flow::evidence::{flush_golden_files, read_flushed_golden};
 use crate::flow::mesh::KAD_CONTACT_VERSION;
+use crate::verdict::Verdict;
 
 /// Options for [`run_http_bootstrap_goldens`] (flow H).
 pub struct HttpBootstrapGoldensOptions<'a> {
@@ -60,7 +61,7 @@ pub struct HttpBootstrapGoldensOptions<'a> {
 /// `nodes.dat` cannot be harvested from an eD2k-only aMule (it never runs Kad,
 /// so it writes none) and harvesting one needs a ≥25-contact swarm spanning ≥3
 /// `/24`s. The v2 hole and the missing rmule HTTP-consumption
-/// runner are recorded in `http-bootstrap-goldens-report.toml`.
+/// runner are recorded in `http-bootstrap-goldens-verdict.toml`.
 ///
 /// Success here = the aMule-authored `server.met` golden exists and the fixture
 /// payload is assembled. The full cold-start (fresh rmule fetches both over
@@ -215,15 +216,23 @@ fn write_http_bootstrap_report(
          # nodes.dat over HTTP, connects, and Kad-joins; the full cold start runs green via the\n\
          # `http-bootstrap-cold-start` subcommand (flow H). This subcommand authors the goldens\n\
          # half; the cold-start subcommand runs the consumption half end to end.\n\
-         verdict = \"{}\"\n",
-        match (server_met_authored, server_met_populated) {
-            (true, true) => "PARTIAL-golden-populated",
-            (true, false) => "PARTIAL-golden-authored-empty",
-            (false, _) => "FAIL",
+         verdict = \"{}\"\n\
+         reading = \"{}\"\n",
+        if server_met_authored {
+            Verdict::Observed
+        } else {
+            Verdict::Fail
+        },
+        if !server_met_authored {
+            "no-golden"
+        } else if server_met_populated {
+            "golden-populated"
+        } else {
+            "golden-authored-empty"
         },
     );
-    let path = layout.root().join("http-bootstrap-goldens-report.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    let path = layout.root().join("http-bootstrap-goldens-verdict.toml");
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     println!(
         "http-bootstrap-goldens report written to {}",

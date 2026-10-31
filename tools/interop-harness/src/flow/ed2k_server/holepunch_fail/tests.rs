@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use super::{GHOST_LOW_ID, claims};
 use crate::flow::nat::claims::label;
 use crate::flow::pcap::Ed2kFrame;
+use crate::verdict::Verdict;
 
 fn server() -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 200), 4661))
@@ -52,7 +53,7 @@ fn refusal(when: f64, to: SocketAddr, reason: u8) -> Ed2kFrame {
 fn a_refusal_naming_the_ghost_as_not_connected_passes_and_is_cut_whole() {
     let frames = vec![request(1.0), refusal(1.1, probe(50_000), 1)];
     let (claims, rows, cut) = claims(server(), &frames);
-    assert_eq!(label(&claims).0, "PASS", "{claims:#?}");
+    assert_eq!(label(&claims).0, Verdict::Pass, "{claims:#?}");
     assert_eq!((rows.reason, rows.refusal_frame_bytes), (1, 11));
     assert_eq!(cut.map(|f| f.bytes.clone()), Some(frames[1].bytes.clone()));
 }
@@ -61,7 +62,7 @@ fn a_refusal_naming_the_ghost_as_not_connected_passes_and_is_cut_whole() {
 fn a_server_that_answers_nothing_fails_and_cuts_nothing() {
     let frames = vec![request(1.0)];
     let (claims, rows, cut) = claims(server(), &frames);
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
     assert_eq!(rows.reason, -1);
     assert!(cut.is_none());
 }
@@ -73,8 +74,8 @@ fn only_the_askers_refusal_counts_and_its_reason_is_read() {
     let elsewhere = [request(1.0), refusal(1.1, probe(50_001), 1)];
     let (found, _, cut) = claims(server(), &elsewhere);
     assert!(cut.is_none());
-    assert_eq!(label(&found).0, "FAIL");
+    assert_eq!(label(&found).0, Verdict::Fail);
     let (found, rows, _) = claims(server(), &[request(1.0), refusal(1.1, probe(50_000), 4)]);
     assert_eq!(rows.reason, 4);
-    assert_eq!(label(&found).0, "FAIL");
+    assert_eq!(label(&found).0, Verdict::Fail);
 }

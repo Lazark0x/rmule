@@ -9,6 +9,7 @@
 //! part size, the 43-minute wait a part no seed holds.
 
 use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::net::Ipv4Addr;
@@ -91,10 +92,10 @@ pub(crate) struct SeedRow {
 }
 
 #[derive(Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     file_size: u64,
     part_count: u32,
@@ -124,7 +125,7 @@ struct Verdict<'a> {
 ///
 /// # Errors
 /// If an artifact cannot be read or the verdict cannot be written.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let topology: TopologyFile = read_toml(&root.join(TOPOLOGY_FILE))?;
     let file_hash = topology
@@ -202,7 +203,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
             .find(|seed| seed.ip == ip)
             .map_or_else(|| ip.to_string(), |seed| seed.role.clone())
     };
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -253,7 +254,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the streaming-window verdict")?;
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("peer_streaming_window verdict={verdict}");
     // A corrupt seed's run is that leg's measurement: its verdict is the run's.
     if let Some(seed) = &topology.corrupt {

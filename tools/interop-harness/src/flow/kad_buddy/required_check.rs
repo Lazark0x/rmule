@@ -434,7 +434,7 @@ fn assert_kad_required_check(
         ));
     }
     let path = layout.kad_dir().join("kad-required-check-verdict.toml");
-    fs::write(&path, &toml).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &toml)?;
     println!(
         "kad-required-check peer_crypt={peer_crypt} verdict={} {last_verdicts}",
         verdict.label()

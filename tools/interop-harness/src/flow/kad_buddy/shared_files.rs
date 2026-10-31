@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 use crate::artifacts::RunLayout;
 use crate::flow::pcap::udp4_datagrams;
 use crate::rmule::CONTAINER_RUN_ROOT;
+use crate::verdict::Verdict;
 
 /// A staged file's size, plus its index so no two share a hash.
 const FILE_BYTES: usize = 1024;
@@ -139,7 +140,7 @@ pub(crate) fn write(layout: &RunLayout, pcap: &Path, rmule: Ipv4Addr, count: usi
         "scenario = \"kad-core-buddy-shared-files\"\nverdict = \"{}\"\nshared_files = {count}\n\
          req_0x21_sent = {sent}\npeak_0x21_per_minute_to_one_address = {peak}\n\
          flood_lines_0x21 = {floods}\ntracking_category_on = {spoke}\n",
-        if pass { "PASS" } else { "FAIL" },
+        if pass { Verdict::Pass } else { Verdict::Fail },
     );
     for (role, lines, on) in &nodes {
         writeln!(out, "# {role}: flood lines {lines}, category on {on}")?;
@@ -148,7 +149,7 @@ pub(crate) fn write(layout: &RunLayout, pcap: &Path, rmule: Ipv4Addr, count: usi
         writeln!(out, "# {to}: peak {peak} a minute")?;
     }
     let path = layout.kad_dir().join("kad-shared-files-verdict.toml");
-    fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &out)?;
     print!("{out}");
     Ok(())
 }

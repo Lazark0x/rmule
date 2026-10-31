@@ -59,6 +59,7 @@ use crate::flow::mesh::{
 };
 use crate::flow::wire_filter::{OP_EDONKEYPROT, WireFilter};
 use crate::rmule::{RMULE_SERVE_TCP_PORT, RmuleServeContainer};
+use crate::verdict::Verdict;
 
 /// The firewalled aMule's pinned Kad ID for flow N. Distance does not matter
 /// here (no search converges on anyone), but pinning both IDs keeps the seeded
@@ -389,11 +390,11 @@ fn assert_kad_direct_callback(
     let kad_in = count("amule_kad_datagrams_in_rmule_tap");
 
     let verdict = if dial_in > 0 {
-        "PASS"
+        Verdict::Pass
     } else if serving && tcp_fw && callback_out > 0 {
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let mut verdict_toml =
@@ -434,14 +435,13 @@ fn assert_kad_direct_callback(
          # support (BaseClient.cpp:1500), which this topology does not drive.\n",
     );
     let verdict_path = layout.kad_dir().join("kad-direct-callback-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-direct-callback verdict={verdict} 0x95_out={callback_out} dial_in={dial_in} \
          hello_in={hello_in} reverse_0x95_in={reverse_in} kad_in={kad_in}"
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "flow N did not stand up: amule_tcp_firewall_installed={tcp_fw}, \
              rmule_serving_started={serving}, \

@@ -16,7 +16,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::artifacts::RunLayout;
-use crate::flow::nat::claims::GATEWAYS_PROBED_AS_CLAIMED;
+use crate::flow::nat::claims::{GATEWAYS_PROBED_AS_CLAIMED, weakest};
 use crate::flow::nat::portmap::gateway::GatewayRecord;
 use crate::flow::nat::portmap::helper::KadHelperWire;
 use crate::flow::nat::portmap::link_local::PcpSources;
@@ -24,6 +24,7 @@ use crate::flow::nat::portmap::row::DriverRow;
 use crate::flow::nat::portmap::{DRIVER_LAN_ADDRESS, PEER_TCP_PORT, PortMapFlow, UDP_PORT};
 use crate::flow::taps::TapRow;
 use crate::nat::NatTypeProof;
+use crate::verdict::Verdict;
 
 /// The flow's verdict file.
 #[derive(Debug, Serialize)]
@@ -31,7 +32,7 @@ pub(crate) struct PortMapVerdict {
     #[serde(rename = "scenario")]
     pub(crate) flow: &'static str,
     /// `PASS`, `OBSERVED`, `SKIPPED` or `FAIL`.
-    pub(crate) verdict: &'static str,
+    pub(crate) verdict: Verdict,
     /// What the label means for this run, in one sentence per claim.
     pub(crate) detail: String,
     /// Present only on a skip.
@@ -134,7 +135,7 @@ pub(crate) fn judge(
     kad_wire: Option<&KadHelperWire>,
     sources: Option<&PcpSources>,
     driver_log: &str,
-) -> (&'static str, String, Vec<Claim>) {
+) -> (Verdict, String, Vec<Claim>) {
     let mut claims = vec![gateway_claim(proof)];
     claims.extend(match flow {
         PortMapFlow::HighId | PortMapFlow::NatPmp => high_id_claims(flow, gateway, rmule, kad_wire),
@@ -163,13 +164,7 @@ pub(crate) fn judge(
         .iter()
         .filter(|claim| claim.outcome == "blocked")
         .count();
-    let verdict = if absent > 0 {
-        "FAIL"
-    } else if blocked > 0 {
-        "OBSERVED"
-    } else {
-        "PASS"
-    };
+    let verdict = weakest(claims.iter().map(|claim| claim.outcome));
     let detail = format!(
         "{} claims: {} held, {blocked} blocked (undriveable, named in `claim`), {absent} absent.",
         claims.len(),
@@ -685,7 +680,7 @@ pub(crate) fn write(layout: &RunLayout, verdict: &PortMapVerdict) -> Result<()> 
     for claim in &verdict.claim {
         println!("  {} {} — {}", claim.outcome, claim.name, claim.note);
     }
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }
 
 #[cfg(test)]

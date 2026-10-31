@@ -15,6 +15,7 @@
 //! obfuscated dial completes and carries both files.
 
 use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -92,10 +93,10 @@ struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     rows: &'a Rows,
     claim: &'a [Claim],
@@ -141,7 +142,7 @@ fn first_link(capture: &TcpCapture, rmule: IpAddr, peer: SocketAddr) -> (usize, 
 ///
 /// # Errors
 /// If the addresses, the tap, the staged files or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let at: SilentAddresses = read_toml(&root.join(SILENT_ADDRESSES))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
@@ -225,7 +226,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         ),
     ];
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-one-link-silent",
         verdict,
         detail,
@@ -233,7 +234,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         claim: &claims,
     })
     .context("serialize the silent verdict")?;
-    fs::write(run_dir.join(VERDICT), &text).context("write the silent verdict")?;
+    crate::verdict::write(&run_dir.join(VERDICT), &text)?;
     println!("{text}");
     Ok(verdict)
 }

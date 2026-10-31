@@ -51,6 +51,7 @@ use crate::flow::wire_filter::{
     OP_EDONKEYPROT, OP_EMULEPROT, WireFilter, lift_ed2k_frames, link_script,
     refuse_segment_payload, streams_from,
 };
+use crate::verdict::Verdict;
 
 /// The downloader's user hash: fixed so a hello and a verdict name one value.
 const HASH_DOWNLOADER: &str = "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d";
@@ -433,7 +434,7 @@ impl CallbackLeg {
             ),
         ];
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
 
         let mut out = String::from(
             "# Flow M's third party (kad-core-buddy --callback-downloader): ADR-0061 route 4 against a live\n\
@@ -477,7 +478,7 @@ impl CallbackLeg {
             .layout
             .kad_dir()
             .join("kad-buddy-callback-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-buddy-callback verdict={verdict} routed={routed}");
         if !pass {
             let failing: Vec<&str> = claims

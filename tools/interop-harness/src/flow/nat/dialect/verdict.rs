@@ -6,7 +6,6 @@
 //! file's shape: the dual-stack WAN it names, the bodies and their pins, and
 //! the **Per-Attachment Taps**.
 
-use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -14,6 +13,7 @@ use serde::Serialize;
 
 pub(crate) use crate::flow::nat::claims::{Body, Claim, DriverRow, Evidence, label};
 use crate::flow::taps::TapRow;
+use crate::verdict::Verdict;
 
 /// The flow's verdict file.
 #[derive(Debug, Serialize)]
@@ -21,7 +21,7 @@ pub(crate) struct Ipv6Verdict {
     #[serde(rename = "scenario")]
     pub(crate) flow: &'static str,
     /// `PASS`, `OBSERVED`, `SKIPPED` or `FAIL`.
-    pub(crate) verdict: &'static str,
+    pub(crate) verdict: Verdict,
     /// What the label means for this run.
     pub(crate) detail: String,
     /// The standing note a reader needs to interpret the row at all — the
@@ -57,5 +57,5 @@ pub(crate) fn write(run_root: &Path, verdict: &Ipv6Verdict) -> Result<()> {
     let text = toml::to_string_pretty(verdict).context("serialize the IPv6 dialect verdict")?;
     let path = run_root.join(format!("{}-verdict.toml", verdict.flow));
     println!("{text}");
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+    crate::verdict::write(&path, &text)
 }

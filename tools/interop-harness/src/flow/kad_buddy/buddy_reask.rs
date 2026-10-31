@@ -50,6 +50,7 @@ use crate::flow::kad_buddy::callback::{
 };
 use crate::flow::logs::collect_kad_logs;
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT, WireFilter};
+use crate::verdict::Verdict;
 
 /// The downloader's user hash and Kad ID: far from the file key and from
 /// the buddy target, so it is neither a storer nor a recruit candidate.
@@ -458,7 +459,7 @@ impl ReaskLeg {
             ),
         ];
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
 
         let mut out = String::from(
             "# Flow M's buddy reask leg (kad-core-buddy --buddy-reask): a queued downloader that\n\
@@ -505,7 +506,7 @@ impl ReaskLeg {
             out.push_str(&format!("{key} = {count} # {label}\n"));
         }
         let path = judged.layout.kad_dir().join("kad-buddy-reask-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-buddy-reask verdict={verdict}");
         if !pass {
             let failing: Vec<&str> = claims

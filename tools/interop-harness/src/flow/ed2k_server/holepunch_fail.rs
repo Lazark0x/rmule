@@ -27,6 +27,7 @@ use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{Ed2kFrame, TcpStream, records, tcp_capture};
 use crate::flow::wire_filter::OP_EDONKEYPROT;
 use crate::rmule::{ProbeAsks, RmuleClientContainer};
+use crate::verdict::Verdict;
 
 /// The flow's name and its verdict file's stem.
 pub(crate) const FLOW: &str = "ed2ksrv-holepunch-fail";
@@ -179,10 +180,10 @@ pub(crate) struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     ed2ksrv_pin: &'a str,
     rows: &'a Rows,
@@ -194,7 +195,7 @@ struct Verdict<'a> {
 ///
 /// # Errors
 /// If the tap is missing or unreadable — a broken run, never a zero.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let capture = tcp_capture(&records(&root.join(SERVER_PCAP))?)?;
     let frames: Vec<Ed2kFrame> = capture
@@ -213,7 +214,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     }
     let pin = fs::read_to_string(root.join("ed2ksrv-pin.txt")).unwrap_or_default();
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -223,7 +224,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the verdict")?;
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

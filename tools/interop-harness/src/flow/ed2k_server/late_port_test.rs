@@ -22,6 +22,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, run_checked};
 use crate::flow::gate::wait_for_container_log;
+use crate::verdict::{self, Verdict};
 
 /// Lugdunum's no-answer give-up, measured, plus margin: the delay must beat it.
 pub const DEFAULT_HELLO_DELAY_MS: u64 = 14_000;
@@ -51,7 +52,7 @@ pub struct LatePortTestOptions<'a> {
     pub hello_delay_ms: u64,
 }
 
-/// Run the leg and write `late-port-test/verdict.txt`.
+/// Run the leg and write `late-port-test/late-port-test-verdict.toml`.
 pub fn run_late_port_test(options: LatePortTestOptions<'_>) -> Result<()> {
     let mut bench = Bench::new(
         options.container_runtime,
@@ -66,7 +67,7 @@ pub fn run_late_port_test(options: LatePortTestOptions<'_>) -> Result<()> {
         .collect();
     fs::write(root.join("late-port-test.bin"), share).context("write the shared file")?;
 
-    let result = (|| -> Result<String> {
+    let result = (|| -> Result<(Verdict, String)> {
         bench.create_network(options.layout, None)?;
         bench.start_eserver_in_network(
             options.layout,
@@ -146,15 +147,15 @@ pub fn run_late_port_test(options: LatePortTestOptions<'_>) -> Result<()> {
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), format!("{verdict}\n")).context("write verdict")?;
-    println!("{verdict}");
+    let (verdict, report) = result?;
+    verdict::write_report(&root, "late-port-test", verdict, &report)?;
+    println!("verdict={verdict} {report}");
     Ok(())
 }
 
 /// PASS when the login was answered with the window closed and no test, and
 /// the late test was then refused.
-fn verdict(log: &str) -> Result<String> {
+fn verdict(log: &str) -> Result<(Verdict, String)> {
     let answered_without = log
         .lines()
         .any(|line| line.contains("step=port_test_window_closed arrived=no"));
@@ -163,12 +164,15 @@ fn verdict(log: &str) -> Result<String> {
     };
     let refused = late.contains("admission=refused");
     let outcome = if answered_without && refused {
-        "PASS"
+        Verdict::Pass
     } else {
-        "FAIL"
+        Verdict::Fail
     };
-    Ok(format!(
-        "verdict={outcome} window_closed_without_test={answered_without} late_refused={refused} line=\"{}\"",
-        late.trim()
+    Ok((
+        outcome,
+        format!(
+            "window_closed_without_test={answered_without} late_refused={refused} line=\"{}\"",
+            late.trim()
+        ),
     ))
 }

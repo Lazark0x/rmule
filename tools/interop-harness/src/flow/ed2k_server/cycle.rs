@@ -20,6 +20,7 @@ use crate::flow::evidence::verify_bytes;
 use crate::rmule::{
     RmuleClientContainer, run_rmule_download_in_container, run_rmule_search_in_container,
 };
+use crate::verdict::Verdict;
 
 /// Options for the server-cycle acceptance flow (flow A). One
 /// eserver plus one aMule sharing the synthetic file; rmule then runs the four
@@ -237,10 +238,14 @@ fn write_server_cycle_verdict(layout: &RunLayout, verdict: &ServerCycleVerdict) 
             .map(|id| id.to_string())
             .unwrap_or_else(|| "none".to_owned()),
         verdict.download_completed,
-        if all_pass { "PASS" } else { "FAIL" },
+        if all_pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        },
     );
     let path = layout.root().join("server-cycle-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     println!("server-cycle verdict written to {}", path.display());
     Ok(())

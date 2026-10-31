@@ -25,6 +25,7 @@ use crate::flow::mesh::{
     KAD_CONTACT_VERSION, KAD_NETWORK_SUBNET, KAD_RMULE_IP, KAD_RMULE_KAD_ID, KAD_RMULE_UDP_PORT,
     KAD_STORER_IP, KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec, start_kad_node,
 };
+use crate::verdict::Verdict;
 
 /// Options for [`run_kad_join`] beyond the shared Kad capture options.
 pub struct KadJoinOptions<'a> {
@@ -318,11 +319,14 @@ fn assert_kad_join_acceptance(layout: &RunLayout, hub_udp_port: u16) -> Result<(
     report.push_str(&format!("amule_to_rmule_opcodes = {inbound_opcodes:?}\n"));
     report.push_str(&format!(
         "verdict = \"{}\"\n",
-        if verdict_pass { "PASS" } else { "FAIL" }
+        if verdict_pass {
+            Verdict::Pass
+        } else {
+            Verdict::Fail
+        }
     ));
-    let verdict_path = layout.kad_dir().join("kad-join-verdict.txt");
-    fs::write(&verdict_path, &report)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    let verdict_path = layout.kad_dir().join("kad-join-verdict.toml");
+    crate::verdict::write(&verdict_path, &report)?;
     println!("{report}");
     println!("verdict written to {}", verdict_path.display());
 

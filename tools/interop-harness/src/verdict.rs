@@ -7,7 +7,7 @@
 
 use std::fmt;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use serde::{Serialize, Serializer};
@@ -84,43 +84,58 @@ impl Serialize for Verdict {
     }
 }
 
-/// The file `flow`'s verdict lands in under `dir`.
-#[must_use]
-pub fn path(dir: &Path, flow: &str) -> PathBuf {
-    dir.join(format!("{flow}-verdict.toml"))
-}
-
-/// Write `body` as `flow`'s verdict file under `dir`, and return its path.
+/// Write the rendered verdict `text` to `path`: the one way a verdict reaches a
+/// run dir.
 ///
 /// # Errors
-/// If `body` does not serialize to a TOML table holding a known `verdict`, or
-/// the file cannot be written.
-pub fn write(dir: &Path, flow: &str, body: &impl Serialize) -> Result<PathBuf> {
-    let text =
-        toml::to_string_pretty(body).with_context(|| format!("serialize {flow}'s verdict"))?;
-    write_rendered(dir, flow, &text)
-}
-
-/// Write `flow`'s verdict file from TOML text a scorer renders by hand, for the
-/// comments it carries; the text meets the same checks as a typed body.
-///
-/// # Errors
-/// If `text` is not TOML holding a known `verdict`, or the file cannot be
-/// written.
-pub fn write_rendered(dir: &Path, flow: &str, text: &str) -> Result<PathBuf> {
+/// If `path` is not a `*-verdict.toml`, `text` is not TOML holding a known
+/// `verdict`, or the file cannot be written.
+pub fn write(path: &Path, text: &str) -> Result<()> {
+    if !is_verdict_file(path) {
+        bail!("{} is no verdict file's name", path.display());
+    }
     let table: toml::Table = text
         .parse()
-        .with_context(|| format!("{flow}'s verdict is not TOML"))?;
+        .with_context(|| format!("{} is not TOML", path.display()))?;
     let Some(word) = table.get("verdict").and_then(toml::Value::as_str) else {
-        bail!("{flow}'s verdict holds no `verdict` word");
+        bail!("{} holds no `verdict` word", path.display());
     };
     if Verdict::from_word(word).is_none() {
-        bail!("{flow}'s verdict reads `{word}`, which is no verdict");
+        bail!("{} reads `{word}`, which is no verdict", path.display());
     }
-    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let path = path(dir, flow);
-    fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
-    Ok(path)
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    fs::write(path, text).with_context(|| format!("write {}", path.display()))
+}
+
+/// The body of a verdict whose evidence reads as a scorer's lines of prose.
+#[derive(Serialize)]
+struct Report<'a> {
+    scenario: &'a str,
+    verdict: Verdict,
+    report: &'a str,
+}
+
+/// Write `flow`'s `<dir>/<flow>-verdict.toml` from `verdict` and its `report`.
+///
+/// # Errors
+/// As [`write`].
+pub fn write_report(dir: &Path, flow: &str, verdict: Verdict, report: &str) -> Result<()> {
+    let body = Report {
+        scenario: flow,
+        verdict,
+        report,
+    };
+    let text =
+        toml::to_string_pretty(&body).with_context(|| format!("serialize {flow}'s verdict"))?;
+    write(&dir.join(format!("{flow}-verdict.toml")), &text)
+}
+
+fn is_verdict_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with("-verdict.toml"))
 }
 
 /// Every verdict file under `dir`, in no set order. `None` stands for a file
@@ -141,11 +156,7 @@ fn collect(dir: &Path, found: &mut Vec<Option<Verdict>>) {
         let path = entry.path();
         if path.is_dir() {
             collect(&path, found);
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("-verdict.toml"))
-        {
+        } else if is_verdict_file(&path) {
             found.push(read(&path));
         }
     }
@@ -158,23 +169,22 @@ fn read(path: &Path) -> Option<Verdict> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Verdict, found_under, write, write_rendered};
+    use super::{Verdict, found_under, write, write_report};
 
-    #[derive(serde::Serialize)]
-    struct Body {
-        verdict: &'static str,
-    }
-
-    /// The writer stops at what the Run Record could not read back: a foreign
-    /// word, no word, and text that is not TOML (a repeated key among them).
+    /// The writer stops at what the Run Record could not read back: another
+    /// file name, a foreign word, no word, and text that is not TOML (a
+    /// repeated key among them).
     #[test]
     fn the_writer_refuses_what_could_not_be_read_back() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(write(dir.path(), "a", &Body { verdict: "GREEN" }).is_err());
-        assert!(write_rendered(dir.path(), "a", "claims = 3\n").is_err());
-        assert!(write_rendered(dir.path(), "a", "verdict = \"PASS\"\nx = 1\nx = 2\n").is_err());
+        let path = dir.path().join("a-verdict.toml");
+        let bad = |text: &str| assert!(write(&path, text).is_err(), "{text}");
+        assert!(write(&dir.path().join("verdict.txt"), "verdict = \"PASS\"\n").is_err());
+        bad("verdict = \"GREEN\"\n");
+        bad("claims = 3\n");
+        bad("verdict = \"PASS\"\nx = 1\nx = 2\n");
         assert!(found_under(dir.path()).is_empty());
-        write(dir.path(), "a", &Body { verdict: "NOT-RUN" }).unwrap();
+        write_report(dir.path(), "a", Verdict::NotRun, "line one\nline two\n").unwrap();
         assert_eq!(found_under(dir.path()), [Some(Verdict::NotRun)]);
     }
 }

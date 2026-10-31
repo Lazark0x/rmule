@@ -14,7 +14,7 @@ mod offers;
 mod uploads;
 
 use crate::flow::evidence::read_toml;
-use std::fmt;
+pub(crate) use crate::verdict::Verdict;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;
@@ -122,19 +122,6 @@ fn dials_went_through() -> bool {
     true
 }
 
-/// A claim's outcome.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-pub(crate) enum Verdict {
-    #[serde(rename = "PASS")]
-    Pass,
-    #[serde(rename = "FAIL")]
-    Fail,
-    #[serde(rename = "OBSERVED")]
-    Observed,
-    #[serde(rename = "NOT-RUN")]
-    NotRun,
-}
-
 /// One claim, judged.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Claim {
@@ -163,7 +150,7 @@ impl Claim {
 
 #[derive(Serialize)]
 struct VerdictFile<'a> {
-    verdict: &'static str,
+    verdict: Verdict,
     file_hash: &'a str,
     unread_links: usize,
     claims: &'a [Claim],
@@ -242,7 +229,7 @@ impl Run<'_> {
 ///
 /// # Errors
 /// If a file the score reads is missing or unreadable.
-pub fn score_run_dir(run_dir: &Path) -> Result<String> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let topology: TopologyFile = read_toml(&root.join(TOPOLOGY_FILE))?;
     let pcap = root.join(RMULE_PCAP);
@@ -287,9 +274,9 @@ pub fn score_run_dir(run_dir: &Path) -> Result<String> {
     };
     let claims = claims(&run);
     let verdict = if claims.iter().any(|claim| claim.verdict == Verdict::Fail) {
-        "FAIL"
+        Verdict::Fail
     } else {
-        "PASS"
+        Verdict::Pass
     };
     let file = VerdictFile {
         verdict,
@@ -298,18 +285,17 @@ pub fn score_run_dir(run_dir: &Path) -> Result<String> {
         claims: &claims,
     };
     let path = run_dir.join(VERDICT_FILE);
-    fs::write(
+    crate::verdict::write(
         &path,
-        toml::to_string_pretty(&file).context("serialize the verdict")?,
-    )
-    .with_context(|| format!("write {}", path.display()))?;
+        &toml::to_string_pretty(&file).context("serialize the verdict")?,
+    )?;
     for claim in &claims {
         println!(
             "partial_share claim={} verdict={}",
             claim.name, claim.verdict
         );
     }
-    Ok(verdict.to_owned())
+    Ok(verdict)
 }
 
 /// Every claim, in ADR order.
@@ -333,17 +319,6 @@ pub(crate) fn claims(run: &Run<'_>) -> Vec<Claim> {
         links::relinked_waiter_keeps_its_place(run),
         links::dialled_at_its_address(run),
     ]
-}
-
-impl fmt::Display for Verdict {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Pass => "PASS",
-            Self::Fail => "FAIL",
-            Self::Observed => "OBSERVED",
-            Self::NotRun => "NOT-RUN",
-        })
-    }
 }
 
 /// A 32-digit hex hash.

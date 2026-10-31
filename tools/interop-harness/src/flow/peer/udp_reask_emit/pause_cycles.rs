@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use super::standing::{self, Ask, BAN_SCORE, Road, StandingRun};
 use crate::flow::nat::claims::{Claim, Evidence, label};
+use crate::verdict::Verdict;
 
 /// The file whose existence holds rmule's downloads paused, under the run dir.
 pub(crate) const GATE: &str = "pause-cycle-gate";
@@ -128,10 +129,10 @@ fn claims(facts: &Facts<'_>) -> Vec<Claim> {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     claim: &'a [Claim],
 }
@@ -145,7 +146,7 @@ pub(crate) fn write(
     run: &StandingRun<'_>,
     cycles: u32,
     sharer_log: &Path,
-) -> Result<&'static str> {
+) -> Result<Verdict> {
     let asks = standing::asks(run)?;
     let log_path = root.join("rmule").join("stdout.log");
     let rmule_log =
@@ -158,7 +159,7 @@ pub(crate) fn write(
         asks: &asks,
     });
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-udp-reask-emit-pause-cycles",
         verdict,
         detail,
@@ -166,7 +167,7 @@ pub(crate) fn write(
     })
     .context("serialize the pause-cycle verdict")?;
     let path = root.join("peer-udp-reask-emit-pause-cycles-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("peer_udp_reask_emit pause_cycles_verdict={verdict}");
     Ok(verdict)
 }

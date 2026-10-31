@@ -20,6 +20,7 @@ use crate::flow::peer::one_link::verdict::{part_of, requested};
 use crate::flow::peer::udp_reask_emit::standing::{
     Ask, BAN_SCORE, FILE_REASK_SECS, StandingRun, aggressiveness, asks,
 };
+use crate::verdict::Verdict;
 
 /// The flow's name and its verdict file's stem.
 pub(crate) const FLOW: &str = "peer-source-handover";
@@ -73,10 +74,10 @@ struct Rows {
 }
 
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     rows: &'a Rows,
     claim: &'a [Claim],
@@ -96,7 +97,7 @@ struct Observed {
 ///
 /// # Errors
 /// If the addresses, the tap, a staged file or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let addresses_path = root.join(ADDRESSES);
     let at: Addresses = toml::from_str(
@@ -107,7 +108,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     let observed = observe(run_dir, &at)?;
     let (claims, rows) = claims(&at, &observed);
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -116,7 +117,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the verdict")?;
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

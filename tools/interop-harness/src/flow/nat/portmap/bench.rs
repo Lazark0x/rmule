@@ -52,6 +52,7 @@ use crate::flow::nat::{
 };
 use crate::flow::taps::{Attachment, PerAttachmentTaps, TapRole, TapsRecord, write_taps_record};
 use crate::nat::NatTypeProof;
+use crate::verdict::Verdict;
 
 /// Every tap records all IP traffic on its side, and counts it the same way.
 /// A port-mapping exchange is SSDP and SOAP over TCP as well as PCP over UDP,
@@ -501,7 +502,7 @@ fn drive(bench: &mut Bench, options: &PortMapOptions<'_>) -> Result<()> {
             claim: claims,
         },
     )?;
-    if label == "FAIL" {
+    if label == Verdict::Fail {
         bail!(
             "{} did not hold every claim the bench can drive; see {}-verdict.toml",
             flow.name(),
@@ -790,7 +791,7 @@ fn write_skip(
         layout,
         &PortMapVerdict {
             flow: flow.name(),
-            verdict: "SKIPPED",
+            verdict: Verdict::Skipped,
             detail: "the bench lacks a capability this flow needs; nothing was measured."
                 .to_owned(),
             skip_reason: Some(skip.reason.clone()),

@@ -30,6 +30,7 @@ use crate::flow::bench::{
 use crate::flow::ed2k_server::search_wire::server_tap::OP_IDCHANGE;
 use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, SUBNET as ED2KSRV_SUBNET, start_ed2ksrv};
 use crate::flow::pcap::{ED2K_PROTOCOLS, tcp_streams};
+use crate::verdict::{self, Verdict};
 
 const SUBNET: &str = "198.51.100.0/24";
 /// Past the first-contact status answer (5 s after start, 20 s grace).
@@ -74,7 +75,7 @@ pub struct ServerLoginCryptOptions<'a> {
     pub by_name: bool,
 }
 
-/// Run the leg and write `server-login-crypt/verdict.txt`.
+/// Run the leg and write `server-login-crypt/server-login-crypt-verdict.toml`.
 pub fn run_server_login_crypt(options: ServerLoginCryptOptions<'_>) -> Result<()> {
     let initiates = match options.policy {
         "off" | "supported" => false,
@@ -97,7 +98,7 @@ pub fn run_server_login_crypt(options: ServerLoginCryptOptions<'_>) -> Result<()
         .collect();
     fs::write(root.join("login-crypt.bin"), share).context("write the shared file")?;
 
-    let result = (|| -> Result<String> {
+    let result = (|| -> Result<(Verdict, String)> {
         let server = match options.ed2ksrv {
             Some((image, config)) => {
                 bench.create_network(options.layout, Some(ED2KSRV_SUBNET))?;
@@ -210,9 +211,9 @@ pub fn run_server_login_crypt(options: ServerLoginCryptOptions<'_>) -> Result<()
         bench.collect_failure_logs(options.layout);
     }
     bench.cleanup_best_effort();
-    let verdict = result?;
-    fs::write(root.join("verdict.txt"), format!("{verdict}\n")).context("write verdict")?;
-    println!("{verdict}");
+    let (verdict, report) = result?;
+    verdict::write_report(&root, "server-login-crypt", verdict, &report)?;
+    println!("verdict={verdict} {report}");
     Ok(())
 }
 
@@ -340,7 +341,7 @@ fn verdict(
     logs: &str,
     pcap: &std::path::Path,
     server: IpAddr,
-) -> Result<String> {
+) -> Result<(Verdict, String)> {
     let dials = dials(logs);
     let streams = tcp_streams(pcap)?;
     let reply_to = |stream: &crate::flow::pcap::TcpStream| {
@@ -381,7 +382,7 @@ fn verdict(
     };
     // The login under test is the last one of the kind the last dial chose.
     let of_kind = |kind: LoginKind| logins.iter().rfind(|login| login.kind == kind);
-    let outcome = match (
+    let reading = match (
         initiates,
         of_kind(LoginKind::Obfuscated),
         of_kind(LoginKind::Plain),
@@ -402,7 +403,12 @@ fn verdict(
         {
             "PLAIN-LOGIN-ANSWERED"
         }
-        _ => "FAIL",
+        _ => "NEITHER-LOGIN-ANSWERED",
+    };
+    let outcome = if reading == "NEITHER-LOGIN-ANSWERED" {
+        Verdict::Fail
+    } else {
+        Verdict::Pass
     };
     let byte_words =
         |byte: Option<u8>| byte.map_or_else(|| "none".to_owned(), |byte| format!("{byte:02x}"));
@@ -438,11 +444,14 @@ fn verdict(
         Some(_) => "no",
         None => "unread",
     };
-    Ok(format!(
-        "verdict={outcome} policy={policy} by_name={by_name} id_change_size20={extension} dials={} logins={} port_test_first_bytes=[{}]",
-        dial_words.join(""),
-        login_words.join(""),
-        test_words.join(",")
+    Ok((
+        outcome,
+        format!(
+            "{reading} policy={policy} by_name={by_name} id_change_size20={extension} dials={} logins={} port_test_first_bytes=[{}]",
+            dial_words.join(""),
+            login_words.join(""),
+            test_words.join(",")
+        ),
     ))
 }
 

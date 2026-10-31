@@ -14,7 +14,6 @@
 //! sharer's rank or grant after rmule's last slot ask is the counterparty's
 //! word that rmule was not banned. What rmule sent is stimulus (ADR-0045).
 
-use std::fs;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
@@ -25,6 +24,7 @@ use crate::flow::identity::hex_lower;
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{tcp_streams, udp4_datagrams};
 use crate::flow::wire_filter::OP_EDONKEYPROT;
+use crate::verdict::Verdict;
 
 /// The eMule extension protocol byte.
 const OP_EMULEPROT: u8 = 0xC5;
@@ -97,7 +97,7 @@ struct Cycle {
 struct StandingVerdict<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     /// Seconds the tap ran past rmule's first ask.
     window_secs: u64,
@@ -317,7 +317,7 @@ fn claims(asks: &[Ask], window: f64) -> Vec<Claim> {
 ///
 /// # Errors
 /// If the tap cannot be read or the verdict cannot be written.
-pub(crate) fn write(root: &Path, run: &StandingRun<'_>) -> Result<&'static str> {
+pub(crate) fn write(root: &Path, run: &StandingRun<'_>) -> Result<Verdict> {
     let asks = asks(run)?;
     let window = crate::flow::pcap::records(run.pcap)?
         .last()
@@ -349,7 +349,7 @@ pub(crate) fn write(root: &Path, run: &StandingRun<'_>) -> Result<&'static str> 
     })
     .context("serialize the standing verdict")?;
     let path = root.join("peer-udp-reask-emit-standing-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("peer_udp_reask_emit standing_verdict={verdict}");
     Ok(verdict)
 }

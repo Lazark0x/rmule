@@ -21,6 +21,7 @@ use super::tap::{
 use crate::flow::identity::{hex_lower, parse_ed2k_file_hash};
 use crate::flow::nat::claims::{Claim, Evidence, label};
 use crate::flow::pcap::{Udp4Datagram, records, tcp_streams, udp4_datagrams};
+use crate::verdict::Verdict;
 
 /// The 6 bytes aMule itself writes as `OP_REASKACK` to a v1 claimant at queue
 /// rank 1, cut whole from the capture promoted as
@@ -51,7 +52,7 @@ pub(crate) struct ReaskRun<'a> {
 struct ReaskVerdict<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     crypt: bool,
     /// Seconds after rmule's start of each obfuscation flip the run recorded.
@@ -204,7 +205,7 @@ pub(crate) fn claims(run: &ReaskRun<'_>) -> Result<Vec<Claim>> {
 ///
 /// # Errors
 /// If the pcap cannot be read or the verdict cannot be written.
-pub(crate) fn write(root: &Path, run: &ReaskRun<'_>) -> Result<&'static str> {
+pub(crate) fn write(root: &Path, run: &ReaskRun<'_>) -> Result<Verdict> {
     let claims = claims(run)?;
     let (verdict, detail) = label(&claims);
     let text = toml::to_string_pretty(&ReaskVerdict {
@@ -217,7 +218,7 @@ pub(crate) fn write(root: &Path, run: &ReaskRun<'_>) -> Result<&'static str> {
     })
     .context("serialize the peer-udp-reask verdict")?;
     let path = root.join("peer-udp-reask-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("peer_udp_reask verdict={verdict}");
     Ok(verdict)
 }
@@ -231,7 +232,7 @@ pub fn score_run_dir(
     rmule: Ipv4Addr,
     reasker: Ipv4Addr,
     crypt: bool,
-) -> Result<&'static str> {
+) -> Result<Verdict> {
     let link = fs::read_to_string(root.join("synthetic/shared.ed2k.txt"))
         .context("read synthetic/shared.ed2k.txt")?;
     let file_size = fs::metadata(root.join("synthetic/shared.bin"))

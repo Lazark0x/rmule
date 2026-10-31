@@ -18,6 +18,7 @@ use crate::flow::evidence::{
 };
 use crate::flow::identity::ipv4_string;
 use crate::flow::kad_buddy::firewalled::{KAD_FW_AMULE_KAD_ID, KAD_FW_RMULE_KAD_ID};
+use crate::verdict::Verdict;
 
 /// The **Kad UDP Key** every crypt-armed rmule body a verdict decodes runs
 /// under: the harness chooses it and passes it in (`kad join-node
@@ -159,14 +160,14 @@ pub(crate) fn assert_kad_verify_keys(
     }
 
     let verdict = if amule_ack.is_some() {
-        "PASS"
+        Verdict::Pass
     } else if !inbound_opcodes.is_empty() {
         // The counterparty reached rmule but never emitted the ACK. That is a
         // real finding, not a harness failure — the opcode columns below say
         // which half of the emit condition stayed shut. Recorded, never forced.
-        "OBSERVED"
+        Verdict::Observed
     } else {
-        "FAIL"
+        Verdict::Fail
     };
 
     let verdict_toml = format!(
@@ -203,15 +204,14 @@ pub(crate) fn assert_kad_verify_keys(
             .collect::<Vec<_>>(),
     );
     let verdict_path = layout.kad_dir().join("kad-verify-keys-verdict.toml");
-    fs::write(&verdict_path, &verdict_toml)
-        .with_context(|| format!("write {}", verdict_path.display()))?;
+    crate::verdict::write(&verdict_path, &verdict_toml)?;
     println!(
         "kad-verify-keys verdict={verdict} amule_0x22_in={} rmule_0x22_out={rmule_acks_out} \
          hello_req_in={hellos_in} hello_res_out={hello_res_out}",
         usize::from(amule_ack.is_some())
     );
 
-    if verdict == "FAIL" {
+    if verdict == Verdict::Fail {
         bail!(
             "verify-key leg saw no counterparty datagram at all from {amule_remote}: the \
              topology never came up (rmule must be a routing-zone contact of the aMule)"

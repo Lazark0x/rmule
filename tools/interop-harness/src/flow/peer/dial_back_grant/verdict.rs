@@ -11,6 +11,7 @@
 //! hung up before the grant came.
 
 use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -99,10 +100,10 @@ pub(crate) struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     rows: &'a Rows,
     claim: &'a [Claim],
@@ -122,13 +123,13 @@ struct Observed {
 ///
 /// # Errors
 /// If the addresses, the tap, the staged file or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let addresses: Addresses = read_toml(&root.join(ADDRESSES))?;
     let observed = observe(run_dir)?;
     let (claims, rows) = claims(&addresses, &observed);
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: FLOW,
         verdict,
         detail,
@@ -137,7 +138,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
     })
     .context("serialize the verdict")?;
     let path = run_dir.join(format!("{FLOW}-verdict.toml"));
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(verdict)
 }

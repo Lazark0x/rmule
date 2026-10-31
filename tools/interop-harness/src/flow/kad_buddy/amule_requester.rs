@@ -60,6 +60,7 @@ use crate::flow::logs::{collect_amule_logfile, collect_kad_logs};
 use crate::flow::mesh::{KAD_TCP_PORT, KadCaptureOptions, KadNodeSpec, start_kad_node};
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT, WireFilter};
 use crate::kad_seed::KadContact;
+use crate::verdict::Verdict;
 
 mod firewall_check_client;
 use firewall_check_client::ReleaseGate;
@@ -449,7 +450,7 @@ impl AmuleRequesterLeg {
             ));
         }
         let pass = claims.iter().all(|(_, holds)| *holds);
-        let verdict = if pass { "PASS" } else { "FAIL" };
+        let verdict = if pass { Verdict::Pass } else { Verdict::Fail };
 
         let mut out = String::from(
             "# Flow M's stock aMule requester (kad-core-buddy --amule-requester): aMule's own 0x52 to\n\
@@ -494,7 +495,7 @@ impl AmuleRequesterLeg {
             .layout
             .kad_dir()
             .join("kad-amule-requester-verdict.toml");
-        fs::write(&path, &out).with_context(|| format!("write {}", path.display()))?;
+        crate::verdict::write(&path, &out)?;
         println!("kad-amule-requester verdict={verdict}");
         if !pass {
             let failing: Vec<&str> = claims

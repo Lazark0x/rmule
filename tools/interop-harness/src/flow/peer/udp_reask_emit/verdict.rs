@@ -28,6 +28,7 @@ use crate::flow::peer::udp_reask::tap::{
     is_obfuscated, open, ping_shape,
 };
 use crate::flow::wire_filter::OP_EDONKEYPROT;
+use crate::verdict::Verdict;
 
 /// The eserver's TCP port on the bench.
 const ESERVER_TCP_PORT: u16 = 4661;
@@ -66,7 +67,7 @@ pub(crate) struct EmitRun<'a> {
 struct EmitVerdict<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     crypt: bool,
     /// Seconds after rmule's login of each obfuscation flip the run recorded.
@@ -371,7 +372,7 @@ fn score(run: &EmitRun<'_>) -> Result<Scored> {
 ///
 /// # Errors
 /// If the pcap cannot be read or the verdict cannot be written.
-pub(crate) fn write(root: &Path, run: &EmitRun<'_>) -> Result<&'static str> {
+pub(crate) fn write(root: &Path, run: &EmitRun<'_>) -> Result<Verdict> {
     let scored = score(run)?;
     let (verdict, detail) = label(&scored.claims);
     let text = toml::to_string_pretty(&EmitVerdict {
@@ -386,7 +387,7 @@ pub(crate) fn write(root: &Path, run: &EmitRun<'_>) -> Result<&'static str> {
     })
     .context("serialize the peer-udp-reask-emit verdict")?;
     let path = root.join("peer-udp-reask-emit-verdict.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("peer_udp_reask_emit verdict={verdict}");
     Ok(verdict)
 }
@@ -401,7 +402,7 @@ pub fn score_run_dir(
     rmule: Ipv4Addr,
     sharer: Ipv4Addr,
     crypt: bool,
-) -> Result<&'static str> {
+) -> Result<Verdict> {
     let link = fs::read_to_string(root.join("synthetic/shared.ed2k.txt"))
         .context("read synthetic/shared.ed2k.txt")?;
     let file_size = fs::metadata(root.join("synthetic/shared.bin"))

@@ -9,6 +9,7 @@
 //! rmule did meanwhile.
 
 use crate::flow::evidence::read_toml;
+use crate::verdict::Verdict;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -215,10 +216,10 @@ struct Rows {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     shape: CrossingShape,
     marks: &'a Marks,
@@ -245,7 +246,7 @@ fn records_about(log: &str, peer: Ipv4Addr) -> Vec<String> {
 ///
 /// # Errors
 /// If the topology, the tap, the staged file or rmule's log cannot be read.
-pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
+pub fn score_run_dir(run_dir: &Path) -> Result<Verdict> {
     let root = run_dir.join(ROOT_DIR);
     let at: Topology = read_toml(&root.join(TOPOLOGY))?;
     let capture = tcp_capture(&records(&root.join(RMULE_PCAP))?)?;
@@ -557,7 +558,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         }
     };
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-crossing",
         verdict,
         detail,
@@ -567,7 +568,7 @@ pub fn score_run_dir(run_dir: &Path) -> Result<&'static str> {
         claim: &claims,
     })
     .context("serialize the crossing verdict")?;
-    fs::write(run_dir.join(VERDICT), &text).context("write the crossing verdict")?;
+    crate::verdict::write(&run_dir.join(VERDICT), &text)?;
     println!("{text}");
     Ok(verdict)
 }

@@ -26,6 +26,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::nat::NatTypeProof;
+use crate::verdict::Verdict;
 
 /// What kind of evidence a claim rests on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -173,8 +174,22 @@ pub(crate) struct Body {
     pub(crate) address_v6: String,
 }
 
+/// The verdict of a set of claim outcomes: the weakest wins, and an empty set
+/// judged nothing.
+pub(crate) fn weakest<'a>(outcomes: impl IntoIterator<Item = &'a str>) -> Verdict {
+    let mut verdict = None;
+    for outcome in outcomes {
+        verdict = match (verdict, outcome) {
+            (_, "absent") => return Verdict::Fail,
+            (_, "blocked") | (Some(Verdict::Observed), _) => Some(Verdict::Observed),
+            _ => Some(Verdict::Pass),
+        };
+    }
+    verdict.unwrap_or(Verdict::Observed)
+}
+
 /// Label a claim set: the weakest claim wins.
-pub(crate) fn label(claims: &[Claim]) -> (&'static str, String) {
+pub(crate) fn label(claims: &[Claim]) -> (Verdict, String) {
     let absent = claims.iter().filter(|c| c.outcome == "absent").count();
     let blocked = claims.iter().filter(|c| c.outcome == "blocked").count();
     let held = claims.len() - absent - blocked;
@@ -182,16 +197,7 @@ pub(crate) fn label(claims: &[Claim]) -> (&'static str, String) {
         "{held} of {} claims held; {absent} absent, {blocked} blocked.",
         claims.len()
     );
-    let verdict = if claims.is_empty() {
-        "OBSERVED"
-    } else if absent > 0 {
-        "FAIL"
-    } else if blocked > 0 {
-        "OBSERVED"
-    } else {
-        "PASS"
-    };
-    (verdict, detail)
+    (weakest(claims.iter().map(|claim| claim.outcome)), detail)
 }
 
 /// One driver row, read back as a flat map of TOML scalars.
@@ -271,7 +277,7 @@ impl DriverRow {
 
 #[cfg(test)]
 mod tests {
-    use super::{Claim, Evidence, gateways_probed_as_claimed, label, measured_total};
+    use super::{Claim, Evidence, Verdict, gateways_probed_as_claimed, label, measured_total};
     use crate::nat::{NatType, NatTypeProof, PinnedPortReach};
 
     #[test]
@@ -280,14 +286,14 @@ mod tests {
             Claim::about("a", true, Evidence::Captured, ""),
             Claim::blocked("b", "no pinned body can drive it"),
         ];
-        assert_eq!(label(&blocked).0, "OBSERVED");
+        assert_eq!(label(&blocked).0, Verdict::Observed);
 
         let absent = vec![
             Claim::about("a", true, Evidence::Captured, ""),
             Claim::about("b", false, Evidence::Captured, ""),
             Claim::blocked("c", "no pinned body can drive it"),
         ];
-        assert_eq!(label(&absent).0, "FAIL");
+        assert_eq!(label(&absent).0, Verdict::Fail);
     }
 
     /// A **Documented Absence** is a finding, not a failure: the zero was
@@ -300,7 +306,7 @@ mod tests {
             0,
             "the pin has no IPv6",
         )];
-        assert_eq!(label(&claims).0, "PASS");
+        assert_eq!(label(&claims).0, Verdict::Pass);
     }
 
     /// An absence whose own run observed the thing it names is not held, and
@@ -310,7 +316,7 @@ mod tests {
         for observed in [1, 7, -1] {
             let claim = Claim::absence("no-tunnel-rose", observed, "");
             assert_eq!(claim.outcome, "absent", "observed = {observed}");
-            assert_eq!(label(&[claim]).0, "FAIL", "observed = {observed}");
+            assert_eq!(label(&[claim]).0, Verdict::Fail, "observed = {observed}");
         }
     }
 

@@ -47,6 +47,7 @@ use crate::flow::pcap::{Ed2kFrame, TcpCapture, records, tcp_capture};
 use crate::flow::peer::one_link::verdict::{Switch, link_switch};
 use crate::flow::wire_filter::{OP_EDONKEYPROT, OP_EMULEPROT};
 use crate::rmule::RMULE_SERVE_TCP_PORT;
+use crate::verdict::Verdict;
 
 use super::standing::{StandingRun, aggressiveness, asks};
 
@@ -247,10 +248,10 @@ fn answer_to_grant(sent: &[Ed2kFrame], granted: f64) -> DialBackTake {
 
 /// The verdict file.
 #[derive(Debug, Serialize)]
-struct Verdict<'a> {
+struct VerdictFile<'a> {
     #[serde(rename = "scenario")]
     flow: &'static str,
-    verdict: &'static str,
+    verdict: Verdict,
     detail: String,
     rows: &'a Rows,
     claim: &'a [Claim],
@@ -309,7 +310,7 @@ fn link_switch_between(
 ///
 /// # Errors
 /// If the tap, a staged file, a link or rmule's log cannot be read.
-pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'static str> {
+pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<Verdict> {
     let capture = tcp_capture(&records(
         &root.join("emit-reask-capture").join("emit-reask.pcap"),
     )?)?;
@@ -447,7 +448,7 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
         aggressiveness: scores,
     };
     let (verdict, detail) = label(&claims);
-    let text = toml::to_string_pretty(&Verdict {
+    let text = toml::to_string_pretty(&VerdictFile {
         flow: "peer-udp-reask-emit-hand-over",
         verdict,
         detail,
@@ -456,7 +457,7 @@ pub(crate) fn write(root: &Path, rmule: Ipv4Addr, sharer: Ipv4Addr) -> Result<&'
     })
     .context("serialize the hand-over verdict")?;
     let path = root.join(VERDICT);
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     println!("peer_udp_reask_emit hand_over_verdict={verdict}");
     Ok(verdict)

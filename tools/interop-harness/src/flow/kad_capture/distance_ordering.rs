@@ -26,6 +26,7 @@ use crate::flow::mesh::{
     KAD_NETWORK_SUBNET, KAD_STORER_IP, KadCaptureOptions, KadNode, KadNodeSpec, start_kad_node,
     wait_kad_settle_window, write_kad_endpoints, write_kad_nodes,
 };
+use crate::verdict::{self, Verdict};
 
 /// The flow name every artifact this flow writes is tagged with.
 const FLOW: &str = "kad-distance-ordering-capture";
@@ -333,42 +334,44 @@ fn report_distance_verdict(layout: &RunLayout) {
         offset = start + 2;
     }
 
-    let mut verdict = String::new();
-    verdict.push_str("# Kad distance-ordering capture verdict (ADR-0043)\n\n");
-    verdict.push_str(&format!(
+    let mut report = format!(
         "responses: {} non-empty, {empty} empty (count=0)\n\n",
         nonempty.len()
-    ));
+    );
+    let mut judged = Verdict::Observed;
 
     match nonempty.first() {
         Some(res) => {
             let closest = res.contacts[0].kad_id;
-            verdict.push_str(&format!("closest_returned = {}\n", hex_lower(&closest)));
+            report.push_str(&format!("closest_returned = {}\n", hex_lower(&closest)));
             match design::identify_hypothesis(&closest) {
-                Some(name) => verdict.push_str(&format!("HYPOTHESIS CONFIRMED: {name}\n")),
-                None => verdict.push_str(
+                Some(name) => {
+                    judged = Verdict::Pass;
+                    report.push_str(&format!("HYPOTHESIS CONFIRMED: {name}\n"));
+                }
+                None => report.push_str(
                     "closest contact is not one of the seeded discrimination IDs (unexpected)\n",
                 ),
             }
-            verdict.push_str("\nfull ordering (closest first):\n");
+            report.push_str("\nfull ordering (closest first):\n");
             for (rank, contact) in res.contacts.iter().enumerate() {
-                verdict.push_str(&format!("  {rank}: {}\n", hex_lower(&contact.kad_id)));
+                report.push_str(&format!("  {rank}: {}\n", hex_lower(&contact.kad_id)));
             }
-            println!("{verdict}");
+            println!("{report}");
         }
         None => {
-            verdict.push_str(
+            report.push_str(
                 "NO RANKED ANSWER: every KADEMLIA2_RES was empty. The responder \
                  retained the seeded contacts but withheld them (unverified / firewalled) \
                  — the tiny-mesh verification wall.\n",
             );
-            eprintln!("{verdict}");
+            eprintln!("{report}");
         }
     }
 
-    let path = layout.kad_capture_dir().join("distance-verdict.txt");
-    if let Err(error) = fs::write(&path, &verdict) {
-        eprintln!("warning: cannot write distance verdict {path:?}: {error}");
+    let dir = layout.kad_capture_dir();
+    if let Err(error) = verdict::write_report(&dir, "distance-ordering", judged, &report) {
+        eprintln!("warning: cannot write the distance verdict: {error:#}");
     }
 }
 

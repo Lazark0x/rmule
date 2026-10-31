@@ -8,6 +8,7 @@ use super::{ANSWERED, Addresses, NO_SECOND_CALLBACK, Observed, PINGED, SX_ANSWER
 use crate::fixture::{at, frame, open};
 use crate::flow::nat::claims::{Claim, label};
 use crate::flow::pcap::{Ed2kFrame, Udp4Datagram};
+use crate::verdict::Verdict;
 
 const RMULE: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 70);
 const SHARER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 31);
@@ -156,7 +157,7 @@ fn claim<'a>(claims: &'a [Claim], name: &str) -> &'a Claim {
 #[test]
 fn a_called_back_source_is_pinged_and_its_answer_keeps_the_standing_fresh() {
     let (claims, rows) = claims(&addresses(), &the_run());
-    assert_eq!(label(&claims).0, "PASS", "{claims:#?}");
+    assert_eq!(label(&claims).0, Verdict::Pass, "{claims:#?}");
     assert_eq!(rows.sharer_id, i64::from(LOW_ID));
     assert_eq!(rows.callback_requests_server_tap, 1);
     assert_eq!(
@@ -186,7 +187,7 @@ fn a_dial_at_the_sharers_old_inbound_endpoint_fails_the_run() {
     let (claims, _) = claims(&addresses(), &run);
     let dialed = claim(&claims, "rmule-dialed-no-endpoint-of-the-sharer");
     assert_eq!(dialed.outcome, "absent", "{}", dialed.note);
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
 }
 
 /// With no source answer from the sharer, aMule's source-ask gate stays open
@@ -224,7 +225,7 @@ fn an_unanswered_ping_and_a_second_callback_fail_the_run() {
     assert_eq!(claim(&claims, ANSWERED).outcome, "absent");
     let stale = claim(&claims, NO_SECOND_CALLBACK);
     assert_eq!(stale.outcome, "absent", "{}", stale.note);
-    assert_eq!(label(&claims).0, "FAIL");
+    assert_eq!(label(&claims).0, Verdict::Fail);
 }
 
 #[test]

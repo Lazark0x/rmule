@@ -16,6 +16,7 @@ use crate::docker::RunContainer;
 use crate::flow::bench::Bench;
 use crate::flow::bootstrap::AMULE_CONFIG_DIR;
 use crate::flow::evidence::{flush_golden_files, read_flushed_golden};
+use crate::verdict::Verdict;
 
 /// The aMule Kad role the harvest node runs as (a lone routing seed idles once
 /// Kad has started — no live counterparty is needed to fill the seeded table).
@@ -175,13 +176,13 @@ fn write_v2_harvest_report(
          verdict = \"{verdict}\"\n",
         seed = crate::kad_seed::V2_HARVEST_SEED_CONTACTS,
         verdict = if harvested && version == 2 && contact_count >= V2_HARVEST_MIN_CONTACTS {
-            "GOLDEN-v2-authored"
+            Verdict::Pass
         } else {
-            "FAIL"
+            Verdict::Fail
         },
     );
-    let path = layout.root().join("v2-nodes-dat-harvest-report.toml");
-    fs::write(&path, &text).with_context(|| format!("write {}", path.display()))?;
+    let path = layout.root().join("v2-nodes-dat-harvest-verdict.toml");
+    crate::verdict::write(&path, &text)?;
     println!("{text}");
     Ok(())
 }
