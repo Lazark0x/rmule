@@ -14,9 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_core::{
-    ContentFileStore, Core, CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadId,
-    DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository, HoleVerdict,
-    PartFileChange, PartsLost, StorageIntegrityFault, VerifiedPartRecord, open_durable_store,
+    ContentFileStore, Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent,
+    DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths, DownloadRepository,
+    DurableDownloadRepository, HoleVerdict, PartFileChange, PartsLost, StorageIntegrityFault,
+    VerifiedPartRecord, VolumeStop, open_durable_store,
 };
 use rmule_primitives::ED2K_PART_SIZE;
 use rmule_testkit::{FakeEd2kServer, ServingCore, file_link};
@@ -43,7 +44,13 @@ struct Leg {
 impl Leg {
     /// The restored run, waiting for a connection with its part file held.
     async fn waiting_with_part_zero() -> Self {
-        let mut leg = Self::with_part_zero(true).await;
+        Self::waiting_with_part_zero_in("").await
+    }
+
+    /// [`Self::waiting_with_part_zero`], its part file in the directory
+    /// `sub` of the store's.
+    async fn waiting_with_part_zero_in(sub: &str) -> Self {
+        let mut leg = Self::with_part_zero_in(true, sub).await;
         next_expected(
             &mut leg.core,
             "the restored run waiting, its file held",
@@ -61,6 +68,12 @@ impl Leg {
     /// The download stored with part 0 verified, and a core attached to it
     /// that starts it again only when `restore`.
     async fn with_part_zero(restore: bool) -> Self {
+        Self::with_part_zero_in(restore, "").await
+    }
+
+    /// [`Self::with_part_zero`], its part file in the directory `sub` of the
+    /// store's.
+    async fn with_part_zero_in(restore: bool, sub: &str) -> Self {
         let mut bytes = vec![0x5A; PART];
         bytes.push(0xA5);
         let link = file_link("held.bin", &bytes);
@@ -72,7 +85,8 @@ impl Leg {
         let dir = tempfile::tempdir().unwrap();
         let store = open_durable_store(dir.path()).unwrap();
         let repo = DurableDownloadRepository::new(Arc::clone(&store));
-        let paths = DownloadPaths::from_final_path(dir.path().join("held.bin"));
+        std::fs::create_dir_all(dir.path().join(sub)).unwrap();
+        let paths = DownloadPaths::from_final_path(dir.path().join(sub).join("held.bin"));
         let id = repo
             .create_download(&link, Some(&server.endpoint()), &paths, None)
             .unwrap()
@@ -215,6 +229,84 @@ async fn a_part_file_removed_while_the_run_waits_is_told_without_a_connect() {
         leg.server.assigned_ids().await.is_empty(),
         "told while it waited: nothing connected"
     );
+}
+
+/// A leftover longer than the file is cut when the run holds it: the hash
+/// reads only the file's size, so a tail kept would land with it (ADR-0115).
+#[tokio::test]
+async fn a_part_file_longer_than_the_file_lands_no_trailing_bytes() {
+    let mut leg = Leg::with_part_zero(false).await;
+    let mut with_tail = std::fs::read(leg.part_path()).unwrap();
+    with_tail.resize(PART + 2, 0);
+    with_tail.extend_from_slice(b"a leftover tail");
+    std::fs::write(leg.part_path(), with_tail).unwrap();
+    leg.connect().await;
+    leg.core
+        .send(CoreCommand::Download(DownloadCommand::ResumeDownload {
+            download_id: leg.id,
+        }))
+        .await
+        .unwrap();
+
+    let events = leg.events_until_the_run_ends().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::DownloadCompleted { .. })),
+        "{events:#?}"
+    );
+    assert_eq!(std::fs::read(leg.paths.final_path()).unwrap(), leg.bytes);
+}
+
+/// A parent directory renamed leaves the handle reading a whole file: no part
+/// is lost, the run pauses and says why, and with the directory back a resume
+/// goes on from what it held (ADR-0094, "A volume's refusal is a Volume Stop").
+#[tokio::test]
+async fn a_path_gone_over_a_whole_file_pauses_with_every_part_kept() {
+    let mut leg = Leg::waiting_with_part_zero_in("mounted").await;
+    let mounted = leg.part_path().parent().unwrap().to_path_buf();
+    let away = mounted.with_file_name("away");
+    std::fs::rename(&mounted, &away).unwrap();
+
+    next_expected(&mut leg.core, "the stop, said", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::VolumeStopped {
+                stop: VolumeStop::PartFileOutOfReach,
+                ..
+            })
+        )
+    })
+    .await;
+    next_expected(&mut leg.core, "the pause, told", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadPaused { .. })
+        )
+    })
+    .await;
+    assert_eq!(leg.repo.verified_parts(leg.id).unwrap().len(), 1);
+    assert_eq!(
+        leg.repo.load_download(leg.id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused
+    );
+
+    std::fs::rename(&away, &mounted).unwrap();
+    leg.connect().await;
+    leg.core
+        .send(CoreCommand::Download(DownloadCommand::ResumeDownload {
+            download_id: leg.id,
+        }))
+        .await
+        .unwrap();
+    let events = leg.events_until_the_run_ends().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, DownloadEvent::DownloadCompleted { .. })),
+        "the file finishes from the part it kept: {events:?}"
+    );
+    assert_eq!(std::fs::read(leg.paths.final_path()).unwrap(), leg.bytes);
 }
 
 #[tokio::test]

@@ -392,3 +392,26 @@ fn stored_paths(store: &Arc<DurableStore>, download_id: DownloadId) -> DownloadP
         .paths()
         .clone()
 }
+
+/// A `.part` on disk that no row names is someone's: a fresh add never takes
+/// it over (ADR-0115), where its tail could land with the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leftover_part_file_refuses_a_fresh_start() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("have.bin.part"), b"left behind").unwrap();
+    let mut core = core_in(Some(dir.path()), ShareGuards::default());
+
+    core.send(start(file_link("have.bin", b"abc"), NameTaken::Refuse))
+        .await
+        .unwrap();
+    let answer = verdict(&mut core).await;
+    assert!(
+        matches!(
+            answer,
+            CoreEvent::CommandRejected {
+                reason: CoreCommandRejectReason::DownloadPathConflict
+            }
+        ),
+        "got {answer:?}",
+    );
+}

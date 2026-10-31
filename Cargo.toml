@@ -90,7 +90,8 @@ flate2 = "1"
 getrandom = "0.4"
 # Confined to rmule (the app) and rmule-primitives: the accent fold in a Table Sort's
 # name comparison (ADR-0070) and in a search's whole-word match (ADR-0034)
-# decomposes to NFD and drops the combining marks.
+# decomposes to NFD and drops the combining marks; a file name compared as a
+# volume folds it (ADR-0115) composes to NFC.
 # Unicode-3.0, already in the graph through `url`'s IDNA, so it adds no crate.
 icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
 # Confined to rmule-net: the UPnP-IGD Mapping Backend (ADR-0086). MIT itself,

@@ -51,6 +51,10 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
         R::DownloadPathConflict => {
             "download refused: a file of that name is already in the download dir"
         }
+        R::FileTooLargeForVolume => {
+            "download refused: the file is over 4 GB, and the download dir or the Temp dir \
+             lies on a FAT disk, which cannot hold it"
+        }
         R::NoDownloadDir => return super::download::NO_DOWNLOAD_DIR,
         R::DownloadDirRefused(guard) => {
             return Sentence::owned(format!(

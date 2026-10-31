@@ -420,8 +420,13 @@ pub enum CoreCommandRejectReason {
     /// than raced.
     DuplicateDownload,
     /// A start named a file that already exists in the download directory,
-    /// or whose `.part` another download already writes there.
+    /// a `.part` that stands in the part file's directory, or a name a live
+    /// row holds, compared as the strictest volume folds (ADR-0115).
     DownloadPathConflict,
+    /// A start named a file past `OLD_MAX_FILE_SIZE` and the Temp Directory
+    /// or the download directory lies on FAT, whose files end below 4 GiB
+    /// (`DownloadQueue.cpp:242-251`, ADR-0115).
+    FileTooLargeForVolume,
     /// A start found no download directory in the Core Settings: there is
     /// nowhere to put the file.
     NoDownloadDir,

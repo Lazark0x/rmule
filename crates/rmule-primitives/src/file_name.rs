@@ -15,6 +15,8 @@
 
 use std::path::{Path, PathBuf};
 
+use icu_normalizer::ComposingNormalizerBorrowed;
+
 use crate::{Ed2kFileLink, FileHash};
 
 /// A remote file name, cleaned to one path component.
@@ -30,11 +32,19 @@ use crate::{Ed2kFileLink, FileHash};
 /// hash stands in for it. Last, a name whose part before its first dot is a
 /// Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`, `LPT1` and the
 /// rest; any case, trailing spaces ignored) gains a leading `_`, so
-/// `nul.txt` is kept as `_nul.txt`.
+/// `nul.txt` is kept as `_nul.txt`. A name past [`Self::MAX_BYTES`] keeps its
+/// extension and a stem cut on a character boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SafeFileName(String);
 
 impl SafeFileName {
+    /// The bytes a name keeps, so every file made from it fits the strictest
+    /// volume, 255 bytes (ext4), which also bounds the 255 UTF-16 units of
+    /// exFAT and NTFS: the part file `<name> (n).part`, the Hole Probe's
+    /// `.<name> (n).part.holeprobe` and the Completion Copy's
+    /// `.<name> (n).completing`, the number up to five digits (ADR-0115).
+    pub const MAX_BYTES: usize = 230;
+
     /// The cleaned name of the file `link` names.
     #[must_use]
     pub fn of_link(link: &Ed2kFileLink) -> Self {
@@ -51,9 +61,9 @@ impl SafeFileName {
             return Self(hash.to_hex_upper());
         }
         if names_a_device(cleaned) {
-            return Self(format!("_{cleaned}"));
+            return Self(shortened(&format!("_{cleaned}")));
         }
-        Self(cleaned.to_owned())
+        Self(shortened(cleaned))
     }
 
     /// The cleaned name.
@@ -67,6 +77,42 @@ impl SafeFileName {
     pub fn path_in(&self, dir: &Path) -> PathBuf {
         dir.join(&self.0)
     }
+}
+
+/// `text` as the strictest volume compares a name: NFC, then lowered character
+/// by character, with final sigma as sigma. A name that comes from a peer can
+/// spell another's file (ADR-0115). Measured on exFAT: `Я` is `я`, `Ω` is `ω`,
+/// NFC is NFD, and `ß` and `ı` stay themselves, as lowering leaves them.
+#[must_use]
+pub fn fold_as_a_volume(text: &str) -> String {
+    ComposingNormalizerBorrowed::new_nfc()
+        .normalize(text)
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|c| if c == '\u{3c2}' { '\u{3c3}' } else { c })
+        .collect()
+}
+
+/// The longest extension a shortened name keeps: past it the tail of a long
+/// name is no extension.
+const MAX_KEPT_EXTENSION_BYTES: usize = 32;
+
+/// `name` within [`SafeFileName::MAX_BYTES`]: its stem cut on a character
+/// boundary, its extension kept, no trailing dot or space left by the cut.
+fn shortened(name: &str) -> String {
+    if name.len() <= SafeFileName::MAX_BYTES {
+        return name.to_owned();
+    }
+    let (stem, extension) = match name.rfind('.') {
+        Some(dot) if dot > 0 && name.len() - dot <= MAX_KEPT_EXTENSION_BYTES => name.split_at(dot),
+        _ => (name, ""),
+    };
+    let mut end = SafeFileName::MAX_BYTES - extension.len();
+    while !stem.is_char_boundary(end) {
+        end -= 1;
+    }
+    let stem = stem[..end].trim_end_matches(['.', ' ']);
+    format!("{stem}{extension}")
 }
 
 fn is_dropped(c: char) -> bool {
@@ -257,5 +303,43 @@ mod tests {
                 "{name:?} gave {path:?}"
             );
         }
+    }
+
+    /// A name past the cap keeps its extension and a stem cut on a character
+    /// boundary, so every file made from it fits a volume's 255 bytes.
+    #[test]
+    fn a_name_past_the_cap_is_shortened_and_keeps_its_extension() {
+        let hash = FileHash::from_bytes([1; FileHash::BYTE_LEN]);
+        let long = format!("{}.mkv", "\u{6f22}".repeat(100));
+        let name = SafeFileName::clean(&long, &hash);
+        assert!(name.as_str().len() <= SafeFileName::MAX_BYTES);
+        assert!(name.as_str().ends_with("\u{6f22}.mkv"), "{}", name.as_str());
+
+        let no_extension = "a".repeat(300);
+        assert_eq!(
+            SafeFileName::clean(&no_extension, &hash).as_str().len(),
+            SafeFileName::MAX_BYTES
+        );
+
+        let cut_before_a_space = format!("{}  b{}.iso", "a".repeat(224), "c".repeat(50));
+        assert_eq!(
+            SafeFileName::clean(&cut_before_a_space, &hash).as_str(),
+            format!("{}.iso", "a".repeat(224))
+        );
+
+        let fits = format!("{}.mkv", "a".repeat(SafeFileName::MAX_BYTES - 4));
+        assert_eq!(SafeFileName::clean(&fits, &hash).as_str(), fits);
+    }
+
+    #[test]
+    fn what_a_volume_folds_is_one_name_and_what_it_keeps_is_two() {
+        let one = |a: &str, b: &str| fold_as_a_volume(a) == fold_as_a_volume(b);
+        assert!(one("Film", "film"));
+        assert!(one("\u{42f}", "\u{44f}"), "Я is я");
+        assert!(one("\u{3a9}", "\u{3c9}"), "Ω is ω");
+        assert!(one("\u{3a3}", "\u{3c2}"), "Σ is ς");
+        assert!(one("caf\u{e9}", "cafe\u{301}"), "NFC is NFD");
+        assert!(!one("stra\u{df}e", "strasse"), "ß stays itself");
+        assert!(!one("\u{131}", "i"), "ı stays itself");
     }
 }

@@ -56,7 +56,7 @@ where
                 if self.second_link(&file).await {
                     return;
                 }
-                let paths = match self.place_download(&name, if_taken) {
+                let paths = match self.place_download(&file, &name, if_taken) {
                     Ok(paths) => paths,
                     Err(reason) => {
                         tracing::warn!(
