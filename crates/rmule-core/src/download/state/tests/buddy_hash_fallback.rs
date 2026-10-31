@@ -1,9 +1,7 @@
 //! The buddy callback's second spelling. A firewalled source's
-//! `TAG_BUDDYHASH` is read aMule's way first — the captured form — and only a
-//! primary `0x52` that drew no dial-back in the whole callback wait earns one
-//! more, addressed under the eMule 0.70b / eMuleAI `GetData()` spelling of the
-//! same tag. That fallback leg is **source-derived**: no eMule-family row has
-//! been captured, and every test here that sends it says so.
+//! `TAG_BUDDYHASH` is read the eMule way first, and only a primary `0x52` that
+//! drew no dial-back in the whole callback wait earns one more, addressed under
+//! the reading aMule through 3.1.0 wrote.
 
 use rmule_kad::KadId;
 use rmule_primitives::UserHash;

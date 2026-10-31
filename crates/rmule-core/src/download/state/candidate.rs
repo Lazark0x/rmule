@@ -257,11 +257,12 @@ impl LowIdCandidate {
         self.user_hash = newer.user_hash.or(self.user_hash);
         // The same buddy named again without its endpoint keeps the endpoint
         // another channel stated — an ID-only Kad row is silent about where
-        // the buddy is, not denying the endpoint a hello named.
+        // the buddy is, not denying the endpoint a hello named. It keeps the
+        // reading it holds too: the row says nothing of which one answered.
         self.buddy = match (newer.buddy, self.buddy) {
-            (Some(newer), Some(held)) if newer.buddy_id == held.buddy_id => Some(BuddyContact {
+            (Some(newer), Some(held)) if held.same_buddy(&newer) => Some(BuddyContact {
                 buddy_udp: newer.buddy_udp.or(held.buddy_udp),
-                ..newer
+                ..held
             }),
             (newer, held) => newer.or(held),
         };

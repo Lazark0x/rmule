@@ -155,6 +155,9 @@ impl NattFacts {
 /// walk/verify target) and its UDP endpoint when the candidate carried it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BuddyContact {
+    /// The held reading of the row's `TAG_BUDDYHASH`: the primary, until the
+    /// fallback draws a dial-back and takes its place (ADR-0061). Everything
+    /// that names the buddy reads this, so a source has one reading at a time.
     pub(crate) buddy_id: KadId,
     /// The buddy's UDP endpoint when known (`0x52` straight to it); `None`
     /// means the buddy-callback road walks toward `buddy_id` first
@@ -175,6 +178,19 @@ impl BuddyContact {
             buddy_udp_ipv6: None,
         }
         .fallback_buddy_id()
+    }
+
+    /// Whether `other` names this same buddy, in either reading.
+    pub(crate) fn same_buddy(&self, other: &Self) -> bool {
+        other.buddy_id == self.buddy_id || Some(other.buddy_id) == self.fallback_buddy_id()
+    }
+
+    /// This buddy under its other reading: the fallback, once it has answered.
+    pub(crate) fn fallback_reading(self) -> Self {
+        Self {
+            buddy_id: self.fallback_buddy_id().unwrap_or(self.buddy_id),
+            ..self
+        }
     }
 }
 

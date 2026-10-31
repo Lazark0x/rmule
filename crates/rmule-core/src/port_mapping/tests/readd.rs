@@ -102,12 +102,17 @@ fn a_re_add_answered_while_a_round_is_open_leaves_its_row_renewing() {
     let _ = drain(&mut mapper);
     reset_probe(&mut mapper, MappingProtocol::Pcp, reboot);
     mapper.tick(reboot);
-    let readded = answer_maps(&mut mapper, reboot, |mapping| granted(mapping.internal_port));
+    let readded = answer_maps(&mut mapper, reboot, |mapping| {
+        granted(mapping.internal_port)
+    });
     assert_eq!(readded.len(), 1, "the surviving row is re-added");
 
     probe_absent(MappingProtocol::Upnp, reboot, &mut mapper);
     assert_eq!(
-        answer_maps(&mut mapper, reboot, |mapping| granted(mapping.internal_port)).len(),
+        answer_maps(&mut mapper, reboot, |mapping| granted(
+            mapping.internal_port
+        ))
+        .len(),
         2,
         "the trial asks for the whole set"
     );
@@ -170,7 +175,10 @@ fn a_past_due_row_held_by_a_re_add_is_no_wake() {
     // nothing a tick could do, so the runtime must not wake to do it.
     let past_due = reset + 2 * HOUR;
     mapper.tick(past_due);
-    assert!(maps(&drain(&mut mapper)).is_empty(), "a re-add holds its row");
+    assert!(
+        maps(&drain(&mut mapper)).is_empty(),
+        "a re-add holds its row"
+    );
     assert_ne!(
         mapper.next_wake().map(|wake| wake <= past_due),
         Some(true),

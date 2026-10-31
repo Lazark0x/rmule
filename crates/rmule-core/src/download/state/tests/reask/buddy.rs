@@ -113,6 +113,81 @@ fn a_firewalled_downloader_reasks_a_low_id_source_through_its_buddy() {
     );
 }
 
+/// A source of the row spelling [`BUDDY_ID`] in the layout aMule through 3.1.0
+/// wrote: the primary drew nothing, the fallback drew the dial-back, and the
+/// source queued us and hung up at the instant returned.
+fn standing_through_the_fallback() -> (DownloadState, Instant) {
+    let mut state = state_from(
+        file_hash_only_content(ONE_PART),
+        live_posture(),
+        1,
+        no_facts(),
+        Vec::new(),
+        Vec::new(),
+    );
+    let row = kad_buddy_sighting(Some(SOURCE), BUDDY_ID, Some(buddy_udp()), 0x00);
+    let key = super::super::buddy_callback::buddy_key(&via_kad(&mut state, vec![row]));
+    let answered = t0() + CALLBACK_TIMEOUT;
+    let _ = state.on_tick(answered);
+    let _ = state.on_callback_connected(answered, key, called_in());
+    queue_and_hang_up_as(
+        &mut state,
+        called_in(),
+        Some(reaskable(SOURCE).identity()),
+        5,
+        answered,
+    );
+    (state, answered)
+}
+
+/// A stock buddy compares a `0x94`'s key exactly (`ClientUDPSocket.cpp:151`),
+/// so the key is the reading that drew the dial-back, or every reask of such a
+/// source is dropped.
+#[test]
+fn a_reask_after_the_fallback_answered_is_keyed_by_that_reading() {
+    let (mut state, answered) = standing_through_the_fallback();
+    let _ = state.on_callback_capability(answered, firewalled());
+
+    let due = state.on_tick(answered + low_id_udp_due());
+    let Some(Decision::SendReaskPing { ping, .. }) = due.first() else {
+        panic!("a reask through the buddy: {due:?}");
+    };
+    assert_eq!(
+        ping.datagram[2..18],
+        BUDDY_ID.word_swapped().big_endian_bytes()
+    );
+}
+
+/// The next road opens on the reading that answered, not on another whole
+/// wait for the one that did not, and a later sighting of the same row does
+/// not move it back; the reading that stayed silent is the road's fallback.
+#[test]
+fn the_road_after_the_fallback_answered_leads_with_that_reading() {
+    let (mut state, answered) = standing_through_the_fallback();
+    let row = kad_buddy_sighting(Some(SOURCE), BUDDY_ID, Some(buddy_udp()), 0x00);
+    let _ = via_kad(&mut state, vec![row]);
+
+    let opened = state.on_tick(answered + FILE_REASK_TIME);
+    let asked: Vec<_> = opened
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::RequestBuddyCallback { candidate, .. } => Some(candidate.buddy?.buddy_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, vec![BUDDY_ID.word_swapped()], "{opened:?}");
+
+    let lapsed = state.on_tick(answered + FILE_REASK_TIME + CALLBACK_TIMEOUT);
+    assert!(
+        lapsed.iter().any(|decision| matches!(
+            decision,
+            Decision::RequestFallbackBuddyCallback { candidate, .. }
+                if candidate.buddy.map(|buddy| buddy.buddy_id) == Some(BUDDY_ID)
+        )),
+        "{lapsed:?}"
+    );
+}
+
 /// Firewalled, a source whose record names its buddy by ID alone has no road
 /// but TCP: nothing is sent in the window, and the full ask falls due on time.
 #[test]

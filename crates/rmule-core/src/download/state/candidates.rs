@@ -154,9 +154,9 @@ impl DownloadState {
     /// id, so it cannot be attributed here — the deadline is the only release path.
     ///
     /// One exception keeps the slot: a buddy callback whose `0x52` went to a
-    /// known buddy endpoint under the primary (aMule, captured) spelling of
-    /// its `TAG_BUDDYHASH`, and whose other spelling names a different ID,
-    /// gets one more `0x52` under that spelling and the same wait again
+    /// known buddy endpoint under the held reading of its `TAG_BUDDYHASH`, and
+    /// whose other reading names a different ID, gets one more `0x52` under
+    /// that reading and the same wait again
     /// ([`Self::fallback_spelling_callback`]).
     fn on_callback_timeout(&mut self, now: Instant, key: CallbackKey) -> Vec<Decision> {
         if let Some(retry) = self.fallback_spelling_callback(now, key) {
@@ -173,13 +173,13 @@ impl DownloadState {
         }
         self.release_callback_slot(now, key)
     }
-    /// The buddy callback's second spelling (ADR-0061): aMule
-    /// writes `TAG_BUDDYHASH` big-endian (captured), eMule 0.70b and eMuleAI
-    /// word-ordered (source-derived), and the row cannot say which family
-    /// wrote it. The primary went first; only its silence through the whole
-    /// wait earns this one extra `0x52`, never both at once — an rmule buddy
-    /// would relay both, and an aMule one would hand its firewalled node a
-    /// callback it drops.
+    /// The buddy callback's second spelling (ADR-0061): aMule through 3.1.0
+    /// writes `TAG_BUDDYHASH` big-endian (captured), every current family
+    /// word-ordered, and the row cannot say which family wrote it. The held
+    /// reading went first, the primary until another answered; only its
+    /// silence through the whole wait earns this one extra `0x52`, never both
+    /// at once — an rmule buddy would relay both, and an aMule one would hand
+    /// its firewalled node a callback it drops.
     ///
     /// Only for a buddy with a known endpoint: one datagram to the same buddy.
     /// A buddy named by ID alone was reached by a Callback Walk toward the

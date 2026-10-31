@@ -14,6 +14,7 @@ use super::road::PendingRoad;
 use super::standing::ReaskFacts;
 use super::{Adopted, DialEnd, MergeEnd, NextDial, Release, SourceBook, WorkerEnd};
 use crate::adapters::CallbackKey;
+use crate::callback::BuddyContact;
 use crate::dialable::{DialPosition, choose_dial};
 use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
 
@@ -350,11 +351,19 @@ impl SourceBook {
     /// The peer `key`'s callback asked for dialed in at `endpoint` and was
     /// adopted (ADR-0039): its record moves to Dialing there, keeping its
     /// candidate and `CallbackKey` beside the worker. The inbound endpoint
-    /// joins the record — a record that answered to it is the same peer.
+    /// joins the record — a record that answered to it is the same peer. A
+    /// dial-back after the fallback `0x52` makes that reading the source's
+    /// (ADR-0061).
     pub(crate) fn adopt(&mut self, key: CallbackKey, endpoint: PeerEndpoint) -> Option<Adopted> {
         let id = self.aliases.key(key)?;
-        if !matches!(self.records.get(&id)?.stage, Stage::CallbackPending(_)) {
+        let record = self.records.get_mut(&id)?;
+        let Stage::CallbackPending(pending) = &record.stage else {
             return None;
+        };
+        if pending.fallback_spelling_sent
+            && let Some(candidate) = record.candidate.as_mut()
+        {
+            candidate.buddy = candidate.buddy.map(BuddyContact::fallback_reading);
         }
         let holder = self
             .aliases
