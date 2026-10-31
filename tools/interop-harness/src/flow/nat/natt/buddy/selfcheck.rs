@@ -98,8 +98,10 @@ const HASH_TARGET: &str = super::HASH_TARGET;
 /// run that fails says so as a verdict, not as a hang.
 const UDP_OPEN_TIMEOUT_SECS: u64 = 240;
 
-/// How long the target holds after publishing — the publish walk's window.
-const PUBLISH_WINDOW_SECS: u64 = 60;
+/// How long the target holds once told to publish: up to its first
+/// self-lookup at three minutes, which opens its publishing as stock's does,
+/// and the publish walk's own window after it.
+const PUBLISH_WINDOW_SECS: u64 = 240;
 
 /// How long the root, the storer and the helpers live. The storer finalizes
 /// its capture only on its own deadline, so this is also when its evidence

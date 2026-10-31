@@ -102,9 +102,10 @@ const KNO_SHARED_BYTES: u64 = 1 << 20;
 /// The file rmule publishes a source for; a different size, so a different key.
 const RMULE_PUBLISHED_BYTES: u64 = 2 << 20;
 
-/// How long the rmule publisher runs: its publish, kno's ack, its search and
-/// kno's answer, with the stimulus retries they may need.
-const PUBLISHER_WINDOW_SECS: u64 = 150;
+/// How long the rmule publisher runs: its first self-lookup at three minutes,
+/// which opens its publishing as stock's does, then its publish, kno's ack, its
+/// search and kno's answer, with the stimulus retries they may need.
+const PUBLISHER_WINDOW_SECS: u64 = 300;
 /// How long the rmule storer runs. kno publishes after its first
 /// `NODECOMPLETE` self-lookup — three minutes after Kad starts, plus the
 /// search's own 45 s lifetime — and the downloader then asks the storer for
