@@ -1165,8 +1165,8 @@ aMule's `TryToConnect` uses — so an aMule buddy row, which states no NAT-T and
 direct-callback bit, is reachable at all. Governed like the server
 callback: the 30 s slot release, and the 12 s **Callback Silence Fallback** only for a
 candidate whose facts admit a coordinator. When the 30 s lapse finds a known-endpoint buddy
-whose `TAG_BUDDYHASH` reads as a different ID the eMule way, one more `0x52` goes out under
-that spelling and the 30 s is armed again before the road ends (source-derived).
+whose `TAG_BUDDYHASH` reads as a different ID the way aMule through 3.1.0 wrote it, one more
+`0x52` goes out under that reading and the 30 s is armed again before the road ends.
 A buddy the row named by ID alone is reached by
 a **Callback Walk** (`rmule-kad`); a walk that reaches nobody retires the road
 (`BuddyNotFound`, or `CallbackWalkBusy` when a walk toward that ID already runs) and the

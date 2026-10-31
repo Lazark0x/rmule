@@ -207,6 +207,9 @@ pub(crate) enum RelayVerdict {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RelayedCallback {
     pub(crate) kind: RelayKind,
+    /// The ID the buddy registered, which a `0x99` names whatever form the
+    /// `0x52` arrived in: every source's check takes it.
+    pub(crate) buddy_id: KadId,
     pub(crate) requester: Ipv4Endpoint,
     pub(crate) forwarded: Vec<u8>,
 }
@@ -346,33 +349,33 @@ impl BuddyService {
             };
         };
         // The tightening: verify the addressed buddy-ID against our registered
-        // buddy on BOTH the 0x52 and the 0x94 relay — aMule checks only 0x94.
-        // On the 0x52 either `TAG_BUDDYHASH` spelling is our buddy:
-        // a requester of the other family reads the row's tag one
-        // per-word swap away. Relayed verbatim, as aMule relays every 0x52;
-        // our buddy's own 0x99 check has the last word. The 0x94 keeps the
-        // exact match aMule itself applies there.
-        let swapped_spelling = if req.claimed_buddy_id == link.buddy_id {
-            false
-        } else if req.kind == RelayKind::Callback
-            && req.claimed_buddy_id.word_swapped() == link.buddy_id
-        {
-            tracing::info!(
-                requester = ?req.requester,
-                "0x52 names our buddy in the other TAG_BUDDYHASH spelling \
-                 (eMule-family reading); relaying verbatim"
-            );
-            true
-        } else {
+        // buddy on BOTH the 0x52 and the 0x94 relay, in either layout: a
+        // requester reads the row's tag one per-word swap from its publisher
+        // when the two are of different families, and a 0x94's key is the
+        // big-endian form our registered wire-order ID is a swap from. A 0x52
+        // goes on under the registered ID, which an exact 0x99 check takes
+        // where the form it came in would be dropped (aMule 3.2.0
+        // `KadBuddyCallback.h`).
+        let swapped = req.claimed_buddy_id != link.buddy_id;
+        if swapped && req.claimed_buddy_id.word_swapped() != link.buddy_id {
             return RelayVerdict::Reject {
                 reason: RelayReject::BuddyIdMismatch,
             };
-        };
+        }
+        let swapped_spelling = swapped && req.kind == RelayKind::Callback;
+        if swapped_spelling {
+            tracing::info!(
+                requester = ?req.requester,
+                "0x52 names our buddy in the other TAG_BUDDYHASH layout; \
+                 relaying under the registered ID"
+            );
+        }
         RelayVerdict::Relay {
             swapped_spelling,
             buddy_link: link.endpoint,
             callback: RelayedCallback {
                 kind: req.kind,
+                buddy_id: link.buddy_id,
                 requester: req.requester,
                 forwarded: req.forwarded.clone(),
             },

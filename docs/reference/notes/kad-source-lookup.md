@@ -526,9 +526,9 @@ holding rmule as its recruited buddy — run `1790097388`, promoted as
   asymmetrically per 32-bit word, a buddy ID spelling
   `FFEEDDCCBBAA99887766554433221100` on the wire came out as
   `CCDDEEFF8899AABB4455667700112233` in the tag — `CUInt128::ToByteArray`, not
-  `GetData()`. eMule 0.70b and eMuleAI write the other string (source reading;
-  neither is on the bench), so the two families cannot address each other's
-  buddies.
+  `GetData()`. eMule 0.70b, eMuleAI, aMule from 3.2.0 and emule-qt from
+  `3ba9a4d4e0` write the other string (source reading; none of them is on the
+  bench), and rmule writes it too (ADR-0061).
 - **`TAG_SERVERIP` is not byte-swapped.** Its four value bytes read `a b c d`
   for `a.b.c.d` — the opposite of `SOURCEIP` above, which a storer synthesises
   in host order. A decoder that treats them alike gets one of them backwards.

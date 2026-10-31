@@ -64,6 +64,12 @@ pub(crate) struct RendezvousOffer {
     pub(crate) transport: NattTransport,
 }
 
+/// The key a rendezvous names the buddy of ID `buddy_id` by, and the one a
+/// buddy's hint echoes: a `0x94`'s, big-endian ([`rmule_kad::KadId::big_endian_bytes`]).
+pub(crate) fn rendezvous_key(buddy_id: [u8; BUDDY_ID_LEN]) -> [u8; BUDDY_ID_LEN] {
+    rmule_kad::KadId::from_bytes(buddy_id).big_endian_bytes()
+}
+
 /// Frame the rendezvous toward `buddy_udp` — eMuleAI's **embedded** form, the
 /// only one rmule emits: an `OP_REASKCALLBACKUDP` routed by the target's
 /// serving-buddy Kad ID, carrying the null-hash marker, `0xA0`, and the body.
@@ -88,7 +94,7 @@ pub(crate) fn rendezvous_request(
         claimed_endpoint: offer.claimed_endpoint,
         transport_hint: Some(offer.transport),
     }
-    .embed(buddy_id)
+    .embed(rendezvous_key(buddy_id))
     .encode_udp();
     ClientUdpSend::plaintext(PeerEndpoint::V4(buddy_udp), datagram)
 }
@@ -169,12 +175,17 @@ mod tests {
             claimed_endpoint: None,
             transport: NattTransport::Utp,
         };
-        let send = rendezvous_request(buddy_udp, [0xBB; 16], &offer);
+        let buddy_id: [u8; 16] = core::array::from_fn(|byte| byte as u8);
+        let send = rendezvous_request(buddy_udp, buddy_id, &offer);
         assert_eq!(send.to, PeerEndpoint::V4(buddy_udp));
         assert!(send.crypt_target.is_none());
 
         let relay = ReaskCallbackUdp::decode_udp(&send.datagram).expect("a 0x94");
-        assert_eq!(relay.buddy_id, [0xBB; 16]);
+        assert_eq!(relay.buddy_id, rendezvous_key(buddy_id));
+        assert_ne!(
+            relay.buddy_id, buddy_id,
+            "big-endian, as a stock buddy stored it"
+        );
         let body = RendezvousBody::from_forwarded(&relay.forwarded)
             .expect("marked as a rendezvous")
             .expect("well-formed");

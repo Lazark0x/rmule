@@ -59,7 +59,7 @@ impl DownloadState {
                     buddy,
                 } => {
                     let ping = requester::ping_via_buddy(
-                        *buddy.buddy_id.as_bytes(),
+                        buddy.buddy_id.big_endian_bytes(),
                         self.file_hash,
                         self.our_udp_version,
                         contact.version,

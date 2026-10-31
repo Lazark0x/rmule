@@ -7,7 +7,10 @@ use rmule_kad::KadId;
 
 use super::*;
 
-const BUDDY_ID: KadId = KadId::from_bytes([0x7A; KadId::BYTE_LEN]);
+/// Asymmetric per word, so its two layouts differ.
+const BUDDY_ID: KadId = KadId::from_bytes([
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F,
+]);
 
 fn buddy_udp() -> Ipv4Endpoint {
     Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 9000)
@@ -80,7 +83,8 @@ fn a_reachable_downloader_pings_a_called_back_source_directly() {
 }
 
 /// Firewalled, the direct ping could not be answered: the source is reasked
-/// through its buddy with a plain `0x94` keyed on the buddy's ID, and its
+/// through its buddy with a plain `0x94` keyed on the buddy's ID in big-endian
+/// bytes, the form a stock buddy stored (`ClientList.cpp:929-930`), and its
 /// answer is awaited from the source's own client-UDP endpoint.
 #[test]
 fn a_firewalled_downloader_reasks_a_low_id_source_through_its_buddy() {
@@ -99,7 +103,7 @@ fn a_firewalled_downloader_reasks_a_low_id_source_through_its_buddy() {
     let Some(Decision::SendReaskPing { ping, .. }) = due.first() else {
         unreachable!()
     };
-    assert_eq!(&ping.datagram[2..18], BUDDY_ID.as_bytes());
+    assert_eq!(ping.datagram[2..18], BUDDY_ID.big_endian_bytes());
     assert_eq!(&ping.datagram[18..34], state.file_hash.as_bytes());
     assert_eq!(ping.crypt_target, None, "a buddy is sent plaintext");
 

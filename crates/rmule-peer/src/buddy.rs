@@ -174,9 +174,9 @@ impl ReaskCallbackTcp {
 /// carrying Kad word order would fail every lookup it was handed to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Callback {
-    /// The buddy-ID the requester addressed, echoed from the `0x52` (the core
-    /// buddy service verifies it against the registered buddy before relay — the
-    /// ADR-0061 tightening).
+    /// The buddy's registered ID, which the `0x52` named in either layout
+    /// (the core buddy service verifies it before relay — the ADR-0061
+    /// tightening).
     pub buddy_id: [u8; BUDDY_ID_LEN],
     /// The file the callback is for, echoed from the `0x52`.
     pub file_hash: FileHash,

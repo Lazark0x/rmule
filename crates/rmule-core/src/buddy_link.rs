@@ -202,7 +202,8 @@ impl BuddySlot {
 
     /// Verify and enact one Kad `0x52` → `OP_CALLBACK` (`0x99`) relay: the
     /// service checks the claimed buddy-ID (the tightening), and the framed
-    /// `0x99` — buddy-ID and file-hash echoed, the requester endpoint injected —
+    /// `0x99` — the registered buddy-ID, the file-hash echoed, the requester
+    /// endpoint injected —
     /// is queued on the held persistent link.
     pub(crate) fn relay_kad_callback(
         &self,
@@ -220,7 +221,7 @@ impl BuddySlot {
             },
             |callback| {
                 PeerCommand::Side(SideCommand::SendBuddyCallback(Callback {
-                    buddy_id: *claimed_buddy_id.as_bytes(),
+                    buddy_id: *callback.buddy_id.as_bytes(),
                     file_hash,
                     requester: callback.requester,
                 }))
@@ -637,6 +638,30 @@ mod tests {
             slot.relay_kad_callback(buddy, requester, file_hash),
             RelayDisposition::LinkSendFailed
         );
+    }
+
+    /// A `0x52` in the other layout goes on under the ID the buddy registered,
+    /// the one form an exact `0x99` check takes.
+    #[test]
+    fn a_callback_in_the_other_layout_is_relayed_under_the_registered_id() {
+        let slot = BuddySlot::new();
+        let buddy = KadId::from_bytes(core::array::from_fn(|byte| byte as u8));
+        recruit(&slot, buddy, endpoint(1, 4662));
+        let (tx, mut rx) = mpsc::channel(4);
+        assert!(slot.try_attach(peer(1, 61234), buddy_hash(buddy), tx));
+
+        assert_eq!(
+            slot.relay_kad_callback(
+                buddy.word_swapped(),
+                endpoint(9, 5099),
+                FileHash::from_bytes([0xCD; FileHash::BYTE_LEN])
+            ),
+            RelayDisposition::Sent
+        );
+        let Ok(PeerCommand::Side(SideCommand::SendBuddyCallback(callback))) = rx.try_recv() else {
+            panic!("the 0x99 rides the held link");
+        };
+        assert_eq!(callback.buddy_id, *buddy.as_bytes());
     }
 
     #[test]

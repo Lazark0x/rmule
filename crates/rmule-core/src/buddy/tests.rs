@@ -231,6 +231,7 @@ fn the_relay_verifies_the_buddy_id_on_both_the_callback_and_the_reask_opcodes() 
                 buddy_link: link,
                 callback: RelayedCallback {
                     kind,
+                    buddy_id: buddy,
                     requester,
                     forwarded: forwarded.clone(),
                 },
@@ -255,12 +256,14 @@ fn the_relay_verifies_the_buddy_id_on_both_the_callback_and_the_reask_opcodes() 
 /// **Source-derived**: a requester that read our buddy's
 /// aMule-spelled `TAG_BUDDYHASH` the eMule 0.70b / eMuleAI way claims the
 /// registered buddy ID with each four-byte word reversed. On the `0x52` that
-/// is still our buddy — relayed verbatim, as aMule relays every `0x52`, and
-/// flagged so it is counted apart; the buddy's own `0x99` check decides the
-/// rest. The `0x94` keeps its exact match (aMule's own check there), and any
-/// third ID is still a mismatch.
+/// is still our buddy — relayed under the ID we registered, which an exact
+/// `0x99` check takes where the other form would be dropped, and flagged so it
+/// is counted apart. A `0x94` matches in either layout too, as at aMule 3.2.0
+/// (`6f47e2bad1` `ClientUDPSocket.cpp`), and goes uncounted: its big-endian key
+/// is every requester's form, not another family's. Any third ID is still a
+/// mismatch.
 #[test]
-fn source_derived_the_callback_relay_accepts_the_other_spelling_of_our_buddys_id() {
+fn source_derived_a_relay_accepts_either_layout_and_names_the_registered_id() {
     let requester = endpoint(9, 4662);
     let make = |kind, id| BuddyRelayRequest {
         kind,
@@ -288,14 +291,28 @@ fn source_derived_the_callback_relay_accepts_the_other_spelling_of_our_buddys_id
             buddy_link: link,
             callback: RelayedCallback {
                 kind: RelayKind::Callback,
+                buddy_id: buddy,
                 requester,
                 forwarded: Vec::new(),
             },
             swapped_spelling: true,
         }
     );
+    assert_eq!(
+        svc.relay(&make(RelayKind::ReaskCallback, buddy.word_swapped())),
+        RelayVerdict::Relay {
+            buddy_link: link,
+            callback: RelayedCallback {
+                kind: RelayKind::ReaskCallback,
+                buddy_id: buddy,
+                requester,
+                forwarded: Vec::new(),
+            },
+            swapped_spelling: false,
+        }
+    );
     for (kind, id) in [
-        (RelayKind::ReaskCallback, buddy.word_swapped()),
+        (RelayKind::ReaskCallback, kad_id(0x22)),
         (RelayKind::Callback, kad_id(0x22)),
     ] {
         assert_eq!(
