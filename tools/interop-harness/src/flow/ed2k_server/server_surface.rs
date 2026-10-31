@@ -11,7 +11,7 @@
 //!   Low-ID client naming an IPv6 asks for it and must read a sentinel; a third
 //!   naming none, with no UDP port and no NAT bit, can reach no Low-ID source
 //!   and must read nothing of it. ed2k-server's rules are
-//!   `get_sources.rs:26-28` and `:190-192`.
+//!   `get_sources.rs:26-28` and `:192-194`.
 //! - **`0x26` and the `OP_SERVERLIST` v6 block.** The pin writes neither:
 //!   `build_tcp_server_list` is IPv4 records and nothing after them, and
 //!   `build_callbackrequested` has no IPv6 form because an IPv6 session is

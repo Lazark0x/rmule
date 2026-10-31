@@ -402,6 +402,9 @@ pub(crate) const ESERVER_ENTRYPOINT_LOG: &str = "starting Lugdunum eserver on tc
 const ED2KSRV_READY_LOG: &str = "TCP listener ready";
 /// The fake-public subnet a flow with no address plan stands ed2k-server on.
 const ED2KSRV_BENCH_SUBNET: &str = "203.0.113.0/24";
+/// The fake-public subnet a second ed2k-server bench stands on beside a first,
+/// named by `RMULE_BENCH_ED2KSRV_SECOND_SUBNET`.
+const ED2KSRV_SECOND_SUBNET: &str = "198.51.100.0/24";
 
 /// The eserver as the bench stands it up: its image, the host port its
 /// container port is published on (the readiness probe target), its extra
@@ -456,11 +459,17 @@ impl Bench {
     /// The subnet a flow with no address plan of its own stands `image` on.
     /// ed2k-server treats a private peer as local, so it only behaves as a
     /// public server does on a fake-public network; Lugdunum takes the
-    /// runtime's bridge.
+    /// runtime's bridge. The subnet is fixed, so a second ed2k-server bench at
+    /// once takes the second one.
     pub(crate) fn subnet_for(&self, image: &str) -> Option<&'static str> {
+        let subnet = if std::env::var_os("RMULE_BENCH_ED2KSRV_SECOND_SUBNET").is_some() {
+            ED2KSRV_SECOND_SUBNET
+        } else {
+            ED2KSRV_BENCH_SUBNET
+        };
         crate::flow::ed2ksrv::ED2KSRV
             .built(&self.docker, image)
-            .then_some(ED2KSRV_BENCH_SUBNET)
+            .then_some(subnet)
     }
 
     /// The server role container when `image` is ed2k-server: on the bench's
