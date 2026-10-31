@@ -313,6 +313,7 @@ async fn move_into_place<S, P>(
         .rt
         .diagnostics
         .completion_step(download_id, CompletionStep::Moving);
+    make_directory(&destination).await?;
     let mut backoff = Backoff::new();
     let mut waiting = false;
     loop {
@@ -346,6 +347,25 @@ async fn move_into_place<S, P>(
             }
         }
     }
+}
+
+/// Make the directory `destination` lands in when it is missing: the download
+/// directory may not exist yet, and no part file makes it any more. Every
+/// name the move goes on to take lies in it, on either road. The system's
+/// own code fails the move, whatever it says: a file in the directory's way
+/// is no name to number past.
+async fn make_directory(destination: &Path) -> Result<(), DownloadFailure> {
+    let Some(directory) = destination.parent().map(Path::to_path_buf) else {
+        return Ok(());
+    };
+    on_pool(move || std::fs::create_dir_all(directory))
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "the finished file's directory could not be made");
+            DownloadFailure::CompletedFileNotMoved {
+                os_code: error.raw_os_error(),
+            }
+        })
 }
 
 /// Land `from` under `destination` through the Completion Gate: a name a

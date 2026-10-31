@@ -22,6 +22,8 @@ use crate::service::{CompletionStep, CoreEvent, DownloadEvent, DownloadId};
 use crate::storage::DownloadRepository;
 use crate::{DownloadLifecycle, DownloadPaths, VerifiedPartRecord};
 
+mod missing_directory;
+
 /// A download whose every part is verified, its part file in `temp/` and
 /// its destination in `dl/`.
 struct Finished {
