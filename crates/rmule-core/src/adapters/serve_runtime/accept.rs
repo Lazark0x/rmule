@@ -163,7 +163,7 @@ impl SharedTunnelAdmit {
         role: PeerStreamRole,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         self.push(stream, peer, role, InboundOrigin::AcceptedTunnel)
             .await
