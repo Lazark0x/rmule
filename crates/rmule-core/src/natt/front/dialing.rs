@@ -78,7 +78,8 @@ pub(super) enum DialOrder {
         /// datagram just proved the mapping alive.
         burst: bool,
     },
-    /// The budget is spent with no tunnel: the attempt is a transport failure.
+    /// Nothing is left to dial, because the budget is spent or a hello refuted
+    /// the endpoint: the attempt is a transport failure.
     Exhausted {
         peer: UserHash,
         /// How many dials it spent, for diagnostics.
@@ -162,12 +163,27 @@ impl DialSchedule {
         })
     }
 
-    /// One dial ended without a tunnel, or its Tunnel without naming `peer`.
+    /// One dial ended without a tunnel, or its Tunnel closed naming nobody.
     /// The attempt continues on the cadence unless its budget is spent.
     pub(super) fn settled(&mut self, peer: UserHash, now: Instant) -> Option<DialOrder> {
         let dial = self.dials.get_mut(&peer)?;
         dial.in_flight = false;
         (now.saturating_duration_since(dial.began) >= DIAL_BUDGET).then(|| self.exhausted(peer))
+    }
+
+    /// A hello named somebody else on the Tunnel a dial toward `peer` raised at
+    /// `at`. A schedule still aimed there is over, and one a punch has
+    /// corrected since only gets its dial back (ADR-0091, security rule 12).
+    pub(super) fn refuted(
+        &mut self,
+        peer: UserHash,
+        at: Ipv4Endpoint,
+        now: Instant,
+    ) -> Option<DialOrder> {
+        if self.dials.get(&peer)?.at == at {
+            return Some(self.exhausted(peer));
+        }
+        self.settled(peer, now)
     }
 
     /// The clock: dials whose cadence has come round, and attempts whose budget
@@ -414,6 +430,31 @@ mod tests {
     /// server introduction armed fifteen seconds after Begin is spent at
     /// Begin + 120 s, not fifteen seconds later; one armed past it never
     /// starts.
+    /// A hello refutes the endpoint it was read on: a schedule aimed there is
+    /// over at once, with the dials it spent, and one a punch has moved on
+    /// only gets its dial back.
+    #[test]
+    fn a_refuted_endpoint_ends_the_schedule_aimed_at_it() {
+        let began = Instant::now();
+        let mut schedule = DialSchedule::default();
+        schedule.arm(hash(1), at(1, 4000), began, began);
+        assert_eq!(
+            schedule.refuted(hash(1), at(1, 4000), began),
+            Some(DialOrder::Exhausted {
+                peer: hash(1),
+                dials: 1
+            })
+        );
+        assert!(!schedule.holds(hash(1)));
+
+        schedule.arm(hash(2), at(1, 4000), began, began);
+        schedule.arm(hash(2), at(1, 4001), began, began);
+        assert_eq!(schedule.refuted(hash(2), at(1, 4000), began), None);
+        assert!(schedule.holds(hash(2)));
+        assert!(!schedule.in_flight(hash(2)));
+        assert_eq!(schedule.target(hash(2)), Some(at(1, 4001)));
+    }
+
     #[test]
     fn a_late_dial_keeps_only_what_is_left_of_the_attempts_budget() {
         let begin = Instant::now();

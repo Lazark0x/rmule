@@ -70,13 +70,13 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // requester ledger holds nothing to fail: the introduction
                 // left through the session, so only the **Traversal Attempt**
                 // knows this target was ever being punched at. Without a line
-                // here, two minutes of dialing ended in total silence — which
+                // here, up to two minutes of dialing ended in total silence — which
                 // is how the server introduction once read as "the front never dialed" while an
                 // opener was on the wire.
                 tracing::info!(
                     ?peer,
                     dials,
-                    "a NAT-T traversal spent its whole budget without a tunnel"
+                    "a NAT-T traversal ended its dials without a tunnel"
                 );
                 let step = self.requester.on_failure(
                     &peer,
@@ -198,9 +198,9 @@ impl<S: NattDatagramSink> NattFront<S> {
                     .identified(at, peer.user_hash, now);
                 let named = peer;
                 let peer = named.user_hash;
-                let aimed = at.as_v4().and_then(|path| {
+                let refuted = at.as_v4().and_then(|path| {
                     self.crypt_targets.bind_path(path, named);
-                    self.paths.identified(path)
+                    self.paths.identified(path).map(|aimed| (aimed, path))
                 });
                 if let Some(dials) = self.dials.risen(peer) {
                     self.wiring.diagnostics.record_natt_attempt_dials(dials);
@@ -210,9 +210,11 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // it rides.
                 self.end_prediction(&peer, true);
                 self.identified(peer);
-                // Our dial reached somebody else: its target is still to find.
-                if let Some(aimed) = aimed.filter(|aimed| *aimed != peer) {
-                    self.dial_settled(aimed, now).await;
+                // Our dial reached somebody else, who is no way to its target.
+                if let Some((aimed, path)) = refuted.filter(|(aimed, _)| *aimed != peer)
+                    && let Some(order) = self.dials.refuted(aimed, path, now)
+                {
+                    self.enact_dial(order, now).await;
                 }
             }
             Risen::Abandoned { peer } => {

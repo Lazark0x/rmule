@@ -310,18 +310,43 @@ async fn dialed_tunnel(harness: &mut Harness, target: UserHash, from: Ipv4Endpoi
     due
 }
 
-/// A rise proves only that something answered: the attempt stands, its dial
-/// stays in flight, and a hello naming somebody else gives the dial back so
-/// the claim behind it keeps an attempt that ends on its own budget
-/// (ADR-0091, security rule 12).
+/// A rise proves only that something answered: the attempt stands and its
+/// dial stays in flight. A hello naming somebody else at the endpoint the
+/// schedule aims at then ends the attempt there and then, with no re-dial and
+/// no burst at a host that said no (ADR-0091, security rule 12).
 #[tokio::test]
-async fn a_dialed_tunnel_naming_somebody_else_leaves_the_attempt_dialing() {
+async fn a_hello_naming_somebody_else_at_the_aimed_endpoint_ends_the_attempt() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let aimed = at(9, 31999);
+    let due = dialed_tunnel(&mut harness, target, aimed).await;
+    assert!(harness.front.attempts.contains(&target), "no hello yet");
+    assert!(harness.front.dials.in_flight(target), "no second opener");
+    harness.drained();
+
+    let named = hello_of(aimed, hash(0x77));
+    harness.front.on_risen(named, due).await;
+
+    assert!(!harness.front.dials.holds(target), "the schedule is over");
+    harness.front.on_tick(due + REDIAL_INTERVAL).await;
+    assert!(
+        harness
+            .drained()
+            .iter()
+            .all(|send| send.to != PeerEndpoint::V4(aimed)),
+        "nothing more is aimed at that host"
+    );
+}
+
+/// A hello refutes an endpoint. One the schedule has left, because a punch
+/// corrected it, costs that dial alone: the next goes where the punch came
+/// from.
+#[tokio::test]
+async fn a_corrected_schedule_outlives_a_hello_at_the_old_endpoint() {
     let mut harness = Harness::new();
     let target = hash(0x44);
     let stranger = at(9, 40000);
     let due = dialed_tunnel(&mut harness, target, stranger).await;
-    assert!(harness.front.attempts.contains(&target), "no hello yet");
-    assert!(harness.front.dials.in_flight(target), "no second opener");
 
     let named = hello_of(stranger, hash(0x77));
     harness.front.on_risen(named, due).await;
