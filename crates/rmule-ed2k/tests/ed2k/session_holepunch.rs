@@ -126,6 +126,7 @@ fn the_servers_answers_surface_as_attributable_events() {
         peer_hash: UserHash::from_bytes([0x44; 16]),
         role: HolepunchRole::Initiator,
         peer_id: Some(ClientId::from_u32(1337)),
+        peer_crypt: None,
     };
     let wire = info.encode_packet().encode();
     for _ in 0..2 {
@@ -151,7 +152,7 @@ fn the_servers_answers_surface_as_attributable_events() {
 }
 
 /// ed2k-server appends fields to `0x61`: `peer_id` since v0.9.84
-/// (`holepunch.rs:112`, 29 bytes) and `peer_crypt` for a pair on its extension
+/// (`holepunch.rs:112`, 29 bytes) and `peer_crypt` on every frame since v0.9.86
 /// (30). A reader that held the old 25 closed the session on every
 /// introduction, on every current server.
 #[test]

@@ -112,7 +112,10 @@ exception, Port prediction, gated on our own observed mapping.**
   transport-agnostic, so the punch and Tunnel are eMuleAI's. The target's NAT-T support is
   not required (the server holds its `0xF9` and answers `TargetNoUdp`). Fields of `0x61` are
   appended, never inserted: 25 bytes before v0.9.84, `peer_id 4` from 29, `peer_crypt 1` at
-  30, and a longer body is read as far as rmule knows it. `peer_id` names the peer described,
+  30 (every `0x61` since v0.9.86: the peer's support, request and require bits, a source's
+  crypt byte). The punch burst carries it as the crypt target, so a peer that requires the
+  layer is punched obfuscated and one that only supports it follows rmule's own stance; a
+  29-byte body keeps the plain punch. A longer body is read as far as rmule knows it. `peer_id` names the peer described,
   so a `0x61` settles exactly the request that named it, however many are outstanding; one
   from a server too old to carry it settles a request only when exactly one is outstanding. A
   lost frame still costs `INTRODUCTION_TIMEOUT` (15 s, polled by the session's own loop), after

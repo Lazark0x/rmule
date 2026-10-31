@@ -277,6 +277,7 @@ async fn the_server_coordinator_asks_punches_and_ends_with_its_session() {
                 peer_hash: UserHash::from_bytes([0x44; 16]),
                 role: HolepunchRole::Responder,
                 peer_id: None,
+                peer_crypt: None,
             },
         })
         .await

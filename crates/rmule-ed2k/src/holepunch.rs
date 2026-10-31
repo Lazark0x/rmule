@@ -22,7 +22,9 @@
 use std::net::Ipv4Addr;
 use std::ops::RangeInclusive;
 
-use rmule_primitives::{ClientId, Ipv4Endpoint, Packet, PacketProtocol, UserHash};
+use rmule_primitives::{
+    ClientId, Ipv4Endpoint, Packet, PacketProtocol, SourceCryptOptions, UserHash,
+};
 
 use crate::{Ed2kError, Opcode, Result};
 
@@ -32,6 +34,8 @@ const REQUEST_LEN: usize = 4 + 2;
 const INFO_MIN_LEN: usize = 4 + 2 + 2 + UserHash::BYTE_LEN + 1;
 /// With `peer_id`, the body since v0.9.84 (`holepunch.rs:112`).
 const INFO_WITH_PEER_ID_LEN: usize = INFO_MIN_LEN + 4;
+/// With `peer_crypt`, the body since v0.9.86: byte 29 on every `0x61`.
+const INFO_WITH_PEER_CRYPT_LEN: usize = INFO_WITH_PEER_ID_LEN + 1;
 const FAIL_LEN: usize = 4 + 1;
 
 /// `OP_LOWID_HOLEPUNCH_REQUEST` (`0x60`), client → server: introduce us to
@@ -115,8 +119,9 @@ impl HolepunchRole {
 /// side's coordinates. Body
 /// `<ip 4><tcp 2 LE><udp 2 LE><userhash 16><role 1><peer_id 4 LE>` — the
 /// address in eD2k's dotted byte order. Earlier servers stop before `peer_id`,
-/// and a later one may append: ed2k-server's extension adds `peer_crypt 1`
-/// for a pair that both announced it, which rmule does not.
+/// and v0.9.86 appends `peer_crypt 1` to every one (`holepunch.rs`,
+/// `build_info`): the peer's `(CT_SERVER_FLAGS >> 9) & 7`, the same three
+/// bits as a source's crypt byte (support, request, require).
 ///
 /// This is the one rendezvous in the dialect where the address was **observed
 /// by a third party**: the server writes the UDP port it last saw that
@@ -141,6 +146,10 @@ pub struct HolepunchInfo {
     /// `0x60` named, which is what matches this answer to one of several
     /// requests in flight. `None` from a server before v0.9.84.
     pub peer_id: Option<ClientId>,
+    /// The peer's crypt stance as the server saw it: with `peer_hash` it lets
+    /// the first datagram leave obfuscated, so a peer that requires the layer
+    /// accepts the punch. `None` from a server before v0.9.86.
+    pub peer_crypt: Option<SourceCryptOptions>,
 }
 
 impl HolepunchInfo {
@@ -148,7 +157,7 @@ impl HolepunchInfo {
     /// and the KATs.
     #[must_use]
     pub fn encode_packet(&self) -> Packet {
-        let mut payload = Vec::with_capacity(INFO_WITH_PEER_ID_LEN);
+        let mut payload = Vec::with_capacity(INFO_WITH_PEER_CRYPT_LEN);
         payload.extend_from_slice(&self.peer_udp.ip.octets());
         payload.extend_from_slice(&self.peer_tcp_port.to_le_bytes());
         payload.extend_from_slice(&self.peer_udp.port.to_le_bytes());
@@ -156,6 +165,10 @@ impl HolepunchInfo {
         payload.push(self.role.as_u8());
         if let Some(peer_id) = self.peer_id {
             payload.extend_from_slice(&peer_id.as_u32().to_le_bytes());
+            // Byte 29 follows the id; it has no place without it.
+            if let Some(crypt) = self.peer_crypt {
+                payload.push(crypt.as_byte());
+            }
         }
         Packet::new(
             PacketProtocol::Edonkey,
@@ -190,6 +203,9 @@ impl HolepunchInfo {
             peer_id: body.get(25..INFO_WITH_PEER_ID_LEN).map(|id| {
                 ClientId::from_u32(u32::from_le_bytes(id.try_into().expect("fixed width")))
             }),
+            peer_crypt: body
+                .get(INFO_WITH_PEER_ID_LEN)
+                .map(|byte| SourceCryptOptions::from_byte(*byte)),
         })
     }
 }
@@ -374,8 +390,7 @@ mod tests {
     }
 
     /// `holepunch.rs:631-651`: `peer_id` follows the role, little-endian, read
-    /// from 29 bytes. Byte 30 is the extension's `peer_crypt`, which a pair
-    /// rmule is part of never draws: it decodes as if it were absent.
+    /// from 29 bytes. Byte 30 is `peer_crypt`, on every `0x61` since v0.9.86.
     #[test]
     fn the_info_names_the_peer_it_describes_and_tolerates_what_follows() {
         let mut payload = vec![45, 55, 200, 7];
@@ -389,9 +404,16 @@ mod tests {
         assert_eq!(info.peer_id, Some(ClientId::from_u32(1337)));
         assert_eq!(info.encode_packet(), current);
 
-        payload.push(0x03);
+        payload.push(0x07);
         let extended = Packet::new(PacketProtocol::Edonkey, 0x61, payload);
-        assert_eq!(HolepunchInfo::decode_packet(&extended), Ok(info));
+        let with_crypt = HolepunchInfo::decode_packet(&extended).expect("30 bytes");
+        assert_eq!(
+            with_crypt.peer_crypt,
+            Some(SourceCryptOptions::from_byte(0x07))
+        );
+        assert_eq!(with_crypt.peer_id, info.peer_id);
+        assert_eq!(with_crypt.encode_packet(), extended);
+        assert_eq!(info.peer_crypt, None, "29 bytes keep today's plain form");
 
         let torn = Packet::new(PacketProtocol::Edonkey, 0x61, vec![1; 27]);
         assert_eq!(

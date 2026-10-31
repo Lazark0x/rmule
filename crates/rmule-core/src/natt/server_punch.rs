@@ -23,6 +23,7 @@ use rmule_ed2k::{
     natt_keepalive_datagram, natt_keepalive_port,
 };
 use rmule_peer::natt::is_public_punch_address;
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, UserHash};
 
 use super::acting::{ACTING_MIN_INTERVAL, ACTING_TRACKED_MAX};
@@ -343,10 +344,18 @@ impl SharedServerPunch {
             if let Some(diagnostics) = self.inner.diagnostics.get() {
                 diagnostics.count_natt_server_punch();
             }
+            // The server states the peer's crypt stance (byte 29): the send
+            // gate obfuscates the punch for a peer that requires the layer and
+            // follows our own stance for one that only supports it. A body
+            // without the byte keeps the plain punch.
+            let crypt_target = info
+                .peer_crypt
+                .map(|crypt| PeerUdpCryptTarget::new(info.peer_hash, crypt.crypt_stance()));
             for endpoint in rmule_peer::natt::punch_burst(target) {
-                let send = ClientUdpSend::plaintext(
+                let send = ClientUdpSend::to_peer(
                     PeerEndpoint::V4(endpoint),
                     rmule_peer::natt::holepunch_datagram(),
+                    crypt_target,
                 );
                 if tx.try_send(send).is_err() {
                     break;
@@ -507,6 +516,7 @@ mod tests {
             peer_hash: UserHash::from_bytes([0x44; 16]),
             role: HolepunchRole::Responder,
             peer_id: None,
+            peer_crypt: None,
         }
     }
 
@@ -733,7 +743,10 @@ mod tests {
         let mut ports = Vec::new();
         while let Ok(send) = rx.try_recv() {
             assert_eq!(send.datagram, [0xC5, 0xA1]);
-            assert!(send.crypt_target.is_none());
+            assert!(
+                send.crypt_target.is_none(),
+                "a 29-byte form states no stance, so the punch stays plain"
+            );
             ports.push(send.to.port());
         }
         assert_eq!(ports.len(), 6 + 32);
@@ -774,5 +787,28 @@ mod tests {
             4661,
         ));
         assert!(keepalive_send(v6, &hash).is_none());
+    }
+
+    /// ed2k-server v0.9.86 `0x61` byte 29 is the peer's crypt stance. A peer
+    /// that requires the layer refuses a plain punch, so the burst carries it
+    /// as the crypt target; the send gate then obfuscates every datagram.
+    #[tokio::test]
+    async fn a_peer_that_requires_crypt_is_punched_with_its_crypt_target() {
+        let shared = SharedServerPunch::default();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+        shared.install_client_udp(tx);
+        let info = HolepunchInfo {
+            peer_crypt: Some(rmule_primitives::SourceCryptOptions::from_byte(0b111)),
+            ..info_at([45, 55, 200, 7], 31999)
+        };
+        shared.on_info(&info, |_| false, Instant::now());
+        let mut sent = 0;
+        while let Ok(send) = rx.try_recv() {
+            let target = send.crypt_target.expect("the stance rides on every punch");
+            assert_eq!(target.user_hash, UserHash::from_bytes([0x44; 16]));
+            assert!(target.stance.requires());
+            sent += 1;
+        }
+        assert_eq!(sent, 6 + 32);
     }
 }
