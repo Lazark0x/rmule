@@ -18,8 +18,8 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use rmule_net::natt::{
-    Admission, NattCrypt, NattDatagramSink, NattDemux, NattDisposition, NattIdentity, NattOwnHash,
-    NattSender, Tunnel, TunnelRegistry, TunnelSlot, TunnelTransport,
+    Admission, KEY_FRAME_INTERVAL, NattCrypt, NattDatagramSink, NattDemux, NattDisposition,
+    NattIdentity, NattOwnHash, NattSender, Tunnel, TunnelRegistry, TunnelSlot, TunnelTransport,
 };
 use rmule_net::peer::{ConnectOptions, Connection, PeerStreamRole};
 use rmule_peer::natt::{
@@ -195,7 +195,7 @@ impl FakeNetwork {
     fn between(local: HelloNattClaim, armed: bool, a_at: PeerEndpoint, b_at: PeerEndpoint) -> Self {
         let (tx, mut rx) = mpsc::unbounded_channel::<Datagram>();
         let log = Arc::new(Mutex::new(Vec::new()));
-        let front = |me: PeerEndpoint, own: UserHash, registry: &Arc<Mutex<TunnelRegistry>>| {
+        let front = |me: PeerEndpoint, own: UserHash| {
             // The key is our own external address in the family the datagram
             // leaves by, and the recipient keys its decrypt on the source
             // address it observes — so on this wire the two are the same
@@ -222,15 +222,14 @@ impl FakeNetwork {
                     NattIdentity { local },
                     Arc::new(SettableHash::known(own)) as Arc<dyn NattOwnHash>,
                     sender,
-                    Arc::clone(registry),
                 )
                 .expect("both engines start"),
             )
         };
-        let a_registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let b_registry = Arc::new(Mutex::new(TunnelRegistry::new()));
-        let a = front(a_at, hash(0xAA), &a_registry);
-        let b = front(b_at, hash(0xBB), &b_registry);
+        let a = front(a_at, hash(0xAA));
+        let b = front(b_at, hash(0xBB));
+        let a_registry = a.sender().registry();
+        let b_registry = b.sender().registry();
         let (route_a, route_b) = (Arc::clone(&a), Arc::clone(&b));
         let router = tokio::spawn(async move {
             while let Some((from, to, datagram)) = rx.recv().await {
@@ -667,7 +666,6 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
         NattIdentity { local: UTP_ONLY },
         Arc::new(own_hash.clone()) as Arc<dyn NattOwnHash>,
         sender,
-        Arc::new(Mutex::new(TunnelRegistry::new())),
     )
     .expect("the uTP engine starts");
 
@@ -888,4 +886,55 @@ async fn a_quic_proof_for_another_node_raises_no_tunnel() {
         "a proof addressed to 0x77 must not raise a tunnel to 0xBB"
     );
     assert!(accepting.await.expect("accept task").is_err());
+}
+
+/// A CAPS body naming no recipient, which the dialect reads as addressed to
+/// whoever hears it.
+fn null_caps() -> Vec<u8> {
+    NattFrame::Caps(CapsFrame {
+        connect_options: NattConnectOptions::advertise(0x01, true, false),
+        sender: hash(0x66),
+        expected_recipient: UserHash::from_bytes([0; UserHash::BYTE_LEN]),
+        file_hash: FileHash::from_bytes([0; FileHash::BYTE_LEN]),
+    })
+    .encode()
+}
+
+/// `0xB2 0xFF` or a null-recipient CAPS from a source nothing expects is the
+/// same stranger an `ST_SYN` is: no row, no answer (ADR-0091, security rule 10).
+#[tokio::test]
+async fn a_stranger_key_or_caps_leaves_no_row_and_draws_no_answer() {
+    let net = FakeNetwork::build(UTP_ONLY, false);
+    let nobody = |_: std::net::IpAddr| false;
+    let stranger = endpoint(9);
+    let now = Instant::now();
+    net.b
+        .on_datagram(stranger, &NattFrame::Key(hash(0x66)).encode(), &nobody, now)
+        .await;
+    assert_eq!(net.b.sender().key_for(stranger, now), None);
+
+    net.b
+        .on_datagram(stranger, &null_caps(), &nobody, now)
+        .await;
+    assert!(net.log.lock().expect("wire log").is_empty(), "no CAPS-ACK");
+}
+
+/// An expected address is still a claimed one, so CAPS frames from it draw
+/// one answer per window, the rate the KEY frame already keeps.
+#[tokio::test]
+async fn a_caps_flood_from_one_endpoint_draws_one_answer_per_window() {
+    let net = FakeNetwork::build(UTP_ONLY, false);
+    let source = endpoint(9);
+    let now = Instant::now();
+    for _ in 0..50 {
+        net.b
+            .on_datagram(source, &null_caps(), &any_source, now)
+            .await;
+    }
+    let answers = || net.log.lock().expect("wire log").len();
+    assert_eq!(answers(), 1);
+    net.b
+        .on_datagram(source, &null_caps(), &any_source, now + KEY_FRAME_INTERVAL)
+        .await;
+    assert_eq!(answers(), 2, "the window passed");
 }

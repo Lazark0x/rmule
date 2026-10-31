@@ -324,3 +324,51 @@ fn a_dialed_tunnel_spends_no_allowance() {
     assert_eq!(opened, Admission::Opened);
     drop(tunnels);
 }
+
+/// One bound for the whole front: however many spoofed sources speak, the key
+/// and negotiation tables hold no more rows than the allowance, a flood over
+/// it leaves none, and a row goes with its charge.
+#[test]
+fn what_a_flood_leaves_behind_is_bounded_by_the_allowance_and_goes_with_it() {
+    let now = Instant::now();
+    let mut registry = TunnelRegistry::new();
+    let hash = UserHash::from_bytes([0x66; UserHash::BYTE_LEN]);
+    for last in 0..=255u8 {
+        for port in 0..8 {
+            let peer = at(last, 1000 + port);
+            if registry.admit(peer, true, expected, now) != Admission::Drop {
+                registry.learn_key(peer, hash, now);
+                registry.negotiations.touch(peer, Default::default(), now);
+            }
+        }
+    }
+    assert_eq!(registry.keys.len(), UNIDENTIFIED_MAX);
+    assert_eq!(registry.negotiations.len(), UNIDENTIFIED_MAX);
+
+    registry.prune(now + OPENING_TTL);
+    assert!(registry.keys.is_empty(), "no key outlives its charge");
+    assert_eq!(registry.negotiations.len(), 0);
+}
+
+/// A hello ends the charge and keeps what the endpoint taught us; the key row
+/// then lives by its own window.
+#[test]
+fn an_identified_endpoints_rows_outlive_its_charge() {
+    let now = Instant::now();
+    let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
+    let peer = endpoint(1);
+    let hash = UserHash::from_bytes([0x66; UserHash::BYTE_LEN]);
+    let tunnel = {
+        let mut held = registry.lock().expect("registry");
+        held.admit(peer, true, expected, now);
+        held.learn_key(peer, hash, now);
+        drop(held);
+        HeldSlot::hold(&registry, peer)
+    };
+    registry.lock().expect("registry").identified(peer);
+    drop(tunnel);
+    assert_eq!(
+        registry.lock().expect("registry").key_for(peer, now),
+        Some(hash)
+    );
+}

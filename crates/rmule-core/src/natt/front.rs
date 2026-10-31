@@ -478,13 +478,8 @@ fn assemble<S: NattDatagramSink>(
     wiring: NattWiring,
 ) -> Result<Assembled<S>, NattStartError> {
     let sender = Arc::new(NattSender::new(sink, crypt));
-    let registry = Arc::new(std::sync::Mutex::new(TunnelRegistry::new()));
-    let demux = Arc::new(NattDemux::start(
-        identity,
-        own_hash,
-        sender,
-        Arc::clone(&registry),
-    )?);
+    let registry = sender.registry();
+    let demux = Arc::new(NattDemux::start(identity, own_hash, sender)?);
     let (risen_tx, risen_rx) = mpsc::channel(COMMAND_QUEUE_LEN);
     // The Awaited Inbound registry's report-back seam: the same channel
     // `PunchedPathGuard` closes with, so the adoption inbound triage confirms

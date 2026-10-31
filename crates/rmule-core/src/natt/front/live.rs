@@ -66,6 +66,9 @@ pub(super) struct Node {
     pub(super) port: u16,
     commands: mpsc::Sender<NattCommand>,
     pub(super) accepted: mpsc::Receiver<AdmittedPeer>,
+    /// The **Peer Roster** the front's admission reads, for a leg whose
+    /// counterparty no punch expects.
+    roster: crate::peer_roster::SharedPeerRoster,
     /// The one counter surface both halves of this node write: the client-UDP
     /// engine's inbox drops and the front's tunnel and retirement tallies. A
     /// leg reads it to say what the wire did rather than what it hoped.
@@ -157,6 +160,7 @@ impl Node {
             crate::adapters::HelloAdverts::default(),
         );
         let claims = crate::adapters::AwaitedInbound::default();
+        let roster = crate::peer_roster::SharedPeerRoster::default();
         let commands = spawn(
             ClientUdpNattSink(socket),
             NattIdentity {
@@ -177,7 +181,7 @@ impl Node {
                 admit,
                 claims: claims.clone(),
                 peer_pin: crate::adapters::SharedPeerPin::default(),
-                roster: crate::peer_roster::SharedPeerRoster::default(),
+                roster: roster.clone(),
                 diagnostics: diagnostics.clone(),
                 events: None,
                 prediction: None,
@@ -189,6 +193,7 @@ impl Node {
             port,
             commands,
             accepted,
+            roster,
             diagnostics,
             admit_tx,
             claims,
@@ -605,6 +610,10 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_published() {
     let probe_socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
         .await
         .expect("a loopback probe socket binds");
+    node.roster.mark_known(
+        crate::peer_roster::PeerRelation::Upload,
+        Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4662),
+    );
     let node_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, node.port));
     let probe_naming = |expected: UserHash| {
         NattFrame::Caps(CapsFrame {

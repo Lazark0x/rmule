@@ -43,13 +43,24 @@
 //! at the `ST_SYN`, so a slot that turned [`TunnelSlot::Held`] at the accept
 //! has proved nothing, and it spends the allowance until
 //! [`TunnelRegistry::identified`] says a hello read on it or its tunnel drops.
+//!
+//! # One ledger per endpoint
+//!
+//! The registry owns the **Key Frame** table and the **CAPS Negotiation** rows
+//! too, under one lock, because the allowance has to answer for them. A KEY or
+//! CAPS frame opens a slot exactly as an opening packet does, so it passes the
+//! same gate, and the rows it leaves behind go with the charge: those tables
+//! hold at most [`UNIDENTIFIED_MAX`] rows an unidentified source made.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{PeerEndpoint, UserHash};
+
+use super::keys::NattKeyTable;
+use super::negotiations::NegotiationTable;
 
 /// How long an endpoint stays admitted on the strength of an **inbound**
 /// opening packet alone. rmule's own bound, not the dialect's — eMuleAI defines
@@ -132,6 +143,10 @@ pub struct TunnelRegistry {
     unidentified: HashMap<IpAddr, usize>,
     /// The sum of `unidentified`.
     unidentified_total: usize,
+    /// What KEY frames taught us, and when we last asserted our own hash.
+    pub(super) keys: NattKeyTable,
+    /// Each endpoint's **CAPS Negotiation**.
+    pub(super) negotiations: NegotiationTable,
 }
 
 impl TunnelRegistry {
@@ -170,10 +185,11 @@ impl TunnelRegistry {
         Admission::Opened
     }
 
-    /// Expire inbound opening slots whose window has passed. Held and dialing
-    /// slots are untouched: each is ended by the guard that owns it — a held
-    /// one when its tunnel drops, whatever ended the tunnel, and a dial's by
-    /// the dial. The caller runs this on its own coarse tick.
+    /// Expire inbound opening slots whose window has passed, and key and
+    /// negotiation rows past theirs. Held and dialing slots are untouched:
+    /// each is ended by the guard that owns it — a held one when its tunnel
+    /// drops, whatever ended the tunnel, and a dial's by the dial. The caller
+    /// runs this on its own coarse tick.
     pub fn prune(&mut self, now: Instant) {
         let lapsed: Vec<PeerEndpoint> = self
             .slots
@@ -184,6 +200,22 @@ impl TunnelRegistry {
         for peer in lapsed {
             self.remove(peer);
         }
+        self.keys.prune(now);
+        self.negotiations.prune(now);
+    }
+
+    /// Adopt the hash a KEY frame carried, returning whether it was adopted:
+    /// a held endpoint refuses one that contradicts its live key (ADR-0091,
+    /// security rule 11).
+    pub fn learn_key(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) -> bool {
+        let held = self.slot(peer) == Some(TunnelSlot::Held);
+        self.keys.learn(peer, hash, held, now)
+    }
+
+    /// The hash to obfuscate a send to `peer` under, if any.
+    #[must_use]
+    pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
+        self.keys.key_for(peer, now)
     }
 
     /// Record that we are dialing `peer`, so the answer to our own opening
@@ -290,9 +322,9 @@ impl TunnelRegistry {
     }
 
     /// Put `entry` at `peer`, replacing whatever was there, with the allowance
-    /// kept in step.
+    /// kept in step. The endpoint is still spoken for, so its rows stay.
     fn insert(&mut self, peer: PeerEndpoint, entry: SlotEntry) {
-        self.remove(peer);
+        self.take(peer);
         if entry.unidentified {
             *self.unidentified.entry(peer.ip()).or_default() += 1;
             self.unidentified_total += 1;
@@ -300,14 +332,26 @@ impl TunnelRegistry {
         self.slots.insert(peer, entry);
     }
 
-    /// Forget `peer`'s slot, with the allowance kept in step.
+    /// Forget `peer`'s slot, and with an unidentified one the rows its frames
+    /// left: nothing an unidentified source made outlives its charge.
     fn remove(&mut self, peer: PeerEndpoint) {
-        let Some(entry) = self.slots.remove(&peer) else {
-            return;
-        };
-        if entry.unidentified {
+        if self.take(peer) {
+            self.keys.forget(peer);
+            self.negotiations.forget(peer);
+        }
+    }
+
+    /// Take `peer`'s slot out, with the allowance kept in step, returning
+    /// whether it was unidentified.
+    fn take(&mut self, peer: PeerEndpoint) -> bool {
+        let unidentified = self
+            .slots
+            .remove(&peer)
+            .is_some_and(|entry| entry.unidentified);
+        if unidentified {
             self.uncharge(peer.ip());
         }
+        unidentified
     }
 
     /// Give one unidentified endpoint at `ip` back to the allowance.

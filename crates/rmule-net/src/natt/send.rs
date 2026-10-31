@@ -14,7 +14,7 @@
 //! correct".
 
 use std::io;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -24,7 +24,7 @@ use rmule_primitives::{
     encrypt_datagram_client,
 };
 
-use super::keys::NattKeyTable;
+use super::registry::TunnelRegistry;
 
 /// The client-UDP send half, narrowed to what NAT-T needs. The production impl
 /// is the shared [`ClientUdpSocket`](crate::ed2k::ClientUdpSocket)'s Family
@@ -136,7 +136,7 @@ pub struct SentFrame {
 pub struct NattSender<S> {
     sink: S,
     crypt: Option<Box<dyn NattCrypt>>,
-    keys: Mutex<NattKeyTable>,
+    registry: Arc<Mutex<TunnelRegistry>>,
 }
 
 impl<S> std::fmt::Debug for NattSender<S> {
@@ -155,7 +155,7 @@ impl<S: NattDatagramSink> NattSender<S> {
         Self {
             sink,
             crypt,
-            keys: Mutex::new(NattKeyTable::new()),
+            registry: Arc::new(Mutex::new(TunnelRegistry::new())),
         }
     }
 
@@ -165,23 +165,20 @@ impl<S: NattDatagramSink> NattSender<S> {
         self.crypt.as_ref().map_or(0, |crypt| crypt.crypt_options())
     }
 
-    /// Adopt the hash an inbound KEY frame carried, unless `held` — the
-    /// endpoint holds a tunnel — and the hash contradicts the live one.
-    /// Returns whether it was adopted.
-    pub fn learn_key(&self, peer: PeerEndpoint, hash: UserHash, held: bool, now: Instant) -> bool {
-        self.keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned")
-            .learn(peer, hash, held, now)
+    /// The **Tunnel Registry** this path keys its sends from, the one ledger
+    /// the engines and the demux share.
+    #[must_use]
+    pub fn registry(&self) -> Arc<Mutex<TunnelRegistry>> {
+        Arc::clone(&self.registry)
     }
 
     /// The hash a send to `peer` would obfuscate under, if any — the
     /// observable the KEY-interplay tests read.
     #[must_use]
     pub fn key_for(&self, peer: PeerEndpoint, now: Instant) -> Option<UserHash> {
-        self.keys
+        self.registry
             .lock()
-            .expect("the NAT-T key table is never poisoned")
+            .expect("the NAT-T tunnel registry is never poisoned")
             .key_for(peer, now)
     }
 
@@ -299,9 +296,10 @@ impl<S: NattDatagramSink> NattSender<S> {
 
     /// A KEY frame claimed at `now` did not leave: give its window back.
     fn unclaim_key_frame(&self, peer: PeerEndpoint, now: Instant) {
-        self.keys
+        self.registry
             .lock()
-            .expect("the NAT-T key table is never poisoned")
+            .expect("the NAT-T tunnel registry is never poisoned")
+            .keys
             .unclaim_key_frame(peer, now);
     }
 
@@ -319,13 +317,16 @@ impl<S: NattDatagramSink> NattSender<S> {
         let Some(crypt) = self.crypt.as_deref().filter(|crypt| crypt.armed()) else {
             return (None, plain, false);
         };
-        let mut keys = self
-            .keys
-            .lock()
-            .expect("the NAT-T key table is never poisoned");
-        let key_frame = (opens && keys.claim_key_frame(peer, now))
-            .then(|| NattFrame::Key(crypt.own_user_hash()).encode());
-        let obfuscated = keys.key_for(peer, now).and_then(|peer_hash| {
+        let (claimed, peer_hash) = {
+            let mut registry = self
+                .registry
+                .lock()
+                .expect("the NAT-T tunnel registry is never poisoned");
+            let claimed = opens && registry.keys.claim_key_frame(peer, now);
+            (claimed, registry.key_for(peer, now))
+        };
+        let key_frame = claimed.then(|| NattFrame::Key(crypt.own_user_hash()).encode());
+        let obfuscated = peer_hash.and_then(|peer_hash| {
             let sender = crypt.sender_address(peer.family())?;
             Some(encrypt_datagram_client(
                 &plain,
@@ -336,7 +337,6 @@ impl<S: NattDatagramSink> NattSender<S> {
                 &crypt.nonce(),
             ))
         });
-        drop(keys);
         match obfuscated {
             Some(bytes) => (key_frame, bytes, true),
             None => (key_frame, plain, false),
@@ -496,7 +496,11 @@ mod tests {
     async fn a_learned_key_turns_the_very_next_transport_frame_obfuscated() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), false, now);
+        sender
+            .registry()
+            .lock()
+            .expect("registry")
+            .learn_key(peer(), hash(0x99), now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41, 0x00], false, now)
             .await
@@ -518,7 +522,11 @@ mod tests {
     async fn a_caps_frame_stays_plaintext_even_with_a_key_in_hand() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), false, now);
+        sender
+            .registry()
+            .lock()
+            .expect("registry")
+            .learn_key(peer(), hash(0x99), now);
         let frame = NattFrame::Key(hash(0x11));
         sender.send_frame(peer(), &frame).await.expect("recorded");
         let log = recorder.sent.lock().expect("recorder").clone();
@@ -541,7 +549,11 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), false, now);
+        sender
+            .registry()
+            .lock()
+            .expect("registry")
+            .learn_key(peer(), hash(0x99), now);
         let sent = sender
             .send_transport(peer(), NattFrameType::Utp, &[0x41], false, now)
             .await
@@ -591,7 +603,11 @@ mod tests {
             })),
         );
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), false, now);
+        sender
+            .registry()
+            .lock()
+            .expect("registry")
+            .learn_key(peer(), hash(0x99), now);
         let send = || sender.send_transport(peer(), NattFrameType::Utp, &[0x41], true, now);
 
         assert!(send().await.expect("recorded").obfuscated);
@@ -615,7 +631,11 @@ mod tests {
     fn the_poll_send_reports_the_payload_length_not_the_datagrams() {
         let (recorder, sender) = armed_sender();
         let now = Instant::now();
-        sender.learn_key(peer(), hash(0x99), false, now);
+        sender
+            .registry()
+            .lock()
+            .expect("registry")
+            .learn_key(peer(), hash(0x99), now);
         let waker = std::task::Waker::noop();
         let mut cx = Context::from_waker(waker);
         let payload = [0x41u8, 0x00, 0x01, 0x02];

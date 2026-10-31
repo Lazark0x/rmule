@@ -58,6 +58,7 @@
 
 mod demux;
 mod keys;
+mod negotiations;
 mod quic;
 mod registry;
 mod send;

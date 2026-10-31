@@ -10,6 +10,12 @@
 //!
 //! Explicit time throughout — the caller reads the clock, so the whole table
 //! is testable without sleeping.
+//!
+//! The table lives inside the **Tunnel Registry**. A KEY frame from an endpoint
+//! reaches it only past the registry's admission, a row an unidentified source
+//! made leaves with that source's charge on the **Unidentified Allowance**
+//! (ADR-0091, security rule 10), and expired rows go on the caller's tick,
+//! never per frame.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -66,7 +72,6 @@ impl NattKeyTable {
             return false;
         }
         self.entries.entry(peer).or_insert(EMPTY).learned = Some((hash, now));
-        self.prune(now);
         true
     }
 
@@ -85,14 +90,7 @@ impl NattKeyTable {
     /// Whether a KEY frame to `peer` is due, and record it if so. One call,
     /// one decision: a "may I?" that did not also claim the window would let
     /// two concurrent sends both pass it.
-    ///
-    /// A new endpoint prunes the table first. The trigger is a packet any
-    /// stranger can forge from any source, so without it a SYN flood grew one
-    /// row per spoofed source until some KEY frame happened to be learned.
     pub fn claim_key_frame(&mut self, peer: PeerEndpoint, now: Instant) -> bool {
-        if !self.entries.contains_key(&peer) {
-            self.prune(now);
-        }
         let entry = self.entries.entry(peer).or_insert(EMPTY);
         let due = entry
             .asserted_at
@@ -115,11 +113,15 @@ impl NattKeyTable {
         }
     }
 
+    /// Forget `peer`'s row.
+    pub fn forget(&mut self, peer: PeerEndpoint) {
+        self.entries.remove(&peer);
+    }
+
     /// Drop entries no longer doing anything: the learned hash has expired and
     /// the send window has too, so the row would be recreated identically on
-    /// the next datagram. Run on every `learn` and on every claim for a new
-    /// endpoint, so endpoint churn cannot grow the table without bound.
-    fn prune(&mut self, now: Instant) {
+    /// the next datagram. The caller runs this on its own coarse tick.
+    pub fn prune(&mut self, now: Instant) {
         self.entries.retain(|_, entry| {
             let hash_live = entry
                 .learned
@@ -268,13 +270,14 @@ mod tests {
         table.learn(endpoint(1), hash(1), false, now);
         assert_eq!(table.len(), 1);
         table.learn(endpoint(2), hash(2), false, now + LEARNED_HASH_TTL);
+        table.prune(now + LEARNED_HASH_TTL);
         assert_eq!(table.len(), 1, "endpoint 1 aged out on the prune");
         assert!(!table.is_empty());
     }
 
-    /// A flood of forged openers from distinct sources costs rows for one
-    /// window, not forever: the claim for a new endpoint prunes the ones whose
-    /// window has passed, with no KEY frame ever learned in between.
+    /// A flood of claims from distinct sources costs rows for one window, not
+    /// forever: the tick prunes the ones whose window has passed, with no KEY
+    /// frame ever learned in between.
     #[test]
     fn claims_from_a_forged_flood_age_out_without_a_learn() {
         let now = Instant::now();
@@ -284,6 +287,7 @@ mod tests {
         }
         assert_eq!(table.len(), 200);
         assert!(table.claim_key_frame(endpoint(201), now + KEY_FRAME_INTERVAL));
+        table.prune(now + KEY_FRAME_INTERVAL);
         assert_eq!(table.len(), 1, "only the fresh claim is left");
     }
 
