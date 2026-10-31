@@ -170,3 +170,34 @@ fn only_a_round_that_can_start_spends_the_clock() {
     assert_eq!(rounds.next_ask(start, true, &swept, &[], ext), None);
     assert!(rounds.next_ask(start, true, &swept, &queue, ext).is_some());
 }
+
+/// A run asks 800 s after its last ask; at the gate it keeps looking and asks
+/// once the file falls under it.
+#[test]
+fn a_run_asks_again_after_the_reask_and_only_under_the_gate() {
+    let start = Instant::now();
+    let sources = SourceCount::default();
+    let mut reask = TcpReask::default();
+    assert_eq!(reask.next_look(), None, "nothing owed before the first ask");
+    reask.asked(start);
+    let due = start + TCP_REASK;
+    assert_eq!(reask.next_look(), Some(due));
+    assert!(!reask.look(due - TICK, true, &sources));
+    sources.publish(TCP_SOURCE_GATE);
+    assert!(!reask.look(due, true, &sources));
+    let next = reask.next_look().expect("still looking");
+    assert!(next > due);
+    sources.publish(TCP_SOURCE_GATE - 1);
+    assert!(reask.look(next, true, &sources));
+}
+
+/// With no session the clock stops owing anything: the next session is an
+/// ask of its own, not a timer's.
+#[test]
+fn a_run_with_no_session_owes_no_reask() {
+    let start = Instant::now();
+    let mut reask = TcpReask::default();
+    reask.asked(start);
+    assert!(!reask.look(start + TCP_REASK, false, &SourceCount::default()));
+    assert_eq!(reask.next_look(), None);
+}

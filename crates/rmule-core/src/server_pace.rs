@@ -45,6 +45,14 @@ pub(crate) const KAD_SOURCE_GATE: u32 = 50;
 /// `PartFile.cpp:1547`, `Preferences.h:270`).
 pub(crate) const TCP_SOURCE_GATE: u32 = 270;
 
+/// aMule's `SERVERREASKTIME` (stock 2.3.3 `Constants.h:36`): how long a run
+/// waits before asking its session for the file's sources again.
+pub(crate) const TCP_REASK: Duration = Duration::from_secs(800);
+
+/// How soon a run past its re-ask looks again while its file sits at the
+/// gate; aMule looks on every pass of `CPartFile::Process`.
+const TCP_REASK_LOOK: Duration = Duration::from_secs(60);
+
 /// How many sources a run holds, published by the run and read by the roads
 /// that gate on it. One word per run, so a reader takes no lock of the run's.
 #[derive(Clone, Debug, Default)]
@@ -59,6 +67,45 @@ impl SourceCount {
     /// Whether the file holds fewer sources than `gate`.
     pub(crate) fn under(&self, gate: u32) -> bool {
         self.0.load(Ordering::Relaxed) < gate
+    }
+}
+
+/// One run's periodic TCP re-ask (ADR-0097): 800 s after its last ask, while
+/// the file is under the gate and a session is up. The clock is the run's, so
+/// it dies with the run: a Resume or a re-add asks at once, as aMule's
+/// `m_lastsearchtime` is zeroed at Resume and new for a new file (stock 2.3.3
+/// `PartFile.cpp:2472`). With no session it waits, as a new session is an ask
+/// of its own.
+#[derive(Debug, Default)]
+pub(crate) struct TcpReask {
+    next_look: Option<Instant>,
+}
+
+impl TcpReask {
+    /// The run asked at `now`.
+    pub(crate) fn asked(&mut self, now: Instant) {
+        self.next_look = Some(now + TCP_REASK);
+    }
+
+    /// When to look next; `None` while nothing is owed.
+    pub(crate) const fn next_look(&self) -> Option<Instant> {
+        self.next_look
+    }
+
+    /// The look at `now`: whether to ask, and when to look otherwise.
+    pub(crate) fn look(&mut self, now: Instant, session_up: bool, sources: &SourceCount) -> bool {
+        if !session_up {
+            self.next_look = None;
+            return false;
+        }
+        if self.next_look.is_some_and(|look| now < look) {
+            return false;
+        }
+        let ask = sources.under(TCP_SOURCE_GATE);
+        if !ask {
+            self.next_look = Some(now + TCP_REASK_LOOK);
+        }
+        ask
     }
 }
 

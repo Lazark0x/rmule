@@ -229,7 +229,7 @@ where
     // guard deregisters on any exit (including `?`-propagated failures). The
     // global channel ignores the size; the Kad channel carries it on the wire.
     // Both read the run's source count at their gate (ADR-0051).
-    let source_count = crate::server_pace::SourceCount::default();
+    let source_count = server_leg.source_count();
     let (global_sources_tx, mut global_sources_rx) = mpsc::channel(16);
     let _global_source_guard = register(
         &runner.rt.global_source_registry,
