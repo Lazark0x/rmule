@@ -136,22 +136,21 @@ fn on_test_volume() -> tempfile::TempDir {
     tempfile::tempdir_in(volume).unwrap()
 }
 
-/// Windows refuses to rename a directory holding an open file, so the path
-/// cannot go while the handle stays there.
-#[cfg(unix)]
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows refuses to rename a directory holding an open file"
+)]
 async fn a_path_gone_with_the_file_whole_is_no_loss() {
     path_gone_with_the_file_whole(&tempfile::tempdir().unwrap()).await;
 }
 
-#[cfg(unix)]
 #[tokio::test]
 #[ignore = "by hand, RMULE_TEST_VOLUME on an exFAT volume"]
 async fn a_path_gone_with_the_file_whole_is_no_loss_on_the_test_volume() {
     path_gone_with_the_file_whole(&on_test_volume()).await;
 }
 
-#[cfg(unix)]
 async fn path_gone_with_the_file_whole(dir: &tempfile::TempDir) {
     let parent = dir.path().join("mounted");
     std::fs::create_dir(&parent).unwrap();

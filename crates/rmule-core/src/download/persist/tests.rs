@@ -98,10 +98,11 @@ async fn a_write_the_volume_refuses_is_a_volume_stop_and_no_failed_part() {
     ));
 }
 
-/// Windows refuses to rename a directory holding an open file, so the path
-/// cannot go while the handle stays there.
-#[cfg(unix)]
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows refuses to rename a directory holding an open file"
+)]
 async fn an_absent_path_over_a_whole_file_drops_no_record() {
     let (runner, mut held) = context();
     let dir = tempfile::tempdir().unwrap();

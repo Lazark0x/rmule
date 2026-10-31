@@ -13,13 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-#[cfg(unix)]
-use rmule_core::VolumeStop;
 use rmule_core::{
     ContentFileStore, Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent,
     DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths, DownloadRepository,
     DurableDownloadRepository, HoleVerdict, PartFileChange, PartsLost, StorageIntegrityFault,
-    VerifiedPartRecord, open_durable_store,
+    VerifiedPartRecord, VolumeStop, open_durable_store,
 };
 use rmule_primitives::ED2K_PART_SIZE;
 use rmule_testkit::{FakeEd2kServer, ServingCore, file_link};
@@ -263,9 +261,11 @@ async fn a_part_file_longer_than_the_file_lands_no_trailing_bytes() {
 /// A parent directory renamed leaves the handle reading a whole file: no part
 /// is lost, the run pauses and says why, and with the directory back a resume
 /// goes on from what it held (ADR-0094, "A volume's refusal is a Volume Stop").
-/// Windows refuses to rename a directory holding an open file.
-#[cfg(unix)]
 #[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "Windows refuses to rename a directory holding an open file"
+)]
 async fn a_path_gone_over_a_whole_file_pauses_with_every_part_kept() {
     let mut leg = Leg::waiting_with_part_zero_in("mounted").await;
     let mounted = leg.part_path().parent().unwrap().to_path_buf();
