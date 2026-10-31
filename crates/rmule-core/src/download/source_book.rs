@@ -301,12 +301,8 @@ impl SourceBook {
             return false;
         };
         record.standing = None;
+        let spend = record.dead_spend();
         let candidate = record.candidate.take();
-        let spend = if candidate.is_some() {
-            Spend::DeadLowId
-        } else {
-            Spend::DeadHighId
-        };
         self.blocks.spend(endpoint, spend);
         if let Some(candidate) = candidate {
             self.blocks

@@ -13,6 +13,7 @@ use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint};
 use super::road::PendingRoad;
 use super::standing::Standing;
 use crate::download::source_ask_clock::AskFacts;
+use crate::download::spent_names::Spend;
 use crate::download::state::LowIdCandidate;
 
 /// A record's name inside one book, minted in sighting order, so a lower id is
@@ -190,6 +191,16 @@ impl Record {
             seed: None,
             asks: AskFacts::default(),
             advertised: None,
+        }
+    }
+
+    /// How long a dead source stays spent: a Low ID's window for a candidate
+    /// (`DeadSourceList.cpp:34-35`).
+    pub(super) const fn dead_spend(&self) -> Spend {
+        if self.candidate.is_some() {
+            Spend::DeadLowId
+        } else {
+            Spend::DeadHighId
         }
     }
 

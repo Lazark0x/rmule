@@ -107,8 +107,8 @@ pub(crate) const fn reask_period(reachable: bool) -> Duration {
 /// The period of a source holding no part we need: twice the base, whatever
 /// our reach, as it asks for parts and not for a slot (stock 2.3.3
 /// `PartFile.cpp:1439-1440`).
-pub(crate) fn no_needed_parts_period() -> Duration {
-    FILE_REASK_TIME * NO_NEEDED_PARTS_MULTIPLIER
+pub(crate) const fn no_needed_parts_period() -> Duration {
+    FILE_REASK_TIME.saturating_mul(NO_NEEDED_PARTS_MULTIPLIER)
 }
 
 /// What a worker's identity says a queue standing it earns carries past it

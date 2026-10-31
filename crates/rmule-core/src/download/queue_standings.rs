@@ -40,10 +40,9 @@ use crate::service::DownloadId;
 /// (`UploadClient.cpp:795-825`). Nothing of ours is asked inside it.
 pub(crate) const MIN_REQUEST_TIME: Duration = Duration::from_secs(590);
 
-/// How long a stamp no place carries any more is kept: two reask periods past
-/// the newest stamp, the longest a standing waits between asks (aMule
-/// `FILEREASKTIME * 2` for a source holding nothing we need).
-const STAMP_KEPT: Duration = Duration::from_millis(2 * 1_300_000);
+/// How long a stamp no place carries any more is kept, past the newest stamp:
+/// the longest a standing waits between asks.
+const STAMP_KEPT: Duration = no_needed_parts_period();
 
 /// How long a stamp with a score is kept: the uploader's own queue purge
 /// (`MAX_PURGEQUEUETIME`, `UploadQueue.cpp:86`), the shortest it can hold the
@@ -206,10 +205,10 @@ impl Stamp {
         }
     }
 
-    /// The peer was asked at `now`, by TCP or not.
-    fn asked(&mut self, now: Instant, tcp: bool) {
+    /// The peer was asked at `now`, as `ask` says.
+    fn asked(&mut self, now: Instant, ask: Ask) {
         self.asked_at = self.asked_at.max(now);
-        if tcp {
+        if ask != Ask::Ping {
             self.tcp_asked_at = self.tcp_asked_at.max(Some(now));
         }
     }
@@ -352,7 +351,7 @@ impl QueueStandings {
             let Some(asked) = place.asked else { continue };
             for name in &place.names {
                 let stamp = self.stamps.entry(*name).or_insert(Stamp::new(asked));
-                stamp.asked(asked, true);
+                stamp.asked(asked, Ask::Slot);
                 if stamp.named.is_none_or(|(_, at)| asked >= at) {
                     stamp.named = Some((file, asked));
                 }
@@ -422,7 +421,7 @@ impl QueueStandings {
         };
         for name in names {
             let stamp = self.stamps.entry(*name).or_insert(Stamp::new(now));
-            stamp.asked(now, ask != Ask::Ping);
+            stamp.asked(now, ask);
             stamp.score = score;
         }
     }

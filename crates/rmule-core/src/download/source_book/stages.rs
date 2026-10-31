@@ -225,12 +225,7 @@ impl SourceBook {
         let record = self.records.get_mut(&id)?;
         let hello_hash = record.stage.identity().map(PeerIdentity::user_hash);
         if failed {
-            let spend = if record.candidate.is_some() {
-                Spend::DeadLowId
-            } else {
-                Spend::DeadHighId
-            };
-            self.blocks.spend(endpoint, spend);
+            self.blocks.spend(endpoint, record.dead_spend());
             record.standing = None;
         }
         if record.standing.is_some() {
