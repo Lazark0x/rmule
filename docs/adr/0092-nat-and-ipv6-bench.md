@@ -125,8 +125,19 @@ fired against what left the gateway.
 
 ### Verdicts and claims
 
-- Verdicts are `PASS`, `OBSERVED`, `SMOKE` and documented absence. `SMOKE` is defined and not
-  implemented: no flow touches the public network.
+- A verdict is one typed word, written by one writer into one `<flow>-verdict.toml`:
+  `PASS`, `OBSERVED`, `FAIL`, `SKIPPED`, `NOT-RUN`, `NOT-DRAWN`, `BLOCKED`, `TCP_OPEN` or
+  `SMOKE`. `SMOKE` is defined and not implemented: no flow touches the public network. A
+  word outside that list, or a file that is not TOML, stops the writer.
+- **`PASS` means every claim the run owes held, and a claim that was not drawn is not one
+  that held.** A run with nothing judged, or a run that left a required leg undriven, reads
+  `OBSERVED`. Bytes the scorer could not read are `FAIL` where an absence claim would
+  otherwise read them as silence.
+- **The run's `outcome` comes from its verdict words.** Any `FAIL` is `fail`, even when the
+  flow also returned an error; an error with no `FAIL` is `error`; no verdict is `unknown`;
+  all `SKIPPED` is `skip`; only `PASS`, with or beside `SKIPPED`, is `pass`; anything else is
+  `observed`. The harness exits non-zero on `fail` and `error`, on a re-score as well, so
+  exit status and `outcome` never disagree with the file a person would open.
 - **A documented absence holds only on its own measured zero.** A claim takes the measured
   count of what it names: held on `0`, absent on a positive count or on `-1` (never measured).
   A sum with one unmeasured operand is `-1`. A counter a missed snapshot never filled is `-1`,

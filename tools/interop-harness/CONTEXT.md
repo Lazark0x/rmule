@@ -119,10 +119,13 @@ absent as precisely as from what is present.
 _Avoid_: metric, assertion, check
 
 **Verdict**:
-The TOML a flow writes into its run dir (and prints) recording what it observed, leg
-by leg. `PASS` means the counterparty did the thing. `OBSERVED` is the honest partial:
-the topology stood up and the counterparty engaged, but the target exchange did not
-fire in-window. A verdict never reports a number it did not measure.
+The `<flow>-verdict.toml` a flow writes into its run dir (and prints) recording what
+it observed, leg by leg, under one typed word from `verdict::Verdict`; `verdict::write`
+is the only writer and refuses anything else. `PASS` means the counterparty did the
+thing and every claim the run owes held. `OBSERVED` is the honest partial: the topology
+stood up and the counterparty engaged, but the target exchange did not fire in-window,
+or a required leg was never driven. `FAIL` makes the harness exit non-zero. A verdict
+never reports a number it did not measure.
 _Avoid_: result, report, assertion, status
 
 **Documented Absence**:
@@ -235,8 +238,9 @@ _Avoid_: publish window, sleep, warm-up
 The `run.toml` the harness itself writes into every Run Dir: when the run began and
 ended, the commit and dirty state of the harness workspace, the hash of the `rmule-tools`
 binary (or the id of the Driver Image) under test, the ids of the images the run started,
-and how it ended. It is what lets "mine before running" tell an unchanged build from a
-changed one; a re-score only appends `rescored_at`.
+and how it ended (`outcome`: `pass`, `observed`, `fail`, `skip`, `error`, or `unknown`
+when the run wrote no verdict). It is what lets "mine before running" tell an unchanged
+build from a changed one; a re-score only appends `rescored_at`.
 _Avoid_: run metadata, resolved config (that is the flow's options only)
 
 **Driver Image**:
