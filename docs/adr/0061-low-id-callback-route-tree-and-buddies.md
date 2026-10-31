@@ -39,11 +39,16 @@ Wire facts the captures pinned:
   eMule 0.70b `Search.cpp:666-691`, eMuleAI `Search.cpp:883-913`). A firewalled publisher
   whose UDP is verified open publishes type 6 instead, tested before the buddy slot
   (`Search.cpp:821-839`).
-- `TAG_BUDDYHASH` is `~publisherKadID` as hex, spelled two ways: aMule (`ToByteArray`,
-  big-endian) and emule-qt (`toHexString`) write upper-case big-endian; eMule 0.70b and
-  eMuleAI write `GetData()`, the raw word-ordered bytes. On a little-endian host the two
-  differ by a per-word byte swap, so the two families cannot address each other's
-  buddies.
+- `TAG_BUDDYHASH` is `~publisherKadID` as upper-case hex, in one of two layouts a per-word
+  byte swap apart on a little-endian host. The **eMule layout** is `GetData()`, the ID's
+  wire bytes: eMule 0.70b, eMuleAI, aMule from 3.2.0 (`6f47e2bad1`) and emule-qt from
+  `3ba9a4d4e0`. The **aMule layout** is `ToByteArray`, big-endian: aMule through 3.1.0, kno
+  `ab483654` and emule-qt `73fff714`. A row does not say which it is, and a source whose
+  check is exact (every eMule, aMule through 3.1.0) drops a `0x99` in the other layout.
+- The `0x94`'s leading ID is not `TAG_BUDDYHASH`: it is the big-endian bytes in every
+  family. aMule stores the ID by `ToByteArray` from either end (`ClientList.cpp:929-930`,
+  `DownloadQueue.cpp:1615-1616`) and writes and compares it raw (`ClientUDPSocket.cpp:390`
+  at 3.1.0).
 - Stock aMule 2.3.3 publishes a firewalled node's sources only with its buddy connected
   (`SharedFileList.cpp:773`); it has no direct-callback branch in its publish gate.
 
@@ -189,7 +194,7 @@ in no server's namespace, so the server road is refused for it.
   | `TAG_SOURCETYPE` `0xFF` | `UINT8` | 3, or 5 above the u32 size range |
   | `TAG_SERVERIP` `0xFB` | `UINT32` | the buddy's IPv4 as the eD2k address word, swapped by neither side |
   | `TAG_SERVERPORT` `0xFA` | `UINT16` | the buddy's UDP port |
-  | `TAG_BUDDYHASH` `0xF8` | `STRING(32)` | upper-case big-endian hex of `~publisherKadID` |
+  | `TAG_BUDDYHASH` `0xF8` | `STRING(32)` | upper-case hex of `~publisherKadID`, eMule layout |
   | `TAG_SOURCEPORT` `0xFD` | `UINT16` | our eD2k TCP port |
   | `TAG_FILESIZE` `0x02` | `UINT32`, `UINT64` past `u32::MAX` | for a v2+ storer |
   | `TAG_ENCRYPTION` `0xF3` | `UINT8` | the connect-options byte, last |
@@ -223,17 +228,25 @@ in no server's namespace, so the server road is refused for it.
 
 `rmule_kad::KadSourceRowFacts` projects the whole row. `TAG_SERVERIP` is read as the eD2k
 word, unswapped, while the storer-synthesised `SOURCEIP` is in Kad host order and swapped
-back (`DownloadQueue.cpp:1713`). `TAG_BUDDYHASH` is **read in both spellings and written in
-one**:
+back (`DownloadQueue.cpp:1713`). `TAG_BUDDYHASH` is **written in the eMule layout, what every
+current family reads, and read in both**:
 
-- The aMule reading is the primary buddy ID and the other spelling the
-  `fallback_buddy_id()`. When the whole callback wait lapses with no dial-back, rmule sends
-  **one** more `0x52` under the fallback (same buddy, file and port) and re-arms the wait;
-  never both at once. Only for a buddy with a known endpoint: a buddy named by ID alone gets
-  no second Callback Walk.
-- A relayed `0x99` whose check inverts to our Kad ID in either spelling is ours. An open
-  node accepts either spelling of its registered buddy on a `0x52` and relays it verbatim,
-  never rewriting the check ID; the `0x94` keeps its exact match.
+- The eMule reading is the primary buddy ID and the aMule reading the
+  `fallback_buddy_id()`, the order aMule 3.2.0 tries them in. When the whole callback wait
+  lapses with no dial-back, rmule sends **one** more `0x52` under the fallback (same buddy,
+  file and port) and re-arms the wait; never both at once. Only for a buddy with a known
+  endpoint: a buddy named by ID alone gets no second Callback Walk.
+- A relayed `0x99` whose check inverts to our Kad ID in either layout is ours. An open
+  node accepts either layout of its registered buddy on a `0x52` and a `0x94`, and relays
+  a `0x52` under the ID it registered, which any source's check takes: an older client's
+  exact check included, so one current buddy repairs every pair. aMule 3.2.0's buddy does
+  the same (`KadBuddyCallback.h`).
+- rmule's own `0x94`, a reask or a rendezvous, names the buddy by the row's ID in
+  big-endian bytes, the form a buddy of any family stored.
+- A stock aMule through 3.1.0 reading our row reads the other layout. Its `0x52` still
+  arrives, because no buddy of its age filters that field and our `0x99` check takes
+  either; its `0x94` through a buddy of its age is dropped, and it falls back to a
+  callback. One row carries one string, so writing both is not on offer.
 - Counters (`SessionCounters::buddy_hash_spelling`): `callback_fallback_spelling_sent_total`,
   `relayed_callbacks_swapped_spelling_total`, `buddy_relays_swapped_spelling_total`.
 
@@ -250,9 +263,10 @@ one**:
   the buddy's Kad ID, relayed by rmule; both type-6 rows; and a firewalled aMule's type-5
   row for a file past 4 GiB, its `TAG_FILESIZE` a `UINT64`, which rmule writes back byte
   for byte.
-- Still source-derived: the fallback-spelling `0x52` (it needs an eMule 0.70b or eMuleAI
-  body; emule-qt writes aMule's spelling), and a `0x99` relayed by aMule over a link rmule
-  serves.
+- Still source-derived: an eMule-layout row read off a third body (it needs an eMule 0.70b,
+  eMuleAI, aMule 3.2.0 or current emule-qt body), the fallback `0x52` against a stock
+  aMule's own row behind a stock aMule buddy, rmule's `0x94` through a stock aMule buddy,
+  and a `0x99` relayed by aMule over a link rmule serves.
 - The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form), and its
   dial-back is proven on the bench: a High-ID stock aMule downloaded a byte-equal file from
   a Low-ID rmule through ed2k-server over rmule's dial-back alone (`server-callback-serve`,
@@ -275,11 +289,15 @@ one**:
   bounds the flood, and the floor drops pings unanswered.
 - **A two-minute keepalive.** Rejected: aMule's answering floor drops four of five such
   pings, so it spends frames to learn nothing.
-- **Rewriting a swapped-spelling `0x52` to the registered ID while relaying.** Rejected:
-  the relayed `0x99` equalling the `0x52`'s bytes is a captured aMule fact; the repair
-  belongs upstream.
-- **A second Callback Walk toward the swapped ID.** Rejected: the walk is the expensive
-  road, and every eMule-spelled row is still a source reading.
+- **Relaying a `0x52` verbatim, as aMule through 3.1.0 does.** Rejected: the buddy holds
+  the one ID every source's check takes, and a verbatim relay of the other layout reaches
+  an exact check only to be dropped there.
+- **Keeping aMule's layout for stock 2.3.3's sake.** Rejected: rmule would be alone in it
+  among the current families, and the stock reader is served anyway by our `0x99` check.
+- **Sending both forms of a `0x52` at once.** Rejected: eMule's Kad flood protection allows
+  about one a minute per address, and a source could dial back twice.
+- **A second Callback Walk toward the other layout.** Rejected: the walk is the expensive
+  road.
 - **Writing `TAG_ENCRYPTION` as 0 when no byte is known, or a self-declared
   `TAG_SOURCEUPORT`.** Rejected: the first states "no crypt, no NAT-T, no direct callback"
   as a fact; the second overwrites the storer's correct observation with a port nothing
