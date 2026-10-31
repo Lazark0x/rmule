@@ -121,7 +121,7 @@ fn a_requiring_target_passes_on_an_obfuscated_burst_and_fails_on_a_plain_one() {
             ]),
         )
     };
-    let obfuscated = run(0, 19);
+    let obfuscated = run(2, 32);
     assert_eq!(named(&obfuscated, claim).outcome, "held", "{obfuscated:?}");
     assert_eq!(
         named(
@@ -132,7 +132,7 @@ fn a_requiring_target_passes_on_an_obfuscated_burst_and_fails_on_a_plain_one() {
         "held",
         "an obfuscated burst is a burst: {obfuscated:?}"
     );
-    let plain = run(19, 0);
+    let plain = run(32, 0);
     assert_ne!(named(&plain, claim).outcome, "held", "{plain:?}");
     let untouched = punch_wire_claims(
         NattFlow::ServerPunchCone,

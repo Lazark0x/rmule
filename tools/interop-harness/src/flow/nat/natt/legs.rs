@@ -652,6 +652,10 @@ fn sum_rows(wire: &[WireRow], prefix: &str) -> i64 {
 /// The server's tap: rmule's `0x60` in, the server's own `0x61` to both
 /// peers, and the keepalive cadence that makes an observed port fresh enough
 /// to introduce.
+/// One punch's datagrams: `natt::rendezvous`'s burst, the port and its
+/// neighbours.
+const PUNCH_BURST_DATAGRAMS: i64 = 32;
+
 fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
     let cone = flow != NattFlow::ServerPunchSymmetric;
     let plain_punches: i64 = sum_rows(wire, "holepunch-datagrams-from-");
@@ -730,12 +734,14 @@ fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
         let obfuscated_from_requester = packets(wire, "obfuscated-punch-from-a");
         claims.push(Claim::about(
             "a-target-that-requires-the-crypt-layer-is-punched-through-it",
-            obfuscated_from_requester >= 1 && plain_from_requester == 0,
+            obfuscated_from_requester >= PUNCH_BURST_DATAGRAMS,
             Evidence::RmuleOnly,
             format!(
                 "the requester's burst at the target crossed its WAN tap as \
-                 {obfuscated_from_requester} obfuscated datagrams and \
-                 {plain_from_requester} plain `0xA1`; byte 29 of the `0x61` is what told it",
+                 {obfuscated_from_requester} obfuscated datagrams of {PUNCH_BURST_DATAGRAMS}; \
+                 byte 29 of the `0x61` is what told it. The {plain_from_requester} plain `0xA1` \
+                 beside them are the tunnel's path keepalive, which the row cannot tell \
+                 from a burst by count",
             ),
         ));
     }
