@@ -510,11 +510,7 @@ fn a_callback_that_lands_first_emits_no_fallback() {
         state.on_tick(t0() + CALLBACK_SILENCE_FALLBACK).is_empty(),
         "an adopted callback has nothing to fall back from"
     );
-    assert_eq!(
-        state.next_wake(),
-        Some(t0() + FILE_REASK_TIME),
-        "no deadline is left"
-    );
+    assert_eq!(state.next_wake(), None, "no deadline is left");
 }
 
 /// ADR-0091: the **Traversal Attempt** the fallback began has

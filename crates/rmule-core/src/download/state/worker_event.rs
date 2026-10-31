@@ -61,6 +61,7 @@ impl DownloadState {
         event: PeerWorkerEvent,
     ) -> Vec<Decision> {
         let mut out = Vec::new();
+        self.sources.turn_spent(now);
         self.note_seed_fact(peer, &event);
         match event {
             // The worker's slot ask waits for its Advertised Parts and its
@@ -74,10 +75,11 @@ impl DownloadState {
                         phase: WorkerPhase::AskingFile,
                     });
                 }
-                // While the vote runs — no root yet, or a Kad root it may
-                // contest — ask this peer for the file's master hash to feed it
-                // (ADR-0038). Once the vote commits we stop asking.
-                if self.aich_root.vote_runs() {
+                // Ask this peer for the file's master hash, as stock's file
+                // request does (`DownloadClient.cpp:SendFileRequest`): it feeds
+                // the vote, and a recovery ask goes only to a peer stating the
+                // trusted root (ADR-0038). A contested file has neither.
+                if self.aich_root.wants_roots() {
                     out.push(Decision::Send {
                         peer,
                         command: PeerWorkerCommand::RequestAichFileHash,
@@ -295,24 +297,32 @@ impl DownloadState {
                 let Some(assembled) = assembled else {
                     return out;
                 };
-                // With a trusted AICH root and the completing peer still
-                // connected, recover at block granularity (ADR-0038): ask that
-                // peer for the part's recovery data and hold the corrupt buffer
-                // (with its provenance) until `on_aich_answer`, the part still
-                // verifying so none of its blocks is handed meanwhile. Without
-                // a root, its refetch attributes it (ADR-0117 §1).
-                match self.aich_root.trusted() {
-                    Some(root) if self.worker_slots.contains_key(&peer) => {
-                        self.awaiting_recovery.insert(part_index, (peer, assembled));
+                // With a trusted AICH root and a peer stating it past its
+                // clock, recover at block granularity (ADR-0038): ask it for
+                // the part's recovery data and hold the corrupt buffer (with
+                // its provenance) until `on_aich_answer`, the part still
+                // verifying so none of its blocks is handed meanwhile. With
+                // none, its refetch attributes it (ADR-0117 §1).
+                let asker = self
+                    .aich_root
+                    .trusted()
+                    .and_then(|root| Some((root, self.recovery_asker(now, root, peer)?)));
+                match asker {
+                    Some((root, asker)) => {
+                        if let Some(place) = self.sources.dial_place(asker) {
+                            self.standings.asked(&place.names, now);
+                        }
+                        self.awaiting_recovery
+                            .insert(part_index, (asker, assembled));
                         out.push(Decision::Send {
-                            peer,
+                            peer: asker,
                             command: PeerWorkerCommand::RequestAich {
                                 part: part_index as u16,
                                 root,
                             },
                         });
                     }
-                    _ => self.refetch_rootless(now, part_index, &assembled, &mut out),
+                    None => self.refetch_rootless(now, part_index, &assembled, &mut out),
                 }
             }
         }

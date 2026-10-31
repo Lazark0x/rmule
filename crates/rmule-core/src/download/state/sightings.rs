@@ -146,6 +146,7 @@ impl DownloadState {
         sightings: impl IntoIterator<Item = SourceSighting>,
         gate: &Gate<'_>,
     ) -> Taken {
+        self.sources.turn_spent(now);
         // aMule stamps both clocks on any answer, empty or not (stock 2.3.3
         // `ClientTCPSocket.cpp:1513-1515`, ADR-0108).
         if let Channel::Exchanged(peer) = channel {

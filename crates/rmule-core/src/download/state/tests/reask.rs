@@ -25,6 +25,7 @@ mod no_needed_parts;
 mod on_queue;
 mod purge;
 mod redial;
+mod spent;
 mod standing;
 
 /// Our reask position with no client-UDP socket: every reask is a TCP full
@@ -448,7 +449,7 @@ fn a_file_not_found_reply_for_the_last_source_ends_the_run() {
 /// A `0x92` spends the source for this download, as aMule dead-lists it
 /// (ADR-0090): its record leaves the book, nothing is reasked, and a sighting
 /// of it — at its endpoint or by the User Hash its hello named — is refused
-/// until two spent turns have passed.
+/// for stock's per-file 45 minutes.
 #[test]
 fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
     let mut state = standing();
@@ -458,11 +459,7 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
         DownloadEvent::SourceReaskDropped { peer: p, .. } if *p == peer(1)
     ));
     assert_eq!(state.known_sources(), 0);
-    assert_eq!(
-        state.next_wake(),
-        Some(t0() + FILE_REASK_TIME),
-        "the spent turn alone"
-    );
+    assert_eq!(state.next_wake(), None, "no timer runs for a spent name");
     assert!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
             .is_empty(),
@@ -483,13 +480,13 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
         "its User Hash is spent too"
     );
 
-    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    let _ = state.on_tick(t0() + Duration::from_secs(44 * 60));
     assert!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
             .is_empty(),
-        "one turn later it is still spent"
+        "a minute short of its window it is still spent"
     );
-    let later = t0() + FILE_REASK_TIME * 2;
+    let later = t0() + Duration::from_secs(45 * 60);
     let _ = state.on_tick(later);
     assert_eq!(
         spawned(
@@ -502,7 +499,7 @@ fn a_file_not_found_reply_spends_the_source_for_the_re_ask_period() {
             .decisions
         ),
         vec![peer(1)],
-        "two turns later it is a source again"
+        "past its window it is a source again"
     );
 }
 

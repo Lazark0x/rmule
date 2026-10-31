@@ -34,7 +34,9 @@ impl SourceBook {
         }
         Some(Place {
             names: self.ask_names(record, &self.user_hashes(record)),
-            asked: record.last_ask,
+            asked: record
+                .last_ask
+                .filter(|_| record.standing.is_none_or(|standing| standing.queued())),
             needs_parts: record
                 .standing
                 .is_none_or(|standing| standing.needs_parts()),

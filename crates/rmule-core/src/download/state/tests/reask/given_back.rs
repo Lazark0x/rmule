@@ -91,14 +91,13 @@ fn a_granted_worker_with_no_part_free_gives_its_slot_back_onto_the_ordinary_cade
         "the row keeps why it left"
     );
     assert!(
-        verified.iter().any(|d| matches!(
-            d,
-            Decision::Emit(DownloadEvent::SourceRemoteQueued { peer: p, rank: None, .. })
-                if *p == peer(1)
-        )),
-        "{verified:?}"
+        !verified
+            .iter()
+            .any(|d| matches!(d, Decision::Emit(DownloadEvent::SourceRemoteQueued { .. }))),
+        "the uploader dropped it at our cancel: {verified:?}"
     );
     assert!(state.remote_queued().any(|at| at == peer(1)));
+    assert_eq!(state.source_activity().queued, 0);
     assert!(!state.sources.is_spent(peer(1)));
     assert!(
         state.is_working(peer(2)),

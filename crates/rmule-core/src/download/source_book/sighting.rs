@@ -121,7 +121,10 @@ impl SourceBook {
         let spent_hash = candidate
             .user_hash
             .is_some_and(|hash| self.blocks.is_spent(AskName::User(hash)));
-        if spent_hash || low_id_name(&candidate).is_some_and(|name| self.blocks.is_spent(name)) {
+        if spent_hash
+            || low_id_name(&candidate).is_some_and(|name| self.blocks.is_spent(name))
+            || self.blocks.is_spent(AskName::LowId(candidate.key()))
+        {
             return Sighted::Blocked(Blocked::Spent);
         }
         if let (Some(hash), Some(buddy)) = (candidate.user_hash, candidate.buddy)

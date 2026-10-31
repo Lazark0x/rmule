@@ -63,6 +63,7 @@ pub(crate) use self::standing::{
 };
 use crate::adapters::CallbackKey;
 use crate::download::source_ask_clock::{FileAskClock, SourceCounts};
+use crate::download::spent_names::{Spend, SpentSeat};
 use crate::download::state::{LowIdCandidate, LowIdRoad};
 
 /// What one sighting did to the book.
@@ -268,7 +269,7 @@ impl SourceBook {
         }
     }
 
-    /// Whether `endpoint` sits out a re-ask period (ADR-0090 invariant 3).
+    /// Whether `endpoint` sits out its dead-source window (ADR-0090 invariant 3).
     pub(crate) fn is_spent(&self, endpoint: PeerEndpoint) -> bool {
         self.blocks.is_spent(endpoint)
     }
@@ -278,16 +279,40 @@ impl SourceBook {
         self.blocks.distrusts(user_hash)
     }
 
-    /// The brain's tick at `now`: once a `FILEREASKTIME` period has passed,
-    /// endpoints spent two periods ago may be dialed again when next sighted.
-    /// Nothing is re-pooled here. The first instant starts the period.
+    /// The brain reached the book at `now`: spent names read and write on this
+    /// clock. Nothing is re-pooled here.
     pub(crate) fn turn_spent(&mut self, now: Instant) {
-        self.blocks.turn_at(now);
+        self.blocks.clock(now);
     }
 
-    /// When the spent endpoints' generations next turn.
-    pub(crate) fn next_spent_turn(&self) -> Option<Instant> {
-        self.blocks.next_turn()
+    /// Read and write spent names in the node's registry through `spent`.
+    pub(crate) fn share_spent(&mut self, spent: SpentSeat) {
+        self.blocks.share_spent(spent);
+    }
+
+    /// The live worker at `endpoint` closed after the hello with its file
+    /// request unanswered and no standing: stock's `DS_CONNECTED` close, dead
+    /// and removed (`BaseClient.cpp:1288-1293`). The record is spent, and its
+    /// candidate goes with it, so no road reopens it. Whether it was.
+    pub(crate) fn closed_unanswered(&mut self, endpoint: PeerEndpoint) -> bool {
+        let Some(record) = self.live_record_mut(endpoint) else {
+            return false;
+        };
+        if record.standing.is_some() {
+            return false;
+        }
+        let candidate = record.candidate.take();
+        let spend = if candidate.is_some() {
+            Spend::DeadLowId
+        } else {
+            Spend::DeadHighId
+        };
+        self.blocks.spend(endpoint, spend);
+        if let Some(candidate) = candidate {
+            self.blocks
+                .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
+        }
+        true
     }
 
     /// Whether `endpoint`'s record came from a seed at that endpoint.
@@ -471,8 +496,11 @@ impl SourceBook {
         {
             hashes.push(queued_under.user_hash);
         }
+        let spend = Spend::NoFile {
+            low_id: record.candidate.is_some(),
+        };
         for name in self.ask_names(record, &hashes) {
-            self.blocks.spend(name);
+            self.blocks.spend(name, spend);
         }
         self.remove(id);
     }

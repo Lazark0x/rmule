@@ -243,8 +243,13 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
     for (start, end) in [(0, 3 * B), (3 * B, file)] {
         let _ = deliver(&mut state, peer(1), (start, end), true);
     }
-    let failed = state.on_persist_result(
+    let _ = state.on_worker_event(
         t0(),
+        peer(1),
+        PeerWorkerEvent::AichFileHashReceived { root },
+    );
+    let failed = state.on_persist_result(
+        t0() + MIN_REQUEST_TIME,
         0,
         peer(1),
         Err(DownloadFailure::PartVerificationFailed),

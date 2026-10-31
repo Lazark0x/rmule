@@ -76,7 +76,13 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   link's `h=` is already in the row's canonical link; the vote's root is not kept.
 - **AICH changes only the failure path.** MD4 still defines "verified". When a part fails
   MD4 and a trusted root exists, core requests the part's recovery data
-  (`0x9B` → `0x9C`), hashes each block, and finds the corrupt ones. `PartAssembly` records
+  (`0x9B` → `0x9C`), hashes each block, and finds the corrupt ones. The ask goes to a
+  connected peer that stated that root, with none of ours out, past the peer's clock
+  (ADR-0107 invariant 14): 3.1.0 and kno score it (`ClientTCPSocket.cpp:1768`), so it stamps
+  the peer, and the peer asked longest ago goes first, as stock's random pick among such
+  peers spreads its asks (3.1.0 `PartFile.cpp:3994-4047`). So `0x9E` goes to every peer while
+  the file is not contested, as stock's file request carries it; with no such peer the part
+  takes its refetch. `PartAssembly` records
   every worker that wrote a byte into each block's cell (ADR-0117); repair drops only the
   corrupt cells from the part's **Arrived Ranges**, retires the workers that wrote into
   them, and distrusts a corrupt cell's sole writer. The dropped blocks are handed again to

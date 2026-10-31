@@ -64,6 +64,12 @@ impl AichRootAuthority {
     pub(crate) const fn vote_runs(self) -> bool {
         matches!(self, Self::Rootless | Self::Kad(_))
     }
+
+    /// Whether each peer's root is still wanted: the vote reads it, and a
+    /// recovery ask goes only to a peer stating the trusted root.
+    pub(crate) const fn wants_roots(self) -> bool {
+        !matches!(self, Self::Contested)
+    }
 }
 
 /// The **Qualified Kad Root** of a Kad keyword result (ADR-0038): its one
@@ -117,6 +123,7 @@ impl DownloadState {
         root: AichRootHash,
         out: &mut Vec<Decision>,
     ) {
+        self.aich_stated.insert(peer, root);
         if !self.aich_root.vote_runs() {
             return;
         }
@@ -148,6 +155,35 @@ impl DownloadState {
             };
         }
     }
+    /// Who to ask for `root`'s recovery data at `now`, `completing` having
+    /// finished the part: a connected worker stating `root`, with no recovery
+    /// ask of ours out and past the peer's clock (ADR-0107 invariant 14), the
+    /// peer asked longest ago first, so asks spread as stock's random pick
+    /// spreads them (3.1.0 `PartFile.cpp:3994-4047`).
+    pub(super) fn recovery_asker(
+        &self,
+        now: Instant,
+        root: AichRootHash,
+        completing: PeerEndpoint,
+    ) -> Option<PeerEndpoint> {
+        self.connected_workers()
+            .into_iter()
+            .filter(|peer| self.aich_stated.get(peer) == Some(&root))
+            .filter(|peer| {
+                !self
+                    .awaiting_recovery
+                    .values()
+                    .any(|(asked, _)| asked == peer)
+            })
+            .filter_map(|peer| {
+                let place = self.sources.dial_place(peer)?;
+                (!self.standings.clock_holds(&place, now))
+                    .then(|| (self.standings.last_ask(&place), peer != completing, peer))
+            })
+            .min_by_key(|&(asked, other, _)| (asked, other))
+            .map(|(.., peer)| peer)
+    }
+
     /// Resume after a peer answered our `OP_AICHREQUEST` for `part_index`
     /// (ADR-0038). Verify the recovery data against the trusted root; if it
     /// localizes corrupt blocks, drop exactly those blocks from the part's

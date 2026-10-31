@@ -370,6 +370,7 @@ impl DownloadState {
         self.wants.remove(&peer);
         self.handouts.remove(&peer);
         self.delivered.remove(&peer);
+        self.aich_stated.remove(&peer);
         let holds_slot = self.slot_asks.holds_slot(peer);
         let granted = self.slot_asks.granted(peer);
         self.delivery.remove(&peer);
@@ -380,8 +381,8 @@ impl DownloadState {
             // at rank 0, and reasks at twice the period, over TCP (aMule
             // `DS_NONEEDEDPARTS`, ADR-0112). One that gave back a granted
             // slot with no part free earns a standing on the ordinary cadence,
-            // and so does one whose link failed or whose slot stalled while it
-            // transferred, dated at its last ask (aMule `DS_DOWNLOADING` →
+            // naming no place, and one whose link failed or whose slot stalled while it
+            // transferred earns one dated at its last ask (aMule `DS_DOWNLOADING` →
             // `DS_ONQUEUE`). Any other end is the standing's (ADR-0090, "How a
             // worker ends, and what its record keeps").
             match reason {
@@ -396,7 +397,7 @@ impl DownloadState {
                 | PeerRetirementReason::LinkEnded
                 | PeerRetirementReason::OnPeersClock => {}
                 PeerRetirementReason::NoNeededParts => self.sources.no_needed_parts(peer, now),
-                PeerRetirementReason::NoFreePart => self.sources.on_queue(peer, now),
+                PeerRetirementReason::NoFreePart => self.sources.gave_back(peer, now),
                 _ => self.sources.end_standing(peer),
             }
             // A worker that gave way in a merge left the book already: its
@@ -417,6 +418,14 @@ impl DownloadState {
                 // A source that said it lacks the file, or proved to be this
                 // node, is spent under every name its record holds, whichever
                 // road reached it (ADR-0090).
+                // One that closed after the hello with its file request
+                // unanswered is dead, as stock's `DS_CONNECTED` close has it.
+                if reason == PeerRetirementReason::PeerDisconnected
+                    && !failed
+                    && self.sources.worker_parts(peer).is_none()
+                {
+                    self.sources.closed_unanswered(peer);
+                }
                 let end = if matches!(
                     reason,
                     PeerRetirementReason::FileNotFound | PeerRetirementReason::OurOwnNode
@@ -430,7 +439,9 @@ impl DownloadState {
                 if end == Some(WorkerEnd::Release(Release::RemoteQueued))
                     && !matches!(
                         reason,
-                        PeerRetirementReason::NoNeededParts | PeerRetirementReason::OnPeersClock
+                        PeerRetirementReason::NoNeededParts
+                            | PeerRetirementReason::NoFreePart
+                            | PeerRetirementReason::OnPeersClock
                     )
                 {
                     out.push(Decision::Emit(DownloadEvent::SourceRemoteQueued {

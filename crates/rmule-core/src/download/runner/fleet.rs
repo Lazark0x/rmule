@@ -290,6 +290,10 @@ where
         std::sync::Arc::clone(&runner.rt.queue_standings),
         download_id,
         file.file_hash,
+    ))
+    .with_spent(crate::download::spent_names::SpentSeat::new(
+        std::sync::Arc::clone(&runner.rt.spent_names),
+        file.file_hash,
     ));
     // The snapshot is sighted in the order a pool is built; nothing fills a
     // slot until `start`.

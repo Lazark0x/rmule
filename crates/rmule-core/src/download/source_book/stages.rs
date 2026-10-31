@@ -9,6 +9,7 @@ use std::net::Ipv4Addr;
 use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
+use super::asks::AskName;
 use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
@@ -16,6 +17,7 @@ use super::{Adopted, DialEnd, MergeEnd, NextDial, Release, SourceBook, WorkerEnd
 use crate::adapters::CallbackKey;
 use crate::callback::BuddyContact;
 use crate::dialable::{DialPosition, choose_dial};
+use crate::download::spent_names::Spend;
 use crate::download::state::{CallbackCapability, LowIdCandidate, LowIdRoute};
 
 impl SourceBook {
@@ -179,7 +181,12 @@ impl SourceBook {
         let record = self.records.get_mut(&id)?;
         let hello_hash = record.stage.identity().map(PeerIdentity::user_hash);
         if failed {
-            self.blocks.spend(endpoint);
+            let spend = if record.candidate.is_some() {
+                Spend::DeadLowId
+            } else {
+                Spend::DeadHighId
+            };
+            self.blocks.spend(endpoint, spend);
             record.standing = None;
         }
         if record.standing.is_some() {
@@ -438,6 +445,8 @@ impl SourceBook {
     /// when rung 0 is open now — a sighting named a half not yet spent while
     /// the road was pending, or our Known IPv6 arrived — or the record holds a
     /// dialable half another channel proved: then it goes first in that lane.
+    /// One that ends with nowhere to go is spent under its Low-ID key, as stock
+    /// dead-lists a client whose callback lapsed (`BaseClient.cpp:1340-1346`).
     pub(crate) fn end_callback(&mut self, key: CallbackKey, dial: DialPosition) -> Option<Release> {
         let id = self.aliases.key(key)?;
         let record = self.records.get(&id)?;
@@ -467,6 +476,8 @@ impl SourceBook {
         if let Some(first) = dialable {
             return Some(self.back_to(id, Lane::HighId, Some(first)));
         }
+        self.blocks
+            .spend(AskName::LowId(candidate.key()), Spend::DeadLowId);
         self.remove(id);
         Some(Release::Gone)
     }

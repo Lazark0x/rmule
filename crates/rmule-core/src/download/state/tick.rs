@@ -68,7 +68,6 @@ impl DownloadState {
     /// to sleep until; `None` while nothing is timed.
     pub(crate) fn next_wake(&self) -> Option<Instant> {
         [
-            self.sources.next_spent_turn(),
             self.sources.next_asks_cleanup(),
             self.slot_asks.next_deadline(),
             self.sources.next_deadline(),

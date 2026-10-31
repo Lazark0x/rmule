@@ -106,7 +106,10 @@ fn a_link_root_beats_a_kad_root_and_closes_the_vote() {
     let mut state = started(Some(LINK_ROOT), Some(KadAichRoot::Trusted(KAD_ROOT)));
 
     assert_eq!(state.trusted_aich_root(), Some(LINK_ROOT));
-    assert!(!asks_for_roots(&connect(&mut state, t0(), peer(1))));
+    assert!(
+        asks_for_roots(&connect(&mut state, t0(), peer(1))),
+        "a recovery ask needs to know who states the root"
+    );
     let _ = vote(&mut state, KAD_ROOT);
     assert_eq!(state.trusted_aich_root(), Some(LINK_ROOT));
 }

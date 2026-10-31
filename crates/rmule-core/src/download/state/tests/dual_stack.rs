@@ -109,8 +109,9 @@ fn the_second_family_failing_too_retires_the_source() {
     );
 }
 
-/// The failed family is spent: after the IPv4 dial reached the peer and its
-/// session ended, a later sighting dials the IPv4 straight away.
+/// The failed family is spent: after the IPv4 dial reached the peer, whose
+/// file answer leaves it alive, a later sighting past the peer's clock dials
+/// the IPv4.
 #[test]
 fn a_later_sighting_skips_the_spent_family() {
     let mut state = exchanging_state(known_ipv6());
@@ -120,18 +121,22 @@ fn a_later_sighting_skips_the_spent_family() {
         PeerEndpoint::V6(v6()),
         PeerWorkerEvent::Disconnected,
     );
-    let _ = end(
-        &mut state,
-        PeerEndpoint::V4(v4()),
-        PeerWorkerEvent::Connected,
-    );
+    let _ = probed(&mut state, t0(), PeerEndpoint::V4(v4()));
     let _ = end(
         &mut state,
         PeerEndpoint::V4(v4()),
         PeerWorkerEvent::Disconnected,
     );
 
-    assert_eq!(sight(&mut state), vec![PeerEndpoint::V4(v4())]);
+    let source =
+        SourceSighting::plain(PeerSource::HighId(v4()), Informant::Own).with_ipv6_half(Some(v6()));
+    let seen = take_at(
+        &mut state,
+        t0() + MIN_REQUEST_TIME,
+        Channel::Exchanged(peer(1)),
+        [source],
+    );
+    assert_eq!(spawned(&seen.decisions), vec![PeerEndpoint::V4(v4())]);
 }
 
 #[test]

@@ -438,9 +438,10 @@ read, so the hello's facts end with that worker (ADR-0049). Its
 one entry takes a **Source Sighting** and merges a held source rather than pooling it
 twice; two records merge only on wire proof, never on a matching User Hash. It holds the
 blocks — the **Reserved Range** check (against the sighting's **Informant**, `rmule-primitives`
-glossary), the IP filter and address family it judges each half of a sighting by, the spent
-names (a failed dial's endpoint, and every **Ask Name** of a source that said it lacks the
-file), turned once a period at the brain's tick, and the **Distrusted Peer**s — the
+glossary), the IP filter and address family it judges each half of a sighting by, the
+**Spent Names** it reads (a failed dial's endpoint, a peer that closed before its file answer,
+a lapsed callback's Low-ID key, and every **Ask Name** of a source that said it lacks the
+file), each on stock's dead-source window in the node's one registry, and the **Distrusted Peer**s — the
 attachments that ride each record (its queue standing, its **Advertised Parts** and its
 **Source Ask Clock** facts among them), and picks the next dial in lane order. **Download State** maps its outcomes to
 decisions and keeps the slots' numbers and the part scheduler.

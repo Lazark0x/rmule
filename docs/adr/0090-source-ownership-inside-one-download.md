@@ -83,7 +83,9 @@ live, not queued. How the worker ends decides the rest:
 | `OP_OUTOFPARTREQS` (`0x57`) on a granted slot | the worker does not end: its flow is queued again on the same link, as aMule turns `DS_DOWNLOADING` back into `DS_ONQUEUE` (`ClientTCPSocket.cpp:755-762`); the part it held is released for retry (ADR-0026) and a standing is earned without a rank, which the `0x60` that follows ranks (ADR-0057) | stays Worker | no |
 | `OP_OUTOFPARTREQS` while only queued | ignored, as aMule acts on it only while downloading | stays Worker | no |
 | Advertised Parts holding no part we lack | kept, or earned at rank 0, with the no-needed-parts mark: asked again at twice the period, over TCP | waits in RemoteQueued | no |
-| a granted slot it has no part to work, given back with `0x56` (`NoFreePart`) | earned, on the ordinary cadence (ADR-0057) | waits in RemoteQueued | no |
+| a granted slot it has no part to work, given back with `0x56` (`NoFreePart`) | earned on the ordinary cadence (ADR-0057) and naming no place: the uploader dropped it (`UploadQueue.cpp:527-542`), so it counts as asking, not queued (ADR-0107 invariant 16) | waits in RemoteQueued | no |
+| the peer closing after the hello, its file request unanswered | none | leaves, candidate and all, as stock's `DS_CONNECTED` close (`BaseClient.cpp:1288-1293`) | its endpoint, and its Low-ID key: 30 or 45 minutes |
+| the peer's clock holding its slot ask back, or no link standing for a ride (`OnPeersClock`) | kept, or spaced on the clock (ADR-0107 invariants 14, 16) | waits in RemoteQueued | no |
 | the peer saying it lacks the file (`0x48`, at the probe or mid-slot) | ends | leaves the book, whichever road reached it — a called-back source does not return to its lane | every Ask Name its record holds, below |
 | bad data it alone sent, or a part hash set not the file's own | ends | leaves | no: distrusted (invariant 4) |
 | bad bytes a failed part's refetch names it for by elimination (ADR-0117 §1) | ends | leaves | no |
@@ -151,27 +153,32 @@ held records, the higher stage keeps the record — Worker > Dialing > CallbackP
 RemoteQueued > Pooled — and the other's aliases and attachments fold into it. When both are
 live, the newer one ends with `EndWorker` and its endpoint is not spent: the peer is alive.
 
-**A failed dial spends its endpoint for a re-ask period.** Every endpoint the download
+**A failed dial spends its endpoint for stock's window.** Every endpoint the download
 dials — single-address, either dual-stack half, or a Low-ID candidate's rung-0 half — is
 **spent** when its dial ends short of a handshake, and is neither pooled nor kept as a
-fallback for one to two `FILEREASKTIME` periods (21.7–43.3 minutes): the spent names are two
-generations the book turns once a period at the brain's tick, so no name carries a clock. That brackets aMule's
-30/45-minute dead-source block (`DeadSourceList.cpp:34`). A retirement after the handshake
-never spends — the peer is alive — and a `CryptIncompatible` refusal dialed nothing, with
-one exception.
+fallback for aMule's global dead-source block: 30 minutes, 45 for a Low ID
+(`DeadSourceList.cpp:34-35`, `BaseClient.cpp:1340-1346`). So is one that answered the hello
+and closed before its file answer, stock's `DS_CONNECTED` close (`BaseClient.cpp:1288-1293`),
+which is what a stock peer banning us does at its 40 s close and which takes the record's
+candidate with it; and a callback that lapses with nowhere left to go, under its Low-ID key.
+The **Spent Names** are the node's one registry, as stock's global list is: a dead peer is
+dead for every file, and a Pause, a Resume, a Cancel and a re-add of one hash keep them
+(ADR-0107 invariant 15). Each name carries the instant it is free; one past it reads unspent,
+so no timer runs, and expired names are swept. A retirement after the file answer never
+spends — the peer is alive — and a `CryptIncompatible` refusal dialed nothing, with one
+exception.
 
 **A source that says it lacks the file is spent for this download.** A TCP
 `OP_FILEREQANSNOFIL` (`0x48`) — at the probe, mid-slot, or on a called-back link — or a
 UDP `OP_FILENOTFOUND` (`0x92`) to a reask spends the record under every **Ask Name** it
 holds (ADR-0108): its endpoints, its Low-ID key, and the User Hashes it knows. Its
 standing ends and it leaves the book; a sighting under any of those names is refused,
-`spent`, for the same one to two periods. It is not distrusted: it sent nothing bad.
+`spent`, for 45 minutes, 60 for a Low ID. It is not distrusted: it sent nothing bad.
 aMule dead-lists such a source by its ID, its TCP or Kad port and, for a Low ID, its
 server (`DeadSourceList.cpp:63-75`, `AddDeadSource` at `ClientTCPSocket.cpp:541-563` and
 `DownloadClient.cpp:1228-1238`), and every sighting road checks the list
-(`DownloadQueue.cpp:627`); its per-file block lasts 45 or 60 minutes
-(`DeadSourceList.cpp:34-35`), which rmule's one clock for every spent name shortens to the
-re-ask brackets. The block is this download's alone: the same peer stays a source of
+(`DownloadQueue.cpp:627`); those are its per-file windows (`DeadSourceList.cpp:34-35`). The
+block is this file's alone, across its runs: the same peer stays a source of
 another download (ADR-0107), and aMule's swap of such a source to another file
 (`SwapToAnotherFile(true, true, true, NULL)`, `ClientTCPSocket.cpp:555-561`) is the peer's
 Queue Standing passing on as the record leaves.
@@ -339,7 +346,7 @@ The worker lifecycle keeps the invariants:
 ## Considered options
 
 - **Spend a failed endpoint for the run.** Rejected: a source momentarily down never returns;
-  one to two re-ask periods brackets aMule's dead-source block.
+  aMule's dead-source windows return it.
 - **Merge two records on a matching User Hash.** Rejected: eMule's weak-key clones and peers
   sharing a hash would fold two peers into one record and drop one of them.
 - **Keep the older owner of a Low-ID key, as aMule keeps the client it already knows**

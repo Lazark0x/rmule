@@ -469,6 +469,11 @@ impl StandingSeat {
             .is_some_and(|at| now.saturating_duration_since(at) < MIN_REQUEST_TIME)
     }
 
+    /// The peer's last ask, as it binds the record `place` names.
+    pub(crate) fn last_ask(&self, place: &Place) -> Option<Instant> {
+        self.lock().last_ask(place)
+    }
+
     /// Republish the places this run's records hold now.
     pub(crate) fn publish(&self, places: Vec<Place>) {
         self.lock().publish(self.download, self.file, places);

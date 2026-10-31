@@ -182,9 +182,12 @@ pub(super) struct Standing {
     /// Whether its Source Handover is reported: the giver's record has
     /// waited on another download since (ADR-0090).
     handed_over: bool,
-    /// Past `last_reask`, when a **spaced** record's first ask falls due: it
-    /// has no place at the peer (ADR-0107 invariant 16).
+    /// Past `last_reask`, when a **spaced** record's first ask falls due
+    /// (ADR-0107 invariant 16).
     first_ask_after: Option<Duration>,
+    /// It holds no place at the peer: a spaced record, or a slot it gave back
+    /// (invariant 16). What it counts and publishes as: not queued.
+    no_place: bool,
 }
 
 impl Standing {
@@ -192,12 +195,12 @@ impl Standing {
     /// queue-full (`IsRemoteQueueFull`), not holding nothing we need
     /// (`DS_NONEEDEDPARTS` is no queue state), and a place at all.
     pub(super) const fn names_a_place(&self) -> bool {
-        !self.queue_full && !self.no_needed_parts && self.first_ask_after.is_none()
+        !self.queue_full && !self.no_needed_parts && !self.no_place
     }
 
-    /// Whether it stands at the peer: a spaced record holds no place there.
+    /// Whether it holds a place at the peer.
     pub(super) const fn queued(&self) -> bool {
-        self.first_ask_after.is_none()
+        !self.no_place
     }
 
     /// The peer-UDP crypt target the identity it queued under stated.
@@ -238,6 +241,7 @@ impl Standing {
             role: Role::Waits { asked_at },
             handed_over: false,
             first_ask_after: None,
+            no_place: false,
         }
     }
 
@@ -249,8 +253,14 @@ impl Standing {
             Role::Returns {
                 no_needed_parts, ..
             } => self.no_needed_parts = no_needed_parts,
-            Role::Spaced { asked_at: Some(_) } => self.first_ask_after = Some(MIN_REQUEST_TIME),
-            Role::Spaced { asked_at: None } => self.first_ask_after = Some(Duration::ZERO),
+            Role::Spaced { asked_at } => {
+                self.no_place = true;
+                self.first_ask_after = Some(if asked_at.is_some() {
+                    MIN_REQUEST_TIME
+                } else {
+                    Duration::ZERO
+                });
+            }
             _ => {}
         }
         self
@@ -507,7 +517,21 @@ impl SourceBook {
             role: Role::Holds,
             handed_over: false,
             first_ask_after: None,
+            no_place: false,
         });
+    }
+
+    /// The live worker at `endpoint` gave its granted slot back with
+    /// `OP_CANCELTRANSFER`: the uploader dropped it (`UploadQueue.cpp:527-542`),
+    /// so its record is reasked on the ordinary cadence and holds no place.
+    pub(crate) fn gave_back(&mut self, endpoint: PeerEndpoint, now: Instant) {
+        self.on_queue(endpoint, now);
+        if let Some(standing) = self
+            .live_record_mut(endpoint)
+            .and_then(|record| record.standing.as_mut())
+        {
+            standing.no_place = true;
+        }
     }
 
     /// The live worker at `endpoint`'s source holds no part we need: its

@@ -485,6 +485,9 @@ pub(crate) struct DownloadState {
     /// secure-AICH). A root is committed to `aich_root` once it clears the
     /// agreement thresholds. Empty (and unused) once the vote is closed.
     aich_root_votes: HashMap<AichRootHash, HashSet<aich::AichVoter>>,
+    /// The AICH root each connected worker's peer stated: a recovery ask goes
+    /// only to one stating the trusted root.
+    aich_stated: HashMap<PeerEndpoint, AichRootHash>,
     retired_peers: u32,
     /// The download's sources, one record per source, and who owns each
     /// (ADR-0090). Every pooling seam, every slot fill and every worker's end
@@ -604,6 +607,7 @@ impl DownloadState {
             resolved,
             aich_root,
             aich_root_votes: HashMap::new(),
+            aich_stated: HashMap::new(),
             retired_peers: 0,
             sources,
             free_slots: BTreeSet::new(),
@@ -628,6 +632,12 @@ impl DownloadState {
     #[must_use]
     pub(crate) fn with_standings(mut self, seat: StandingSeat) -> Self {
         self.standings = seat;
+        self
+    }
+
+    /// Read and write spent names in the node's registry through `seat`.
+    pub(crate) fn with_spent(mut self, seat: crate::download::spent_names::SpentSeat) -> Self {
+        self.sources.share_spent(seat);
         self
     }
 

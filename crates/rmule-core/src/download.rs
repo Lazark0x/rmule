@@ -9,6 +9,7 @@ pub(crate) mod queue_standings;
 mod reask_routes;
 mod runner;
 mod runtime;
+pub(crate) mod spent_names;
 pub(crate) use runtime::SharedRuntime;
 pub(crate) mod source_ask_clock;
 pub(crate) mod source_asks;

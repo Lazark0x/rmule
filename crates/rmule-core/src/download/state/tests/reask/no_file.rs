@@ -39,7 +39,7 @@ fn retired_lacking(decisions: &[Decision], peer: PeerEndpoint) -> bool {
 
 /// A queued source whose TCP full ask meets no file is retired as lacking it,
 /// its standing gone: it is never asked again at the next `FILEREASKTIME`, and
-/// a sighting of it is refused until two spent turns have passed.
+/// a sighting of it is refused for stock's per-file 45 minutes.
 #[test]
 fn a_queued_source_whose_full_ask_meets_no_file_is_never_asked_again() {
     let mut state = started(&[peer(1)], live_posture());
@@ -70,9 +70,9 @@ fn a_queued_source_whose_full_ask_meets_no_file_is_never_asked_again() {
     assert!(
         spawned(&take(&mut state, Channel::Server, plain_sightings(&[peer(1)])).decisions)
             .is_empty(),
-        "a sighting of it is refused one turn on"
+        "a sighting of it is refused one period on"
     );
-    let later = t0() + FILE_REASK_TIME * 3;
+    let later = t0() + FILE_REASK_TIME + Duration::from_secs(45 * 60);
     let _ = state.on_tick(later);
     assert_eq!(
         spawned(
@@ -85,7 +85,7 @@ fn a_queued_source_whose_full_ask_meets_no_file_is_never_asked_again() {
             .decisions
         ),
         vec![peer(1)],
-        "two turns on it is a source again"
+        "past its window it is a source again"
     );
 }
 

@@ -9,6 +9,9 @@ use rmule_primitives::{
 
 use super::*;
 
+/// Stock's global dead-source window for a Low ID (`DeadSourceList.cpp:35`).
+const LOW_ID_WINDOW: Duration = Duration::from_secs(45 * 60);
+
 fn half() -> Ipv6Endpoint {
     Ipv6Endpoint::new("3fff:ed2:1::7".parse().unwrap(), 4662)
 }
@@ -327,8 +330,8 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     let same = sight(&mut state, high, half());
     assert!(same.is_empty(), "a spent half is not re-dialed: {same:?}");
 
-    // That sighting took the callback road; let it lapse too.
-    let _ = until_road_ends(&mut state, connected_key(low(7)));
+    // A dead Low ID opens nothing for its 45 minutes, whatever half it names.
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW * 2);
     let moved = sight(&mut state, high, moved_half());
     assert_eq!(moved, vec![PeerEndpoint::V6(moved_half())]);
 
@@ -337,24 +340,19 @@ fn a_new_half_reopens_rung_0_once_and_a_spent_half_stays_spent() {
     assert!(again.is_empty(), "the new half is spent in turn: {again:?}");
 }
 
-/// A spent rung-0 half is spent for one to two re-ask periods, like any
-/// High-ID endpoint, not for the run: once it has sat one out,
-/// the next sighting dials it again.
+/// A spent rung-0 half is spent for a Low ID's window, not for the run: once
+/// it has sat that out, the next sighting dials it again.
 #[test]
-fn a_spent_half_is_redialled_after_it_sits_out_a_reask_period() {
+fn a_spent_half_is_redialled_after_stocks_window() {
     let (mut state, high) = exchanging_state();
     fail_dial(&mut state, half());
     let _ = until_road_ends(&mut state, connected_key(low(7)));
 
-    let _ = state.on_tick(t0() + FILE_REASK_TIME);
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW - Duration::from_secs(1));
     let within = sight(&mut state, high, half());
-    assert!(
-        within.is_empty(),
-        "spent in the period that just ended: {within:?}"
-    );
-    let _ = until_road_ends(&mut state, connected_key(low(7)));
+    assert!(within.is_empty(), "spent inside its window: {within:?}");
 
-    let _ = state.on_tick(t0() + FILE_REASK_TIME * 2);
+    let _ = state.on_tick(t0() + LOW_ID_WINDOW * 2);
     assert_eq!(
         sight(&mut state, high, half()),
         vec![PeerEndpoint::V6(half())]

@@ -52,7 +52,9 @@ fn empty_book() -> SourceBook {
 }
 
 fn book_distrusting(distrusted: HashSet<UserHash>) -> SourceBook {
-    SourceBook::new(distrusted, 3)
+    let mut book = SourceBook::new(distrusted, 3);
+    book.turn_spent(Instant::now());
+    book
 }
 
 fn plain(n: u8) -> SourceSighting {
@@ -262,7 +264,7 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
 /// periods, whichever road dialed it. A dual-stack source falls to its other
 /// half once; its second failure falls nowhere.
 #[test]
-fn a_failed_dial_spends_its_endpoint_for_a_re_ask_period() {
+fn a_failed_dial_spends_its_endpoint_for_stocks_window() {
     let mut book = empty_book();
     let _ = sight(&mut book, plain(1));
     assert_eq!(dial(&mut book), Some(NextDial::Worker(high(1))));
@@ -273,14 +275,13 @@ fn a_failed_dial_spends_its_endpoint_for_a_re_ask_period() {
     assert_eq!(sight(&mut book, plain(1)), Sighted::Blocked(Blocked::Spent));
 
     let start = Instant::now();
-    book.turn_spent(start);
-    book.turn_spent(start + FILE_REASK_TIME);
+    book.turn_spent(start + std::time::Duration::from_secs(29 * 60));
     assert_eq!(
         sight(&mut book, plain(1)),
         Sighted::Blocked(Blocked::Spent),
-        "spent through the next period"
+        "stock's 30 minutes"
     );
-    book.turn_spent(start + FILE_REASK_TIME * 2);
+    book.turn_spent(start + std::time::Duration::from_secs(31 * 60));
     assert_eq!(sight(&mut book, plain(1)), Sighted::Pooled(Some(high(1))));
 
     let mut book = empty_book();

@@ -88,9 +88,13 @@ fn a_low_id_with_no_server_known_keeps_no_facts_past_its_record() {
     assert!(matches!(dial(&mut book), Some(NextDial::Callback { .. })));
     assert_eq!(book.end_callback(key, ours()), Some(Release::Gone));
 
-    assert_eq!(sight_on(&mut book, 7, None), Sighted::Pooled(None));
+    assert_eq!(
+        sight_on(&mut book, 7, None),
+        Sighted::Blocked(Blocked::Spent),
+        "a lapsed callback is dead for its 45 minutes, its server known or not"
+    );
     assert!(
         book.wants_sources_for(key, now),
-        "nothing kept under a low id whose server is unknown"
+        "no ask clock kept under a low id whose server is unknown"
     );
 }

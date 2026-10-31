@@ -5,6 +5,89 @@
 
 use super::*;
 
+/// `peer` states `root` as the file's AICH master hash.
+fn states_root(state: &mut DownloadState, peer: PeerEndpoint, root: AichRootHash) {
+    let _ = state.on_worker_event(t0(), peer, PeerWorkerEvent::AichFileHashReceived { root });
+}
+
+/// A four-block file with a trusted root, `peer(1)` and `peer(2)` granted at
+/// `t0` and `granted_two`, whose only part `peer(2)` completes unverified.
+fn part_awaiting_recovery(granted_two: Instant) -> (DownloadState, AichRootHash) {
+    let file_size = 4 * EMBLOCKSIZE;
+    let bytes = vec![0x5A_u8; file_size as usize];
+    let root = AichHashSet::from_bytes(&bytes).master_root();
+    let mut state = aich_state(file_size, root, vec![peer(1), peer(2)], 2);
+    let _ = state.start(t0());
+    let _ = connect(&mut state, t0(), peer(1));
+    let _ = connect(&mut state, granted_two, peer(2));
+    for (at, offset) in [
+        (peer(1), 0),
+        (peer(1), EMBLOCKSIZE),
+        (peer(1), 2 * EMBLOCKSIZE),
+        (peer(2), 3 * EMBLOCKSIZE),
+    ] {
+        let _ = state.on_worker_event(
+            granted_two,
+            at,
+            PeerWorkerEvent::BlockReceived {
+                part_index: 0,
+                offset,
+                bytes: vec![0_u8; EMBLOCKSIZE as usize],
+            },
+        );
+    }
+    (state, root)
+}
+
+fn recovery_asked(decisions: &[Decision]) -> Vec<PeerEndpoint> {
+    sent(decisions)
+        .into_iter()
+        .filter(|(_, command)| matches!(command, PeerWorkerCommand::RequestAich { .. }))
+        .map(|(to, _)| to)
+        .collect()
+}
+
+fn part_fails(state: &mut DownloadState, now: Instant) -> Vec<Decision> {
+    state.on_persist_result(
+        now,
+        0,
+        peer(2),
+        Err(DownloadFailure::PartVerificationFailed),
+    )
+}
+
+/// `OP_AICHREQUEST` is scored at 3.1.0 and kno (`ClientTCPSocket.cpp:1768`):
+/// inside the peer's clock nothing is asked, and the part takes its refetch.
+#[test]
+fn a_recovery_ask_inside_the_peers_clock_leaves_nothing() {
+    let (mut state, root) = part_awaiting_recovery(t0());
+    states_root(&mut state, peer(2), root);
+    let failed = part_fails(&mut state, t0() + Duration::from_secs(60));
+    assert!(recovery_asked(&failed).is_empty(), "{failed:?}");
+}
+
+/// A recovery ask goes only to a peer stating the trusted root, which need
+/// not be the one that completed the part (3.1.0 `PartFile.cpp:3994-4047`).
+#[test]
+fn a_recovery_ask_goes_to_a_peer_stating_the_trusted_root() {
+    let (mut state, root) = part_awaiting_recovery(t0());
+    states_root(&mut state, peer(1), root);
+    let failed = part_fails(&mut state, t0() + MIN_REQUEST_TIME);
+    assert_eq!(recovery_asked(&failed), vec![peer(1)], "{failed:?}");
+}
+
+/// Asks spread among the peers stating the root: the one asked longest ago
+/// goes first, so a corrupting swarm does not spend one innocent peer's clock.
+#[test]
+fn recovery_asks_spread_to_the_peer_asked_longest_ago() {
+    let later = t0() + Duration::from_secs(100);
+    let (mut state, root) = part_awaiting_recovery(later);
+    states_root(&mut state, peer(1), root);
+    states_root(&mut state, peer(2), root);
+    let failed = part_fails(&mut state, later + MIN_REQUEST_TIME);
+    assert_eq!(recovery_asked(&failed), vec![peer(1)], "{failed:?}");
+}
+
 #[test]
 fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block() {
     // A 6-block file with a trusted AICH root. peer 1 is handed blocks 0-2
@@ -22,6 +105,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
     let _ = state.start(t0());
     let _ = connect(&mut state, t0(), peer(1));
     let _ = connect(&mut state, t0(), peer(2));
+    states_root(&mut state, peer(2), root);
 
     let mut corrupt_block1 = true_bytes[emb..2 * emb].to_vec();
     corrupt_block1[0] ^= 0xFF;
@@ -71,7 +155,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
     // MD4 fails: with a trusted root, ask the completing peer for AICH
     // recovery data rather than retiring everyone up front.
     let failed = state.on_persist_result(
-        t0(),
+        t0() + MIN_REQUEST_TIME,
         0,
         peer(2),
         Err(DownloadFailure::PartVerificationFailed),
@@ -194,6 +278,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         let _ = state.on_worker_event(t0(), at, identified(user_hash));
         let _ = connect(&mut state, t0(), at);
     }
+    states_root(&mut state, peer(2), tree.master_root());
     let mut corrupt_block0 = true_bytes[..emb].to_vec();
     corrupt_block0[0] ^= 0xFF;
     let _ = state.on_worker_event(
@@ -215,7 +300,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         },
     );
     let _ = state.on_persist_result(
-        t0(),
+        t0() + MIN_REQUEST_TIME,
         0,
         peer(2),
         Err(DownloadFailure::PartVerificationFailed),
