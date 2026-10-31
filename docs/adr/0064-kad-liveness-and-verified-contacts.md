@@ -62,13 +62,22 @@ publish, before its self-lookup ended or while firewalled with nothing to publis
 empty walk never spends a 5 hour due time. A republish is due 5 h after its own start, so
 the 2 s pace at start spreads every later round too.
 
-**Ban: the node reports, core enforces on peer TCP.** At `count > 5 × rate`
+**The Ask Clock: a re-ask is the file's, not the run's.** Stock re-asks a file at
+`KADEMLIAREASKTIME × N`, `N` capped at 7, and only while connected (`PartFile.cpp:1514-1532`).
+Core keeps that per hash in one clock the actor owns, outside any run and any Kad node, so
+Pause, Resume, Cancel, a re-add of the hash, a run restart and a Kad restart all keep it. Only
+a process restart loses it, as stock's does. Stock's Stop clears it; rmule does not, because
+the peer's count does not clear either. An ask is spent only once the node has heard someone.
+
+**Ban: the node reports, core enforces.** At `count > 5 × rate`
 ([PacketTracking.cpp#L212](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/PacketTracking.cpp#L212))
 the node emits `KadEvent::FloodOffenderDetected`. Core's `BanStore` (IP to banned-until,
 lazy expiry) records it for `CLIENTBANTIME` = 2 hours, checked then evicted as aMule does
 ([ClientList.cpp#L739](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L739)).
-Enforcement is on the peer-TCP surface: inbound connections from a banned IP are refused
-and banned source candidates are not dialed. Kad and server traffic are not ban-gated.
+Enforcement is aMule's: inbound connections from a banned IP are refused, banned source
+candidates are not dialed, and every datagram from it stops at the client UDP front before
+the demux (`MuleUDPSocket.cpp:176-177`), which is Kad's socket and the peers'. Stock also
+gates its server UDP socket; rmule's hears only servers it asked, so that door stays open.
 The inbound refusal is the second of the **Accept Gates** — the IP filter, the ban, then the
 Test Connection carve-out (ADR-0046), in that order and in one place. They run where a
 connection enters the serve accept channel and before it does: in the accept pump for a TCP

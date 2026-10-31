@@ -1,9 +1,9 @@
 //! The **Source Discovery Engine** (`crates/rmule-core/CONTEXT.md`): the one
 //! Core mechanism behind per-download source discovery, generic over a
 //! [`DiscoveryChannel`] adapter. It owns an active-download registry (file
-//! hash → size, sink and source count), a due-cadence sweep (first ask immediate,
-//! re-ask per the channel's interval, a file at the channel's source gate left
-//! out, finished downloads forgotten), answer routing to
+//! hash → size, sink and source count), a due-cadence sweep over the channel's
+//! **Ask Clock** (first ask immediate, then per the clock, which outlives every
+//! run; a file at the channel's source gate left out), answer routing to
 //! the matching download's sink, and one RAII [`DiscoveryGuard`]. Two channels
 //! run on it: the server-UDP global sweep (`global_sources`, ADR-0051) and the
 //! Kad channel (`kad_sources`, ADR-0043).
@@ -12,6 +12,8 @@
 //! channels; the engine is the shared mechanism they run on. Concerns that are
 //! not discovery live elsewhere: the **Kad Publisher** is its own
 //! registry-driven Core task (`kad_sources`). The engine has exactly two concerns — ask cadence and answer routing.
+
+mod ask_clock;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -22,6 +24,7 @@ use rmule_primitives::{FileHash, SourceLookupTarget};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+pub(crate) use self::ask_clock::{AskClock, SharedAskClock};
 use crate::server_pace::SourceCount;
 
 /// One source-discovery channel behind the [`SourceDiscovery`] engine
@@ -38,6 +41,12 @@ pub(crate) trait DiscoveryChannel: Send + 'static {
     /// slice may be empty when nothing is due; an adapter with no due target then
     /// does nothing (the global channel early-returns on an empty batch).
     fn ask(&self, targets: &[SourceLookupTarget]) -> impl Future<Output = ()> + Send;
+
+    /// Whether an ask could reach anyone now. No ask is spent until it can:
+    /// stock asks only while connected (`PartFile.cpp:1514`).
+    fn ready(&self) -> bool {
+        true
+    }
 
     /// The next answered `(file hash, answer)`, or `None` once the channel has
     /// stopped (the engine then winds down).
@@ -67,10 +76,10 @@ pub(crate) struct SourceDiscovery<C: DiscoveryChannel> {
     registry: DiscoveryRegistry<C::Answer>,
     /// How often the engine sweeps the registry for due asks.
     sweep_interval: Duration,
-    /// Per-file minimum spacing between asks: [`Duration::ZERO`] for the global
-    /// channel, whose pace is the Server Pace's (ADR-0051), `KADEMLIAREASKTIME`
-    /// for Kad.
-    reask_interval: Duration,
+    /// When each file may next be asked: every sweep for the global channel,
+    /// whose pace is the Server Pace's (ADR-0051), `KADEMLIAREASKTIME × N` for
+    /// Kad (ADR-0064).
+    asks: SharedAskClock,
     /// A file holding this many sources is not asked for more on this channel.
     source_gate: u32,
 }
@@ -80,27 +89,23 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
         channel: C,
         registry: DiscoveryRegistry<C::Answer>,
         sweep_interval: Duration,
-        reask_interval: Duration,
+        asks: SharedAskClock,
         source_gate: u32,
     ) -> Self {
         Self {
             channel,
             registry,
             sweep_interval,
-            reask_interval,
+            asks,
             source_gate,
         }
     }
 
     pub(crate) async fn run(self) {
         let mut tick = tokio::time::interval(self.sweep_interval);
-        // Per-file last-ask bookkeeping — the whole cadence state, held here so
-        // both channels share one proof (first ask immediate, re-ask on the
-        // interval, finished downloads forgotten).
-        let mut last_ask: HashMap<FileHash, Instant> = HashMap::new();
         loop {
             tokio::select! {
-                _ = tick.tick() => self.sweep(&mut last_ask).await,
+                _ = tick.tick() => self.sweep().await,
                 answered = self.channel.next_answer() => match answered {
                     Some((file_hash, answer)) => self.route(file_hash, answer).await,
                     None => return, // the channel stopped
@@ -109,28 +114,25 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
         }
     }
 
-    /// One sweep: ask the channel for every registered download whose re-ask is
-    /// due (first ask immediate, then no more often than `reask_interval`).
-    async fn sweep(&self, last_ask: &mut HashMap<FileHash, Instant>) {
-        let downloads: Vec<(FileHash, u64)> = {
-            let registry = self.registry.lock().unwrap();
-            // Forget finished downloads so a later re-download asks immediately.
-            last_ask.retain(|hash, _| registry.contains_key(hash));
-            registry
+    /// One sweep: ask the channel for every registered download its clock
+    /// says is due.
+    async fn sweep(&self) {
+        let mut due = Vec::new();
+        if self.channel.ready() {
+            let downloads: Vec<(FileHash, u64)> = self
+                .registry
+                .lock()
+                .unwrap()
                 .iter()
                 .filter(|(_, download)| download.sources.under(self.source_gate))
                 .map(|(hash, download)| (*hash, download.file_size))
-                .collect()
-        };
-        let now = Instant::now();
-        let mut due = Vec::new();
-        for (file_hash, file_size) in downloads {
-            let is_due = last_ask
-                .get(&file_hash)
-                .is_none_or(|asked| now.duration_since(*asked) >= self.reask_interval);
-            if is_due {
-                due.push(SourceLookupTarget::new(file_hash, file_size));
-                last_ask.insert(file_hash, now);
+                .collect();
+            let now = Instant::now();
+            let mut asks = self.asks.lock().unwrap();
+            for (file_hash, file_size) in downloads {
+                if asks.take_ask(file_hash, now) {
+                    due.push(SourceLookupTarget::new(file_hash, file_size));
+                }
             }
         }
         self.channel.ask(&due).await;
@@ -258,7 +260,7 @@ mod tests {
                 channel,
                 registry,
                 Duration::from_millis(10),
-                Duration::from_millis(200),
+                AskClock::shared(Duration::from_millis(200)),
                 u32::MAX,
             )
             .run(),
@@ -290,50 +292,102 @@ mod tests {
         task.abort();
     }
 
+    /// A pause, a cancel and a re-add all come here as a registry entry that
+    /// went and came back, and a Kad restart as a second task on the same
+    /// clock. None of them asks the storers again.
     #[tokio::test]
-    async fn a_finished_download_is_forgotten_and_re_asked_immediately() {
+    async fn a_run_that_ends_and_returns_does_not_ask_again() {
         let file_hash = FileHash::from_bytes([0x66; FileHash::BYTE_LEN]);
         let (channel, mut asks) = recording_channel();
         let registry = registry_with(file_hash, 4096);
+        let clock = AskClock::shared(Duration::from_secs(3600));
 
-        // A long re-ask interval: only forgetting the download can make it due
-        // again inside the test window.
         let task = tokio::spawn(
             SourceDiscovery::new(
                 channel,
                 registry.clone(),
                 Duration::from_millis(10),
-                Duration::from_secs(3600),
+                clock.clone(),
                 u32::MAX,
             )
             .run(),
         );
-
         let first = tokio::time::timeout(Duration::from_secs(2), asks.recv())
             .await
             .expect("a first ask within 2s")
             .expect("channel open");
         assert_eq!(first, vec![SourceLookupTarget::new(file_hash, 4096)]);
 
-        // The download finishes: its registry entry is removed. A few sweeps
-        // later the engine has dropped its stale last-ask bookkeeping.
         registry.lock().unwrap().remove(&file_hash);
         tokio::time::sleep(Duration::from_millis(40)).await;
-
-        // The same file is re-downloaded: registered afresh, it is asked
-        // immediately rather than waiting out the (untouched) hour-long cadence.
         let (sink_tx, sink_rx) = mpsc::channel(1);
         std::mem::forget(sink_rx);
         registry
             .lock()
             .unwrap()
             .insert(file_hash, entry(4096, sink_tx, SourceCount::default()));
-        let reasked = tokio::time::timeout(Duration::from_secs(2), asks.recv())
-            .await
-            .expect("the re-download is asked immediately")
-            .expect("channel open");
-        assert_eq!(reasked, vec![SourceLookupTarget::new(file_hash, 4096)]);
+        task.abort();
 
+        let (channel, mut asks) = recording_channel();
+        let task = tokio::spawn(
+            SourceDiscovery::new(channel, registry, Duration::from_millis(10), clock, u32::MAX).run(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), asks.recv())
+                .await
+                .is_err(),
+            "the hour stands across the run and the task"
+        );
+        task.abort();
+    }
+
+    /// A channel that cannot reach anyone yet spends no ask.
+    struct UnreadyChannel(
+        RecordingChannel,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    );
+
+    impl DiscoveryChannel for UnreadyChannel {
+        type Answer = ();
+
+        async fn ask(&self, targets: &[SourceLookupTarget]) {
+            self.0.ask(targets).await;
+        }
+
+        fn ready(&self) -> bool {
+            self.1.load(std::sync::atomic::Ordering::Relaxed)
+        }
+
+        async fn next_answer(&self) -> Option<(FileHash, ())> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn no_ask_is_spent_until_the_channel_can_reach_anyone() {
+        let file_hash = FileHash::from_bytes([0x77; FileHash::BYTE_LEN]);
+        let (channel, mut asks) = recording_channel();
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let task = tokio::spawn(
+            SourceDiscovery::new(
+                UnreadyChannel(channel, ready.clone()),
+                registry_with(file_hash, 4096),
+                Duration::from_millis(10),
+                AskClock::shared(Duration::from_secs(3600)),
+                u32::MAX,
+            )
+            .run(),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(60), asks.recv())
+                .await
+                .is_err()
+        );
+        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::timeout(Duration::from_secs(2), asks.recv())
+            .await
+            .expect("the ask goes out once it can")
+            .expect("channel open");
         task.abort();
     }
 
@@ -376,7 +430,7 @@ mod tests {
                 },
                 registry,
                 Duration::from_secs(3600),
-                Duration::from_secs(3600),
+                AskClock::shared(Duration::from_secs(3600)),
                 u32::MAX,
             )
             .run(),
@@ -415,7 +469,7 @@ mod tests {
                 channel,
                 registry,
                 Duration::from_millis(5),
-                Duration::ZERO,
+                AskClock::shared(Duration::ZERO),
                 100,
             )
             .run(),

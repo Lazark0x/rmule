@@ -57,6 +57,10 @@ impl<C: KadSourceChannel> DiscoveryChannel for KadDiscoveryChannel<C> {
         }
     }
 
+    fn ready(&self) -> bool {
+        self.channel.joined()
+    }
+
     async fn next_answer(&self) -> Option<(FileHash, KadAnswer)> {
         self.channel.next_sources().await
     }

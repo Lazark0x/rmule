@@ -94,6 +94,7 @@ fn front_without_kad<T: ClientUdpTransport>(
         diagnostics,
         send_tx,
         SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     )
 }
 
@@ -119,6 +120,7 @@ fn front_with_kad<T: ClientUdpTransport>(
         diagnostics,
         mpsc::channel(4).0,
         inlet,
+        crate::ban_store::SharedBanStore::default(),
     );
     (engine, inboxes, kad_rx)
 }
@@ -207,6 +209,51 @@ async fn the_front_routes_pings_to_serve_replies_to_the_downloader_and_drops_the
 /// endpoint — while a spoofed buddy-ID's `0x94` is dropped (the ADR-0061
 /// tightening). This is the front's own relay (aMule
 /// `CClientUDPSocket::OnPacketReceived`), not the Kad pump's.
+/// A flood ban stops every protocol on the socket (`MuleUDPSocket.cpp:176-177`),
+/// and only that IP.
+#[tokio::test]
+async fn a_banned_ip_reaches_neither_kad_nor_the_reask_surface() {
+    let banned = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 9), 5000));
+    let other = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 10), 5000));
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock()
+        .await
+        .ban(banned.ip(), std::time::Instant::now());
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let kad_ping = vec![0xE4, 0x60];
+    let (kad_tx, mut kad_rx) = mpsc::channel(4);
+    let inlet = SharedKadInlet::default();
+    inlet.install_for_good(kad_tx);
+    let (engine, mut inboxes) = ClientUdpEngine::new(
+        scripted(vec![
+            (banned, ping.clone()),
+            (banned, kad_ping.clone()),
+            (other, ping),
+            (other, kad_ping),
+        ]),
+        PeerUdpCrypt::disarmed(),
+        SharedBuddySlot::default(),
+        SharedFirewalledFront::default(),
+        DiagnosticsState::default(),
+        mpsc::channel(4).0,
+        inlet,
+        bans,
+    );
+    engine.run().await;
+
+    let (from, _) = inboxes.reask_ping.recv().await.expect("the other's ping");
+    assert_eq!(from, other);
+    let (from, _) = kad_rx.recv().await.expect("the other's Kad datagram");
+    assert_eq!(from, other.as_v4().expect("an IPv4 endpoint"));
+    assert!(inboxes.reask_ping.try_recv().is_err());
+    assert!(kad_rx.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn an_inbound_0x94_relays_as_0x9a_over_the_held_buddy_link() {
     use std::sync::Arc;

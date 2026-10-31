@@ -1,18 +1,17 @@
-//! The core-owned **BanStore** (ADR-0064): the peer-TCP enforcement half
-//! of the Kad anti-flood stack.
+//! The core-owned **BanStore** (ADR-0064): where a flood offender's 2 hours
+//! are kept and enforced.
 //!
 //! `KadNode`'s flood limiter (ADR-0064, `rmule-kad`'s `flood.rs`) only
-//! *reports* an offender IP via `KadEvent::FloodOffenderDetected` — it never
-//! enforces anything itself, and Kad keeps answering the IP's other opcodes
-//! (the per-opcode bucket already contains the flood). This store is where
-//! that report lands: an `Arc<Mutex<_>>`-shared IP -> banned-until map, fed by
-//! the `RuntimeKadFactory` pump task's fold of every `FloodOffenderDetected`
-//! event and consulted by the two peer-TCP surfaces that enforce it —
-//! the serve adapter's **Accept Gates** (refuse an inbound connection from a
-//! banned IP before the serve loop sees it) and
-//! `RuntimePeerTransferService::start_download_worker`
-//! (skips dialing a banned candidate source entirely). Kad and the eD2k
-//! server surface are untouched — aMule's own client ban gates neither.
+//! *reports* an offender IP via `KadEvent::FloodOffenderDetected`. This store
+//! is where that report lands: an `Arc<Mutex<_>>`-shared IP -> banned-until
+//! map, fed by the `RuntimeKadFactory` pump task's fold of every
+//! `FloodOffenderDetected` event. As aMule's client ban does
+//! (`ClientTCPSocket.cpp:158`, `MuleUDPSocket.cpp:176-177`), it stops TCP and
+//! UDP alike, at three doors: the serve adapter's **Accept Gates** refuse an
+//! inbound connection, `RuntimePeerTransferService::start_download_worker`
+//! skips dialing the candidate, and the client UDP front drops every datagram
+//! before the demux, which is Kad's and the peers' one socket. The server UDP
+//! socket is the one door left open: it hears only servers we asked.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -21,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-/// The core-owned BanStore, shared between the Kad event fold and the two
-/// peer-TCP enforcement surfaces (`Core::builder`'s single instance).
+/// The core-owned BanStore, shared between the Kad event fold and its three
+/// enforcement surfaces (`Core::builder`'s single instance).
 pub(crate) type SharedBanStore = Arc<Mutex<BanStore>>;
 
 /// IP -> banned-until (address-typed, so it applies to both families —
@@ -38,7 +37,7 @@ pub(crate) struct BanStore {
 
 impl BanStore {
     /// aMule's `CLIENTBANTIME` (`ed2k/Constants.h#L71`): how long a
-    /// flood-offender IP is refused at the peer-TCP surface once banned.
+    /// flood-offender IP is refused once banned.
     pub(crate) const CLIENTBANTIME: Duration = Duration::from_secs(2 * 60 * 60);
 
     /// Ban `ip` for [`CLIENTBANTIME`](Self::CLIENTBANTIME) from `now` (aMule

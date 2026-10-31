@@ -231,6 +231,7 @@ async fn a_next_sources_dropped_mid_await_loses_nothing_and_the_next_call_delive
     let channel = RuntimeKadChannel {
         commands,
         sources: Mutex::new(sources),
+        verdicts: crate::reachability::SharedKadVerdicts::default(),
     };
     let file_hash = FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]);
 

@@ -62,6 +62,7 @@ async fn one_bound_port_carries_the_reask_surface_natt_and_a_live_kad_node() {
         DiagnosticsState::default(),
         reply_tx.clone(),
         kad_inlet.clone(),
+        crate::ban_store::SharedBanStore::default(),
     );
     tokio::spawn(engine.run());
     let drain = Arc::clone(&socket);

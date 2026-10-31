@@ -143,6 +143,7 @@ impl Node {
             // No Kad node in this assembly: the inlet stays empty, which is
             // what the front reads as "nothing to hand a Kad datagram to".
             crate::client_udp::SharedKadInlet::default(),
+            crate::ban_store::SharedBanStore::default(),
         );
         tokio::spawn(engine.run());
         let drain = Arc::clone(&socket);

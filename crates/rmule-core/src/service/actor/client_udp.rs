@@ -64,6 +64,8 @@ pub(super) fn spawn_client_udp_front(
         // Where a running Kad node installs its inbound half (ADR-0057):
         // empty until `EnableKad`, empty again once the node stops.
         sinks.kad_inlet,
+        // Every datagram of a banned IP stops at the front (ADR-0064).
+        sinks.bans,
     );
     tokio::spawn(engine.run());
     // The send drain: each serve/download `SendClientUdp` datagram (an
@@ -143,6 +145,7 @@ pub(super) struct ClientUdpSinks<'a> {
     pub(super) buddy_slot: &'a SharedBuddySlot,
     pub(super) reask_reply: &'a SharedReaskReplySink,
     pub(super) kad_inlet: crate::client_udp::SharedKadInlet,
+    pub(super) bans: crate::ban_store::SharedBanStore,
 }
 
 /// The cells the **NAT-T Front** reaches that the client-UDP front does not

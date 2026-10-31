@@ -1443,13 +1443,21 @@ _Avoid_: Kad lookup (the walk is the node's concern, not Core's), DHT search (ke
 The one Core mechanism behind per-download source discovery: an active-download
 registry (file hash → sink), an ask-cadence sweep (due-check per file; a file at the
 channel's source gate is left out; the global channel takes one **Server Pace** step
-each sweep, Kad honors `KADEMLIAREASKTIME`), answer routing, and an
+each sweep, Kad honors the **Ask Clock**), answer routing, and an
 RAII deregistration guard — generic over a **Discovery Channel** adapter. Two
 adapters exist: the server-UDP global sweep (ADR-0051) and the Kad channel
 (ADR-0043). Distinct from **Source Discovery Policy**, which is the per-download
 *selection* of channels; the engine is the shared mechanism they run on. Share
 publishing is not discovery (see **Kad Publisher**).
 _Avoid_: discovery task twins (the retired GlobalSourceDiscovery/KadSourceDiscovery copies), source lookup (the eD2k TCP exchange), scheduler
+
+**Ask Clock**:
+When a file may next be asked for sources on one channel, per hash and outside any run: stock's
+`KADEMLIAREASKTIME × N`, `N` capped at 7, on Kad; every sweep on the global channel. The actor
+owns Kad's, so Pause, Resume, Cancel, a re-add of the hash, a run restart and a Kad restart all
+keep it, and only a process restart loses it. An ask is spent only once the node has heard
+someone (ADR-0064).
+_Avoid_: reask (the peer-level ask), search timer
 
 **Kad Publisher**:
 The small Core task that keeps the Kad node's source publications equal to the offered
@@ -1540,11 +1548,11 @@ _Avoid_: Kad bootstrap fetch (that's the manual nodes.dat route), peer source ex
 
 **Ban Store**:
 The core-owned record of flood-offender IPs (IP plus banned-until, lazily expired). Protocol
-nodes report offenders into it — they never enforce — and the peer-TCP surface is the sole
-enforcement point: inbound peer connections from banned IPs are refused and banned source
-candidates are not dialed. Kad and server traffic are never gated by it, matching where aMule's
-client-layer ban lands.
-_Avoid_: IP filter (local policy file), Kad ban (no such gate exists), blocklist
+nodes report offenders into it — they never enforce. Inbound peer connections from banned IPs
+are refused, banned source candidates are not dialed, and every datagram from one stops at the
+client UDP front, Kad's socket and the peers', where aMule's client-layer ban lands too. Only
+the server UDP socket stays open: it hears the servers we asked.
+_Avoid_: IP filter (local policy file), Kad ban (the node only reports), blocklist
 
 **IP Filter**:
 The core-owned local-policy verdict store (aMule 2.3.3 `CIPFilter` parity): built

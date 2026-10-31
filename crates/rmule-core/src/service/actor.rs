@@ -290,6 +290,9 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// exists — a runner registers its sink unconditionally, and with Kad
     /// disabled nothing ever reads it.
     kad_source_registry: KadSourceRegistry,
+    /// The **Ask Clock** on Kad source searches: the actor's, so a Kad restart
+    /// keeps it (ADR-0064).
+    kad_ask_clock: crate::source_discovery::SharedAskClock,
     /// The **Kad Activity** (ADR-0093): `Some` exactly while a Kad node runs.
     /// It holds the one Kad Presence lease, so "is Kad running" — read
     /// through [`SharedSelfReach::kad_running`](crate::reachability::SharedSelfReach::kad_running)

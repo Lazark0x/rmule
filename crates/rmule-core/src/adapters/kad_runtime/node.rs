@@ -313,6 +313,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
         Ok(RuntimeKadChannel {
             commands: commands_tx,
             sources: Mutex::new(sources_rx),
+            verdicts: cells.verdicts.clone(),
         })
     }
 }

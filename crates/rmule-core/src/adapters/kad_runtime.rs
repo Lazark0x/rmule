@@ -182,8 +182,16 @@ pub trait KadSourceChannel: Send + Sync + 'static {
     /// sources (the **Kad Requester** role).
     fn search_sources(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send;
 
+    /// Whether the node has heard anyone (aMule's `IsConnected`): before that a
+    /// search reaches nobody, so no ask is spent on one. Default: a channel
+    /// with no node behind it has nothing to wait for.
+    fn joined(&self) -> bool {
+        true
+    }
+
     /// Register `target` for publication (the **Kad Publisher** role): the
-    /// node publishes immediately and republishes on its own 5-hour cadence.
+    /// node starts it at its own pace (ADR-0064) and republishes on its own
+    /// 5-hour cadence.
     fn publish_source(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send;
 
     /// Withdraw `target` from publication (the **Kad Publisher** role): the
@@ -234,6 +242,10 @@ pub trait KadSourceChannel: Send + Sync + 'static {
 impl<C: KadSourceChannel> KadSourceChannel for Arc<C> {
     fn search_sources(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send {
         (**self).search_sources(target)
+    }
+
+    fn joined(&self) -> bool {
+        (**self).joined()
     }
 
     fn publish_source(&self, target: SourceLookupTarget) -> impl Future<Output = ()> + Send {
@@ -664,11 +676,17 @@ pub(crate) fn request_kad_buddy_callback(sink: &SharedKadPump, ask: BuddyCallbac
 pub struct RuntimeKadChannel {
     commands: mpsc::Sender<KadPumpCommand>,
     sources: Mutex<mpsc::Receiver<(FileHash, crate::kad_sources::KadAnswer)>>,
+    /// Read for the join latch alone.
+    verdicts: crate::reachability::SharedKadVerdicts,
 }
 
 impl KadSourceChannel for RuntimeKadChannel {
     async fn search_sources(&self, target: SourceLookupTarget) {
         let _ = self.commands.send(KadPumpCommand::Search(target)).await;
+    }
+
+    fn joined(&self) -> bool {
+        self.verdicts.get().joined
     }
 
     async fn publish_source(&self, target: SourceLookupTarget) {

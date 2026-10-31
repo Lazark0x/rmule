@@ -257,7 +257,7 @@ where
                     KadDiscoveryChannel::new(channel),
                     self.kad_source_registry.clone(),
                     self.wiring.config.kad_sweep_interval,
-                    self.wiring.config.kad_reask_interval,
+                    self.kad_ask_clock.clone(),
                     crate::server_pace::KAD_SOURCE_GATE,
                 );
                 let pump_handle = tokio::spawn(async move {

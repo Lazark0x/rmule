@@ -35,6 +35,7 @@ use tokio::sync::mpsc;
 
 use super::peer_crypt::PeerUdpCrypt;
 use super::{ClientUdpDatagram, ClientUdpSend, SharedKadInlet};
+use crate::ban_store::SharedBanStore;
 use crate::buddy_link::{RendezvousRelay, SharedBuddySlot};
 use crate::diagnostics::DiagnosticsState;
 use crate::firewalled::front::{
@@ -219,6 +220,9 @@ pub(crate) struct ClientUdpEngine<T> {
     /// relayed (ADR-0091). It must leave by the socket the requester's `0x94`
     /// arrived on, or the requester's NAT drops it.
     send_tx: mpsc::Sender<ClientUdpSend>,
+    /// A banned IP's every datagram stops here, whichever protocol it speaks
+    /// (`MuleUDPSocket.cpp:176-177`).
+    bans: SharedBanStore,
 }
 
 impl<T: ClientUdpTransport> ClientUdpEngine<T> {
@@ -230,6 +234,7 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
         diagnostics: DiagnosticsState,
         send_tx: mpsc::Sender<ClientUdpSend>,
         kad_inlet: SharedKadInlet,
+        bans: SharedBanStore,
     ) -> (Self, ClientUdpInboxes) {
         let (reask_tx, reask_rx) = mpsc::channel(INBOX_CAPACITY);
         let reask_tx_injector = reask_tx.downgrade();
@@ -247,6 +252,7 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
                 firewalled,
                 diagnostics,
                 send_tx,
+                bans,
             },
             ClientUdpInboxes {
                 reask_ping: reask_rx,
@@ -273,6 +279,15 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
     /// Route one datagram by its leading protocol byte, then — for peer-UDP —
     /// by its opcode.
     async fn demux(&self, udp_src: PeerEndpoint, datagram: Vec<u8>) {
+        if self
+            .bans
+            .lock()
+            .await
+            .is_banned(udp_src.ip(), std::time::Instant::now())
+        {
+            tracing::trace!(%udp_src, "datagram from a banned IP; dropped");
+            return;
+        }
         // Crypt receive-transform (ADR-0046), the plaintext-under-crypt split
         // the Kad node also runs: under every policy, `off` included (aMule
         // trial-decrypts whatever its setting), dual-path decrypt keyed on our

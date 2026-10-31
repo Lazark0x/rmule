@@ -336,7 +336,7 @@ mod tests {
                 channel,
                 registry,
                 Duration::from_millis(10),
-                Duration::ZERO,
+                crate::source_discovery::AskClock::shared(Duration::ZERO),
                 UDP_SOURCE_GATE,
             )
             .run(),
@@ -435,7 +435,7 @@ mod tests {
                 channel,
                 registry,
                 Duration::from_millis(10),
-                Duration::ZERO,
+                crate::source_discovery::AskClock::shared(Duration::ZERO),
                 UDP_SOURCE_GATE,
             )
             .run(),

@@ -385,6 +385,7 @@ async fn the_firewalled_front_takes_the_standalone_rendezvous_and_the_direct_cal
         diagnostics.clone(),
         mpsc::channel(4).0,
         SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     engine.run().await;
 

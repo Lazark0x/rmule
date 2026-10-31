@@ -204,6 +204,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
         crate::diagnostics::DiagnosticsState::default(),
         tokio::sync::mpsc::channel(4).0,
         crate::client_udp::SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     tokio::spawn(engine.run());
 

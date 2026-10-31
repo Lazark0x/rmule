@@ -61,13 +61,10 @@ fn an_obfuscated_kad_datagram() -> Vec<u8> {
     );
     node.handle_command(
         rmule_kad::KadInstant::from_millis(1),
-        rmule_kad::KadCommand::SearchSources {
-            request: rmule_kad::KadSourceLookupRequest::new(
-                rmule_primitives::SourceLookupTarget::new(
-                    FileHash::from_bytes([0x24; FileHash::BYTE_LEN]),
-                    1024,
-                ),
-            ),
+        rmule_kad::KadCommand::CallbackWalk {
+            buddy_id: rmule_kad::KadId::from_bytes([0x24; rmule_kad::KadId::BYTE_LEN]),
+            file_hash: FileHash::from_bytes([0x24; FileHash::BYTE_LEN]),
+            tcp_port: 4662,
         },
     );
     loop {

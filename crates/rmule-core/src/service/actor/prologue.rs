@@ -142,6 +142,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // (ADR-0051, ADR-0052).
     diagnostics.install_swept_servers(Arc::clone(&global_source_servers), wiring.ip_filter.clone());
     let kad_source_registry: KadSourceRegistry = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let kad_ask_clock = crate::source_discovery::AskClock::shared(wiring.config.kad_reask_interval);
     let own_identity = wiring.shared_server_session.own_identity().clone();
     // A late Kad helper test names no server to report through, so the
     // Awaited Testers report it on the bus itself (ADR-0075, Run Log).
@@ -323,6 +324,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         buddy_slot: &wiring.buddy_slot,
                         reask_reply: &reask_reply_sink,
                         kad_inlet: kad_inlet.clone(),
+                        bans: wiring.kad_cells.adapters.ban_store.clone(),
                     },
                     &diagnostics,
                     NattFrontWiring {
@@ -535,6 +537,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         live_searches,
         global_source_servers,
         kad_source_registry,
+        kad_ask_clock,
         kad: None,
         activity_generation: 0,
         server_udp,

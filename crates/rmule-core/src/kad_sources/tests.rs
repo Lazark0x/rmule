@@ -91,7 +91,7 @@ fn engine<C: KadSourceChannel>(
         KadDiscoveryChannel::new(channel),
         downloads,
         sweep,
-        reask,
+        crate::source_discovery::AskClock::shared(reask),
         crate::server_pace::KAD_SOURCE_GATE,
     )
 }

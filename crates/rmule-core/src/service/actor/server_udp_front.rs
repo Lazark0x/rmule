@@ -112,7 +112,7 @@ pub(super) fn spawn_server_udp_front(
             global_source_registry.clone(),
             config.global_source_tick,
             // The Server Pace paces this channel, not the engine (ADR-0051).
-            Duration::ZERO,
+            crate::source_discovery::AskClock::shared(Duration::ZERO),
             crate::server_pace::UDP_SOURCE_GATE,
         )
         .run(),

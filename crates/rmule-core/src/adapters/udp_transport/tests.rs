@@ -42,6 +42,7 @@ async fn a_reask_ping_on_the_bound_client_udp_socket_reaches_the_engine() {
         crate::diagnostics::DiagnosticsState::default(),
         tokio::sync::mpsc::channel(4).0,
         crate::client_udp::SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     let engine_task = tokio::spawn(engine.run());
 
@@ -114,6 +115,7 @@ async fn an_ipv6_reask_on_the_bound_family_pair_decrypts_under_the_35_byte_key()
         DiagnosticsState::default(),
         tokio::sync::mpsc::channel(4).0,
         crate::client_udp::SharedKadInlet::default(),
+        crate::ban_store::SharedBanStore::default(),
     );
     let engine_task = tokio::spawn(engine.run());
 
