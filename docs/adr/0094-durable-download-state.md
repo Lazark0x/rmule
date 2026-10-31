@@ -72,8 +72,10 @@ never its message). A row failed before the store carried a reason says "reason 
   matches it, it starts over: the recorded parts and any peer-supplied provisional hash set are
   discarded, the `.part` the row names is removed, and the run starts from nothing, keeping the
   download's id, file, name, size, final path and place. An unreadable part file does not start
-  over: its disk or permissions may return. `DownloadRestarted` says `Continued` or `StartedOver`
-  and what it cost. Only the operator's Restart starts over; attach and a paused download's
+  over: its disk or permissions may return. Nor does a missing part file start over while a file
+  of its name stands in the current Temp Directory: the download was moved, not lost, so the
+  Restart is refused and says where that file stands. `DownloadRestarted` says `Continued` or
+  `StartedOver` and what it cost. Only the operator's Restart starts over; attach and a paused download's
   Resume still fail, so a download the operator meant to drop by deleting its part file does not
   come back on its own. A Restart that fails again leaves the row as it was and says why. A
   download that failed while completing (`CompletedFileNotMoved`, `CompletionCopyFailed`)
@@ -119,8 +121,9 @@ is not stored. An operator's Pause of a waiting download ends the wait.
 
 Who may touch a live part file: only its run's held handle writes it; completion moves the run's
 own `.part` after the run releases its handle — a rename, or across volumes a copy to a
-dot-prefixed file beside its destination first (ADR-0115); cancel unlinks the row's `.part` only after the run
-is joined; a starting-over Restart unlinks only for a `Failed` row with no run; clearing completed
+dot-prefixed file beside its destination first (ADR-0115); cancel stores `Cancelled` first and then
+unlinks the row's `.part`, only after the run is joined, and a delete that was refused is told and
+tried again at each attach while the row holds the path; a starting-over Restart unlinks only for a `Failed` row with no run; clearing completed
 downloads, the directory scan and its watch, the rename carry, spare copies, the Registry Check,
 the Had Set and serve reads never open a file under the download directory for writing.
 `ContentFileStore::write_verified_part` writes by path and is called only by tests and tools.

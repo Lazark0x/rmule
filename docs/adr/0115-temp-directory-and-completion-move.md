@@ -39,7 +39,8 @@ different volumes. The part file is deleted only after the finished file is in p
   numbered `stem (n).ext` is taken until neither the final path nor the part path exists and no
   live row holds either. Both are stored on the row, with the **Download Name**: the name the
   command gave, before any number. Changing either setting moves nothing: running, paused and
-  recovered downloads keep the paths their rows hold.
+  recovered downloads keep the paths their rows hold. A part path inside the Data Directory is
+  stored relative to it (ADR-0083), so moving that directory moves nothing either.
 - **One file per folded name.** A part path is derived from a peer's name, so two rows can spell
   one file: exFAT, APFS by default and NTFS fold case, and APFS and exFAT fold normalisation
   (measured on exFAT: `Film` is `film`, `Я` is `я`, NFC is NFD, `ß` and `ı` stay themselves). Rows
@@ -124,7 +125,9 @@ last decision; Download State holds no clock and takes no part.
    `Unsupported`, and for that volume the run checks the destination and renames, the window open
    there alone. Before the rename the run `fsync`s the file, and after it the destination's
    directory where the platform allows it, as step 5 does: `Completed` never stands over bytes
-   the disk has not taken, and nothing rechecks a `Completed` file.
+   the disk has not taken, and nothing rechecks a `Completed` file. A sync refused because a
+   program holds the file waits as the rename does; only a volume with no sync to give goes on
+   without one.
 4. **In use.** When the OS refuses the rename because another program holds the file (Windows
    `ERROR_SHARING_VIOLATION` 32 or `ERROR_LOCK_VIOLATION` 33), the download stays `Completing`
    with the step `WaitingForRelease`, and the run retries on a backoff of 1 s doubling to 30 s,

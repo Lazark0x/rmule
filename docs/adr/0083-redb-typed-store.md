@@ -58,6 +58,40 @@ in filesystem files, not in the store.
   change bumps `Record::VERSION` and lands a step, and so does a new table whose absence an
   older build would write past, because the operator's store holds downloads a reset would
   lose. A step's old types are compiled only while the step exists.
+- **Nothing climbs without a way back.** Before the first rung of a climb the store copies
+  the file to `rmule.redb.v<found>` beside it, written whole under another name and renamed
+  into place. A copy that fails refuses the climb and leaves the file as it was; a copy of
+  that version already there is kept, because it is the older of the two. A climb that
+  stopped resumes at its rung, and the version found then gets a copy of its own. Copies
+  are never deleted by rmule, since they hold what a rung's bug would otherwise take.
+- **The Data Directory is private.** One owner, `data_dir::make_private`: the directory is
+  0700, and `rmule.redb`, its copies and the Run Log's two files are 0600, enforced at every
+  open and so repaired on an install older than the rule. The store holds the Secure
+  Identification key, the User Hash and every download's name; the log at the full level
+  holds peer addresses. On Windows the directory's inherited ACL stands.
+- **A refused open is typed to the operator.** `StoreError` keeps the engine's reason;
+  `open_refusal` sorts it into another process holding the file, a newer store, a damaged
+  file, a disk that said no, and a climb that failed, and `CoreError::StoreRefused` carries
+  that to the front end's words. A repair or a climb says so while it runs. The TUI does not
+  enter its alternate screen over a core it could not attach: it prints the reason and
+  exits 1 (ADR-0069).
+- **One failed store write stops the store until a restart.** The engine latches every
+  failed write: each later call answers `PreviousIo` until the file is reopened. The store
+  counts that as stopped, not as a failed call. It does not reopen under its live handles: a
+  reopen must run the repair, and the disk that refused the write has not changed. The core
+  tells the operator once to free the disk and restart. The volume the store lies on is held
+  to the free-space floor beside every part's own (ADR-0094), so a disk filled by downloads
+  stops them before it stops the store.
+- **One unreadable row costs that row.** A read of a whole table yields per row. Only a
+  decode fails per row; an engine failure still fails the read. The core reports the row it
+  could not read and goes on with the rest. A rung still refuses a row it cannot read, and
+  the copy above holds what it refused.
+- **A part path inside the Data Directory is stored relative to it** (store version 17), so
+  moving the directory carries every download; a path outside it stays absolute, because a
+  Temp Directory the operator set keeps the downloads placed in it (ADR-0115).
+- **Every live record's bytes are pinned by a test.** postcard is positional and the engine
+  compares only the tag, so a shape edit with no bump passes everything but a byte pin. This
+  is a file format.
 - **No in-memory twins.** One implementation per seam; tests and front ends that need
   isolation open the engine's in-memory backend.
 - **A first run creates a fresh `rmule.redb`.** Files of any other storage engine in the
@@ -67,7 +101,7 @@ in filesystem files, not in the store.
 
 - Two invariants are rmule's to keep, not the engine's: every record kind writes through
   `Indexed<T>` (enforced by visibility — the raw tables are private to the wrapper), and
-  every record change lands a ladder step (a review rule).
+  every record change lands a ladder step (a review rule, backed by each record's byte pin).
 - `redb` has no `CREATE TABLE IF NOT EXISTS`: a read on a table no write has created
   fails, so `open` creates every table in one write.
 - A second process cannot open the store while rmule runs.
