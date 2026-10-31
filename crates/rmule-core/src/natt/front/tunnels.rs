@@ -60,7 +60,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 if burst && self.bursts.admit(at, now) {
                     self.fire_burst_only(at, peer).await;
                 }
-                if !self.spawn_dial(peer, at) {
+                if !self.spawn_dial(peer, at, now) {
                     self.dials.skipped(peer);
                 }
             }
@@ -116,13 +116,19 @@ impl<S: NattDatagramSink> NattFront<S> {
     /// leaves.
     ///
     /// Returns whether a dial started.
-    fn spawn_dial(&mut self, peer: UserHash, at: Ipv4Endpoint) -> bool {
+    fn spawn_dial(&mut self, peer: UserHash, at: Ipv4Endpoint, now: Instant) -> bool {
         let endpoint = PeerEndpoint::V4(at);
         if self.demux.utp().holds(endpoint) {
             // A tunnel is already up on this path; a second handshake would be
             // a second tunnel on one pinhole.
             return false;
         }
+        // The dial's slot names who it aims at, which a KEY frame may not
+        // contradict (ADR-0091, security rule 11).
+        self.registry
+            .lock()
+            .expect("the NAT-T tunnel registry is never poisoned")
+            .name(endpoint, peer, now);
         self.wiring.diagnostics.count_natt_dial();
         let demux = Arc::clone(&self.demux);
         let risen = self.risen_tx.clone();
@@ -189,7 +195,7 @@ impl<S: NattDatagramSink> NattFront<S> {
                 self.registry
                     .lock()
                     .expect("the NAT-T tunnel registry is never poisoned")
-                    .identified(at);
+                    .identified(at, peer.user_hash, now);
                 let named = peer;
                 let peer = named.user_hash;
                 let aimed = at.as_v4().and_then(|path| {

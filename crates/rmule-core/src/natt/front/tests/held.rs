@@ -452,3 +452,21 @@ async fn a_keepalive_carries_the_crypt_target_its_hello_named() {
     harness.front.on_risen(closed, due).await;
     assert_eq!(harness.front.crypt_targets.of_path(path), None);
 }
+
+/// A dial's target names its endpoint from the opener on: a forged KEY racing
+/// the answer contradicts it, whereas the real one is adopted (ADR-0091,
+/// security rule 11).
+#[tokio::test]
+async fn a_forged_first_key_at_a_dialed_endpoint_is_refused() {
+    let mut harness = Harness::new();
+    let target = hash(0x44);
+    let aimed = at(9, 31999);
+    let due = held_toward(&mut harness, target, aimed).await;
+
+    harness.front.release_held(due).await;
+
+    let mut registry = harness.front.registry.lock().expect("registry");
+    let endpoint = PeerEndpoint::V4(aimed);
+    assert!(!registry.learn_key(endpoint, hash(0x99), due));
+    assert!(registry.learn_key(endpoint, target, due));
+}

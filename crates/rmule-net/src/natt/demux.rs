@@ -101,9 +101,9 @@ pub enum NattDisposition {
     /// frame to it goes out obfuscated.
     KeyLearned(UserHash),
     /// A KEY frame naming a hash other than the live one, from an endpoint
-    /// that holds a tunnel. Dropped: a NAT rebinding moves the endpoint, never
-    /// the hash at one, so this can only be a spoof (ADR-0091, security rule
-    /// 11).
+    /// that holds a tunnel, or other than the endpoint's name, key or no key
+    /// yet. Dropped: a NAT rebinding moves the endpoint, never the hash at one,
+    /// so this can only be a spoof (ADR-0091, security rule 11).
     KeyContradictsTunnel,
     /// A KEY or CAPS frame from an endpoint with no slot that may not open
     /// one: the same stranger an opener would be, and the same answer

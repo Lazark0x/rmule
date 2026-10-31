@@ -210,8 +210,8 @@ impl TunnelRegistry {
     }
 
     /// Adopt the hash a KEY frame carried, returning whether it was adopted:
-    /// a held endpoint refuses one that contradicts its live key (ADR-0091,
-    /// security rule 11).
+    /// a held endpoint refuses one that contradicts its live key, and any
+    /// endpoint one that contradicts its name (ADR-0091, security rule 11).
     pub fn learn_key(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) -> bool {
         let held = self.slot(peer) == Some(TunnelSlot::Held);
         self.keys.learn(peer, hash, held, now)
@@ -275,14 +275,27 @@ impl TunnelRegistry {
         self.insert(peer, entry);
     }
 
-    /// A hello read on `peer`'s tunnel, or our own dial to it completed: the
-    /// endpoint stops spending the **Unidentified Allowance**.
-    pub fn identified(&mut self, peer: PeerEndpoint) {
+    /// Our own dial to `peer` completed: the endpoint stops spending the
+    /// **Unidentified Allowance**.
+    fn dial_completed(&mut self, peer: PeerEndpoint) {
         if let Some(entry) = self.slots.get_mut(&peer)
             && std::mem::take(&mut entry.unidentified)
         {
             self.uncharge(peer.ip());
         }
+    }
+
+    /// A hello on `peer`'s tunnel named `hash`: the endpoint stops spending the
+    /// **Unidentified Allowance**, and is that hash from here on.
+    pub fn identified(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+        self.dial_completed(peer);
+        self.name(peer, hash, now);
+    }
+
+    /// `peer` is `hash`, for as long as its slot lives (ADR-0091, security rule
+    /// 11): what a dial aimed at, or what a hello said.
+    pub fn name(&mut self, peer: PeerEndpoint, hash: UserHash, now: Instant) {
+        self.keys.name(peer, hash, now);
     }
 
     /// One holder of `peer`'s held slot let go; the slot goes with the last.
@@ -345,6 +358,8 @@ impl TunnelRegistry {
         if self.take(peer) {
             self.keys.forget(peer);
             self.negotiations.forget(peer);
+        } else {
+            self.keys.unname(peer);
         }
     }
 
@@ -432,7 +447,7 @@ impl DialingSlot {
         self.registry
             .lock()
             .expect("the NAT-T tunnel registry is never poisoned")
-            .identified(self.peer);
+            .dial_completed(self.peer);
         slot
     }
 }

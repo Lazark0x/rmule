@@ -302,7 +302,10 @@ fn an_accepted_tunnel_keeps_its_charge() {
     };
     assert_eq!(admit(100), Admission::Drop, "the allowance is spent");
 
-    registry.lock().expect("registry").identified(at(1, 1));
+    registry
+        .lock()
+        .expect("registry")
+        .identified(at(1, 1), UserHash::from_bytes([0x11; 16]), Instant::now());
     assert_eq!(admit(101), Admission::Opened, "a hello gave one back");
 
     tunnels.pop();
@@ -366,7 +369,10 @@ fn an_identified_endpoints_rows_outlive_its_charge() {
         drop(held);
         HeldSlot::hold(&registry, peer)
     };
-    registry.lock().expect("registry").identified(peer);
+    registry
+        .lock()
+        .expect("registry")
+        .identified(peer, hash, now);
     drop(tunnel);
     assert_eq!(
         registry.lock().expect("registry").key_for(peer, now),
@@ -400,4 +406,42 @@ fn a_live_tunnels_key_outlasts_the_learned_window() {
     drop(tunnel);
     let held = registry.lock().expect("registry");
     assert_eq!(held.key_for(peer, later), None, "the window applies again");
+}
+
+/// A hello or a dial names the endpoint; the name reaches a first KEY on the
+/// held slot, and leaves with the slot, so the next peer on that endpoint is
+/// not held to it.
+#[test]
+fn a_named_endpoint_refuses_a_forged_first_key_until_its_slot_goes() {
+    let now = Instant::now();
+    let mut registry = TunnelRegistry::new();
+    let peer = endpoint(1);
+    let (real, forged) = (
+        UserHash::from_bytes([0x11; UserHash::BYTE_LEN]),
+        UserHash::from_bytes([0x99; UserHash::BYTE_LEN]),
+    );
+    registry.dialing(peer, now);
+    registry.name(peer, real, now);
+    registry.held(peer, now);
+
+    assert!(!registry.learn_key(peer, forged, now));
+
+    registry.release_held(peer);
+    assert!(registry.learn_key(peer, forged, now));
+}
+
+/// An inbound slot that a hello named keeps its name while it is held.
+#[test]
+fn a_hello_names_what_it_identifies() {
+    let now = Instant::now();
+    let mut registry = TunnelRegistry::new();
+    let peer = endpoint(1);
+    let hello = UserHash::from_bytes([0x11; UserHash::BYTE_LEN]);
+    assert_ne!(registry.admit(peer, true, expected, now), Admission::Drop);
+    registry.held(peer, now);
+    assert!(registry.learn_key(peer, UserHash::from_bytes([0x99; 16]), now));
+
+    registry.identified(peer, hello, now);
+
+    assert_eq!(registry.key_for(peer, now), Some(hello));
 }
