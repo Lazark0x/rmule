@@ -43,11 +43,17 @@ fn the_count_stands_on_an_unread_socket_and_falls_as_the_receiver_reads() {
 
     let mut chunk = [0u8; 64 * 1024];
     receiver
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
     let give_up = Instant::now() + Duration::from_secs(10);
     loop {
-        receiver.read_exact(&mut chunk).unwrap();
+        // What the receiver holds can end short of a chunk while the sender
+        // waits on a window update, so no read here may insist on a whole one.
+        match receiver.read(&mut chunk) {
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Err(error) => panic!("{error}"),
+        }
         if send_progress(&sender).is_some_and(|now| now.is_past(full)) {
             return;
         }
