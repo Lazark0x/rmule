@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::adapters::LinkServeHalf;
+use crate::serve::ServeOutcome;
 use crate::served_downloads::leased::{Leased, leased};
 
 /// One link's far ends, as the dial that made it hands them to the loop.
@@ -41,16 +42,25 @@ impl Dialed {
     }
 }
 
-/// The current-thread runtime reads both inputs in the one wake: the loop
-/// takes the new link first, the old link's close being behind it.
-#[tokio::test]
-async fn a_redial_read_ahead_of_the_old_links_close_is_served() {
+/// A running serve loop, which shares one leased file, and its two roads in.
+struct Bench {
+    file: FileHash,
+    accepts: mpsc::Sender<ServeConnection>,
+    dials: mpsc::Sender<LinkServeHalf>,
+    stop: watch::Sender<bool>,
+    serve: tokio::task::JoinHandle<ServeOutcome<FakeServeRuntime>>,
+    // Closed, either ends the loop.
+    _evt_rx: mpsc::Receiver<CoreEvent>,
+    _share_changed_tx: mpsc::Sender<()>,
+}
+
+async fn bench() -> Bench {
     let file = FileHash::from_bytes([0x23; FileHash::BYTE_LEN]);
     let Leased { store, cell, .. } = leased(file, "/downloads/download.bin".into());
-    let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);
-    let (dialed_tx, dialed_rx) = mpsc::channel(8);
+    let (accepts, accept_rx) = mpsc::channel::<ServeConnection>(8);
+    let (dials, dialed_rx) = mpsc::channel(8);
     let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
-    let (stop_tx, stop_rx) = watch::channel(false);
+    let (stop, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let serve = tokio::spawn(
         ServeTask {
@@ -85,18 +95,58 @@ async fn a_redial_read_ahead_of_the_old_links_close_is_served() {
         matches!(e, ServeEvent::FilesAnnounced { .. })
     })
     .await;
+    Bench {
+        file,
+        accepts,
+        dials,
+        stop,
+        serve,
+        _evt_rx: evt_rx,
+        _share_changed_tx,
+    }
+}
 
+impl Bench {
+    async fn stop(self) {
+        let _ = self.stop.send(true);
+        let _ = self.serve.await;
+    }
+}
+
+/// The current-thread runtime reads both inputs in the one wake: the loop
+/// takes the new link first, the old link's close being behind it.
+#[tokio::test]
+async fn a_redial_read_ahead_of_the_old_links_close_is_served() {
+    let bench = bench().await;
     let peer = peer_at([203, 0, 113, 8], 4662);
     let (mut old, half) = dialed(peer);
-    dialed_tx.send(half).await.unwrap();
-    old.is_served(file).await;
+    bench.dials.send(half).await.unwrap();
+    old.is_served(bench.file).await;
 
     let (mut new, half) = dialed(peer);
     old.events.send(ServeInput::closed_here()).await.unwrap();
-    dialed_tx.send(half).await.unwrap();
+    bench.dials.send(half).await.unwrap();
 
-    new.is_served(file).await;
+    new.is_served(bench.file).await;
 
-    let _ = stop_tx.send(true);
-    let _ = serve.await;
+    bench.stop().await;
+}
+
+/// A reused ephemeral port: an accepted link at an endpoint the closing link
+/// still holds keeps its turn, as a dialed one does, for the same one wake.
+#[tokio::test]
+async fn an_accepted_link_read_ahead_of_the_old_links_close_is_served() {
+    let bench = bench().await;
+    let peer = peer_at([203, 0, 113, 8], 51000);
+    let (mut old, half) = dialed(peer);
+    bench.accepts.send(half.conn).await.unwrap();
+    old.is_served(bench.file).await;
+
+    let (mut new, half) = dialed(peer);
+    old.events.send(ServeInput::closed_here()).await.unwrap();
+    bench.accepts.send(half.conn).await.unwrap();
+
+    new.is_served(bench.file).await;
+
+    bench.stop().await;
 }

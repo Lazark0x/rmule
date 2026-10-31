@@ -189,6 +189,7 @@ where
         // Every link, keyed by requester endpoint, and the links that follow
         // one to its endpoint.
         let mut links: HashMap<PeerEndpoint, Link> = HashMap::new();
+        let mut accepted_next = NextLinks::default();
         let mut dialed_next = NextLinks::default();
         let mut dial_backs_next = NextLinks::default();
         // The sans-I/O serving brain (**Serve State**): it owns the share-set
@@ -328,25 +329,23 @@ where
                     )
                     .await;
                 }
-                accepted = serve_runtime.accept() => {
-                    match accepted {
-                        Some(conn) => {
-                            // The accept backlog's high-water mark,
-                            // sampled here because this is the deepest the
-                            // channel is ever seen: the loop has just come
-                            // back from whatever it was doing, so what is
-                            // queued is what arrived while it was away. The
-                            // peer just taken is counted, so the gauge reads
-                            // as a depth and not as a remainder.
-                            if let Some(queued) = serve_runtime.accept_backlog() {
-                                diagnostics.observe_serve_accept_backlog(queued + 1);
-                            }
-                            register_serve_connection(conn, &mut links, &fact_tx);
-                        }
-                        None => {
-                            reason = ServeStopReason::ListenerClosed;
-                            break;
-                        }
+                accepted = accepted_next.next_from(serve_runtime.accept()) => {
+                    let Some(conn) = accepted else {
+                        reason = ServeStopReason::ListenerClosed;
+                        break;
+                    };
+                    // The accept backlog's high-water mark, sampled here
+                    // because this is the deepest the channel is ever seen:
+                    // the loop has just come back from whatever it was doing,
+                    // so what is queued is what arrived while it was away.
+                    // The peer just taken is counted, so the gauge reads as a
+                    // depth and not as a remainder.
+                    if let Some(queued) = serve_runtime.accept_backlog() {
+                        diagnostics.observe_serve_accept_backlog(queued + 1);
+                    }
+                    let peer = conn.peer();
+                    if let Some(conn) = accepted_next.turn_of(peer, conn, &links) {
+                        register_serve_connection(conn, &mut links, &fact_tx);
                     }
                 }
                 outcome = dial_backs_next.next_from(dial_back_rx.recv()) => {
@@ -486,6 +485,7 @@ where
                     .await;
                     if closing {
                         links.remove(&peer);
+                        accepted_next.link_left(peer);
                         dialed_next.link_left(peer);
                         dial_backs_next.link_left(peer);
                     }
