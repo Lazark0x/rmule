@@ -28,8 +28,10 @@
 //! (`KademliaUDPListener.cpp:1489-1518`) writes the `0x99` from the `0x52`
 //! verbatim, and the firewalled node drops one that does not name it
 //! (`ClientTCPSocket.cpp:1636-1641`). So rmule's first `0x52`, the eMule
-//! layout, is relayed and dies in silence; the second, after the road's 30 s
-//! wait, reads the row byte for byte and draws the dial-back.
+//! layout, is relayed and dies in silence. The second reads the row byte for
+//! byte, and the leg's last claim asks for its dial-back. Run `1793423850` did
+//! not get one: the fallback leaves after the road's 30 s, and the buddy takes
+//! one `KADEMLIA_CALLBACK_REQ` a minute per IP (`PacketTracking.cpp:158-160`).
 //!
 //! A `0x94` is stricter: `OP_REASKCALLBACKUDP` is relayed only under the
 //! buddy's own bytes (`ClientUDPSocket.cpp:151`), so it needs the reading

@@ -272,10 +272,15 @@ current family reads, and read in both**:
   the buddy's Kad ID, relayed by rmule; both type-6 rows; and a firewalled aMule's type-5
   row for a file past 4 GiB, its `TAG_FILESIZE` a `UINT64`, which rmule writes back byte
   for byte.
+- Measured against a stock buddy (`kad-core-buddy --stock-buddy`, run `1793423850`): the
+  primary `0x52` against a stock aMule's own row is relayed verbatim and dropped by the
+  source's exact check. The fallback, 30 s on, is dropped by the buddy's flood guard, one
+  `KADEMLIA_CALLBACK_REQ` a minute per IP (`PacketTracking.cpp:158-160`), so through 3.1.0
+  the road ends there: no dial-back, no adoption. Open until the fallback leaves past that
+  minute, and rmule's `0x94` through a stock buddy waits on the same adoption.
 - Still source-derived: an eMule-layout row read off a third body (it needs an eMule 0.70b,
-  eMuleAI, aMule 3.2.0 or current emule-qt body), the fallback `0x52` against a stock
-  aMule's own row behind a stock aMule buddy, rmule's `0x94` through a stock aMule buddy,
-  and a `0x99` relayed by aMule over a link rmule serves.
+  eMuleAI, aMule 3.2.0 or current emule-qt body), and a `0x99` relayed by aMule over a link
+  rmule serves.
 - The server-relayed callback is decoded from a capture (`0x35`'s 6-byte form), and its
   dial-back is proven on the bench: a High-ID stock aMule downloaded a byte-equal file from
   a Low-ID rmule through ed2k-server over rmule's dial-back alone (`server-callback-serve`,
