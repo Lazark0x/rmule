@@ -304,18 +304,11 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             note(state, text)
         }
         E::CancelledFileLeft { part_path, .. } => {
-            let text = Sentence::owned(words::cancelled_file_left(&part_path));
-            note(state, text)
+            note(state, words::cancelled_file_left(&part_path))
         }
-        E::RowsUnreadable { rows } => {
-            let text = Sentence::owned(words::rows_unreadable(rows));
-            note(state, text)
-        }
-        E::PartFilesAdopted { parts } => {
-            let text = Sentence::owned(words::part_files_adopted(parts));
-            note(state, text)
-        }
-        E::StoreStopped => note(state, Sentence::fixed(words::STORE_STOPPED)),
+        E::RowsUnreadable { rows } => note(state, words::rows_unreadable(rows)),
+        E::PartFilesAdopted { parts } => note(state, words::part_files_adopted(parts)),
+        E::StoreStopped => note(state, words::STORE_STOPPED),
         E::VolumeStopped {
             download_id,
             directory,

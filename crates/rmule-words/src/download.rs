@@ -125,36 +125,39 @@ pub const NO_DOWNLOAD_DIR: Sentence =
     Sentence::fixed("no download dir — set one with rmule-cli config set-download-dir");
 
 /// A failed write stopped the store: the sentence that says what cures it.
-pub const STORE_STOPPED: &str = "the disk refused a store write, so nothing more is recorded \
-     this run: free some space and restart rmule";
+pub const STORE_STOPPED: Sentence = Sentence::fixed(
+    "the disk refused a store write, so nothing more is recorded this run: free some space and \
+     restart rmule",
+);
 
 /// A cancelled download's part file that would not be deleted.
 #[must_use]
-pub fn cancelled_file_left(part_path: &Path) -> String {
-    format!(
+pub fn cancelled_file_left(part_path: &Path) -> Sentence {
+    Sentence::owned(format!(
         "{} could not be deleted; rmule tries again at its next start",
         part_path.display()
-    )
+    ))
 }
 
 /// Part files the store had no row for, taken back paused.
 #[must_use]
-pub fn part_files_adopted(parts: u32) -> String {
-    format!(
+pub fn part_files_adopted(parts: u32) -> Sentence {
+    Sentence::owned(format!(
         "{} the store had lost {} back, paused; resume to check what each holds",
         crate::units::count(u64::from(parts), "part file", "part files"),
         if parts == 1 { "is" } else { "are" }
-    )
+    ))
 }
 
 /// Rows of the download table that would not read at attach.
 #[must_use]
-pub fn rows_unreadable(rows: u32) -> String {
-    format!(
-        "{} could not be read from the store and is not listed; keep rmule.redb, its part \
+pub fn rows_unreadable(rows: u32) -> Sentence {
+    Sentence::owned(format!(
+        "{} could not be read from the store and {} not listed; keep rmule.redb, the part \
          files still stand",
-        crate::units::count(u64::from(rows), "download", "downloads")
-    )
+        crate::units::count(u64::from(rows), "download", "downloads"),
+        if rows == 1 { "is" } else { "are" }
+    ))
 }
 
 /// A download event's line in the Networks log: terse, no ids or hashes.
@@ -403,9 +406,9 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         D::HoleLessDestination { directory, .. } => {
             format!("{}; {HOLE_LESS_REMEDY}", hole_less_where(directory))
         }
-        D::CancelledFileLeft { part_path, .. } => cancelled_file_left(part_path),
-        D::RowsUnreadable { rows } => rows_unreadable(*rows),
-        D::PartFilesAdopted { parts } => part_files_adopted(*parts),
+        D::CancelledFileLeft { part_path, .. } => cancelled_file_left(part_path).to_string(),
+        D::RowsUnreadable { rows } => rows_unreadable(*rows).to_string(),
+        D::PartFilesAdopted { parts } => part_files_adopted(*parts).to_string(),
         D::StoreStopped => STORE_STOPPED.to_string(),
         D::VolumeStopped {
             directory, stop, ..
