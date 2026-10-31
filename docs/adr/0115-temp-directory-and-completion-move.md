@@ -92,8 +92,10 @@ last decision; Download State holds no clock and takes no part.
    check) is the download's own — a past move landed it and a Pause or a stop came before its row
    was written — so the run takes step 6 there, numbering nothing past it; a file of another size
    or hash is someone else's and is left as it is.
-3. **Rename.** The run renames the part file onto the destination **exclusively**: the call
-   itself refuses when a file stands there (`rmule_os::fs::rename_exclusive`, ADR-0111), so a file
+3. **Rename.** The run first makes the destination's directory when it is missing, on both roads:
+   the download directory may not exist yet, and no part file makes it now. It then renames the
+   part file onto the destination **exclusively**: the call itself refuses when a file stands there
+   (`rmule_os::fs::rename_exclusive`, ADR-0111), so a file
    another program created after step 2 named the destination is never replaced. That refusal
    takes the next free name, stored first, and the rename is tried again. Std's `rename` replaces
    on every platform, Windows included, and a check before it leaves the window open, as aMule's
@@ -130,8 +132,9 @@ last decision; Download State holds no clock and takes no part.
    landed.
 
 Any other refusal fails the download with the part file untouched and every verified part kept:
-a rename as `CompletedFileNotMoved { os_code }`, a copy as `CompletionCopyFailed { os_code }` (a
-full disk, an I/O error), with its partial copy deleted. Restart (ADR-0094) continues: the run finds
+a rename, or a destination directory that cannot be made, as `CompletedFileNotMoved { os_code }`,
+a copy as `CompletionCopyFailed { os_code }` (a full disk, an I/O error), with its partial copy
+deleted. Restart (ADR-0094) continues: the run finds
 every part verified and moves again. `FinalPathTaken` is no longer produced; rows that hold it still
 decode and read as before.
 
