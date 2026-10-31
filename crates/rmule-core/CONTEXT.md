@@ -519,6 +519,14 @@ they decide whether a connection carries a source-exchange ask, and whether a po
 source's UDP reask gives way to the TCP ask (ADR-0108).
 _Avoid_: SX throttle (that is the serving side's)
 
+**Spent Names**:
+The node's one registry of the **Ask Names** a dead source is not pooled or dialed under, each
+free again at the end of stock's dead-source window, 30 minutes or 45 for a Low ID (ADR-0090). A
+dead peer is dead for every file and past every run; one that said it lacks a file is spent for
+that file alone. A sighting reads it at the **Source Book**'s door and a pooled record at its
+turn to dial, so another run's death reaches every pool.
+_Avoid_: dead list (aMule's, per client), blocklist
+
 **Ask Name**:
 One of the names the **Source Ask Clock** knows a peer by, and the **Queue Standings** find it
 by: its **Source Book** record's aliases — its TCP endpoint, a Low-ID callback's
@@ -593,6 +601,19 @@ A peer's `m_Aggressiveness` as rmule computes it on the **Queue Standings**' clo
 may ask inside the clock while that leaves the score at 9 or under; no other road spends it
 (ADR-0107 invariant 17).
 _Avoid_: penalty, ban count
+
+**Peer Clock**:
+A peer's last ask, the stamp the **Queue Standings** keep under each of its **Ask Names**. Every
+ping, slot ask and recovery ask reads it and stamps it as it leaves, whichever download, run or
+road sends it, and nothing leaves inside 590 s of the last stamp; a **Link Rider** alone may, by
+the **Ask Score** (ADR-0107 invariants 14, 17).
+_Avoid_: Ask Clock (a file's, per channel), reask clock (a standing's own period)
+
+**Left Place**:
+What a run's stop leaves in the **Queue Standings**, per file and **Ask Name**: a place that
+asked, its last ask and whether it needed parts, for a later run of that file, Resume or a re-add
+of one hash, to return to (ADR-0107 invariant 15).
+_Avoid_: saved standing (a run keeps no standing past its end)
 
 **Queue Standing**:
 rmule's one place in a remote uploader's queue, per peer across the **Download Set**, as aMule's

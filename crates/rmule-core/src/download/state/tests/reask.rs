@@ -14,7 +14,6 @@ use crate::download::source_book::{
 use crate::own_identity::ConnectedSession;
 use crate::service::IgnoredReaskReply;
 
-mod ask_clock;
 mod buddy;
 mod dial_back;
 mod exchange_pool;
@@ -23,6 +22,7 @@ mod handover;
 mod no_file;
 mod no_needed_parts;
 mod on_queue;
+mod peer_clock;
 mod purge;
 mod redial;
 mod spent;

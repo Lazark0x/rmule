@@ -16,11 +16,11 @@
 //! read, past the place that made it, so a download the standing passes to
 //! asks on the peer's clock. A **Source Handover** (ADR-0090) is a role read
 //! here and nothing else: no run reads another's book or tells it anything.
-//! A **stamp** is also the peer's one ask clock: every ask reads it and stamps
+//! A **stamp** is also the **Peer Clock**: every ask reads it and stamps
 //! it as it leaves, and none leaves inside [`MIN_REQUEST_TIME`] (invariant 14).
 //! Each stamp carries the peer's **Ask Score** as stock computes it, the one
 //! thing a Link Rider may spend to ask inside that clock (invariant 17).
-//! A **left place** keeps, past the run that made it, a place at the peer and
+//! A **Left Place** keeps, past the run that made it, a place at the peer and
 //! its last ask, per file and name (invariant 15): a Resume or a re-add is a
 //! new run, and the book that held them is gone.
 //! Time is an argument, as everywhere in the download brain.

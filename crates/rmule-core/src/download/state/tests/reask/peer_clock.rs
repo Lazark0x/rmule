@@ -1,4 +1,4 @@
-//! One ask clock per peer (ADR-0107 invariants 14-16): nothing is asked inside
+//! One **Peer Clock** per peer (ADR-0107 invariants 14-16): nothing is asked inside
 //! `MIN_REQUESTTIME` of the peer's last ask, whatever road, download, run or
 //! stop, and a run's end forgets neither the clock nor the place at the peer.
 
