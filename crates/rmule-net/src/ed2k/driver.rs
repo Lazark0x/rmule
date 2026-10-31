@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use crate::driver::{DrivenSession, DriverOutput, run_driver};
+use crate::driver::{DrivenSession, DriverOutput, SendSide, run_driver};
 use rmule_ed2k::{CloseReason, Ed2kCommand, Ed2kEvent, Ed2kSession, Output};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -111,7 +111,7 @@ pub async fn drive<S>(
     evt_tx: mpsc::Sender<Ed2kEvent>,
 ) -> Result<(), Ed2kNetError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + SendSide + Unpin + Send,
 {
     drive_with_login_timeout(session, io, cmd_rx, evt_tx, None).await
 }
@@ -129,7 +129,7 @@ pub async fn drive_with_login_timeout<S>(
     login_timeout: Option<Duration>,
 ) -> Result<(), Ed2kNetError>
 where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + SendSide + Unpin + Send,
 {
     run_driver(
         Ed2kDriven::new(session),

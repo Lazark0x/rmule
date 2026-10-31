@@ -17,6 +17,8 @@ use rand::{Rng, RngCore};
 use rmule_primitives::{CryptStance, is_plaintext_marker};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use super::{SendProgress, SendSide};
+
 /// Longest random padding tail rmule appends to a handshake message. `[pending]`
 /// (eMule's `GetCryptTCPPaddingLength`); any value interoperates because the
 /// peer reads the length byte.
@@ -248,6 +250,12 @@ fn handshake_failed() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "obfuscation handshake failed")
 }
 
+impl<S: SendSide, H> SendSide for CryptStream<S, H> {
+    fn send_progress(&self) -> Option<SendProgress> {
+        self.inner.send_progress()
+    }
+}
+
 impl<S, H> AsyncRead for CryptStream<S, H>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -387,6 +395,26 @@ mod tests {
                 *b ^= self.recv_key;
             }
         }
+    }
+
+    /// The driver sees only the top of the stack: the reading comes off the
+    /// socket under it.
+    #[tokio::test]
+    async fn a_stream_over_a_socket_answers_for_that_socket() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dialed = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (_accepted, _) = listener.accept().await.unwrap();
+        let bare = dialed.send_progress();
+        assert!(bare.is_some());
+
+        let stack = CryptStream::new(
+            crate::peer::PushBack::new(dialed, None),
+            XorTransport::initiator(),
+        );
+
+        assert_eq!(stack.send_progress(), bare);
     }
 
     #[tokio::test]

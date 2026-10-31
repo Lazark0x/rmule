@@ -17,6 +17,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rmule_net::driver::SendSide;
 use rmule_net::peer::{
     Admitted, ConnectOptions as PeerConnectOptions, Connection as PeerConnection,
     PEER_SOCKET_TIMEOUT, PeerListener, PeerNetError, PeerStreamRole,
@@ -133,7 +134,7 @@ impl SharedTunnelAdmit {
         role: PeerStreamRole,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         self.push(stream, peer, role, None).await
     }
@@ -155,7 +156,7 @@ impl SharedTunnelAdmit {
         target: UserHash,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         self.push(stream, peer, role, Some(target)).await
     }
@@ -168,7 +169,7 @@ impl SharedTunnelAdmit {
         dialed_toward: Option<UserHash>,
     ) -> Result<(), TunnelAdmitRefusal>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         // The guard never crosses an await: it holds the pump's cell.
         let (accept_tx, gates, conn) = {

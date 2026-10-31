@@ -14,6 +14,8 @@ use std::task::{Context, Poll};
 use rmule_primitives::PeerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use crate::driver::{SendProgress, SendSide};
+
 /// A stream whose first byte was read and put back: the next read sees it
 /// again, then the underlying stream continues untouched. `None` pushes
 /// nothing — a peer that closed before its first byte has no byte to give
@@ -28,6 +30,12 @@ impl<S> PushBack<S> {
     #[must_use]
     pub const fn new(inner: S, pushed: Option<u8>) -> Self {
         Self { inner, pushed }
+    }
+}
+
+impl<S: SendSide> SendSide for PushBack<S> {
+    fn send_progress(&self) -> Option<SendProgress> {
+        self.inner.send_progress()
     }
 }
 
@@ -75,7 +83,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PushBack<S> {
 /// some later transport that is not a socket at all.
 pub trait InboundSource: Send + Sync {
     /// The accepted stream type.
-    type Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static;
+    type Stream: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static;
 
     /// Await the next inbound connection.
     fn accept(&self) -> impl Future<Output = io::Result<(Self::Stream, PeerEndpoint)>> + Send;

@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::Instrument;
 
 use crate::driver::{
-    ChannelCaps, CryptStream, DriverError, SpawnCapture, SpawnHandles, run_capture,
+    ChannelCaps, CryptStream, DriverError, SendSide, SpawnCapture, SpawnHandles, run_capture,
     spawn_connection,
 };
 use crate::ed2k::capture::{Ed2kCaptureFormat, event_to_toml};
@@ -121,7 +121,7 @@ impl Connection {
     /// alternative transports.
     pub fn spawn_with_stream<S>(session: Ed2kSession, stream: S) -> Self
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         let handles = spawn_connection(
             stream,
@@ -142,7 +142,7 @@ impl Connection {
     /// their own stream.
     pub fn spawn_with_options<S>(session: Ed2kSession, stream: S, options: ConnectOptions) -> Self
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         let endpoint = session.endpoint();
         let identity = session.identity();

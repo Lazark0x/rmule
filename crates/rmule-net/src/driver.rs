@@ -27,7 +27,8 @@ pub use crypt::{
 };
 
 use outgoing::Outgoing;
-pub use outgoing::WRITE_STALL_BOUND;
+pub use outgoing::{SendSide, WRITE_STALL_BOUND};
+pub use rmule_os::tcp_send::SendProgress;
 
 /// Read buffer size; matches Tokio's default `BufReader` capacity.
 const READ_BUF_LEN: usize = 8192;
@@ -210,7 +211,8 @@ enum Ending {
 /// is taken once the last one's bytes are in the kernel. Reading pauses while
 /// an event waits for room or too much is unwritten, which is how a peer's
 /// asks are braked by what it leaves unread.
-/// A write that moves no byte for [`WRITE_STALL_BOUND`] ends the connection.
+/// A socket owed bytes that moves none for [`WRITE_STALL_BOUND`] ends the
+/// connection: neither a write taken nor its [`SendSide`] past the last reading.
 ///
 /// The `Send` bounds encode the harness's contract: it is meant to run
 /// inside a spawned task (`tokio::spawn`), so the session, the commands and
@@ -229,7 +231,7 @@ where
     S: DrivenSession + Send,
     S::Command: Send,
     S::Event: Send,
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + SendSide + Unpin + Send,
 {
     let start = tokio::time::Instant::now();
     let started_unix = now_unix_secs();
@@ -300,7 +302,7 @@ where
             break ending;
         }
 
-        let stall_at = outgoing.stall_at();
+        let look_at = outgoing.look_at();
         tokio::select! {
             cmd = cmd_rx.recv(), if ending.is_none() && outgoing.is_idle() => match cmd {
                 Some(command) => session.handle_command(command),
@@ -337,12 +339,19 @@ where
                 // What ended the run stands; a failed goodbye adds nothing.
                 Err(error) => break ending.take().unwrap_or(Ending::Failed(error)),
             },
-            () = sleep_until_opt(stall_at), if stall_at.is_some() => {
-                let stalled = std::io::Error::new(
-                    std::io::ErrorKind::TimedOut,
-                    "the peer took no byte within the write bound",
-                );
-                break ending.take().unwrap_or(Ending::Failed(stalled));
+            () = sleep_until_opt(look_at), if look_at.is_some() => {
+                // No half is in use while a branch's handler runs, so the
+                // stream is whole for the one call a stalled socket pays for.
+                let stream = reader.unsplit(writer);
+                let reading = stream.send_progress();
+                (reader, writer) = tokio::io::split(stream);
+                if outgoing.is_stuck(reading) {
+                    let stalled = std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the peer took no byte within the write bound",
+                    );
+                    break ending.take().unwrap_or(Ending::Failed(stalled));
+                }
             }
             permit = evt_tx.reserve(), if !unsent.is_empty() => {
                 if let (Ok(permit), Some(event)) = (permit, unsent.pop_front()) {
@@ -509,7 +518,7 @@ where
     // The harness holds the close reason and a `&Capture` across `.await`
     // points; spawning the driver future needs both to cross threads.
     S::CloseReason: Send,
-    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + SendSide + Unpin + Send + 'static,
     E: Send + 'static,
     D: FnOnce(BoxFuture<Result<(), std::io::Error>>) -> F,
     F: Future<Output = Result<(), E>> + Send + 'static,

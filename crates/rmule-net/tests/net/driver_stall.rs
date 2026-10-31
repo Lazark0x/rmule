@@ -1,13 +1,19 @@
 //! A socket its peer stopped reading, on a paused clock: the driver keeps
 //! hearing the peer and the session, and ends the connection at its bound.
 
+use std::io;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::fixture::{ed2k_fixture, test_session};
 use rmule_ed2k::{CloseReason, Ed2kCommand, Ed2kEvent};
-use rmule_net::driver::WRITE_STALL_BOUND;
+use rmule_net::driver::{SendProgress, SendSide, WRITE_STALL_BOUND};
 use rmule_net::ed2k::drive;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+use tokio::io::{
+    AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf, duplex,
+};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, timeout};
 
@@ -135,4 +141,185 @@ async fn a_full_event_channel_holds_no_write_back() {
             .unwrap()
             > 0
     );
+}
+
+/// A socket the peer has filled, its send side read off a script the test
+/// writes on the paused clock.
+struct ScriptedSocket {
+    pipe: DuplexStream,
+    reading: Arc<Mutex<Option<SendProgress>>>,
+}
+
+impl SendSide for ScriptedSocket {
+    fn send_progress(&self) -> Option<SendProgress> {
+        *self.reading.lock().unwrap()
+    }
+}
+
+impl AsyncRead for ScriptedSocket {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for ScriptedSocket {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.pipe).poll_write(cx, buf)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_flush(cx)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.pipe).poll_shutdown(cx)
+    }
+}
+
+/// A driven link over a full socket, and what the test holds to script it.
+struct StalledLink {
+    reading: Arc<Mutex<Option<SendProgress>>>,
+    peer: DuplexStream,
+    events: mpsc::Receiver<Ed2kEvent>,
+    _commands: mpsc::Sender<Ed2kCommand>,
+}
+
+impl StalledLink {
+    fn drive(first: Option<SendProgress>) -> Self {
+        let (pipe, peer) = full_pipe();
+        let reading = Arc::new(Mutex::new(first));
+        let socket = ScriptedSocket {
+            pipe,
+            reading: Arc::clone(&reading),
+        };
+        let (commands, cmd_rx) = mpsc::channel(4);
+        let (evt_tx, events) = mpsc::channel(16);
+        tokio::spawn(drive(test_session(), socket, cmd_rx, evt_tx));
+        Self {
+            reading,
+            peer,
+            events,
+            _commands: commands,
+        }
+    }
+
+    fn reads(&self, reading: Option<SendProgress>) {
+        *self.reading.lock().unwrap() = reading;
+    }
+
+    /// Run until the link ends: how long that took from `began`.
+    async fn ended(mut self, began: Instant) -> Duration {
+        while let Ok(Some(event)) = timeout(NEVER, self.events.recv()).await {
+            if matches!(
+                event,
+                Ed2kEvent::Disconnected {
+                    reason: CloseReason::Io(io::ErrorKind::TimedOut)
+                }
+            ) {
+                return began.elapsed();
+            }
+        }
+        panic!("the link never timed out");
+    }
+
+    fn is_alive(&mut self) -> bool {
+        while let Ok(event) = self.events.try_recv() {
+            if matches!(event, Ed2kEvent::Disconnected { .. }) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// The run behind this: 78,192 bytes left a full socket across 40 s in which
+/// the write took none.
+#[tokio::test(start_paused = true)]
+async fn a_socket_whose_count_falls_outlives_the_bound_with_no_write_taken() {
+    let mut link = StalledLink::drive(Some(SendProgress::Held(100_000)));
+
+    tokio::time::sleep(WRITE_STALL_BOUND / 4).await;
+    for step in 1..=5 {
+        link.reads(Some(SendProgress::Held(100_000 - step * 1_000)));
+        tokio::time::sleep(WRITE_STALL_BOUND / 2).await;
+    }
+
+    assert!(link.is_alive(), "the socket moved inside every bound");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_socket_whose_count_stands_ends_at_the_bound() {
+    let began = Instant::now();
+    let link = StalledLink::drive(Some(SendProgress::Held(100_000)));
+
+    assert_eq!(link.ended(began).await, WRITE_STALL_BOUND);
+}
+
+/// Windows answers the bytes acknowledged, which rise.
+#[tokio::test(start_paused = true)]
+async fn a_socket_whose_acked_count_rises_outlives_the_bound() {
+    let mut link = StalledLink::drive(Some(SendProgress::Acked(5_000)));
+
+    tokio::time::sleep(WRITE_STALL_BOUND / 2).await;
+    link.reads(Some(SendProgress::Acked(6_000)));
+    tokio::time::sleep(WRITE_STALL_BOUND).await;
+
+    assert!(link.is_alive());
+}
+
+/// The drain that stops ends the link within one bound of the reading that
+/// last saw it move.
+#[tokio::test(start_paused = true)]
+async fn a_drain_that_stops_ends_one_bound_after_the_last_fall() {
+    let began = Instant::now();
+    let link = StalledLink::drive(Some(SendProgress::Held(100_000)));
+
+    tokio::time::sleep(WRITE_STALL_BOUND / 2).await;
+    link.reads(Some(SendProgress::Held(90_000)));
+
+    assert_eq!(link.ended(began).await, WRITE_STALL_BOUND * 2);
+}
+
+/// Its asks reach the session and leave the clock alone.
+#[tokio::test(start_paused = true)]
+async fn a_peer_that_asks_and_never_reads_still_ends_at_the_bound() {
+    let began = Instant::now();
+    let mut link = StalledLink::drive(Some(SendProgress::Held(100_000)));
+    let ask = ed2k_fixture("server/server_message.bin");
+    let mut peer = std::mem::replace(&mut link.peer, duplex(1).0);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(WRITE_STALL_BOUND / 8).await;
+            peer.write_all(&ask).await.unwrap();
+        }
+    });
+
+    assert_eq!(link.ended(began).await, WRITE_STALL_BOUND);
+}
+
+/// A socket that stops answering says nothing moved.
+#[tokio::test(start_paused = true)]
+async fn a_socket_that_loses_its_reading_ends_at_the_bound() {
+    let began = Instant::now();
+    let link = StalledLink::drive(Some(SendProgress::Held(100_000)));
+
+    tokio::time::sleep(WRITE_STALL_BOUND / 2).await;
+    link.reads(None);
+
+    assert_eq!(link.ended(began).await, WRITE_STALL_BOUND);
+}
+
+/// One that never answered keeps the bound as it was.
+#[tokio::test(start_paused = true)]
+async fn a_socket_with_no_reading_ends_at_the_bound() {
+    let began = Instant::now();
+    let link = StalledLink::drive(None);
+
+    assert_eq!(link.ended(began).await, WRITE_STALL_BOUND);
 }

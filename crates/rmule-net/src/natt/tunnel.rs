@@ -22,6 +22,7 @@ use rmule_primitives::PeerEndpoint;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use super::registry::HeldSlot;
+use crate::driver::SendSide;
 use crate::peer::PeerStreamRole;
 
 /// The reliable stream over a punched path.
@@ -109,6 +110,9 @@ impl Tunnel {
         self.role
     }
 }
+
+/// A tunnel's bytes are kept in user space, and no kernel counts them.
+impl SendSide for Tunnel {}
 
 impl AsyncRead for Tunnel {
     fn poll_read(

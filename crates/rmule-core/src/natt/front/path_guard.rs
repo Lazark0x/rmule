@@ -16,6 +16,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use rmule_net::driver::{SendProgress, SendSide};
 use rmule_primitives::Ipv4Endpoint;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
@@ -42,6 +43,12 @@ impl<S> Drop for PunchedPathGuard<S> {
     /// it, and the registry slot is freed by the `Tunnel` itself on drop.
     fn drop(&mut self) {
         let _ = self.front.try_send(Risen::Closed { at: self.at });
+    }
+}
+
+impl<S: SendSide> SendSide for PunchedPathGuard<S> {
+    fn send_progress(&self) -> Option<SendProgress> {
+        self.stream.send_progress()
     }
 }
 

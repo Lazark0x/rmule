@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 
 use crate::driver::{
-    ChannelCaps, DriverError, SpawnCapture, SpawnHandles, run_capture, spawn_connection,
+    ChannelCaps, DriverError, SendSide, SpawnCapture, SpawnHandles, run_capture, spawn_connection,
 };
 use crate::peer::capture::{PeerCaptureFormat, event_to_toml};
 use crate::peer::driver::PeerDriven;
@@ -51,9 +51,9 @@ pub enum PeerStreamRole {
 /// line — the serve pipeline, the capture tap, `PeerSession` — then sees
 /// plaintext bytes exactly as it does for an obfuscated *inbound* connection,
 /// because the crypt layer is below the stream, not beside it.
-pub trait DialedStream: AsyncRead + AsyncWrite + Unpin + Send {}
+pub trait DialedStream: AsyncRead + AsyncWrite + SendSide + Unpin + Send {}
 
-impl<S> DialedStream for S where S: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<S> DialedStream for S where S: AsyncRead + AsyncWrite + SendSide + Unpin + Send {}
 
 /// Public handle for one live peer conversation — dialed via
 /// [`Self::connect`] or accepted via [`PeerListener`](crate::peer::PeerListener).
@@ -273,7 +273,7 @@ impl Connection {
         options: ConnectOptions,
     ) -> Self
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         match role {
             PeerStreamRole::Dialer => Self::spawn(
@@ -300,7 +300,7 @@ impl Connection {
         options: ConnectOptions,
     ) -> Self
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         let mut session = PeerSession::new_inbound(peer, ctx);
         if let Some(gate) = &options.hello_gate {
@@ -334,7 +334,7 @@ impl Connection {
         peer: PeerEndpoint,
     ) -> Self
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
         let peer_label = peer.to_string();
         let span = tracing::info_span!("peer_connection", peer = %peer_label);
