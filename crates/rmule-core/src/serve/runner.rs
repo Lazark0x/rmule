@@ -219,12 +219,13 @@ where
 
         // Where a read of the share set lands, one out at a time; a trigger
         // meanwhile asks for one more after it.
-        let (share_read_tx, mut share_read_rx) = mpsc::channel::<Vec<SharedFileEntry>>(1);
+        let (share_read_tx, mut share_read_rx) = mpsc::channel::<Option<Vec<SharedFileEntry>>>(1);
         let mut share_read_out = false;
         let mut share_read_owed = false;
-        // No set has been read yet. While the first read is out a peer's input
-        // waits for it, so the first ask is answered from it (ADR-0031).
-        let mut share_set_known = withheld.is_looked();
+        // No set has been read yet. Until one is, what a peer says waits, so
+        // its first ask is answered from that set and no shared file is called
+        // unknown (ADR-0031).
+        let mut share_set_known = false;
 
         // The write-through handles every enactment shares, bound once.
         let sinks = ServeSinks {
@@ -249,20 +250,22 @@ where
             while share_changed_rx.try_recv().is_ok() {}
             // Awaited, off the runtime: no peer is served yet, and the first
             // ask is answered from this set.
-            let rows = read_share_set(registry.clone(), withheld.clone()).await;
-            refresh_served(&served, &mut served_seen, &mut state);
-            let mut decisions: VecDeque<ServeDecision> = state
-                .on_share_set(rows, Instant::now(), &HashMap::new())
-                .into();
-            enact(
-                &mut decisions,
-                &mut state,
-                &links,
-                &mut serve_runtime,
-                &mut aich,
-                sinks,
-            )
-            .await;
+            if let Some(rows) = read_share_set(registry.clone(), withheld.clone()).await {
+                share_set_known = true;
+                refresh_served(&served, &mut served_seen, &mut state);
+                let mut decisions: VecDeque<ServeDecision> = state
+                    .on_share_set(rows, Instant::now(), &HashMap::new())
+                    .into();
+                enact(
+                    &mut decisions,
+                    &mut state,
+                    &links,
+                    &mut serve_runtime,
+                    &mut aich,
+                    sinks,
+                )
+                .await;
+            }
         }
 
         let mut rerank_tick = tokio::time::interval(rerank_interval);
@@ -307,13 +310,15 @@ where
                         start_share_read(&registry, &withheld, &share_read_tx);
                     }
                 }
-                rows = share_read_rx.recv() => {
-                    let Some(rows) = rows else { continue };
-                    share_set_known = true;
+                landed = share_read_rx.recv() => {
+                    let Some(read) = landed else { continue };
                     share_read_out = share_read_owed;
                     if std::mem::take(&mut share_read_owed) {
                         start_share_read(&registry, &withheld, &share_read_tx);
                     }
+                    // Read before the first look ended, whose end asks again.
+                    let Some(rows) = read else { continue };
+                    share_set_known = true;
                     let modifiers = current_modifiers(&credit, &held_places, state.identities());
                     refresh_served(&served, &mut served_seen, &mut state);
                     let mut decisions: VecDeque<ServeDecision> =
@@ -457,7 +462,7 @@ where
                         None => dialed_serve_rx = None,
                     }
                 }
-                fact = fact_rx.recv(), if share_set_known || !share_read_out => {
+                fact = fact_rx.recv(), if share_set_known => {
                     let Some((peer, event)) = fact else { continue };
                     let closing = event.is_disconnect() || event == ServeInput::Readopted;
                     let modifiers = current_modifiers(&credit, &held_places, state.identities());
@@ -522,7 +527,7 @@ where
                     )
                     .await;
                 }
-                reask = recv_reask(&mut reask_rx) => match reask {
+                reask = recv_reask(&mut reask_rx), if share_set_known => match reask {
                     // One inbound OP_REASKFILEPING from the client-UDP front:
                     // answer the reply matrix, refresh the waiter's standing.
                     Some((udp_src, datagram)) => {
@@ -809,19 +814,25 @@ async fn enact<L: ServeRuntimeService>(
 /// The offered share set, for a snapshot refresh: the registry's rows less
 /// the withheld ones (ADR-0106), read off the runtime. Errors degrade to an
 /// empty set (the registry is the durable truth; the serve side just stops
-/// answering).
+/// answering). `None` before the first look's end: no set is known yet, which
+/// is not an empty one, and that end triggers the read that gives one.
 async fn read_share_set(
     registry: Arc<DurableSharedFileRegistry>,
     withheld: crate::registry_check::WithheldRows,
-) -> Vec<SharedFileEntry> {
-    on_pool(move || withheld.offered(registry.list().unwrap_or_default())).await
+) -> Option<Vec<SharedFileEntry>> {
+    on_pool(move || {
+        withheld
+            .is_looked()
+            .then(|| withheld.offered(registry.list().unwrap_or_default()))
+    })
+    .await
 }
 
 /// Read the share set away from the serve loop; it lands on `landed_tx`.
 fn start_share_read(
     registry: &Arc<DurableSharedFileRegistry>,
     withheld: &crate::registry_check::WithheldRows,
-    landed_tx: &mpsc::Sender<Vec<SharedFileEntry>>,
+    landed_tx: &mpsc::Sender<Option<Vec<SharedFileEntry>>>,
 ) {
     let read = read_share_set(Arc::clone(registry), withheld.clone());
     let landed_tx = landed_tx.clone();

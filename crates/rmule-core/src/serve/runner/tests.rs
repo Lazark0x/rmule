@@ -813,6 +813,7 @@ fn self_position_follows_a_mid_session_reassignment() {
 
 mod aich;
 mod deflate;
+mod first_read;
 mod part_file;
 mod reciprocity;
 mod redial;
