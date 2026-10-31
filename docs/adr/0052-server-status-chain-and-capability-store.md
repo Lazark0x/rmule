@@ -51,9 +51,13 @@ crypt-ping variant of the status ping is ADR-0046's.
 
 **Cadence: a first-contact burst, then a slow refresh.** A server not yet probed this
 run gets its first contact at one per 250 ms (eMuleAI's `UDPSEARCHSPEED`), its crypt
-fallback on the same pace. Every later probe is a refresh, due once a 20-minute window
-lapses (aMule's `UDPSERVSTATMINREASKTIME` floor) and paced at one per 5 s across the
-list. Per server the load stays one `0x96` (plus one crypt-ping) per window. At attach
+fallback on the same pace. Every later probe is a refresh, due 4.5 h less up to 1 h of
+jitter after the last (`UDPSERVSTATREASKTIME`, `ServerList.cpp:274`, `:332`) and paced at
+one per 5 s across the list. Per server the load stays one `0x96` (plus one crypt-ping)
+per window. The 20-minute `UDPSERVSTATMINREASKTIME` is a floor for one case only, as in
+`CheckForExpiredUDPKeys` (`ServerList.cpp:1002-1030`): a server whose UDP key was learned
+under a public address we no longer hold is refreshed early, no sooner than 20 minutes
+after its last ping. At attach
 the sweep seeds its schedule from the durable status-answer date alone (ADR-0080's
 `answered_at`): a server whose last challenge-matched `0x97` (or imported `ST_LASTPING`)
 falls within the window counts as pinged then; a server with none, or an older one, joins

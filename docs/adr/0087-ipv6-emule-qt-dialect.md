@@ -209,11 +209,8 @@ attributed by its source port minus four. A datagram from an IPv6 source answers
 rmule asked and is dropped and traced in `recv`. `0x9B`'s sentinel records carry IPv6 sources
 inside the body; a server must never put one in a chained datagram, which a legacy reader
 walks at `count × 6`. `0x99`'s rows name third-party sources in 32 bits with no sentinel form,
-so an IPv6-only source is the server's to omit. **`0x9C` `OP_GLOBCALLBACKREQUEST` is refused
-for its own body, permanently:** it carries rmule's own contact as `WriteUInt32(ip)`, and for
-a request whose content is that address, omitting is dropping — a v6-only rmule has no global
-callback. A v6-only server in the list is usable over TCP (login, search, source lookup, the
-sentinel sources it publishes there) and gets no UDP status sweep, so it holds no proven
+so an IPv6-only source is the server's to omit. A v6-only server in the list is usable over
+TCP (login, search, source lookup, the sentinel sources it publishes there) and gets no UDP status sweep, so it holds no proven
 capabilities and never enters the global-source rotation, as a DNS-named server.
 
 ### Kad `ip6` and `bi6`

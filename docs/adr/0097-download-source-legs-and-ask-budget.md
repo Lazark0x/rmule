@@ -40,6 +40,13 @@ the generation that session installed. A run's server leg asks only a session ne
 its first lookup rode. rmule asks every new session at once, where aMule keeps its 800 s per-file
 stamp across servers (`SERVERREASKTIME`, `Constants.h:36`); the budget bounds that.
 
+**The periodic re-ask.** A long session is asked again: 800 s after the run's last ask, while
+the file holds fewer than 270 sources (`PartFile.cpp:1543-1551`). The clock is the run's own, one
+per run on its server leg, spent through the budget above. It dies with the run, so Pause then
+Resume and a re-add ask at once, as aMule's `m_lastsearchtime` zeroes at Resume
+(`PartFile.cpp:2472`) and is new for a new file; a process restart is a new run. A run with no
+session waits for one, which is an ask of its own.
+
 ## Consequences
 
 - A Kad-only operator can search and download with no server configured.
