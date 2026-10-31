@@ -12,6 +12,7 @@ use rmule_store::{Ladder, Schema, Store};
 use super::{
     DURABLE_STORE_FILE, DurableStore, OpenRefusal, open_durable_store, open_durable_store_in_memory,
 };
+use crate::app_config::AppConfigStore;
 use crate::credit::CreditStore;
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
 use crate::server_list::{ManagedServer, ServerListStore, ServerMerge};
@@ -320,4 +321,53 @@ fn one_download_row_that_will_not_decode_costs_that_row() {
     assert_eq!(listed, [id]);
     assert_eq!(repo.list_resumable().unwrap().len(), 1);
     assert_eq!(repo.unreadable_rows().unwrap(), 1);
+}
+
+/// A store the published v0.2.0 `rmule-cli` wrote, unedited: `identity show`,
+/// `server add`, `config set-download-dir`, then `add` of a link whose run
+/// failed. The climb from it is the one the release's operators will take.
+const PUBLISHED_STORE: &[u8] = include_bytes!("../../tests/fixtures/store-v0.2.0.redb");
+
+/// The store version v0.2.0 wrote.
+const PUBLISHED_VERSION: u32 = 14;
+
+#[test]
+fn a_store_the_published_build_wrote_climbs_and_keeps_everything() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(DURABLE_STORE_FILE), PUBLISHED_STORE).unwrap();
+
+    let store = open_durable_store(dir.path()).unwrap();
+    assert_eq!(store.version().unwrap(), super::LADDER.current);
+    let copy = DurableStore::open(
+        dir.path()
+            .join(format!("{DURABLE_STORE_FILE}.v{PUBLISHED_VERSION}")),
+        &Schema::new(),
+        &Ladder::new(PUBLISHED_VERSION, &[]),
+    )
+    .unwrap();
+    assert_eq!(copy.version().unwrap(), PUBLISHED_VERSION);
+
+    let config = DurableAppConfig::new(Arc::clone(&store));
+    let servers = config.servers().unwrap();
+    assert_eq!(servers.len(), 1);
+    assert_eq!(
+        servers[0].endpoint,
+        ServerEndpoint::new("127.0.0.1", 4661).unwrap()
+    );
+    assert_eq!(
+        config.ensure_identity().unwrap().user_hash(),
+        UserHash::from_hex("e1a1c8ffe30e4e7e7ae66c86b0886f24").unwrap()
+    );
+
+    let repo = DurableDownloadRepository::new(store);
+    let downloads = repo.listed_downloads().unwrap();
+    assert_eq!(downloads.len(), 1);
+    let download = &downloads[0];
+    assert_eq!(download.lifecycle(), DownloadLifecycle::Failed);
+    assert_eq!(download.metadata().size, 10_485_760);
+    assert_eq!(
+        download.paths().part_path(),
+        Path::new("/srv/rmule/downloads/v020-fixture.bin.part")
+    );
+    assert_eq!(repo.unreadable_rows().unwrap(), 0);
 }

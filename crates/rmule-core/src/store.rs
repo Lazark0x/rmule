@@ -29,7 +29,7 @@ use crate::CoreError;
 pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 
 /// The store-wide version ladder (ADR-0083): the current version and the
-/// steps up to it. Published builds wrote every version from 13 up, and the
+/// steps up to it. Published builds wrote versions 13 and 14, and the
 /// operator's store holds downloads a reset would lose, so a record change
 /// takes a rung (ADR-0102), and so does a new table whose absence an older
 /// build would write past (ADR-0105 "The Had Set").
