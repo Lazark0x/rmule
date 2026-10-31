@@ -81,7 +81,8 @@ exception, Port prediction, gated on our own observed mapping.**
   offered with a zero hash before identity. It precedes an opening packet **we** send: our own
   uTP `ST_SYN`, or any QUIC long header, a responder's included. An inbound `ST_SYN` draws
   `ST_STATE` and no KEY, so an accepted uTP Tunnel asserts no hash of ours.
-  **Signalling under `0xC5` is unobfuscated on purpose**: a punch that fails to deobfuscate
+  **Signalling under `0xC5` is unobfuscated on purpose** unless the peer's stance says
+  otherwise (security rule 13): a punch that fails to deobfuscate
   is indistinguishable from one that never arrived. Kad and NAT-T share the one client-UDP
   socket (ADR-0057), so the mapping a buddy observes at the recruit is the mapping a punch
   must reach.
@@ -319,9 +320,16 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
     loses anything. The hash an endpoint is **named** by outranks any KEY, key or no key yet: the
     hash our dial aimed at, then the hello's. A first KEY that contradicts the name is refused;
     a KEY that landed before the name is replaced by it, and an endpoint that sent no KEY stays
-    unkeyed, because a name is no request for obfuscation. The name leaves with the slot. What
-    is left open: an accepted Tunnel has no name before its hello, so a forged first KEY keys
-    our sends until the hello reads, which is the 40 s hello wait at worst and costs that Tunnel.
+    unkeyed, because a name is no request for obfuscation. The name leaves with the slot.
+    **An endpoint the Unidentified Allowance charges keys no send.** An accepted Tunnel has no
+    name before its hello, so a KEY on it is a claim the hello settles, and our frames leave
+    plain until then. Plain costs nothing: `0xB2` passes every peer's receive unobfuscated
+    (`EncryptedDatagramSocket.cpp:141-147`, eMuleAI's `:183-190`), an accepted uTP Tunnel sends
+    only `ST_STATE` and the stream's own cipher before the hello, and its dialer, which we
+    asserted no hash to, stays plain toward us for the Tunnel's whole life. Keying on the
+    first KEY, as eMuleAI does (`ClientUDPSocket.cpp:316-333`), hands that Tunnel to whoever
+    spoofs one frame: the dialer cannot open what we send, for up to the 40 s hello wait. The
+    hello's hash replaces whatever KEY landed, and sends key from there.
 12. **A Tunnel names nobody until its hello does.** An accepted Tunnel exists at the `ST_SYN`,
     so an address, however lone its pending peer, attributes nothing: a forged opener or a CGNAT
     neighbour must not end a traversal. A dialed Tunnel proves only that something answered at
@@ -329,18 +337,26 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
     hello, whose hash and endpoint the serve triage reports to the front for every Tunnel, either
     direction, whichever road then takes it. That one report ends the charge and the attempt of
     the peer the hello named, so a dial-back lands as before. A dial stays in flight while its
-    Tunnel waits for that hello. A hello naming somebody else, or a Tunnel that closes
-    unidentified, gives the dial back to its schedule, so a `Mismatch` leaves a claim whose
-    attempt is still dialing and ends on its own budget. A Tunnel that closes unidentified
-    leaves the expectation and the holds as it found them.
+    Tunnel waits for that hello. A Tunnel that closes unidentified gives the dial back to its
+    schedule and leaves the expectation and the holds as it found them. **A hello naming
+    somebody else at the endpoint a schedule aims at ends that schedule at once:** that host is
+    known now, no opener can leave while its Tunnel stands, and a re-dial after it would find
+    the same host. The attempt fails as a spent budget does, so a `Mismatch` leaves a claim the
+    ladder or the retirement answers in a round trip, not 120 s of bursts at a host that said
+    no. A punch that already corrected the endpoint keeps the schedule, because the hello
+    refuted an endpoint the next dial no longer aims at. Only a dial's Tunnel can do this: an
+    accepted one aimed at nothing.
 13. **A punch takes one crypt target.** The server's burst obfuscates from `0x61` byte 29, and
-    the front's own punches, a released burst, a re-dial's burst, a keepalive, go through the same
-    client-UDP send gate. The front holds one stance per peer, written by whoever stated it: the
+    the front's own punches, a released burst, a re-dial's burst, a keepalive, a prediction leg,
+    go through the same client-UDP send gate. The front holds one stance per peer, written by whoever stated it: the
     reach's source record, byte 29, the connect-options byte of a relayed rendezvous, then the
     hello. The hello binds the target to the path, which is what a keepalive reads, because a
     path outlives the attempt that opened it. A stance goes with the last ledger that could punch
-    that peer; a peer nobody stated a stance for is punched plain. The Prediction Plan's Fan and
-    Probe legs write the socket directly and stay plain.
+    that peer; a peer nobody stated a stance for is punched plain. A Prediction Plan's legs read
+    the stance as each attempt fires, and every leg is one send on the client-UDP drain, where
+    the gate stands: a Probe leg as it is, and a Fan leg naming the Fan socket it leaves by, the
+    only thing a Fan changes about a send. A Fan's answer to a hit is one such send, which the
+    route the hit installed carries out of the right socket. The drain is the one road.
 
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint
