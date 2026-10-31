@@ -33,6 +33,9 @@ use anyhow::{Result, bail};
 use crate::flow::bench::KadMeshNames;
 use crate::flow::identity::{hex_lower, parse_ipv4_octets};
 use crate::flow::kad_buddy::core::KAD_CORE_BUDDY_RMULE_KAD_ID;
+use crate::flow::kad_buddy::stock_buddy::{
+    STOCK_BUDDY_HOST, STOCK_BUDDY_KAD_PORT_OFFSET, STOCK_BUDDY_RMULE_KAD_ID,
+};
 use crate::flow::mesh::{KAD_CONTACT_VERSION, KAD_RMULE_UDP_PORT, KAD_TCP_PORT, KadNodeSpec};
 use crate::kad_seed::KadContact;
 use crate::rmule::RMULE_SERVE_TCP_PORT;
@@ -51,6 +54,8 @@ pub(crate) struct CoreSwarmInputs<'a> {
     /// The counterparty is an open High-ID publisher: see
     /// [`CoreSwarm::storer_seed`].
     pub(crate) publisher_open: bool,
+    /// An open stock aMule takes `~aMuleKadID`: see [`CoreSwarm::stock_buddy`].
+    pub(crate) stock_buddy: bool,
     /// The last member's Kad ID when `--publish-source` pins it to the file key.
     pub(crate) near_file_kad_id: Option<[u8; 16]>,
     pub(crate) names: &'a KadMeshNames,
@@ -69,6 +74,11 @@ pub(crate) struct CoreSwarm {
     pub(crate) members: Vec<(String, u16, String)>,
     /// Open stock aMule helpers, each routing-zone seeded with rmule alone.
     pub(crate) helpers: Vec<KadNodeSpec>,
+    /// The open stock aMule at `~aMuleKadID`, first in the firewalled aMule's
+    /// seed. Its own seed is rmule and the first helper, the two peer-TCP
+    /// contacts its TCP verdict needs (`Prefs.cpp:161`), which leaves the
+    /// other helpers fresh for its UDP verdict.
+    pub(crate) stock_buddy: Option<KadNodeSpec>,
 }
 
 pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm> {
@@ -86,7 +96,11 @@ pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm>
     // rmule: the advertised TCP port is the SERVE LISTENER's, which is what
     // the buddy dial must land on.
     let rmule = KadContact {
-        kad_id: KAD_CORE_BUDDY_RMULE_KAD_ID,
+        kad_id: if inputs.stock_buddy {
+            STOCK_BUDDY_RMULE_KAD_ID
+        } else {
+            KAD_CORE_BUDDY_RMULE_KAD_ID
+        },
         ipv4: inputs.rmule_ip,
         udp_port: KAD_RMULE_UDP_PORT,
         tcp_port: RMULE_SERVE_TCP_PORT,
@@ -120,6 +134,7 @@ pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm>
     }
 
     let mut helpers = Vec::with_capacity(inputs.helper_count);
+    let mut witness = None;
     for helper_index in 0..inputs.helper_count {
         let addr = crate::fake_public::fake_public_address(2 + helper_index)?;
         let ip = parse_ipv4_octets(&addr.ip)?;
@@ -142,28 +157,58 @@ pub(crate) fn plan_core_swarm(inputs: &CoreSwarmInputs<'_>) -> Result<CoreSwarm>
             routing_zone_seed: true,
             seed_contacts: vec![rmule],
         });
+        let contact = KadContact {
+            kad_id,
+            ipv4: ip,
+            udp_port,
+            tcp_port: KAD_TCP_PORT,
+            version: KAD_CONTACT_VERSION,
+        };
         if inputs.publisher_open {
-            storer_seed.insert(
-                1 + helper_index,
-                KadContact {
-                    kad_id,
-                    ipv4: ip,
-                    udp_port,
-                    tcp_port: KAD_TCP_PORT,
-                    version: KAD_CONTACT_VERSION,
-                },
-            );
+            storer_seed.insert(1 + helper_index, contact);
         }
+        witness.get_or_insert(contact);
     }
+    let stock_buddy = if inputs.stock_buddy {
+        let Some(witness) = witness else {
+            bail!("--stock-buddy needs a helper: rmule alone is one TCP firewall ack");
+        };
+        let [a, b, c, _] = inputs.rmule_ip;
+        let contact = KadContact {
+            kad_id: KAD_CORE_BUDDY_RMULE_KAD_ID,
+            ipv4: [a, b, c, STOCK_BUDDY_HOST],
+            udp_port: inputs.kad_udp_port_base + STOCK_BUDDY_KAD_PORT_OFFSET,
+            tcp_port: KAD_TCP_PORT,
+            version: KAD_CONTACT_VERSION,
+        };
+        storer_seed.insert(0, contact);
+        Some(KadNodeSpec {
+            role: "stock-buddy".to_owned(),
+            container: inputs.names.routing(u32::from(STOCK_BUDDY_HOST)),
+            udp_port: contact.udp_port,
+            ip: contact.ipv4,
+            kad_id: contact.kad_id,
+            user_hash_hex: None,
+            shared_host_dir: PathBuf::from(inputs.helper_incoming),
+            bootstrap_peers: Vec::new(),
+            routing_zone_seed: true,
+            seed_contacts: vec![rmule, witness],
+        })
+    } else {
+        None
+    };
     Ok(CoreSwarm {
         storer_seed,
         members,
         helpers,
+        stock_buddy,
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::ops::BitXor;
+
     use super::*;
 
     fn names() -> KadMeshNames {
@@ -179,13 +224,14 @@ mod tests {
     }
 
     fn plan(helper_count: usize, mesh_members: usize) -> Result<CoreSwarm> {
-        plan_for(helper_count, mesh_members, false)
+        plan_for(helper_count, mesh_members, false, false)
     }
 
     fn plan_for(
         helper_count: usize,
         mesh_members: usize,
         publisher_open: bool,
+        stock_buddy: bool,
     ) -> Result<CoreSwarm> {
         let names = names();
         plan_core_swarm(&CoreSwarmInputs {
@@ -194,6 +240,7 @@ mod tests {
             helper_count,
             mesh_members,
             publisher_open,
+            stock_buddy,
             near_file_kad_id: None,
             names: &names,
             helper_incoming: Path::new("/tmp/helper-incoming"),
@@ -222,10 +269,36 @@ mod tests {
     /// contact with a peer-TCP port can ack an open publisher's firewall check.
     #[test]
     fn an_open_publishers_seed_names_two_contacts_that_can_dial_it_first() {
-        let swarm = plan_for(2, 3, true).unwrap();
+        let swarm = plan_for(2, 3, true, false).unwrap();
         let seeded: Vec<[u8; 4]> = swarm.storer_seed.iter().map(|c| c.ipv4).collect();
         assert_eq!(seeded[..2], [[203, 0, 113, 3], swarm.helpers[0].ip]);
         assert_eq!(seeded.len(), 6);
+    }
+
+    /// The walk toward `~aMuleKadID` ends on the stock node, whose own bin
+    /// goes to the two contacts that can dial it, and rmule holds every
+    /// helper, so its answers name the two the stock node's UDP check needs.
+    #[test]
+    fn a_stock_buddy_takes_the_walks_target_and_rmule_names_every_helper() {
+        let swarm = plan_for(3, 3, false, true).unwrap();
+        let buddy = swarm.stock_buddy.as_ref().unwrap();
+
+        assert_eq!(buddy.kad_id, KAD_CORE_BUDDY_RMULE_KAD_ID);
+        assert_eq!(swarm.storer_seed[0].ipv4, buddy.ip);
+        assert_eq!(swarm.storer_seed[1].kad_id, STOCK_BUDDY_RMULE_KAD_ID);
+
+        let zone: Vec<[u8; 4]> = buddy.seed_contacts.iter().map(|c| c.ipv4).collect();
+        assert_eq!(zone, [[203, 0, 113, 3], swarm.helpers[0].ip]);
+        assert!(swarm.helpers[1..].iter().all(|h| !zone.contains(&h.ip)));
+
+        let bucket = |id: [u8; 16]| {
+            u128::from_be_bytes(id)
+                .bitxor(u128::from_be_bytes(STOCK_BUDDY_RMULE_KAD_ID))
+                .leading_zeros()
+        };
+        let buckets: std::collections::BTreeSet<u32> =
+            swarm.helpers.iter().map(|h| bucket(h.kad_id)).collect();
+        assert_eq!(buckets.len(), swarm.helpers.len());
     }
 
     /// With rmule alone in the seed, the first helper the aMule learns takes

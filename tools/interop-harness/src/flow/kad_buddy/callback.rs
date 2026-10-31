@@ -66,7 +66,7 @@ const DOWNLOAD_WINDOW_SECS: u64 = 300;
 /// How long the driver is given past its window to write its row and exit.
 const ROW_GRACE_SECS: u64 = 120;
 /// The downloader tap's pcap under its host directory.
-const DOWNLOADER_PCAP: &str = "downloader.pcap";
+pub(crate) const DOWNLOADER_PCAP: &str = "downloader.pcap";
 /// The `--server` every rmule-tools body names; nothing listens on it.
 const ABSENT_SERVER: &str = "192.0.2.1:4661";
 
@@ -284,6 +284,16 @@ impl CallbackLeg {
         self.started
     }
 
+    /// The downloader's host directory: its pcap and its row.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The downloader's address.
+    pub(crate) fn address_v4(&self) -> &str {
+        &self.address_v4
+    }
+
     /// Give the download its window: wait for the driver's row.
     ///
     /// # Errors
@@ -398,7 +408,11 @@ impl CallbackLeg {
                 count("downloader_callback_req_0x52_out") > 0,
             ),
             (
-                "the-0x52-reached-the-rmule-buddy",
+                if judged.stock_buddy {
+                    "the-0x52-reached-the-stock-buddy"
+                } else {
+                    "the-0x52-reached-the-rmule-buddy"
+                },
                 count("downloader_callback_req_0x52_buddy_tap") > 0,
             ),
             (
@@ -500,7 +514,10 @@ pub(crate) struct Judged<'a> {
     /// Where that tap writes on the host: a body lifted off it lands there.
     pub(crate) amule_host_dir: &'a Path,
     pub(crate) amule_ip: &'a str,
+    /// The buddy's address: the stimulus's, or a stock buddy's.
     pub(crate) rmule_ip: &'a str,
+    /// The buddy is a stock aMule (`--stock-buddy`).
+    pub(crate) stock_buddy: bool,
 }
 
 /// One counted row: `{d}` downloader, `{a}` aMule, `{r}` the rmule buddy,

@@ -23,6 +23,7 @@ use crate::flow::kad_buddy::buddy_reask::{ReaskLeg, ReaskPlan};
 use crate::flow::kad_buddy::callback::{CallbackLeg, DownloaderPlan, Judged, await_indexed};
 use crate::flow::kad_buddy::callback_walk::{WalkLeg, WalkPlan, WalkTaps};
 use crate::flow::kad_buddy::id_only_row::{self, IdOnlyRowPlan};
+use crate::flow::kad_buddy::stock_buddy;
 use crate::flow::logs::collect_kad_logs;
 
 /// What flow M hands its third party.
@@ -45,6 +46,8 @@ pub(crate) struct ThirdParty<'a> {
     pub(crate) amule_kad: String,
     pub(crate) amule_ip: String,
     pub(crate) rmule_ip: String,
+    /// The buddy `rmule_ip` names is a stock aMule (`--stock-buddy`).
+    pub(crate) stock_buddy: bool,
     /// The walk's target, wire order: `~stimulusKadID`, aMule's own ID.
     pub(crate) walk_buddy_id: Option<[u8; 16]>,
     /// `Some` runs a stock aMule requester at `downloader_v4` in place of the
@@ -204,6 +207,7 @@ impl Legs {
             amule_host_dir: amule.2,
             amule_ip: &party.amule_ip,
             rmule_ip: &party.rmule_ip,
+            stock_buddy: party.stock_buddy,
         };
         let callback = match &self.asker {
             Asker::Rmule(callback) => {
@@ -236,6 +240,14 @@ impl Legs {
                 "kad-amule-requester: the placed storer indexed no source, so no requester ran"
             )),
         };
+        // The stock road's own claims, read off the same taps whatever the
+        // leg's verdict said.
+        let stock_road = match &self.asker {
+            Asker::Rmule(callback) if party.stock_buddy && callback.started() => {
+                stock_buddy::judge(&judged, callback.dir(), callback.address_v4())
+            }
+            _ => Ok(()),
+        };
         let walked = self
             .walk
             .as_ref()
@@ -252,6 +264,7 @@ impl Legs {
             })
             .transpose();
         callback?;
+        stock_road?;
         walked.map(|_| ())
     }
 }

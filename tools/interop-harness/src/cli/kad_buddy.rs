@@ -261,6 +261,13 @@ pub(crate) struct KadCoreBuddyArgs {
     /// becomes the bound on the placed storer's `SourceIndexed` gate.
     #[arg(long)]
     pub(crate) callback_downloader: bool,
+    /// Give the firewalled aMule a stock buddy: an open stock aMule takes
+    /// `~aMuleKadID`, with three stock helpers for its firewall verdicts, and
+    /// rmule is an ordinary far node. The downloader's `0x52` then reads the
+    /// row against a relay that repairs nothing. Needs `--publish-source` and
+    /// `--callback-downloader` or `--buddy-reask`.
+    #[arg(long)]
+    pub(crate) stock_buddy: bool,
     /// Add the ID-only fold-in: after the download, a walker
     /// runs one Callback Walk whose `0x52` lands on the firewalled aMule,
     /// which relays `OP_CALLBACK` over its held buddy link. Requires
@@ -442,6 +449,7 @@ pub(crate) fn kad_core_buddy(args: KadCoreBuddyArgs) -> Result<()> {
             image: &args.ed2ksrv_image,
             config: &args.ed2ksrv_config,
         }),
+        stock_buddy: args.stock_buddy,
     })
 }
 

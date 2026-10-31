@@ -31,6 +31,7 @@ pub(crate) mod firewalled_verdict;
 pub(crate) mod id_only_row;
 pub(crate) mod requester_datagrams;
 pub(crate) mod required_check;
+pub(crate) mod stock_buddy;
 pub(crate) mod third_party;
 pub(crate) mod verify_keys;
 

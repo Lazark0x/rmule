@@ -146,7 +146,7 @@ pub(crate) fn assert_kad_core_buddy(
     let mut verdict_toml =
         String::from("# Flow M — Core-Pumped Stimulus Node buddy/relay leg (ADR-0061).\n");
     verdict_toml.push_str(&format!("verdict = \"{verdict}\"\n"));
-    verdict_toml.push_str(&format!("helper_count = {}\n", options.helper_count));
+    verdict_toml.push_str(&format!("helper_count = {}\n", options.helpers_effective()));
     verdict_toml.push_str(&format!("block_udp_requested = {}\n", options.block_udp));
     // Helpers force the UDP block, so the requested flag alone would misstate
     // what ran; record both.

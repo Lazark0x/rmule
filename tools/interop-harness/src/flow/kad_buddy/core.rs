@@ -139,6 +139,17 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
     if options.requester_kad_crypt && !options.amule_requester {
         bail!("--requester-kad-crypt arms the aMule requester: pass --amule-requester");
     }
+    if options.stock_buddy
+        && (!(options.callback_downloader || options.buddy_reask.is_some())
+            || options.callback_walk
+            || options.publisher_open
+            || options.kad_crypt)
+    {
+        bail!(
+            "--stock-buddy needs --callback-downloader or --buddy-reask and excludes \
+             --callback-walk, --publisher-open and --kad-crypt"
+        );
+    }
     let near_file_kad_id = if options.publish_source {
         let link = fs::read_to_string(base.layout.synthetic_ed2k_file())
             .with_context(|| format!("read {}", base.layout.synthetic_ed2k_file().display()))?;
@@ -173,6 +184,8 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
     let amule_ip = parse_ipv4_octets(&amule_addr.ip)?;
     let rmule_ip = parse_ipv4_octets(&rmule_addr.ip)?;
     let hub_udp_port = base.kad_udp_port_base + 2;
+    let helper_count = options.helpers_effective();
+    let rmule_kad_id = options.rmule_kad_id();
 
     // The helpers must stay OPEN, so the firewall env is the firewalled node's
     // alone and each side gets its own `KadCaptureOptions`.
@@ -242,6 +255,16 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         amule_env: &helper_env,
         ..capture_opts
     };
+    // The relay's trail, which the verdict quotes.
+    let stock_buddy_env: Vec<String> = helper_env
+        .iter()
+        .cloned()
+        .chain(["AMULE_DEBUG_PEER_CATEGORIES=1".to_owned()])
+        .collect();
+    let stock_buddy_opts = KadCaptureOptions {
+        amule_env: &stock_buddy_env,
+        ..capture_opts
+    };
 
     // Compile the stimulus BEFORE the isolated network exists: the swarm is a
     // Docker `internal` network with no DNS, and `rust-toolchain.toml` pins
@@ -264,9 +287,10 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
     let swarm = plan_core_swarm(&CoreSwarmInputs {
         rmule_ip,
         kad_udp_port_base: base.kad_udp_port_base,
-        helper_count: options.helper_count,
+        helper_count,
         mesh_members: options.mesh_members,
         publisher_open: options.publisher_open,
+        stock_buddy: options.stock_buddy,
         near_file_kad_id,
         names: &names,
         helper_incoming: &helper_incoming,
@@ -296,6 +320,15 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         seed_contacts: swarm.storer_seed,
     }];
     specs.extend(swarm.helpers);
+    let stock_buddy_node = swarm.stock_buddy.map(|spec| {
+        specs.push(spec);
+        specs.len() - 1
+    });
+    // The relay of the third party's asks: the stock buddy when one stands.
+    let (relay_ip, relay_container) = match stock_buddy_node.map(|index| &specs[index]) {
+        Some(spec) => (spec.ip, spec.container.clone()),
+        None => (rmule_ip, names.rmule.clone()),
+    };
 
     let network_id = run_checked(
         docker.create_internal_network_with_subnet(names.network_name.clone(), subnet.clone()),
@@ -340,7 +373,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 &names.rmule,
                 crate::rmule::KadStimulusKnobs {
                     static_ip: &ipv4_string(rmule_ip),
-                    kad_id_hex: &hex_lower(&KAD_CORE_BUDDY_RMULE_KAD_ID),
+                    kad_id_hex: &hex_lower(&rmule_kad_id),
                     udp_port: KAD_RMULE_UDP_PORT,
                     kad_bootstrap: &format!("{}:{hub_udp_port}", ipv4_string(amule_ip)),
                     assume_open: options.assume_open,
@@ -377,28 +410,31 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         )?;
         println!("kad-core-buddy: stimulus serve listener bound on {subnet}");
 
-        // Tap rmule's OWN netns, so both surfaces land in one pcap: the Kad-UDP
-        // recruit/answer and the peer-TCP buddy link the answer provokes.
+        // Tap the buddy's OWN netns, so both surfaces land in one pcap: the
+        // Kad-UDP recruit/answer and the peer-TCP buddy link the answer
+        // provokes. A stock buddy's tap starts with its container.
         let capture_dir = base.layout.kad_dir().join("capture");
         fs::create_dir_all(&capture_dir)
             .with_context(|| format!("create {}", capture_dir.display()))?;
         let tap = CaptureSidecar {
             image: base.capture_image,
             name: &names.capture,
-            target_container: &names.rmule,
+            target_container: &relay_container,
             interface: DEFAULT_TAP_INTERFACE,
             host_dir: capture_dir,
             pcap_file: "core-buddy.pcap",
             bpf: "tcp or udp",
         };
-        resources.start_capture(base.layout, &tap, "kad-capture-container-id.txt")?;
+        if stock_buddy_node.is_none() {
+            resources.start_capture(base.layout, &tap, "kad-capture-container-id.txt")?;
+        }
 
         // Open helpers after the stimulus and before the firewalled node: each
         // greets rmule from its seed, so rmule already names them when the
         // aMule's helper lookup asks, and with its UDP port dropped the aMule is
         // the only one that can open a flow toward them.
-        let mut nodes = Vec::with_capacity(1 + options.helper_count);
-        for helper_index in 0..options.helper_count {
+        let mut nodes = Vec::with_capacity(2 + helper_count);
+        for helper_index in 0..helper_count {
             let helper = start_kad_node(
                 &docker,
                 &helper_opts,
@@ -490,6 +526,24 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
             );
         }
 
+        // The stock buddy must read itself open and verified before the
+        // firewalled node's one search, 20 minutes from the next.
+        if let Some(index) = stock_buddy_node {
+            let buddy = start_kad_node(&docker, &stock_buddy_opts, &specs, index, &mut resources)?;
+            resources.start_capture(base.layout, &tap, "kad-capture-container-id.txt")?;
+            wait_for_kad_log(
+                &docker,
+                base.layout,
+                &buddy.role,
+                &buddy.container,
+                "rmule-kad-routing-ready",
+                timeout,
+            )?;
+            crate::flow::kad_buddy::stock_buddy::await_open(&docker, &buddy.container)?;
+            println!("kad-core-buddy: stock buddy reads itself open on both verdicts");
+            nodes.push(buddy);
+        }
+
         // The firewalled stock aMule: loads rmule and the members from its
         // routing-zone seed, reaches its firewalled verdicts, and (per the budget
         // above) runs its BuddySearch onto rmule.
@@ -536,16 +590,13 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         println!(
             "kad-core-buddy: firewalled aMule up on {subnet} (tcp_block=true udp_block={block_udp} \
              helpers={}); tapping {}s for the buddy convergence",
-            options.helper_count, options.window_secs
+            helper_count, options.window_secs
         );
 
         // The third party starts only once aMule's row is
         // stored: earlier, a High-ID Core is the fresh UDP helper that opens
         // aMule's UDP verdict and ends its buddy search before it begins.
-        let walker_v4 = crate::fake_public::fake_public_address(
-            3 + options.helper_count + options.mesh_members,
-        )?
-        .ip;
+        let walker_v4 = options.third_party_v4(amule_ip, 1)?;
         let party = if options.third_party() {
             Some(ThirdParty {
                 docker: &docker,
@@ -553,10 +604,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 names: &names,
                 rmule_tools_image: options.rmule_tools_image,
                 capture_image: base.capture_image,
-                downloader_v4: crate::fake_public::fake_public_address(
-                    2 + options.helper_count + options.mesh_members,
-                )?
-                .ip,
+                downloader_v4: options.third_party_v4(amule_ip, 0)?,
                 walker_v4: walker_v4.clone(),
                 storer_events: base
                     .layout
@@ -566,7 +614,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 window: Duration::from_secs(options.window_secs),
                 seed: crate::flow::kad_buddy::callback::seed(
                     (
-                        &hex_lower(&KAD_CORE_BUDDY_RMULE_KAD_ID),
+                        &hex_lower(&rmule_kad_id),
                         &ipv4_string(rmule_ip),
                         KAD_RMULE_UDP_PORT,
                     ),
@@ -574,7 +622,8 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                 ),
                 amule_kad: format!("{}:{hub_udp_port}", ipv4_string(amule_ip)),
                 amule_ip: ipv4_string(amule_ip),
-                rmule_ip: ipv4_string(rmule_ip),
+                rmule_ip: ipv4_string(relay_ip),
+                stock_buddy: options.stock_buddy,
                 // `~stimulusKadID` is aMule's own ID: the walk converges on
                 // aMule and the relayed check names the stimulus.
                 walk_buddy_id: options.callback_walk.then_some(KAD_CORE_BUDDY_AMULE_KAD_ID),
@@ -591,10 +640,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                     .as_ref()
                     .map(|server| -> Result<ReaskPlan<'_>> {
                         let address = |offset: usize| -> Result<String> {
-                            Ok(crate::fake_public::fake_public_address(
-                                2 + options.helper_count + options.mesh_members + offset,
-                            )?
-                            .ip)
+                            options.third_party_v4(amule_ip, offset)
                         };
                         Ok(ReaskPlan {
                             image: options.rmule_tools_image,
@@ -616,7 +662,7 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
                             amule_v4: ipv4_string(amule_ip),
                             seed: crate::flow::kad_buddy::callback::seed(
                                 (
-                                    &hex_lower(&KAD_CORE_BUDDY_RMULE_KAD_ID),
+                                    &hex_lower(&rmule_kad_id),
                                     &ipv4_string(rmule_ip),
                                     KAD_RMULE_UDP_PORT,
                                 ),
@@ -685,6 +731,14 @@ pub fn run_kad_core_buddy(options: KadCoreBuddyOptions<'_>) -> Result<()> {
         // aMule's own verbose log, before teardown: the only trail that says
         // which publish gate refused.
         crate::flow::logs::collect_amule_logfile(&docker, base.layout, "storer", &names.storer);
+        if options.stock_buddy {
+            crate::flow::logs::collect_amule_logfile(
+                &docker,
+                base.layout,
+                "stock-buddy",
+                &relay_container,
+            );
+        }
         collect_kad_node_logs(&docker, base.layout, &nodes);
         collect_kad_logs(&docker, base.layout, "rmule", &names.rmule)?;
         let third = match (&legs, &party) {
