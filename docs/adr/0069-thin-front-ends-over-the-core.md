@@ -116,9 +116,46 @@ subcommands).
   counters of ADR-0077.
 - **Render policy.** Dirty-flag coalescing capped at about 30 fps, each frame in
   synchronized output (mode 2026). Input redraws at once; bursts of core events between
-  frames collapse into one draw. Backpressure is coalescing — bounded channels,
-  latest state wins, a snapshot poll skips while one is in flight — so no queue can
-  grow.
+  frames collapse into one draw.
+
+### Core never waits on the front end
+
+A reader that stops reading — a full pty, a stalled ssh, a remote transport's dead link —
+costs the front end its view and costs the node nothing. Peers do not wait for a
+terminal, so nothing that serves them waits for one.
+
+- **The Outbox.** Every core task reports through the Outbox, whose send is synchronous
+  and never waits. `Core::next_event()` and `Core::quit()`'s stream read it. It holds
+  three weights, named for each `CoreEvent` in one exhaustive match, so a new event does
+  not compile until it is placed:
+  - An **Edge** is a change the front end's state folds and cannot rebuild: a download's
+    or a search's lifecycle, a verified part, a session's transitions, a refusal. An Edge
+    is never dropped. Edges grow with what the operator and the library do, not with
+    peer traffic.
+  - A **Level** is a value a later one of the same subject replaces: a queue rank, a
+    search's legs, a reconnect countdown. A new value takes the old one's place out of
+    the queue and joins the tail, so what the reader sees is always what core said, in
+    the order core said it, less the values already superseded.
+  - A **Note** is a peer-driven fact with no successor: a source found, a dial's end, a
+    slot granted. Notes are delivered in order while the reader keeps up.
+- **The room.** The Outbox holds a fixed room of events. Past it, Levels and Notes are
+  dropped together and one `EventsShed` Edge takes their place with their count, so peer
+  traffic never grows the queue and the reader learns what it missed. A shed loses a
+  front end some per-peer detail, never a row's lifecycle.
+- **The Run Log is written in core** (ADR-0075), at the send, before any weight is read.
+  It holds every event a stalled front end missed, and it does not stop with the bridge.
+  The level handle is the builder's, shared with the front end that changes it.
+- **The bridge is two tasks.** One forwards commands and may wait for the inbox's room;
+  the other reads events and may wait for the `Action` bus. Neither wait holds the
+  other. `CoreClient::send` hands a command over and returns, so the UI loop never waits
+  on the bridge. The forwarding queue is unbounded because the operator is its only
+  writer; the inbox's room is the bound.
+- **Stops do not join in a command arm.** A stop tells the run and goes on. The actor
+  retires the run when its task has ended, finishes the operator's act there, and holds
+  later commands for that download until then, so they run in the order they were sent.
+- **Inner cycles follow the same rule.** The Kad pump holds what discovery has not read,
+  as it holds what the node's inbox has no room for, and a sweep's asks wait for room
+  outside the task that reads the answers (ADR-0093).
 - **State model.** The bridge owns a single-writer `UiState`; components hold view
   state only (selection, scroll). `UiState` evolves purely —
   `fold(state, event)` and `apply_snapshot(state, snapshot, now)` with time injected —
@@ -152,3 +189,11 @@ subcommands).
   operator had changed.
 - **Growing `rmule-tools` into the product CLI.** Rejected: the diagnostic tool and the
   product stay separate members.
+- **Bounded channels with awaited edges.** The first shape: every event awaited a
+  32-slot channel and the bridge awaited the bus. Rejected: a stalled terminal stopped
+  every run, and the bridge, the actor and the UI formed two cycles of bounded awaits
+  that about 66 commands could close for good.
+- **A plain unbounded event channel.** Rejected: a stalled front end would grow it with
+  peer traffic for as long as the stall lasted.
+- **Dropping any event past the room.** Rejected: a lost lifecycle edge leaves a row
+  wrong for the rest of the session, and no later event repairs it.
