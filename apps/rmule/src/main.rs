@@ -68,6 +68,7 @@ fn main() -> ExitCode {
     }
     // One multi-thread runtime for UI loop, bridge, and core tasks.
     let result = tokio::runtime::Runtime::new().and_then(|runtime| runtime.block_on(run(run_args)));
+    rmule_core::run_log::drain();
     match result {
         Ok(code) => code,
         Err(error) => {

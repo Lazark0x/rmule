@@ -23,8 +23,10 @@ fn written(level: Level, run: impl FnOnce(&LevelHandle)) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let log = RunLog::open(dir.path(), level).expect("open");
     let handle = log.level();
+    let file = log.file.clone();
     let subscriber = sink::subscriber(log.file, EnvFilter::new("info"), handle.clone(), None);
     tracing::subscriber::with_default(subscriber, || run(&handle));
+    file.drain();
     read(&dir.path().join(FILE_NAME))
 }
 
@@ -470,6 +472,7 @@ fn the_mirror_holds_the_free_form_lines_the_lean_file_leaves_out() {
         writer: tracing_subscriber::fmt::writer::BoxMakeWriter::new(move || writer.clone()),
         filter: EnvFilter::new("info"),
     };
+    let file = log.file.clone();
     let subscriber = sink::subscriber(log.file, EnvFilter::new("info"), log.level, Some(mirror));
     let peer = CoreEvent::Download(DownloadEvent::PeerSelected {
         download_id: DownloadId::from_u64(1),
@@ -479,6 +482,7 @@ fn the_mirror_holds_the_free_form_lines_the_lean_file_leaves_out() {
         write(&peer.record(), Level::Lean);
         tracing::info!("a free-form line");
     });
+    file.drain();
     let file = read(&dir.path().join(FILE_NAME));
     let mirror = String::from_utf8(mirrored.0.lock().expect("mirror").clone()).expect("utf-8");
     assert_eq!(untimed(&file).len(), 1, "{file}");
@@ -510,6 +514,7 @@ fn the_log_and_its_rotated_twin_are_kept_to_this_user() {
     let mut log = sink::LogFile::open(dir.path(), 8, tell).unwrap();
     std::io::Write::write_all(&mut log, b"one line of log\n").unwrap();
     std::io::Write::write_all(&mut log, b"another line\n").unwrap();
+    log.drain();
     let mode = |name: &str| {
         std::fs::metadata(dir.path().join(name))
             .unwrap()

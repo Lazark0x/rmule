@@ -44,7 +44,7 @@ pub(crate) mod trail;
 
 pub use level::{Level, LevelHandle};
 pub use record::{Address, Kind, Number, Record};
-pub use sink::RunLog;
+pub use sink::{DrainAtExit, RunLog, drain};
 
 /// The log's name inside the data directory.
 pub const FILE_NAME: &str = "rmule.log";

@@ -25,6 +25,10 @@ in an ordinary session. It is written at one of two levels, chosen by the prefer
   output.
 - **Every core event is projected by an exhaustive match** with no wildcard arm, so a new
   variant fails to compile until it is classed.
+- **One thread owns the file, behind a bounded lane.** A stalled disk delays the log and never
+  the thread that logged: past the lane's room a line is counted and dropped, the file says
+  `run_log.dropped lines=N` before the next line that found room, and a front end leaves
+  through `run_log::drain`, which waits at most two seconds. A kill loses what was queued.
 - **The vocabulary and the sink live in core** (`rmule_core::run_log`), beside the events
   they project: `Record`, `Kind` and its class, `Level`, each event's `record()` and each
   reason's code table, and the file, opened as `RunLog::open(data_dir, level)` beside the

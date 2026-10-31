@@ -64,6 +64,12 @@ in filesystem files, not in the store.
   that version already there is kept, because it is the older of the two. A climb that
   stopped resumes at its rung, and the version found then gets a copy of its own. Copies
   are never deleted by rmule, since they hold what a rung's bug would otherwise take.
+- **A part file can outlive the store.** Beside each `<name>.part` lies `.<name>.part.link`, one
+  line: the canonical ed2k link, with the Part Hash Set as soon as it is known, which is before
+  any part is verified. When the store has no row for a part file that stands, attach adopts it
+  as a Paused download: every part of that set is recorded as a claim, and the resume's re-hash
+  (ADR-0094, "Damaged parts") is the proof, as it is for any record. The line is plain text, so
+  an operator can also read it by hand.
 - **The Data Directory is private.** One owner, `data_dir::make_private`: the directory is
   0700, and `rmule.redb`, its copies and the Run Log's two files are 0600, enforced at every
   open and so repaired on an install older than the rule. The store holds the Secure

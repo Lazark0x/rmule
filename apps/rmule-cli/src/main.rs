@@ -193,6 +193,7 @@ fn resolve_data_dir(flag: Option<&std::path::Path>) -> anyhow::Result<PathBuf> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _log_drained = run_log::DrainAtExit;
     let cli = Cli::parse();
     let data_dir = resolve_data_dir(cli.data_dir.as_deref())?;
 
