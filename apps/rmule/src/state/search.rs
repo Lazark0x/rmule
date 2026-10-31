@@ -44,8 +44,8 @@ pub enum SearchStatus {
 pub struct SearchPane {
     /// Where this search stands.
     pub status: SearchStatus,
-    /// The whole merged set as core last published it — replaced per batch,
-    /// never appended, because core re-sends the full set on every change.
+    /// The merged set, folded from what core publishes per batch: at most the
+    /// row cap core holds a search to.
     pub results: Vec<SearchResult>,
     /// Server-skipped results (malformed/filtered). Surfaced in the status line
     /// only when non-zero, so the tally stays honest without noise.
@@ -148,11 +148,16 @@ pub(super) fn fold(state: &mut UiState, event: SearchEvent) -> bool {
             state.searches.insert(search_id, SearchPane::running());
             note(state, words::STARTED)
         }
-        // The event carries the whole merged set, deduped by `(hash, size)`,
-        // re-sent on every change — appending it would list every row again
-        // per batch.
+        // The rows a batch added or changed, each whole: a row the pane
+        // holds is replaced where it stands, a new one appended.
         E::SearchResultsReceived { search_id, results } => {
-            search_pane(state, search_id).results = results;
+            let rows = &mut search_pane(state, search_id).results;
+            for row in results {
+                match rows.iter().position(|held| held.key() == row.key()) {
+                    Some(at) => rows[at] = row,
+                    None => rows.push(row),
+                }
+            }
             true
         }
         E::SearchResultSkipped { search_id, .. } => {
@@ -247,24 +252,22 @@ mod tests {
                 results: vec![search_result("a.avi", 5), search_result("b.avi", 250)],
             }),
         );
-        // Core re-sends the whole merged set, so the second event repeats the
-        // first two rows and adds one. Appending would show five.
+        // A batch brings only what it added or changed: `b.avi` again,
+        // merged, stands where it stood.
+        let mut merged = search_result("b.avi", 250);
+        merged = merged.with_reported_availability(999);
         fold(
             &mut state,
             search_event(SearchEvent::SearchResultsReceived {
                 search_id: search_id(1),
-                results: vec![
-                    search_result("a.avi", 5),
-                    search_result("b.avi", 250),
-                    search_result("c.mp3", 40),
-                ],
+                results: vec![merged, search_result("c.mp3", 40)],
             }),
         );
         let pane = &state.searches[&search_id(1)];
         assert_eq!(
             pane.results.len(),
             3,
-            "the pane mirrors the latest snapshot"
+            "a held row is replaced, a new one appended"
         );
 
         let dirty = fold(

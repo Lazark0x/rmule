@@ -71,6 +71,8 @@ pub enum SearchResultSkipReason {
     FileSizeAboveLimit,
     /// A row named a file of zero bytes: no part to fetch.
     FileSizeZero,
+    /// The search already holds as many rows as it keeps.
+    RowCap,
 }
 
 impl SearchResults {
@@ -255,6 +257,7 @@ impl SearchResultSkipReason {
             Self::TagDecodeFailed => "OP_SEARCHRESULT descriptor tag decode failed",
             Self::FileSizeAboveLimit => "OP_SEARCHRESULT row file size above the eD2k limit",
             Self::FileSizeZero => "OP_SEARCHRESULT row file size zero",
+            Self::RowCap => "search row cap reached",
         }
     }
 }

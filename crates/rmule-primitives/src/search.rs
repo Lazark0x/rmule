@@ -66,6 +66,13 @@ pub enum SearchResultOrigin {
     Kad,
 }
 
+/// The aliases a row folds; past this a name adds nothing an operator could read.
+const ROW_NAMES_CAP: usize = 32;
+/// The sources a row folds, the **Source Limit** a download would take of them.
+const ROW_SOURCES_CAP: usize = 300;
+/// The untyped tags a row folds.
+const ROW_TAGS_CAP: usize = 32;
+
 /// One file as the network reported it, with every alias and source folded in.
 ///
 /// A row is never a single answer: the same file comes back from several
@@ -452,7 +459,8 @@ impl SearchResult {
     /// Fold another report of the same file into this row: union the names,
     /// sources and untyped tags, take the first non-empty typed tag and Kad
     /// AICH root, and combine the counts by origin (sum across servers, max
-    /// once Kad is involved — see `merge_counts`).
+    /// once Kad is involved — see `merge_counts`). Names, sources and tags
+    /// fold up to a cap per row: a report comes from anyone.
     ///
     /// A report of a *different* file is ignored rather than rejected, so a
     /// caller grouping rows cannot corrupt one by mis-grouping.
@@ -462,17 +470,8 @@ impl SearchResult {
         }
         debug_assert_eq!(self.key(), other.key());
 
-        for name in &other.names {
-            if !self.names.contains(name) {
-                self.names.push(name.clone());
-            }
-        }
-
-        for source in &other.sources {
-            if !self.sources.contains(source) {
-                self.sources.push(*source);
-            }
-        }
+        fold_capped(&mut self.names, &other.names, ROW_NAMES_CAP);
+        fold_capped(&mut self.sources, &other.sources, ROW_SOURCES_CAP);
 
         if self.file_type.is_none() {
             self.file_type.clone_from(&other.file_type);
@@ -501,11 +500,25 @@ impl SearchResult {
         if other.origin == SearchResultOrigin::Kad {
             self.origin = SearchResultOrigin::Kad;
         }
-        for tag in &other.extra_tags {
-            if !self.extra_tags.contains(tag) {
-                self.extra_tags.push(tag.clone());
-            }
-        }
+        fold_capped(&mut self.extra_tags, &other.extra_tags, ROW_TAGS_CAP);
+    }
+
+    /// What this row holds in bytes of a counterparty's text: the measure a
+    /// search budgets its set by.
+    #[must_use]
+    pub fn held_bytes(&self) -> usize {
+        let text = |text: &Option<Ed2kText>| text.as_ref().map_or(0, |text| text.as_bytes().len());
+        self.names
+            .iter()
+            .map(|name| name.as_bytes().len())
+            .sum::<usize>()
+            + text(&self.file_type)
+            + text(&self.file_format)
+            + self
+                .extra_tags
+                .iter()
+                .map(|tag| tag.encode().len())
+                .sum::<usize>()
     }
 
     /// The `ed2k://` link for this row, built from its primary name, hash and
@@ -522,6 +535,19 @@ impl SearchResult {
             aich_root: None,
             ipv6_sources: Vec::new(),
             sources: Default::default(),
+        }
+    }
+}
+
+/// Add to `held` what `other` holds that it does not, up to `cap` entries: a
+/// row folds reports from anyone, and each check is a scan.
+fn fold_capped<T: Clone + PartialEq>(held: &mut Vec<T>, other: &[T], cap: usize) {
+    for item in other {
+        if held.len() >= cap {
+            return;
+        }
+        if !held.contains(item) {
+            held.push(item.clone());
         }
     }
 }

@@ -173,8 +173,12 @@ pub(crate) const FIXTURE_SEARCH_IDS: u64 = 1 << 62;
 /// A named result carrying a reported source count — the two facts the
 /// Searches table sorts and tints by.
 pub(crate) fn search_result(name: &str, sources: u32) -> SearchResult {
+    let mut hash = [0xAB; 16];
+    for (at, byte) in name.bytes().enumerate() {
+        hash[at % 16] ^= byte;
+    }
     SearchResult::new(
-        FileHash::from_bytes([0xAB; 16]),
+        FileHash::from_bytes(hash),
         1024,
         vec![Ed2kText::from_utf8(name)],
         Vec::new(),

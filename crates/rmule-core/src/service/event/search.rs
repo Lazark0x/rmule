@@ -137,15 +137,14 @@ pub enum SearchEvent {
         /// The id core minted for this search.
         search_id: SearchId,
     },
-    /// The search's **whole merged result set so far**, re-sent on every batch
-    /// that changed it — not the delta. Rows from the TCP answer, the global
-    /// UDP sweep and the Kad keyword walk are deduped by `(hash, size)` before
-    /// they get here, so a front-end replaces its list with this one rather
-    /// than appending to it.
+    /// The rows a batch added or changed, each whole and as merged. Rows from
+    /// the TCP answer, the global UDP sweep and the Kad keyword walk are deduped
+    /// by `(hash, size)` before they get here, so a front-end folds this in by
+    /// [`SearchResult::key`]: a row it holds is replaced, a new one appended.
     SearchResultsReceived {
-        /// The search whose set this is.
+        /// The search these rows belong to.
         search_id: SearchId,
-        /// The whole merged set, not the new rows.
+        /// The rows added or changed, not the whole set.
         results: Vec<SearchResult>,
     },
     /// A row in an answered batch was not admitted to the set. Reported rather

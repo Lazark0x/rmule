@@ -478,8 +478,8 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     };
     assert_eq!(
         results.len(),
-        3,
-        "0xDD is new; 0xAA deduped across all three"
+        2,
+        "the batch's rows only: 0xDD is new, 0xAA deduped across all three"
     );
     assert_eq!(
         results[0].names().len(),
@@ -610,4 +610,69 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
         .await
         .expect("the event stream closes with the task");
     assert!(said.is_none(), "a stopped task says nothing, got {said:?}");
+}
+
+/// A row of `size`, a file of its own, under `name`.
+fn named(size: u64, name: Vec<u8>) -> SearchResult {
+    SearchResult::new(
+        FileHash::from_bytes([0xCC; FileHash::BYTE_LEN]),
+        size,
+        vec![Ed2kText::from_bytes(name)],
+        Vec::new(),
+    )
+    .expect("valid result")
+}
+
+fn sized(size: u64) -> SearchResult {
+    named(size, b"a.bin".to_vec())
+}
+
+/// The cost of a batch is the batch: a row the batch neither added nor
+/// changed stays out of what the front end is sent.
+#[test]
+fn a_batch_answers_only_the_rows_it_added_or_changed() {
+    let mut set = SearchResultSet::default();
+    let first = set.merge_batch(vec![sized(1), sized(2)]);
+    assert_eq!((first.changed.len(), first.added), (2, 2));
+
+    let second = set.merge_batch(vec![sized(3), named(1, b"b.bin".to_vec())]);
+
+    assert_eq!(second.added, 1);
+    let sizes: Vec<u64> = second.changed.iter().map(SearchResult::file_size).collect();
+    assert_eq!(sizes, [1, 3]);
+    assert_eq!(second.changed[0].names().len(), 2, "the row whole, merged");
+    assert_eq!(set.len(), 3);
+}
+
+/// A server that keeps answering grows the set to the cap and no further,
+/// and a batch past it adds nothing, so it holds no quiet window open.
+#[test]
+fn rows_past_the_cap_are_refused_and_said_once() {
+    let mut set = SearchResultSet::default();
+    let cap = SEARCH_ROW_CAP as u64;
+    assert!(!set.merge_batch((1..=cap).map(sized).collect()).capped);
+
+    let past = set.merge_batch(vec![sized(cap + 1)]);
+
+    assert!(past.capped);
+    assert_eq!(past.added, 0);
+    assert!(past.changed.is_empty());
+    assert_eq!(set.len(), SEARCH_ROW_CAP);
+    assert!(!set.merge_batch(vec![sized(cap + 2)]).capped, "said once");
+}
+
+/// Rows are capped by bytes too: a name is as long as a frame allows.
+#[test]
+fn rows_past_the_byte_budget_are_refused() {
+    let mut set = SearchResultSet::default();
+    let rows = (SEARCH_BYTE_BUDGET / 65_535 + 2) as u64;
+
+    let merged = set.merge_batch(
+        (1..=rows)
+            .map(|size| named(size, vec![b'a'; 65_535]))
+            .collect(),
+    );
+
+    assert!(merged.capped);
+    assert!(set.held_bytes <= SEARCH_BYTE_BUDGET);
 }

@@ -52,6 +52,7 @@ pub const fn skip_words(reason: SearchResultSkipReason) -> &'static str {
             "the row named a file larger than eD2k allows (256 GiB)"
         }
         SearchResultSkipReason::FileSizeZero => "the row named a file of zero bytes",
+        SearchResultSkipReason::RowCap => "the search holds as many rows as it keeps",
     }
 }
 
@@ -178,7 +179,7 @@ pub fn log_line(event: &SearchEvent) -> Sentence {
     Sentence::owned(match event {
         Se::SearchStarted { .. } => "search started".to_string(),
         Se::SearchResultsReceived { results, .. } => {
-            format!("search: {} results", results.len())
+            format!("search: {} results added or updated", results.len())
         }
         Se::SearchResultSkipped { reason, .. } => {
             format!("search result skipped: {}", skip_words(*reason))

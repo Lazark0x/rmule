@@ -637,6 +637,7 @@ pub(super) const fn search_skip(reason: SearchResultSkipReason) -> &'static str 
         SearchResultSkipReason::TagDecodeFailed => "tag_decode_failed",
         SearchResultSkipReason::FileSizeAboveLimit => "file_size_above_limit",
         SearchResultSkipReason::FileSizeZero => "file_size_zero",
+        SearchResultSkipReason::RowCap => "row_cap",
     }
 }
 

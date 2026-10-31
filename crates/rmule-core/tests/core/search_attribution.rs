@@ -83,12 +83,10 @@ async fn run_until_ended(core: &mut Core, ids: &[SearchId]) -> Outcome {
             };
             match event {
                 SearchEvent::SearchResultsReceived { search_id, results } => {
-                    outcome.sets.insert(
-                        search_id,
+                    outcome.sets.entry(search_id).or_default().extend(
                         results
                             .iter()
-                            .map(|row| row.primary_name().to_display_string())
-                            .collect(),
+                            .map(|row| row.primary_name().to_display_string()),
                     );
                 }
                 SearchEvent::SearchCompleted { search_id, .. }
