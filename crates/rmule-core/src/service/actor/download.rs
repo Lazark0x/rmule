@@ -549,23 +549,24 @@ where
     }
 
     /// The once-a-minute look at the downloads a Volume Stop paused for free
-    /// space (ADR-0094): each still paused with a part's room over the floor
-    /// resumes, as `CDownloadQueue::CheckDiskspace` resumes an insufficient
-    /// file (`DownloadQueue.cpp:1229`). A row no longer paused left the wait.
+    /// space (ADR-0094): each still paused with room for all it has left, the
+    /// floor over that, resumes, as `CDownloadQueue::CheckDiskspace` resumes an
+    /// insufficient file (`DownloadQueue.cpp:1267-1269`), so a resume does not
+    /// stop again. A row no longer paused left the wait.
     pub(super) async fn resume_for_space(&mut self) {
         for download_id in self.activities.awaiting_space() {
-            let part_path = self
+            let paused = self
                 .wiring
                 .store
                 .load_download(download_id)
                 .ok()
                 .filter(|record| record.lifecycle() == DownloadLifecycle::Paused)
-                .map(|record| record.paths().part_path().to_path_buf());
-            let Some(part_path) = part_path else {
+                .map(|record| (record.paths().part_path().to_path_buf(), record.file_size()));
+            let Some((part_path, file_size)) = paused else {
                 self.activities.end_space_wait(download_id);
                 continue;
             };
-            if !on_pool(move || free_space::fits_a_part(&part_path)).await {
+            if !on_pool(move || free_space::fits_what_is_left(&part_path, file_size)).await {
                 continue;
             }
             self.activities.end_space_wait(download_id);
