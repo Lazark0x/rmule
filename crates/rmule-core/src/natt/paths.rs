@@ -10,7 +10,7 @@
 //! refusal is ordinary (NAT-PMP and UPnP cannot express it), so a path never
 //! depends on it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddrV4;
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,9 @@ pub(crate) const PEER_PIN_LEASE: Duration = Duration::from_secs(10 * 60);
 pub(crate) struct PunchedPaths {
     /// Per peer: when the path last carried anything in either direction.
     last_activity: HashMap<Ipv4Endpoint, Instant>,
+    /// Paths a peer opened and no hello has named anyone on yet (ADR-0091,
+    /// security rule 12).
+    unidentified: HashSet<Ipv4Endpoint>,
 }
 
 impl PunchedPaths {
@@ -71,8 +74,21 @@ impl PunchedPaths {
     }
 
     /// The Tunnel over this path is gone; stop holding it.
-    pub(crate) fn on_path_closed(&mut self, peer: Ipv4Endpoint) {
+    ///
+    /// Returns whether it closed with nobody ever named on it.
+    pub(crate) fn on_path_closed(&mut self, peer: Ipv4Endpoint) -> bool {
         self.last_activity.remove(&peer);
+        self.unidentified.remove(&peer)
+    }
+
+    /// A peer opened this path, and nothing has said who yet.
+    pub(crate) fn accepted(&mut self, peer: Ipv4Endpoint) {
+        self.unidentified.insert(peer);
+    }
+
+    /// A hello, or our own dial, named somebody on this path.
+    pub(crate) fn identified(&mut self, peer: Ipv4Endpoint) {
+        self.unidentified.remove(&peer);
     }
 
     /// Paths idle for a full keepalive interval. Each is stamped as the

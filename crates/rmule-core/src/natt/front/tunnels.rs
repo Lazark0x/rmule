@@ -152,11 +152,10 @@ impl<S: NattDatagramSink> NattFront<S> {
                 self.adopt(tunnel, Some(peer), now);
             }
             Risen::Accepted { tunnel } => {
-                let peer = tunnel
-                    .peer()
-                    .as_v4()
-                    .and_then(|at| self.attribute_accepted(at));
-                self.adopt(tunnel, peer, now);
+                if let Some(at) = tunnel.peer().as_v4() {
+                    self.note_unattributed(at);
+                }
+                self.adopt(tunnel, None, now);
             }
             Risen::DialSettled { peer } => {
                 if let Some(order) = self.dials.settled(peer, now) {
@@ -164,8 +163,15 @@ impl<S: NattDatagramSink> NattFront<S> {
                 }
             }
             Risen::Closed { at } => {
-                // The observed address outranks a hint's port the same way it
-                // does for an accepted path: the NAT may have
+                let unidentified = self.paths.on_path_closed(at);
+                self.release_prediction_route(at);
+                // Nobody was ever named on this path, so what is pending
+                // behind its address is still pending: a forged opener must
+                // not turn the real peer's away (ADR-0091, security rule 12).
+                if unidentified {
+                    return;
+                }
+                // The observed address outranks a hint's port: the NAT may have
                 // remapped it, so the endpoint a hold's burst was aimed at can
                 // differ from the one that just closed. A lone pending peer
                 // behind the address is still that peer's hold to take;
@@ -176,8 +182,6 @@ impl<S: NattDatagramSink> NattFront<S> {
                         self.held.cancel_at(at);
                     }
                 }
-                self.paths.on_path_closed(at);
-                self.release_prediction_route(at);
                 self.expectations.forget(at);
                 // No registry release: the Tunnel inside the guard that sent
                 // this notice freed its own slot as it dropped, and an
@@ -185,11 +189,19 @@ impl<S: NattDatagramSink> NattFront<S> {
                 // simultaneous open raised on the same endpoint.
             }
             Risen::Identified { peer } => self.identified(peer),
-            Risen::TunnelIdentified { at, peer: _ } => {
+            Risen::TunnelIdentified { at, peer } => {
                 self.registry
                     .lock()
                     .expect("the NAT-T tunnel registry is never poisoned")
                     .identified(at);
+                if let Some(path) = at.as_v4() {
+                    self.paths.identified(path);
+                }
+                // Before `identified`: that ends the attempt, and an attempt's
+                // end closes its Fans outright, where a Tunnel keeps the one
+                // it rides.
+                self.end_prediction(&peer, true);
+                self.identified(peer);
             }
             Risen::Abandoned { peer } => {
                 self.requester.abandon(&peer, now);
@@ -198,36 +210,27 @@ impl<S: NattDatagramSink> NattFront<S> {
         }
     }
 
-    /// Who an accepted path at `observed` belongs to.
-    ///
-    /// An address is not a peer: a lone pending peer behind it is
-    /// attributed by address alone, port aside — the NAT may have remapped
-    /// it, and the observed source is the mapping that demonstrably works
-    /// (ADR-0091). With several, only a port match may name
-    /// one, and a wrong hash is worse than none: attribution
-    /// yields no one, and [`Risen::Identified`] is what a Tunnel's own hello
-    /// resolves it to once something downstream reads it.
-    pub(super) fn attribute_accepted(&mut self, observed: Ipv4Endpoint) -> Option<UserHash> {
-        match self.expectations.attribute(observed) {
-            Attribution::Peer(peer) => Some(peer),
-            Attribution::Unexpected => None,
-            Attribution::Ambiguous => {
-                self.wiring.diagnostics.count_natt_tunnel_unattributed();
-                tracing::debug!(
-                    %observed,
-                    "a NAT-T tunnel rose from an address expecting several peers and named \
-                     none of them; attributed to none until its hello does"
-                );
-                None
-            }
+    /// Count a Tunnel accepted from `observed` while several peers are pending
+    /// behind that address. Nothing is attributed either way: an accepted
+    /// Tunnel exists at the `ST_SYN`, so only its hello names anybody
+    /// (ADR-0091, security rule 12).
+    fn note_unattributed(&self, observed: Ipv4Endpoint) {
+        if matches!(
+            self.expectations.attribute(observed),
+            Attribution::Ambiguous
+        ) {
+            self.wiring.diagnostics.count_natt_tunnel_unattributed();
+            tracing::debug!(
+                %observed,
+                "a NAT-T tunnel rose from an address expecting several peers; \
+                 it names none of them until its hello does"
+            );
         }
     }
 
-    /// `peer`'s accepted path is confirmed — by address alone or by a
-    /// Tunnel's hello naming them: end their attempt, taking
-    /// any hold still waiting to dial them with it. A release after this
-    /// would dial a second Tunnel toward a peer the first one already
-    /// served.
+    /// `peer` is confirmed on a Tunnel: end their attempt, taking any hold
+    /// still waiting to dial them with it. A release after this would dial a
+    /// second Tunnel toward a peer the first one already served.
     pub(super) fn identified(&mut self, peer: UserHash) {
         self.requester.on_tunnel_up(&peer);
         self.end_attempt(&peer);
@@ -243,9 +246,10 @@ impl<S: NattDatagramSink> NattFront<S> {
         let at = tunnel.peer();
         let transport = tunnel.transport();
         let role = tunnel.role();
-        // The Tunnel is the attempt's whole purpose: it ends here, with
+        // A dialed Tunnel is the attempt's whole purpose: it ends here, with
         // nothing reported to a claimant. The claim is spent downstream by
-        // the adoption the hello confirms (ADR-0091).
+        // the adoption the hello confirms (ADR-0091). An accepted one ends
+        // nothing until that hello.
         if let Some(peer) = peer {
             // Before `identified`: that ends the attempt, and an attempt's end
             // closes its Fans outright, where a Tunnel keeps the one it rides.
@@ -260,12 +264,18 @@ impl<S: NattDatagramSink> NattFront<S> {
             tracing::debug!(%at, "a NAT-T tunnel rose on a path no punch opened; closed");
             return;
         };
-        if let Some(pin) = self.paths.on_path_open(
+        let pin = self.paths.on_path_open(
             path,
             self.client_udp_port().unwrap_or(0),
             self.granted_external_port(),
             now,
-        ) {
+        );
+        if peer.is_some() {
+            self.paths.identified(path);
+        } else if pin.is_some() {
+            self.paths.accepted(path);
+        }
+        if let Some(pin) = pin {
             self.wiring.peer_pin.request(pin);
         }
         let guard = PunchedPathGuard::new(tunnel, path, self.risen_tx.clone());
