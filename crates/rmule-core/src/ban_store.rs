@@ -24,6 +24,10 @@ use tokio::sync::Mutex;
 /// that enforce it (`Core::builder`'s single instance).
 pub(crate) type SharedBanStore = Arc<Mutex<BanStore>>;
 
+/// The rows the map holds at most, as `flood.rs` caps its buckets: each row is an
+/// offence a stranger chose to commit, from an address it may rotate freely.
+const BAN_ROWS: usize = 50_000;
+
 /// IP -> banned-until (address-typed, so it applies to both families —
 /// ADR-0085), checked-then-evicted exactly like aMule's
 /// `CClientList` ban list (`ClientList.cpp#L739`): a query past its deadline
@@ -52,11 +56,28 @@ impl BanStore {
     pub(crate) fn ban(&mut self, ip: IpAddr, now: Instant) {
         self.banned_until
             .insert(ip.to_canonical(), now + Self::CLIENTBANTIME);
+        if self.banned_until.len() > BAN_ROWS {
+            self.shed(now);
+        }
+    }
+
+    /// Bring the map back within [`BAN_ROWS`]: the expired rows no query came
+    /// for, and if every row is live, the eighth nearest its end, so a stranger
+    /// rotating addresses pays a sweep once per eighth rather than once per row.
+    fn shed(&mut self, now: Instant) {
+        self.banned_until.retain(|_, until| *until > now);
+        if self.banned_until.len() <= BAN_ROWS {
+            return;
+        }
+        let mut ends: Vec<Instant> = self.banned_until.values().copied().collect();
+        let cut = ends.len() / 8;
+        let (_, &mut kept_from, _) = ends.select_nth_unstable(cut);
+        self.banned_until.retain(|_, until| *until >= kept_from);
     }
 
     /// Whether `ip` is currently banned. Checked-then-evicted (aMule
-    /// `ClientList.cpp#L739`): an expired entry is removed as this reads it,
-    /// so a stale ban never lingers past its own query.
+    /// `ClientList.cpp#L739`): an expired entry is removed as this reads it.
+    /// A row nobody queries goes when [`ban`](Self::ban) sheds.
     ///
     /// `ip` is unmapped first: the peer-TCP dial site queries
     /// this with a candidate source's *claimed* address, and nothing stops a
@@ -81,6 +102,39 @@ mod tests {
 
     fn ip(o: u8) -> IpAddr {
         IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, o))
+    }
+
+    fn row(n: usize) -> IpAddr {
+        IpAddr::V6(std::net::Ipv6Addr::from(n as u128 + 1))
+    }
+
+    #[test]
+    fn an_expired_row_nobody_asks_about_goes_once_the_map_is_past_its_size() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        for n in 0..BAN_ROWS {
+            store.ban(row(n), t0);
+        }
+
+        store.ban(ip(1), t0 + BanStore::CLIENTBANTIME);
+
+        assert_eq!(store.banned_until.len(), 1);
+    }
+
+    /// A rotating address buys no memory: past the size the rows nearest their
+    /// end go, and the map never holds more than its size.
+    #[test]
+    fn live_rows_stay_within_the_size_and_the_soonest_to_end_go_first() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        for n in 0..BAN_ROWS * 2 {
+            store.ban(row(n), t0 + Duration::from_millis(n as u64));
+        }
+
+        assert!(store.banned_until.len() <= BAN_ROWS);
+        let latest = t0 + Duration::from_millis(BAN_ROWS as u64 * 2);
+        assert!(store.is_banned(row(BAN_ROWS * 2 - 1), latest));
+        assert!(!store.banned_until.contains_key(&row(0)));
     }
 
     #[test]
