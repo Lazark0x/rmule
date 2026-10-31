@@ -9,16 +9,18 @@
 //! system; the key comparison does not.
 //!
 //! The `Replaced` check relies on one invariant: while the run holds its
-//! handle, the file at the path has the held key exactly when it is the held
-//! file. On Unix the key is the device and inode, `stat` against `fstat`: one
-//! of each per 9.28 MB part, and an open file's inode is never reused.
+//! handle, the file at the path has the handle's key exactly when it is the
+//! held file. Both keys are read at the check, never kept: exFAT gives an empty
+//! file a made-up number and its first write a real one, through the handle
+//! and the path alike, so a key read at hold names no file by the first part.
+//! On Unix the key is the device and inode, `stat` against `fstat`: one of
+//! each per 9.28 MB part, and an open file's inode is never reused.
 //!
 //! On Windows the key is the volume serial number and the file index that
 //! `GetFileInformationByHandle` reports, the pair Microsoft names as what
-//! tells two handles to one file apart. The handle's key is read once, at
-//! hold; the path's at each check, through an open that asks for no access
-//! and shares read, write and delete, so it never stands in another
-//! program's way. NTFS keeps a file's index until the file is deleted, and a
+//! tells two handles to one file apart. The path's is read through an open
+//! that asks for no access and shares read, write and delete, so it never
+//! stands in another program's way. NTFS keeps a file's index until the file is deleted, and a
 //! file held open is not freed, so no other file can take its index while
 //! the run holds it: the invariant holds there.
 //! Where the key is weaker the check errs towards silence: ReFS's 64-bit
@@ -89,8 +91,6 @@ pub(crate) struct HeldPartFile {
     /// Shared with the blocking-pool call each write and check is.
     file: Arc<File>,
     path: PathBuf,
-    /// Which file the handle holds.
-    key: FileKey,
     /// Where the highest part recorded in the file ends: a file shorter than
     /// this has lost parts.
     recorded_end: u64,
@@ -137,14 +137,12 @@ impl HeldPartFile {
             }
             Err(error) => return Err(HeldWriteError::Io(error)),
         };
-        let key = FileKey::of_open(&file).map_err(HeldWriteError::Io)?;
         let punches = sparse::open_for_writes(&file);
-        check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
+        check_file(&file, &path, recorded_end).map_err(HeldWriteError::Changed)?;
         let allocated = rmule_os::sparse::allocated_bytes(&file).ok();
         let held = Self {
             file: Arc::new(file),
             path,
-            key,
             recorded_end,
             punches,
         };
@@ -152,12 +150,12 @@ impl HeldPartFile {
     }
 
     /// Is the file at the path still the file held, and all of it? Reads the
-    /// path's key and the handle's length.
+    /// keys of the path and the handle, and the handle's length.
     pub(crate) async fn check(&self) -> Result<(), PartFileChange> {
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
-        let (key, recorded_end) = (self.key, self.recorded_end);
-        on_pool(move || check_file(&file, &path, key, recorded_end))
+        let recorded_end = self.recorded_end;
+        on_pool(move || check_file(&file, &path, recorded_end))
             .await
             .map(|_| ())
     }
@@ -175,11 +173,10 @@ impl HeldPartFile {
     ) -> Result<Option<u64>, HeldWriteError> {
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
-        let (key, recorded_end, punches) = (self.key, self.recorded_end, self.punches);
+        let (recorded_end, punches) = (self.recorded_end, self.punches);
         let part = bytes.to_vec();
         let allocated = on_pool(move || {
-            let end =
-                check_file(&file, &path, key, recorded_end).map_err(HeldWriteError::Changed)?;
+            let end = check_file(&file, &path, recorded_end).map_err(HeldWriteError::Changed)?;
             sparse::write_at(&file, offset, &part, end.filter(|_| punches))
                 .map_err(HeldWriteError::Io)?;
             Ok(rmule_os::sparse::allocated_bytes(&file).ok())
@@ -194,8 +191,7 @@ impl HeldPartFile {
     /// The held file's key and its metadata, read through the handle.
     pub(crate) async fn held_metadata(&self) -> io::Result<(FileKey, std::fs::Metadata)> {
         let file = Arc::clone(&self.file);
-        let meta = on_pool(move || file.metadata()).await?;
-        Ok((self.key, meta))
+        on_pool(move || Ok((FileKey::of_open(&file)?, file.metadata()?))).await
     }
 
     /// The parts a truncation cut were dropped: the recorded parts now end at
@@ -205,18 +201,16 @@ impl HeldPartFile {
     }
 }
 
-/// Is the file at `path` the one `file` holds (`key`), and at least
-/// `recorded_end` long? Answers the handle's length, `None` when it could not
+/// Is the file at `path` the one `file` holds, and at least `recorded_end`
+/// long? Answers the handle's length, `None` when it could not
 /// be read: an unreadable key or length is not proof of a change, and the
 /// write that follows says what is wrong.
-fn check_file(
-    file: &File,
-    path: &Path,
-    key: FileKey,
-    recorded_end: u64,
-) -> Result<Option<u64>, PartFileChange> {
+fn check_file(file: &File, path: &Path, recorded_end: u64) -> Result<Option<u64>, PartFileChange> {
+    let Ok(held) = FileKey::of_open(file) else {
+        return Ok(None);
+    };
     match FileKey::at(path) {
-        Ok(at_path) if at_path != key => return Err(PartFileChange::Replaced),
+        Ok(at_path) if at_path != held => return Err(PartFileChange::Replaced),
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Err(PartFileChange::Gone),
         Err(_) => return Ok(None),

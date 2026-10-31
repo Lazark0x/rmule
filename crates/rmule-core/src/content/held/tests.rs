@@ -111,3 +111,21 @@ async fn a_write_past_a_missing_part_punches_the_gap_it_opened() {
     assert!(bytes[..SIZE] == first[..], "part 0 reads back");
     assert!(bytes[2 * SIZE..] == third[..], "part 2 reads back");
 }
+
+/// exFAT gives an empty file a made-up number and the first write a real one,
+/// through the handle and the path alike, so a held file changes key without
+/// changing file. No file system CI mounts does this: run it by hand with
+/// `RMULE_TEST_VOLUME` set to a directory on an exFAT volume.
+#[tokio::test]
+#[ignore = "needs a volume that renumbers a file at its first write"]
+async fn a_first_write_that_renumbers_the_file_is_no_replacement() {
+    let volume = std::env::var_os("RMULE_TEST_VOLUME").expect("RMULE_TEST_VOLUME");
+    let dir = tempfile::tempdir_in(volume).unwrap();
+    let path = dir.path().join("renumbered.part");
+    let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+
+    held.write_part(0, &[1; 4096]).await.unwrap();
+    held.write_part(4096, &[2; 4096]).await.unwrap();
+
+    assert_eq!(held.check().await, Ok(()));
+}
