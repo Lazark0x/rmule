@@ -11,15 +11,18 @@
 //! - a Prediction Route `peer endpoint → socket j` is installed, so every send
 //!   to that endpoint from then on leaves by socket *j*, the one mapping the
 //!   peer's filter admits;
-//! - socket *j* answers one empty `0xA1`, so a peer that dials learns port *j*
-//!   (the only exception to "nothing answers a punch", bounded to one reply
-//!   per socket and only to the endpoint the Fan was opened for);
+//! - the owner hears of the hit and answers one empty `0xA1` down that route,
+//!   so a peer that dials learns port *j* (the only exception to "nothing
+//!   answers a punch", bounded to one reply per route and only to the endpoint
+//!   the Fan was opened for);
 //! - the datagram joins the client-UDP inlet as if the advertised bind had
 //!   received it.
 //!
 //! So the NAT-T front, its demux and the uTP engine are unchanged. They see
 //! datagrams from the peer's endpoint and send to it, and the route decides
-//! which socket carries them. A datagram from any other endpoint is dropped,
+//! which socket carries them. A Fan writes nothing of its own: the owner sends
+//! every leg, naming the [`PredictionFanLeg`] it leaves by, so a leg meets the
+//! same send gate as any other datagram. A datagram from any other endpoint is dropped,
 //! the peer's own address on another port included: a Fan socket belongs to
 //! one endpoint, and a stranger behind the same CGNAT address must not be
 //! able to take a route.
@@ -39,7 +42,6 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
 
 use rmule_peer::natt::{PREDICTION_ATTEMPTS, PREDICTION_FAN_SOCKETS};
 use rmule_primitives::PeerEndpoint;
@@ -69,7 +71,15 @@ pub const PREDICTION_SOCKET_BUDGET: usize = PREDICTION_FAN_SOCKETS * PREDICTION_
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PredictionFanId(u64);
 
+/// One socket of one Fan: what a send names to leave by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PredictionFanLeg {
+    fan: u64,
+    socket: usize,
+}
+
 /// Told the peer endpoint whenever a Fan socket installs a Prediction Route.
+/// What answers the hit is the owner's to send, down that route.
 pub type PredictionHit = Arc<dyn Fn(SocketAddrV4) + Send + Sync>;
 
 /// One Fan socket and the reader behind it. The reader runs as long as one
@@ -157,10 +167,9 @@ impl PredictionFans {
         &self,
         peer: SocketAddrV4,
         sockets: usize,
-        answer: Vec<u8>,
         on_hit: PredictionHit,
     ) -> io::Result<PredictionFanId> {
-        self.open_with(peer, sockets, answer, on_hit, bind_ephemeral)
+        self.open_with(peer, sockets, on_hit, bind_ephemeral)
     }
 
     /// [`open`](Self::open) with the binder handed in, so a test can make a
@@ -172,7 +181,6 @@ impl PredictionFans {
         &self,
         peer: SocketAddrV4,
         sockets: usize,
-        answer: Vec<u8>,
         on_hit: PredictionHit,
         mut bind: impl FnMut() -> io::Result<Arc<UdpSocket>>,
     ) -> io::Result<PredictionFanId> {
@@ -204,7 +212,6 @@ impl PredictionFans {
                     socket,
                     Arc::downgrade(&holder),
                     peer,
-                    answer.clone(),
                     Arc::clone(&self.routes),
                     self.inlet_tx.clone(),
                     Arc::clone(&on_hit),
@@ -240,38 +247,44 @@ impl PredictionFans {
         self.live.load(Ordering::Acquire)
     }
 
-    /// Send `datagram` to `to` once from every socket of `fan`, `pace` apart.
-    /// Returns how many left. A send that fails costs that socket's mapping,
-    /// not the burst.
-    pub(super) async fn burst(
-        &self,
-        fan: PredictionFanId,
-        to: SocketAddrV4,
-        datagram: &[u8],
-        pace: Duration,
-    ) -> usize {
-        let sockets: Vec<Arc<UdpSocket>> = self
+    /// Every socket of `fan`, as what a send names to leave by it.
+    pub(super) fn legs(&self, fan: PredictionFanId) -> Vec<PredictionFanLeg> {
+        let sockets = self
             .fans
             .lock()
             .expect("prediction fans")
             .get(&fan.0)
-            .map(|fan| {
-                fan.sockets
-                    .iter()
-                    .map(|held| Arc::clone(&held.socket))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut sent = 0;
-        for (index, socket) in sockets.iter().enumerate() {
-            if index > 0 && !pace.is_zero() {
-                tokio::time::sleep(pace).await;
-            }
-            if socket.send_to(datagram, SocketAddr::V4(to)).await.is_ok() {
-                sent += 1;
-            }
+            .map_or(0, |fan| fan.sockets.len());
+        (0..sockets)
+            .map(|socket| PredictionFanLeg { fan: fan.0, socket })
+            .collect()
+    }
+
+    /// Send `datagram` to `to` by `leg`.
+    ///
+    /// # Errors
+    /// When the leg's Fan has closed, else whatever the send returned.
+    pub(super) async fn send_leg(
+        &self,
+        leg: PredictionFanLeg,
+        to: PeerEndpoint,
+        datagram: &[u8],
+    ) -> io::Result<()> {
+        let socket = self
+            .fans
+            .lock()
+            .expect("prediction fans")
+            .get(&leg.fan)
+            .and_then(|fan| fan.sockets.get(leg.socket))
+            .map(|held| Arc::clone(&held.socket))
+            .ok_or_else(|| io::Error::other("the prediction fan has closed"))?;
+        let sent = socket
+            .send_to(datagram, SocketAddr::new(to.ip(), to.port()))
+            .await?;
+        if sent != datagram.len() {
+            return Err(io::Error::other("short UDP datagram write"));
         }
-        sent
+        Ok(())
     }
 
     /// Close `fan`. With `keep_routes`, a socket that holds a Prediction Route
@@ -328,8 +341,8 @@ impl PredictionFans {
 }
 
 /// One Fan socket's reader: drop everything not from `peer`; on the first
-/// datagram from it while no route holds that endpoint, route it here, answer
-/// once, and report the hit; hand every datagram from `peer` to the inlet.
+/// datagram from it while no route holds that endpoint, route it here and
+/// report the hit; hand every datagram from `peer` to the inlet.
 /// A receive error is tolerated on the shared [`ReceiveErrorBudget`]; only a
 /// run of them ends the reader.
 ///
@@ -342,13 +355,11 @@ async fn read_fan_socket(
     socket: Arc<UdpSocket>,
     holder: Weak<FanSocket>,
     peer: SocketAddrV4,
-    answer: Vec<u8>,
     routes: Routes,
     inlet: mpsc::Sender<(Vec<u8>, PeerEndpoint)>,
     on_hit: PredictionHit,
 ) {
     let mut buf = vec![0u8; FAN_RECV_LEN];
-    let mut answered = false;
     let mut errors = crate::family::ReceiveErrorBudget::new();
     loop {
         let (len, from) = match socket.recv_from(&mut buf).await {
@@ -389,10 +400,6 @@ async fn read_fan_socket(
         };
         if routed_here {
             on_hit(from);
-            if !answered {
-                answered = true;
-                let _ = socket.send_to(&answer, SocketAddr::V4(from)).await;
-            }
         }
         let endpoint = crate::family::endpoint_of(SocketAddr::V4(from));
         if inlet.send((buf[..len].to_vec(), endpoint)).await.is_err() {

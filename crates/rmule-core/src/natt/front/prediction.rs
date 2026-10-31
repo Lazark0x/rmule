@@ -9,7 +9,9 @@
 //! which Probe Set a returning punch is checked against. The paced sends take
 //! seconds, so each attempt runs on a task of its own. This loop may not
 //! await them: it is the only one that feeds the demux (see `front.rs`,
-//! "What this loop may never await").
+//! "What this loop may never await"). Every leg leaves by the client-UDP
+//! drain with the stance the front holds for the peer, as the burst does
+//! (ADR-0091, security rule 13).
 //!
 //! **What may start a plan**. A plan is armed only for
 //! a peer this node holds a **Traversal Attempt** toward — an introduction
@@ -36,11 +38,14 @@ use rmule_peer::natt::{
     PredictionRng, PredictionRole, PredictionStep, PunchTargetSource, holepunch_datagram,
     prediction_role, probe_ports, punch_burst,
 };
+use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, UserHash};
+use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use super::NattFront;
 use crate::address_learning::SocketRole;
+use crate::client_udp::ClientUdpSend;
 use crate::diagnostics::DiagnosticsState;
 
 /// Live plans at once, node-wide, in either role.
@@ -238,7 +243,13 @@ impl<S: NattDatagramSink> NattFront<S> {
                         }
                         continue;
                     }
-                    fire(active, &wiring.socket, &self.wiring.diagnostics);
+                    fire(
+                        active,
+                        self.crypt_targets.of_peer(peer),
+                        &wiring.socket,
+                        &self.wiring.client_udp,
+                        &self.wiring.diagnostics,
+                    );
                     active.plan.on_fired();
                 }
                 PredictionStep::Wait(_) => {}
@@ -315,10 +326,18 @@ impl<S: NattDatagramSink> NattFront<S> {
 }
 
 /// Fire one attempt of `active`'s role on a task of its own, and keep its
-/// handle so the plan's end can stop it.
-fn fire(active: &mut ActivePlan, socket: &Arc<ClientUdpSocket>, diagnostics: &DiagnosticsState) {
+/// handle so the plan's end can stop it. Every datagram of it, a Fan's answer
+/// to a hit included, carries `crypt` down the one send road.
+fn fire(
+    active: &mut ActivePlan,
+    crypt: Option<PeerUdpCryptTarget>,
+    socket: &Arc<ClientUdpSocket>,
+    sends: &mpsc::Sender<ClientUdpSend>,
+    diagnostics: &DiagnosticsState,
+) {
     let target = active.target;
     let socket = Arc::clone(socket);
+    let sends = sends.clone();
     let diagnostics = diagnostics.clone();
     let task = match active.plan.role() {
         PredictionRole::Fan => {
@@ -328,13 +347,24 @@ fn fire(active: &mut ActivePlan, socket: &Arc<ClientUdpSocket>, diagnostics: &Di
                     diagnostics.record_natt_prediction_refusal(PredictionRefusal::SocketBudget);
                     return;
                 }
+                let to = PeerEndpoint::V4(target);
                 let hits = diagnostics.clone();
+                let answers = sends.clone();
                 let opened = socket
                     .open_prediction_fan(
                         SocketAddrV4::new(target.ip, target.port),
                         PREDICTION_FAN_SOCKETS,
-                        holepunch_datagram(),
-                        Arc::new(move |_| hits.count_natt_prediction_hit()),
+                        Arc::new(move |_| {
+                            hits.count_natt_prediction_hit();
+                            let answers = answers.clone();
+                            // The route this hit installed carries the answer
+                            // out of the socket the peer reached.
+                            tokio::spawn(async move {
+                                let answer =
+                                    ClientUdpSend::to_peer(to, holepunch_datagram(), crypt);
+                                let _ = answers.send(answer).await;
+                            });
+                        }),
                     )
                     .await;
                 let fan = match opened {
@@ -353,15 +383,11 @@ fn fire(active: &mut ActivePlan, socket: &Arc<ClientUdpSocket>, diagnostics: &Di
                     }
                     ledger.fans.push(fan);
                 }
-                let sent = socket
-                    .prediction_fan_burst(
-                        fan,
-                        SocketAddrV4::new(target.ip, target.port),
-                        &holepunch_datagram(),
-                        PREDICTION_PACE,
-                    )
-                    .await;
-                diagnostics.record_natt_prediction_attempt(sent as u64);
+                let legs = socket
+                    .prediction_fan_legs(fan)
+                    .into_iter()
+                    .map(|leg| ClientUdpSend::by_fan_leg(leg, to, holepunch_datagram(), crypt));
+                diagnostics.record_natt_prediction_attempt(paced(&sends, legs).await);
             })
         }
         PredictionRole::Probe => {
@@ -369,22 +395,33 @@ fn fire(active: &mut ActivePlan, socket: &Arc<ClientUdpSocket>, diagnostics: &Di
             active.probed.extend(ports.iter().copied());
             active.answerable.extend(ports.iter().copied());
             tokio::spawn(async move {
-                let punch = holepunch_datagram();
-                let mut sent = 0u64;
-                for (index, port) in ports.into_iter().enumerate() {
-                    if index > 0 {
-                        tokio::time::sleep(PREDICTION_PACE).await;
-                    }
+                let legs = ports.into_iter().map(|port| {
                     let to = PeerEndpoint::V4(Ipv4Endpoint::new(target.ip, port));
-                    if socket.send_to_peer(to, &punch).await.is_ok() {
-                        sent += 1;
-                    }
-                }
-                diagnostics.record_natt_prediction_attempt(sent);
+                    ClientUdpSend::to_peer(to, holepunch_datagram(), crypt)
+                });
+                diagnostics.record_natt_prediction_attempt(paced(&sends, legs).await);
             })
         }
     };
     active.tasks.push(task.abort_handle());
+}
+
+/// Hand `legs` to the send drain, [`PREDICTION_PACE`] apart. Returns how many
+/// it took.
+async fn paced(
+    sends: &mpsc::Sender<ClientUdpSend>,
+    legs: impl IntoIterator<Item = ClientUdpSend>,
+) -> u64 {
+    let mut sent = 0;
+    for (index, leg) in legs.into_iter().enumerate() {
+        if index > 0 {
+            tokio::time::sleep(PREDICTION_PACE).await;
+        }
+        if sends.send(leg).await.is_ok() {
+            sent += 1;
+        }
+    }
+    sent
 }
 
 /// A fresh seed for one plan's Probe Sets.

@@ -22,7 +22,9 @@ mod options;
 mod resolve;
 mod server_udp;
 
-pub use client_udp::{ClientUdpSocket, PREDICTION_SOCKET_BUDGET, PredictionFanId, PredictionHit};
+pub use client_udp::{
+    ClientUdpSocket, PREDICTION_SOCKET_BUDGET, PredictionFanId, PredictionFanLeg, PredictionHit,
+};
 pub use connection::Connection;
 pub use driver::{drive, drive_with_login_timeout};
 pub use error::Ed2kNetError;

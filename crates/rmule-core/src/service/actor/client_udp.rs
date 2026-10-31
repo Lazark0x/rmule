@@ -15,8 +15,7 @@ use tokio::sync::mpsc;
 use crate::adapters::RuntimeClientUdpTransport;
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{
-    ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, encrypt_client_udp_send,
-    os_datagram_nonce,
+    ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, drain_client_udp_sends,
 };
 use crate::own_identity::SharedOwnIdentity;
 use crate::service::{CoreConfig, CoreEvent, SharedReaskReplySink};
@@ -44,7 +43,7 @@ pub(super) fn spawn_client_udp_front(
     // below.
     let policy = &natt.hello_adverts.obfuscation;
     let peer_udp_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
-    let (reply_tx, mut reply_rx) = mpsc::channel::<ClientUdpSend>(32);
+    let (reply_tx, reply_rx) = mpsc::channel::<ClientUdpSend>(32);
     let (engine, inboxes) = ClientUdpEngine::new(
         RuntimeClientUdpTransport::new(Arc::clone(&socket)),
         peer_udp_crypt,
@@ -68,25 +67,13 @@ pub(super) fn spawn_client_udp_front(
     );
     tokio::spawn(engine.run());
     // The send drain: each serve/download `SendClientUdp` datagram (an
-    // uploader reply or a downloader `0x90` reask ping) rides the one bound
-    // socket back to the peer's UDP endpoint. This is where aMule obfuscates
-    // too (`CMuleUDPSocket::SendControlData`), so the crypt gate and its OS
-    // entropy live here rather than at the sans-I/O sites that framed the
-    // plaintext.
-    let send_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
-    let drain_socket = Arc::clone(&socket);
-    tokio::spawn(async move {
-        while let Some(send) = reply_rx.recv().await {
-            let (to, datagram) = encrypt_client_udp_send(&send_crypt, send, os_datagram_nonce);
-            // The Family Pair picks the socket the destination's family
-            // needs (ADR-0085): a reask reply leaves by the half its ping
-            // arrived on, so the peer sees the source address it keyed its
-            // own crypt on.
-            if let Err(error) = drain_socket.send_to_peer(to, &datagram).await {
-                tracing::debug!(%error, %to, "transient client-UDP reply send error");
-            }
-        }
-    });
+    // uploader reply or a downloader `0x90` reask ping), and each NAT-T punch,
+    // meets the crypt gate on its way to the one bound socket.
+    tokio::spawn(drain_client_udp_sends(
+        reply_rx,
+        Arc::clone(&socket),
+        PeerUdpCrypt::new(own_identity.clone(), policy.clone()),
+    ));
     // The quartet names no file, so a reply goes to the one download whose
     // `0x90` to that endpoint is in flight (ADR-0107) — aMule's one requested
     // file per client — and a reply nothing asked for drops. A pool that has

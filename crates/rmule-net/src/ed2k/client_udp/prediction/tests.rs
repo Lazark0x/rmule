@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use super::*;
 
-const ANSWER: &[u8] = &[0xC5, 0xA1];
 const WAIT: Duration = Duration::from_secs(5);
 
 fn loopback(port: u16) -> SocketAddrV4 {
@@ -38,6 +37,16 @@ async fn recv_from(socket: &UdpSocket) -> (Vec<u8>, SocketAddrV4) {
         unreachable!("loopback is IPv4")
     };
     (buf[..len].to_vec(), from)
+}
+
+/// One punch to `to` by every leg of `fan`.
+async fn punch(fans: &PredictionFans, fan: PredictionFanId, to: SocketAddrV4) -> usize {
+    let mut sent = 0;
+    for leg in fans.legs(fan) {
+        fans.send_leg(leg, v4(to), b"punch").await.expect("a leg");
+        sent += 1;
+    }
+    sent
 }
 
 async fn inlet_next(fans: &PredictionFans) -> (Vec<u8>, PeerEndpoint) {
@@ -79,7 +88,6 @@ async fn a_bind_that_fails_part_way_leaves_no_socket_and_no_reader() {
     let opened = fans.open_with(
         loopback(9),
         6,
-        ANSWER.to_vec(),
         Arc::new(|_| {}),
         recording_binder(3, Arc::clone(&seen)),
     );
@@ -109,17 +117,13 @@ async fn a_datagram_from_the_peer_address_on_a_foreign_port_installs_no_route() 
         .open(
             peer_addr,
             1,
-            ANSWER.to_vec(),
             Arc::new(move |_| {
                 counted.fetch_add(1, Ordering::Relaxed);
             }),
         )
         .await
         .expect("open the fan");
-    assert_eq!(
-        fans.burst(fan, peer_addr, b"punch", Duration::ZERO).await,
-        1
-    );
+    assert_eq!(punch(&fans, fan, peer_addr).await, 1);
     let (_, fan_socket) = recv_from(&peer).await;
 
     stranger
@@ -135,17 +139,6 @@ async fn a_datagram_from_the_peer_address_on_a_foreign_port_installs_no_route() 
     assert_eq!(hits.load(Ordering::Relaxed), 1);
     assert!(fans.route(v4(stranger_addr)).is_none());
     assert!(fans.route(v4(peer_addr)).is_some());
-    let (answer, _) = recv_from(&peer).await;
-    assert_eq!(answer, ANSWER, "the hit is answered to the peer");
-    assert!(
-        tokio::time::timeout(
-            Duration::from_millis(200),
-            stranger.recv_from(&mut [0u8; 8])
-        )
-        .await
-        .is_err(),
-        "the stranger is answered nothing"
-    );
 }
 
 /// A Fan's close drops every socket without a route, reader included; the
@@ -160,21 +153,16 @@ async fn a_socket_lives_as_long_as_its_fan_or_its_route() {
         .open_with(
             peer_addr,
             2,
-            ANSWER.to_vec(),
             Arc::new(|_| {}),
             recording_binder(usize::MAX, Arc::clone(&seen)),
         )
         .expect("open the fan");
     assert_eq!(fans.open_sockets(), 2);
-    assert_eq!(
-        fans.burst(fan, peer_addr, b"punch", Duration::ZERO).await,
-        2
-    );
+    assert_eq!(punch(&fans, fan, peer_addr).await, 2);
     let (_, hit) = recv_from(&peer).await;
     let _ = recv_from(&peer).await;
     peer.send_to(b"probe", hit).await.expect("probe");
     let _ = inlet_next(&fans).await;
-    let _ = recv_from(&peer).await; // the answer
 
     fans.close(fan, true);
     tokio::task::yield_now().await;
@@ -218,17 +206,12 @@ async fn a_socket_lives_as_long_as_its_fan_or_its_route() {
 async fn fans_share_one_socket_budget() {
     let fans = PredictionFans::default();
     let first = fans
-        .open(
-            loopback(9),
-            PREDICTION_SOCKET_BUDGET - 3,
-            ANSWER.to_vec(),
-            Arc::new(|_| {}),
-        )
+        .open(loopback(9), PREDICTION_SOCKET_BUDGET - 3, Arc::new(|_| {}))
         .await
         .expect("the first fan opens");
     assert_eq!(fans.open_sockets(), PREDICTION_SOCKET_BUDGET - 3);
     let second = fans
-        .open(loopback(9), 8, ANSWER.to_vec(), Arc::new(|_| {}))
+        .open(loopback(9), 8, Arc::new(|_| {}))
         .await
         .expect("the second fan opens what is left");
     assert_eq!(fans.open_sockets(), PREDICTION_SOCKET_BUDGET);
@@ -238,9 +221,7 @@ async fn fans_share_one_socket_budget() {
         "the second fan is cut to the room left"
     );
     assert!(
-        fans.open(loopback(9), 1, ANSWER.to_vec(), Arc::new(|_| {}))
-            .await
-            .is_err(),
+        fans.open(loopback(9), 1, Arc::new(|_| {})).await.is_err(),
         "no room at all is a refusal"
     );
     fans.close(first, false);
@@ -256,7 +237,7 @@ async fn a_receive_error_leaves_the_fan_reader_listening() {
     let (peer, peer_addr) = bind_peer().await;
     let fan_socket: Arc<Mutex<Option<Arc<UdpSocket>>>> = Arc::new(Mutex::new(None));
     let kept = Arc::clone(&fan_socket);
-    fans.open_with(peer_addr, 1, ANSWER.to_vec(), Arc::new(|_| {}), move || {
+    fans.open_with(peer_addr, 1, Arc::new(|_| {}), move || {
         let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
         // Connected, so the platform reports the ICMP answer to a
         // datagram it sent as an error on the next receive.

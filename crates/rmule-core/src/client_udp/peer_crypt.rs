@@ -6,11 +6,15 @@
 //! carries them out at the send boundary, on the queued unit that holds the
 //! plaintext and its crypt target to that boundary (aMule's `UDPPack`).
 
+use std::sync::Arc;
+
+use rmule_net::ed2k::{ClientUdpSocket, PredictionFanLeg};
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{
     ClientDecryptKeys, ClientEncryptKey, DatagramNonce, DatagramSenderAddress, PeerEndpoint,
     decrypt_datagram_client, encrypt_datagram_client,
 };
+use tokio::sync::mpsc;
 
 use crate::obfuscation_policy::SharedObfuscationPolicy;
 use crate::own_identity::SharedOwnIdentity;
@@ -36,6 +40,9 @@ pub(crate) struct ClientUdpSend {
     /// a stranger (aMule: "we cannot answer this one encrypted since we dont
     /// know this client") or for an opcode that is never obfuscated.
     pub(crate) crypt_target: Option<PeerUdpCryptTarget>,
+    /// The Fan socket this one leaves by, for a Prediction Plan's leg; every
+    /// other datagram leaves by the advertised bind or the peer's route.
+    pub(crate) fan_leg: Option<PredictionFanLeg>,
 }
 
 impl ClientUdpSend {
@@ -45,6 +52,7 @@ impl ClientUdpSend {
             to,
             datagram,
             crypt_target: None,
+            fan_leg: None,
         }
     }
 
@@ -58,6 +66,23 @@ impl ClientUdpSend {
             to,
             datagram,
             crypt_target,
+            fan_leg: None,
+        }
+    }
+
+    /// One leg of a Prediction Fan: [`to_peer`](Self::to_peer), out of the
+    /// Fan's socket `leg` (ADR-0091, security rule 13).
+    pub(crate) const fn by_fan_leg(
+        leg: PredictionFanLeg,
+        to: PeerEndpoint,
+        datagram: Vec<u8>,
+        crypt_target: Option<PeerUdpCryptTarget>,
+    ) -> Self {
+        Self {
+            to,
+            datagram,
+            crypt_target,
+            fan_leg: Some(leg),
         }
     }
 }
@@ -182,6 +207,7 @@ pub(crate) fn encrypt_client_udp_send(
         to,
         datagram,
         crypt_target,
+        ..
     } = send;
     if !crypt.armed() {
         return (to, datagram);
@@ -198,6 +224,33 @@ pub(crate) fn encrypt_client_udp_send(
     };
     let obfuscated = encrypt_datagram_client(&datagram, &key, &nonce());
     (to, obfuscated)
+}
+
+/// The send drain, the one road out of the shared client-UDP socket: each
+/// datagram meets the gate here, where aMule obfuscates too
+/// (`CMuleUDPSocket::SendControlData`), so the gate and its OS entropy live at
+/// the boundary rather than at the sans-I/O sites that framed the plaintext.
+///
+/// The **Family Pair** picks the socket the destination's family needs
+/// (ADR-0085): a reask reply leaves by the half its ping arrived on, so the
+/// peer sees the source address it keyed its own crypt on. A Fan leg names its
+/// own socket and is otherwise any other send.
+pub(crate) async fn drain_client_udp_sends(
+    mut sends: mpsc::Receiver<ClientUdpSend>,
+    socket: Arc<ClientUdpSocket>,
+    crypt: PeerUdpCrypt,
+) {
+    while let Some(send) = sends.recv().await {
+        let leg = send.fan_leg;
+        let (to, datagram) = encrypt_client_udp_send(&crypt, send, os_datagram_nonce);
+        let sent = match leg {
+            Some(leg) => socket.send_prediction_leg(leg, to, &datagram).await,
+            None => socket.send_to_peer(to, &datagram).await,
+        };
+        if let Err(error) = sent {
+            tracing::debug!(%error, %to, "transient client-UDP reply send error");
+        }
+    }
 }
 
 /// The per-packet entropy a live obfuscated send draws from the OS: the

@@ -48,7 +48,8 @@
 //! Per-datagram crypt ([`PeerUdpCrypt`], ADR-0046) is the plaintext-under-crypt
 //! split the server-UDP front and the Kad node also run:
 //! [`ClientUdpEngine::demux`] dual-path-decrypts an armed
-//! datagram before the protocol demux, and [`encrypt_client_udp_send`]
+//! datagram before the protocol demux, and
+//! [`encrypt_client_udp_send`](peer_crypt::encrypt_client_udp_send)
 //! send-gates an outbound one. It keys the **ed2k user-hash family**
 //! (`MAGICVALUE_UDP`), this surface's own — distinct from the Kad NodeID /
 //! verify-key families the Kad socket keys on. Off by default (the
@@ -128,8 +129,10 @@ mod live;
 mod peer_crypt;
 
 pub(crate) use engine::{ClientUdpEngine, ClientUdpTransport};
+#[cfg(test)]
+pub(crate) use peer_crypt::encrypt_client_udp_send;
 pub(crate) use peer_crypt::{
-    ClientUdpSend, PeerUdpCrypt, encrypt_client_udp_send, os_datagram_nonce,
+    ClientUdpSend, PeerUdpCrypt, drain_client_udp_sends, os_datagram_nonce,
 };
 
 /// One datagram received on the client-UDP socket, tagged with its UDP source
@@ -162,7 +165,7 @@ pub(crate) type SharedKadInlet = crate::mailbox::Mailbox<rmule_net::kad::KadData
 /// target builders, and per-packet nonce both the front's receive tests and
 /// the send-gate tests key on.
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::net::Ipv4Addr;
 
     use rmule_peer::ReaskFilePing;

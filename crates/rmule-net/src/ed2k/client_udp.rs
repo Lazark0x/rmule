@@ -20,13 +20,14 @@
 mod prediction;
 
 use std::net::{SocketAddr, SocketAddrV4};
-use std::time::Duration;
 
 use rmule_primitives::PeerEndpoint;
 
 use crate::family::{FamilySelection, UdpFamilyPair};
 
-pub use self::prediction::{PREDICTION_SOCKET_BUDGET, PredictionFanId, PredictionHit};
+pub use self::prediction::{
+    PREDICTION_SOCKET_BUDGET, PredictionFanId, PredictionFanLeg, PredictionHit,
+};
 
 /// Read ceiling per datagram: one UDP datagram can never exceed 64 KiB, and a
 /// zlib-packed Kad payload (`0xE5`) can approach that, so the shared front reads
@@ -170,8 +171,8 @@ impl ClientUdpSocket {
     /// Open a **Prediction Fan**: up to `sockets` ephemeral IPv4 sockets for
     /// one attempt toward `peer`, the punch target, as many as
     /// [`PREDICTION_SOCKET_BUDGET`] has room for. A datagram from exactly
-    /// `peer` on one of them installs a Prediction Route, is answered once
-    /// with `answer`, is reported to `on_hit`, and joins [`recv`](Self::recv).
+    /// `peer` on one of them installs a Prediction Route, is reported to
+    /// `on_hit`, and joins [`recv`](Self::recv).
     ///
     /// # Errors
     /// When the budget has no room at all, or whatever a bind returned; the
@@ -180,10 +181,9 @@ impl ClientUdpSocket {
         &self,
         peer: SocketAddrV4,
         sockets: usize,
-        answer: Vec<u8>,
         on_hit: PredictionHit,
     ) -> std::io::Result<PredictionFanId> {
-        self.prediction.open(peer, sockets, answer, on_hit).await
+        self.prediction.open(peer, sockets, on_hit).await
     }
 
     /// Fan sockets open right now, every Fan's and every Prediction Route's
@@ -192,16 +192,23 @@ impl ClientUdpSocket {
         self.prediction.open_sockets()
     }
 
-    /// Send `datagram` to `to` once from every socket of `fan`, `pace` apart.
-    /// Returns how many datagrams left.
-    pub async fn prediction_fan_burst(
+    /// Every socket of `fan`, as what a send names to leave by it.
+    #[must_use]
+    pub fn prediction_fan_legs(&self, fan: PredictionFanId) -> Vec<PredictionFanLeg> {
+        self.prediction.legs(fan)
+    }
+
+    /// Send one datagram to `to` by `leg` instead of the advertised bind.
+    ///
+    /// # Errors
+    /// When the leg's Fan has closed, else whatever the send returned.
+    pub async fn send_prediction_leg(
         &self,
-        fan: PredictionFanId,
-        to: SocketAddrV4,
+        leg: PredictionFanLeg,
+        to: PeerEndpoint,
         datagram: &[u8],
-        pace: Duration,
-    ) -> usize {
-        self.prediction.burst(fan, to, datagram, pace).await
+    ) -> std::io::Result<()> {
+        self.prediction.send_leg(leg, to, datagram).await
     }
 
     /// Close `fan`. `keep_routes` keeps a socket that carries a Prediction
