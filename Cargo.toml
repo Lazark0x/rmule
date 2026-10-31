@@ -217,6 +217,14 @@ unsafe_code = "forbid"
 all = { level = "warn", priority = -1 }
 
 # Profile of the release archives built by `dist` (see dist-workspace.toml).
+# Full debug info is 124 GB of object files per worktree on macOS, which keeps
+# them unpacked, and it slows every test link. Line tables keep backtraces.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.dist]
 inherits = "release"
 lto = "thin"

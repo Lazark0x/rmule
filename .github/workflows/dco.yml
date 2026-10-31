@@ -32,25 +32,21 @@ jobs:
             const { owner, repo } = context.repo;
             const pr = context.payload.pull_request;
 
-            // GitHub lists at most 250 commits of a pull request.
-            const API_COMMIT_LIMIT = 250;
             // Bot accounts cannot certify anything; the maintainer reviews their changes.
             const EXEMPT_LOGINS = new Set(['dependabot[bot]']);
             const guide = `https://github.com/${owner}/${repo}/blob/HEAD/CONTRIBUTING.md#sign-your-commits`;
 
-            if (pr.commits > API_COMMIT_LIMIT) {
-              core.setFailed(
-                `This pull request has ${pr.commits} commits and the sign-off check reads at most ${API_COMMIT_LIMIT}. Squash it down and push again.`,
-              );
-              return;
-            }
-
-            const commits = await github.paginate(github.rest.pulls.listCommits, {
-              owner,
-              repo,
-              pull_number: pr.number,
-              per_page: 100,
-            });
+            // The pull request listing stops at 250 commits; the comparison pages past it.
+            const commits = await github.paginate(
+              github.rest.repos.compareCommitsWithBasehead,
+              {
+                owner,
+                repo,
+                basehead: `${pr.base.sha}...${pr.head.sha}`,
+                per_page: 100,
+              },
+              (response) => response.data.commits,
+            );
 
             const same = (a, b) => a.normalize('NFC').trim().toLowerCase() === b.normalize('NFC').trim().toLowerCase();
 

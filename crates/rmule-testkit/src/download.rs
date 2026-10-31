@@ -20,7 +20,7 @@ use rmule_primitives::{
     ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Informant, Ipv4Endpoint,
     PeerEndpoint, PeerSource, SafeFileName, ServerEndpoint, SourceLookupTarget, SourceSighting,
 };
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 
 /// `name` as a start names its file, cleaned as a link's name is.
 #[must_use]
@@ -398,10 +398,10 @@ where
     }
 }
 
-/// The core's next event, or a panic if none arrives within two seconds — the
-/// deadline that turns a stalled scheduler into a failure instead of a hang.
+/// The core's next event, or a panic if none arrives within the hang guard —
+/// the deadline that turns a stalled scheduler into a failure instead of a hang.
 pub async fn next_event(core: &mut Core) -> CoreEvent {
-    timeout(Duration::from_secs(2), core.next_event())
+    timeout(crate::HANG_GUARD, core.next_event())
         .await
         .expect("core emitted next event")
         .expect("core event stream stayed open")
