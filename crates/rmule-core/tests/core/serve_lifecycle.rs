@@ -563,9 +563,16 @@ async fn serve_skips_ranges_already_sent_on_a_granted_slot() {
     }))
     .await
     .unwrap();
-    assert_send_block(&mut cmd, file_hash, 0, 100, &bytes).await;
-    assert_send_block(&mut cmd, file_hash, 100, 200, &bytes).await;
-    assert_send_block(&mut cmd, file_hash, 200, 300, &bytes).await;
+    for start in [0, 100, 200] {
+        assert_send_block(&mut cmd, file_hash, start, start + 100, &bytes).await;
+        evt.send(ServeInput::Server(ServerEvent::BlockLeft {
+            file_hash,
+            start,
+            end: start + 100,
+        }))
+        .await
+        .unwrap();
+    }
 
     let overlapping = PartRanges::new([(100, 200), (200, 300), (300, 400)]);
     evt.send(ServeInput::Server(ServerEvent::PartsRequested {

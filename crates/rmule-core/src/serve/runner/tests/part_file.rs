@@ -31,6 +31,8 @@ struct Rig {
     /// How many blocks were asked for, so each ask names bytes not yet
     /// served.
     asked: u64,
+    /// Where the block [`Rig::queue_a_read`] left in the flow starts.
+    queued: u64,
     cmd_rx: mpsc::Receiver<ServeOutput>,
     read_failed_rx: std::sync::mpsc::Receiver<CheckInput>,
     stop_tx: watch::Sender<bool>,
@@ -148,6 +150,7 @@ async fn rig(paused: bool) -> Rig {
         record,
         conn_tx,
         asked: 0,
+        queued: 0,
         cmd_rx,
         read_failed_rx,
         stop_tx,
@@ -164,9 +167,8 @@ async fn next_command(cmd_rx: &mut mpsc::Receiver<ServeOutput>) -> ServerCommand
 }
 
 impl Rig {
-    /// Ask for the next hundred bytes of the first part and return what the
-    /// peer is sent first.
-    async fn ask_block(&mut self) -> ServerCommand {
+    /// Ask for the next hundred bytes of the first part.
+    async fn ask(&mut self) -> u64 {
         let start = self.asked * 100;
         self.asked += 1;
         self.conn_tx
@@ -176,25 +178,42 @@ impl Rig {
             }))
             .await
             .unwrap();
-        next_command(&mut self.cmd_rx).await
+        start
+    }
+
+    /// Say the block at `start` left for the socket, as its session does.
+    async fn left(&self, start: u64) {
+        let left = ServerEvent::BlockLeft {
+            file_hash: self.file,
+            start,
+            end: start + 100,
+        };
+        self.conn_tx.send(ServeInput::Server(left)).await.unwrap();
+    }
+
+    /// Ask for the next hundred bytes of the first part and return what the
+    /// peer is sent first; a block leaves at once.
+    async fn ask_block(&mut self) -> ServerCommand {
+        let start = self.ask().await;
+        let sent = next_command(&mut self.cmd_rx).await;
+        if matches!(sent, ServerCommand::SendBlock { .. }) {
+            self.left(start).await;
+        }
+        sent
     }
 
     /// Fill the Send-Ahead, so the next block asked stays in the flow, then
-    /// ask it and see the serve task take the ask.
+    /// ask it and see the serve task take the ask. Of the ten, the first is on
+    /// the wire and none has left.
     async fn queue_a_read(&mut self) {
         for _ in 0..10 {
-            assert!(matches!(
-                self.ask_block().await,
-                ServerCommand::SendBlock { .. }
-            ));
+            self.ask().await;
         }
-        let start = self.asked * 100;
-        self.asked += 1;
-        let ask = ServerEvent::PartsRequested {
-            file_hash: self.file,
-            ranges: PartRanges::new([(start, start + 100), (0, 0), (0, 0)]),
-        };
-        self.conn_tx.send(ServeInput::Server(ask)).await.unwrap();
+        assert!(matches!(
+            next_command(&mut self.cmd_rx).await,
+            ServerCommand::SendBlock { start: 0, .. }
+        ));
+        self.queued = self.ask().await;
         let slot = ServerEvent::SlotRequested {
             file_hash: self.file,
         };
@@ -205,14 +224,22 @@ impl Rig {
         ));
     }
 
-    /// A block left for the socket, so the read that was queued starts.
+    /// The block on the wire left, so the read that was queued starts.
     async fn free_the_send_ahead(&self) {
-        let left = ServerEvent::BlockLeft {
-            file_hash: self.file,
-            start: 0,
-            end: 100,
-        };
-        self.conn_tx.send(ServeInput::Server(left)).await.unwrap();
+        self.left(0).await;
+    }
+
+    /// What the queued read came to, past the blocks ahead of it, each of
+    /// which leaves as it goes.
+    async fn queued_read_ends(&mut self) -> ServerCommand {
+        loop {
+            match next_command(&mut self.cmd_rx).await {
+                ServerCommand::SendBlock { start, .. } if start < self.queued => {
+                    self.left(start).await;
+                }
+                ended => return ended,
+            }
+        }
     }
 
     /// The identity, at rest, of the file at `path`.
@@ -334,7 +361,7 @@ async fn a_read_queued_before_a_copy_swap_ends_on_the_finished_file() {
     copied.free_the_send_ahead().await;
 
     assert!(matches!(
-        next_command(&mut copied.cmd_rx).await,
+        copied.queued_read_ends().await,
         ServerCommand::SendBlock { .. }
     ));
     assert_eq!(copied.finish().await, (false, Vec::new()));
@@ -354,7 +381,7 @@ async fn a_read_queued_before_a_numbered_rename_ends_on_the_finished_file() {
     renamed.free_the_send_ahead().await;
 
     assert!(matches!(
-        next_command(&mut renamed.cmd_rx).await,
+        renamed.queued_read_ends().await,
         ServerCommand::SendBlock { .. }
     ));
     assert_eq!(renamed.finish().await, (false, Vec::new()));
@@ -387,7 +414,7 @@ async fn a_read_queued_when_the_entry_ends_takes_the_registry_row_at_the_trigger
     done.share_changed_tx.send(()).await.unwrap();
 
     assert!(matches!(
-        next_command(&mut done.cmd_rx).await,
+        done.queued_read_ends().await,
         ServerCommand::SendBlock { .. }
     ));
     assert!(!done.finish().await.0, "never through the Registry Check");
@@ -416,7 +443,7 @@ async fn a_read_queued_across_a_pause_is_checked_at_rest() {
     paused.free_the_send_ahead().await;
 
     assert_eq!(
-        next_command(&mut paused.cmd_rx).await,
+        paused.queued_read_ends().await,
         ServerCommand::AnswerFileNotFound {
             file_hash: paused.file
         },

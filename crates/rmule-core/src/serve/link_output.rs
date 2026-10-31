@@ -1,4 +1,4 @@
-//! What the serve loop hands one link's task: an output as it stands, or a
+//! What the serve loop hands one link's task: an answer as it stands, or a
 //! block to send. Only a block can come too late: its flow may have ended, and
 //! a block for deflate is deflated on the blocking pool, awaited by the task of
 //! the one connection it serves, so it holds neither an async worker nor the
@@ -15,16 +15,10 @@ use crate::content::on_pool;
 /// One entry of a **Link Outbox**.
 #[derive(Debug)]
 pub(super) enum LinkOutput {
-    /// Send this as it is.
+    /// Send this as it is, ahead of the blocks.
     Ready(ServeOutput),
-    /// Send `block` of `flow`, whose `bytes` these are, with `deflate`
-    /// deflated if that is smaller.
-    Block {
-        flow: u64,
-        block: BlockRead,
-        bytes: Vec<u8>,
-        deflate: bool,
-    },
+    /// Send this block, behind the one before it.
+    Block(LinkBlock),
 }
 
 impl From<ServeOutput> for LinkOutput {
@@ -33,22 +27,29 @@ impl From<ServeOutput> for LinkOutput {
     }
 }
 
-impl LinkOutput {
+/// `block` of `flow`, whose `bytes` these are, with `deflate` deflated if that
+/// is smaller.
+#[derive(Debug)]
+pub(super) struct LinkBlock {
+    pub(super) flow: u64,
+    pub(super) block: BlockRead,
+    pub(super) bytes: Vec<u8>,
+    pub(super) deflate: bool,
+}
+
+impl LinkBlock {
     /// What goes down the connection, or nothing for a block of a flow
     /// `ended_through` covers. Off the async runtime for a block to deflate.
     pub(super) async fn ready(self, ended_through: &AtomicU64) -> Option<ServeOutput> {
-        let (block, bytes, deflate) = match self {
-            Self::Ready(output) => return Some(output),
-            Self::Block { flow, .. } if ended_through.load(Ordering::Relaxed) >= flow => {
-                return None;
-            }
-            Self::Block {
-                block,
-                bytes,
-                deflate,
-                ..
-            } => (block, bytes, deflate),
-        };
+        let Self {
+            flow,
+            block,
+            bytes,
+            deflate,
+        } = self;
+        if ended_through.load(Ordering::Relaxed) >= flow {
+            return None;
+        }
         let command = if deflate {
             deflated(block, bytes, deflate_block).await
         } else {
@@ -137,7 +138,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_block_of_an_ended_flow_goes_no_further() {
-        let output = |flow| LinkOutput::Block {
+        let output = |flow| LinkBlock {
             flow,
             block: block(),
             bytes: vec![1; 4],

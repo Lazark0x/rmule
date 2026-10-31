@@ -11,7 +11,6 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use rmule_peer::PeerIdentity;
@@ -29,7 +28,7 @@ use crate::peer_roster::{PeerRelation, RelationLease};
 use crate::registry::{SharedFileEntry, SharedFileRegistry};
 use crate::serve::aich_builder::{AichBuilder, AichLanded};
 use crate::serve::block_reader::{BlockReader, FlowRead, ReadEnd, ReadLanded};
-use crate::serve::link_output::LinkOutput;
+use crate::serve::link_output::{LinkBlock, LinkOutput};
 use crate::serve::state::{ServeDecision, ServeSelfPosition, ServeState};
 use crate::served_downloads::ServedDownloads;
 use crate::service::{CoreEvent, ServeEvent, ServeStopReason};
@@ -636,16 +635,16 @@ async fn enact<L: ServeRuntimeService>(
                 deflate,
             } => output_to(
                 peer,
-                LinkOutput::Block {
+                LinkOutput::Block(LinkBlock {
                     flow,
                     block,
                     bytes,
                     deflate,
-                },
+                }),
             ),
             ServeDecision::EndFlow { peer, flow } => {
                 if let Some(link) = links.get(&peer) {
-                    link.ended_through.fetch_max(flow, Ordering::Relaxed);
+                    link.end_flow(flow);
                 }
             }
             ServeDecision::CountSent {

@@ -157,9 +157,7 @@ impl DownloadState {
                 }));
                 true
             }
-            NextDial::Callback { candidate, .. } => {
-                self.hold_road(candidate.key(), role, now, out)
-            }
+            NextDial::Callback { candidate, .. } => self.hold_road(candidate.key(), role, now, out),
         }
     }
 

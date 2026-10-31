@@ -66,6 +66,12 @@ impl ServeInput {
         })
     }
 
+    /// Whether this says a block's last byte is in the kernel.
+    #[must_use]
+    pub(crate) const fn is_block_left(&self) -> bool {
+        matches!(self, Self::Server(ServerEvent::BlockLeft { .. }))
+    }
+
     /// Whether this is the connection's close — the last input it sends.
     #[must_use]
     pub const fn is_disconnect(&self) -> bool {
