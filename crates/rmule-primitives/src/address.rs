@@ -86,6 +86,17 @@ impl Informant {
         }
     }
 
+    /// Whether this informant is a third party to `claim`: someone other than
+    /// us, and other than the host it names. Only such a word can aim a dial
+    /// at a host that never asked for one.
+    #[must_use]
+    pub fn is_third_party_to(self, claim: IpAddr) -> bool {
+        match self {
+            Self::Own => false,
+            Self::Party(ip) => ip.to_canonical() != claim.to_canonical(),
+        }
+    }
+
     /// Whether `claim`, stated by this informant, may stand as one peer's
     /// address: it lies in no Reserved Range, or it is loopback and this
     /// informant is on this host.

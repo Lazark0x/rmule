@@ -16,6 +16,11 @@ use crate::dialable::{DialPosition, admit_halves};
 use crate::ip_filter::{IpFilter, admits_source};
 use crate::own_identity::ConnectedSession;
 
+/// The first port no operating system reserves to a service. No peer of the
+/// network needs one below it; a host that never joined holds its mail or web
+/// server there.
+const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
+
 /// What the gate reads of us, taken once per batch from the owner of each
 /// fact: the facts aMule's `CanAddSource`, `CheckAndAddSource` and Kad intake
 /// compare a source with (stock 2.3.3 `PartFile.cpp:1575-1625`,
@@ -115,7 +120,8 @@ impl Gate<'_> {
     /// A sighting that names us passes nothing ([`OwnPosition`]). Otherwise
     /// each half is judged on its own ([`admit_halves`]), first by the
     /// Reserved Range check against the sighting's Informant (aMule's
-    /// `IsGoodIP`, which runs before its filter), then by the IP filter: a
+    /// `IsGoodIP`, which runs before its filter), then by the IP filter, then
+    /// by the port a third party named (ADR-0116, the Source Quota): a
     /// refused IPv6 half is dropped from the sighting, a refused client id
     /// leaves the source on its IPv6 half, both refused blocks it. Then the one
     /// address left is judged by family — an IPv6 address needs an IPv6 of ours
@@ -140,6 +146,14 @@ impl Gate<'_> {
         let endpoint = judged.filter_endpoint();
         if endpoint.is_some_and(|endpoint| !stands(endpoint)) {
             return Err(Blocked::Reserved);
+        }
+        let aimed = |half: PeerEndpoint| {
+            half.port() < FIRST_UNPRIVILEGED_PORT && informant.is_third_party_to(half.ip())
+        };
+        let judged = admit_halves(judged, |half| !aimed(half)).ok_or(Blocked::PrivilegedPort)?;
+        let endpoint = judged.filter_endpoint();
+        if endpoint.is_some_and(aimed) {
+            return Err(Blocked::PrivilegedPort);
         }
         if let Some(PeerEndpoint::V6(half)) = endpoint
             && !self.dial.can_dial_ipv6()
@@ -526,5 +540,22 @@ mod tests {
             judged_as(own, our_v4.with_ipv6_half(Some(other_v6)), None),
             Err(Blocked::Ourselves)
         );
+    }
+
+    /// A stranger's word cannot aim a dial at a service: one packet from a
+    /// third party would be a hello at someone's port 25.
+    #[test]
+    fn a_privileged_port_stands_only_on_the_word_of_the_source_or_ourselves() {
+        let source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([203, 0, 113, 9])), 25);
+        let sighting = |informant| SourceClaim::plain(source).stated_by(informant);
+        let filter = IpFilter::default();
+        let gate = gate(&filter);
+
+        assert_eq!(
+            gate.judge(sighting(party([198, 51, 100, 7])), None),
+            Err(Blocked::PrivilegedPort)
+        );
+        assert!(gate.admits(sighting(party([203, 0, 113, 9]))));
+        assert!(gate.admits(sighting(Informant::Own)));
     }
 }

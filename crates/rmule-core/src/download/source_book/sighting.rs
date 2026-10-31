@@ -7,7 +7,9 @@
 
 use std::cmp::Reverse;
 
-use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceSighting, UserHash};
+use rmule_primitives::{
+    Informant, Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceSighting, UserHash,
+};
 
 use super::asks::{AskName, low_id_name};
 use super::record::{Lane, Record, RecordId, Stage};
@@ -36,7 +38,7 @@ impl SourceBook {
             for half in order.halves() {
                 self.run.note_crypt(half, crypt);
             }
-            return self.sight_dialable(order, sighting.user_hash());
+            return self.sight_dialable(order, sighting.user_hash(), sighting.informant());
         }
         match LowIdCandidate::from_sighting(sighting, source_server) {
             Some(candidate) => self.sight_candidate(candidate),
@@ -48,8 +50,15 @@ impl SourceBook {
     /// takes the sighting: a half it lacks joins it as the same peer's other
     /// family, and a half another record holds proves the two one peer. Else
     /// its first unspent half is pooled last in the High-ID lane, the other
-    /// kept beside it; a source both of whose halves are spent is not pooled.
-    fn sight_dialable(&mut self, order: DialOrder, user_hash: Option<UserHash>) -> Sighted {
+    /// kept beside it; a source both of whose halves are spent is not pooled,
+    /// nor one a third party names where the book already holds the Source
+    /// Quota's share (ADR-0116).
+    fn sight_dialable(
+        &mut self,
+        order: DialOrder,
+        user_hash: Option<UserHash>,
+        informant: Informant,
+    ) -> Sighted {
         if self.blocks.distrusts(user_hash) {
             return Sighted::Blocked(Blocked::Distrusted);
         }
@@ -82,6 +91,9 @@ impl SourceBook {
         let Some(first) = unspent.next() else {
             return Sighted::Blocked(Blocked::Spent);
         };
+        if informant.is_third_party_to(first.ip()) && self.aliases.holds_share_of(first) {
+            return Sighted::Blocked(Blocked::OverQuota);
+        }
         let mut record = Record::new(Stage::Pooled(Lane::HighId));
         record.endpoints.push(first);
         record.endpoints.extend(unspent.next());

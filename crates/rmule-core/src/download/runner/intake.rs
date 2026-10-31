@@ -28,6 +28,9 @@ pub(super) fn sight<S, P>(
     for _ in 0..taken.tally.family_unreachable {
         runner.rt.diagnostics.count_undialable_family_source();
     }
+    for _ in 0..taken.tally.over_quota {
+        runner.rt.diagnostics.count_over_quota_source();
+    }
     taken
 }
 

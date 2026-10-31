@@ -245,6 +245,13 @@ impl DiagnosticsState {
         }
     }
 
+    /// Count one sighting a third party aimed past the Source Quota (ADR-0116).
+    pub fn count_over_quota_source(&self) {
+        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        inner.session.over_quota_sources_total =
+            inner.session.over_quota_sources_total.saturating_add(1);
+    }
+
     /// Count one source dropped at ingest for naming an **Address Family**
     /// this build cannot dial (ADR-0085).
     pub fn count_undialable_family_source(&self) {

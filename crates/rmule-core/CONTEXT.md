@@ -676,6 +676,12 @@ after every step. A fill it refuses takes nothing and wakes at the
 window's turn; a grant never asks it (ADR-0116, aMule `TooManySockets`).
 _Avoid_: worker cap, concurrency (no per-download count exists), Source Ask Budget (that paces `OP_GETSOURCES`)
 
+**Source Quota**:
+What a third party's word can put in a **Source Book** (ADR-0116): no row on a port
+below 1024, and none past 4 rows on one address or 16 on one subnet, counted over the
+book. It is what keeps one answer from aiming rmule's dials at a stranger's host.
+_Avoid_: per-informant limit, reflection guard
+
 **Source Limit**:
 The 300 sources one download's **Source Book** holds at most, aMule's `MaxSourcesPerFile`: no channel's
 sighting is taken past it (ADR-0116).

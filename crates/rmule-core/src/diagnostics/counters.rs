@@ -25,6 +25,9 @@ pub struct SessionCounters {
     /// hold. Counted rather than silent, so "no sources" never hides a family
     /// gap.
     pub undialable_family_sources_total: u64,
+    /// Sightings a third party aimed past the Source Quota (ADR-0116): a port
+    /// below 1024, or an address or subnet the book holds its share of.
+    pub over_quota_sources_total: u64,
     /// Client-UDP datagrams dropped because the opcode they carry has **no
     /// wire form that can express the sender's Address Family** (ADR-0087).
     ///

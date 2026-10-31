@@ -88,6 +88,8 @@ pub(crate) struct Tally {
     merged_dialable: usize,
     /// Sightings dropped for an address family this node cannot dial from.
     pub(crate) family_unreachable: usize,
+    /// Those a third party aimed past the Source Quota (ADR-0116).
+    pub(crate) over_quota: usize,
 }
 
 impl Tally {
@@ -115,6 +117,7 @@ impl Add for Tally {
             merged: self.merged + other.merged,
             merged_dialable: self.merged_dialable + other.merged_dialable,
             family_unreachable: self.family_unreachable + other.family_unreachable,
+            over_quota: self.over_quota + other.over_quota,
         }
     }
 }
@@ -166,6 +169,9 @@ impl DownloadState {
             tally.received += 1;
             match sighted {
                 Sighted::Blocked(Blocked::FamilyUnreachable) => tally.family_unreachable += 1,
+                Sighted::Blocked(Blocked::PrivilegedPort | Blocked::OverQuota) => {
+                    tally.over_quota += 1;
+                }
                 Sighted::Blocked(Blocked::Ourselves | Blocked::IpFiltered | Blocked::Reserved) => {}
                 _ => {
                     tally.admitted += 1;

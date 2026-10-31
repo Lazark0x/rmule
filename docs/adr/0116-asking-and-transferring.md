@@ -60,6 +60,18 @@ its worker's slot ask (ADR-0026):
 The operator reads the asking, queued and transferring counts of every running download
 (`DownloadDiagnostics::source_activity`, worded in `rmule-words`).
 
+**The Source Quota** keeps a third party from aiming rmule. A sighting's Informant is a
+third party when it is neither rmule nor the host it names: a server, a Kad storer, or a
+peer answering a source exchange. One such answer of 300 rows on one host would otherwise
+be 300 hello dials at that host, per file, per node, and stock has the same hole. So a
+third party's row is refused on a port below 1024, which no peer needs and any service
+holds; and refused where the book already holds 4 rows on its address or 16 on its `/24`
+or `/64`, counted over the book, every informant alike, so that repeating an answer or
+sharing out the rows buys nothing. A row the source states of itself, or rmule of a link
+or seed, stands; a row already held merges. Both refusals are counted
+(`over_quota_sources_total`). Nothing depends on the rule for wire compatibility: stock
+has no such check, and it only drops rows.
+
 **The Connection Budget** paces asking. It is the node's, shared by every run of the Download Set:
 
 | Key | Bound | Default | aMule |

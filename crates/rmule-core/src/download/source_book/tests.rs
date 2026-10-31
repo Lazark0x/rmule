@@ -515,3 +515,65 @@ fn alone() -> StandingSeat {
         rmule_primitives::FileHash::from_bytes([1; 16]),
     )
 }
+
+/// A row at `ip` and `port`, as `informant` states it.
+fn told(informant: Informant, ip: [u8; 4], port: u16) -> SourceSighting {
+    SourceSighting::plain(
+        PeerSource::new(ClientId::from_u32(u32::from_le_bytes(ip)), port),
+        informant,
+    )
+}
+
+fn stranger() -> Informant {
+    Informant::Party("198.51.100.7".parse().unwrap())
+}
+
+/// One packet from a third party aims no more than a few rows at one host:
+/// the dials follow the rows.
+#[test]
+fn a_third_party_holds_a_few_rows_on_one_address() {
+    let mut book = SourceBook::new(HashSet::new(), 1);
+    for port in 0..4 {
+        let pooled = sight(&mut book, told(stranger(), [203, 0, 113, 9], 4662 + port));
+        assert!(matches!(pooled, Sighted::Pooled(_)), "{pooled:?}");
+    }
+
+    let past = sight(&mut book, told(stranger(), [203, 0, 113, 9], 4700));
+
+    assert_eq!(past, Sighted::Blocked(Blocked::OverQuota));
+    assert_eq!(book.counts().known, 4);
+}
+
+#[test]
+fn a_third_party_holds_a_few_more_rows_on_one_subnet() {
+    let mut book = SourceBook::new(HashSet::new(), 1);
+    for host in 1..=16 {
+        let pooled = sight(&mut book, told(stranger(), [203, 0, 113, host], 4662));
+        assert!(matches!(pooled, Sighted::Pooled(_)), "{pooled:?}");
+    }
+
+    let past = sight(&mut book, told(stranger(), [203, 0, 113, 200], 4662));
+
+    assert_eq!(past, Sighted::Blocked(Blocked::OverQuota));
+    let elsewhere = sight(&mut book, told(stranger(), [203, 0, 114, 1], 4662));
+    assert!(matches!(elsewhere, Sighted::Pooled(_)));
+}
+
+/// The quota is on what a third party can make rmule dial. A row the source
+/// or the operator states is theirs, and a row already held only merges.
+#[test]
+fn the_quota_spares_a_sources_own_word_ours_and_a_row_already_held() {
+    let mut book = SourceBook::new(HashSet::new(), 1);
+    for port in 0..4 {
+        sight(&mut book, told(stranger(), [203, 0, 113, 9], 4662 + port));
+    }
+
+    let held = sight(&mut book, told(stranger(), [203, 0, 113, 9], 4662));
+    assert!(matches!(held, Sighted::Merged(_)), "{held:?}");
+
+    let itself = Informant::Party("203.0.113.9".parse().unwrap());
+    let own_word = sight(&mut book, told(itself, [203, 0, 113, 9], 5000));
+    assert!(matches!(own_word, Sighted::Pooled(_)), "{own_word:?}");
+    let ours = sight(&mut book, told(Informant::Own, [203, 0, 113, 9], 5001));
+    assert!(matches!(ours, Sighted::Pooled(_)), "{ours:?}");
+}

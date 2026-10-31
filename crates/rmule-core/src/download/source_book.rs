@@ -99,6 +99,12 @@ pub(crate) enum Blocked {
     Spent,
     /// It names no road at all: no address, and no Low ID or Kad callback.
     Unreachable,
+    /// A third party named a port below 1024, which no peer of the network
+    /// needs and any service holds (ADR-0116, the Source Quota).
+    PrivilegedPort,
+    /// A third party named an address or subnet the book already holds its
+    /// share of (ADR-0116, the Source Quota).
+    OverQuota,
 }
 
 /// The road a record that gave way in a merge still had in flight.
