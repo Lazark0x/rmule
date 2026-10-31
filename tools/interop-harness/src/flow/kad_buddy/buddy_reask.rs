@@ -150,7 +150,11 @@ impl ReaskLeg {
         let ed2ksrv = format!("{}-ed2ksrv", names.requester);
         start_ed2ksrv(docker, names, resources, plan, &dir, &ed2ksrv)?;
 
+        // One holder at a time: aMule opens one slot a second and picks from a
+        // queue it sorts every two minutes (`UploadQueue.cpp:250`, `:290`), so
+        // a holder landing beside another waits out the link's idle timeout.
         let mut holders = Vec::new();
+        let mut granted = 0;
         for (index, (hash, kad_id)) in HOLDERS.iter().enumerate() {
             let name = format!("{}-holder-{index}", names.requester);
             let holder_dir = dir.join(format!("holder-{index}"));
@@ -172,14 +176,9 @@ impl ReaskLeg {
             run_checked(docker.run_container(body.container()), "run a slot holder")?;
             resources.track_started(&format!("holder-{index}"), name.clone());
             open_gate(&holder_dir)?;
-            holders.push(name);
-        }
-        let mut timeline = Timeline::default();
-        let mut granted = 0;
-        for holder in &holders {
             if wait_logs(
                 docker,
-                holder,
+                &name,
                 &["download.peer_slot_granted"],
                 Duration::from_secs(SLOT_WAIT_SECS),
             )?
@@ -187,7 +186,9 @@ impl ReaskLeg {
             {
                 granted += 1;
             }
+            holders.push(name);
         }
+        let mut timeline = Timeline::default();
         if granted == holders.len() {
             timeline.holders_granted = unix_ms();
             println!("kad-buddy-reask: both holders hold an upload slot");
