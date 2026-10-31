@@ -78,12 +78,18 @@ impl ServeState {
                 status: found.status(),
             });
         // A shared file's reask from a known waiter is an ask like any: a
-        // client it bans is not answered (`ClientUDPSocket.cpp:440-452`).
+        // banned client is not answered, whether a ban it already held got
+        // past the front on a relayed ping or this ask brought it
+        // (`ClientUDPSocket.cpp:440-452`).
         if shared.is_some()
             && let Some(peer) = peer
-            && self.ask_bans(now, peer)
         {
-            return self.ban_asker(now, peer, modifiers);
+            if self.asker.banned && !self.spares(peer) {
+                return self.on_banned(now, peer, modifiers);
+            }
+            if self.ask_bans(now, peer) {
+                return self.ban_asker(now, peer, modifiers);
+            }
         }
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),

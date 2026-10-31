@@ -9,7 +9,7 @@ use rmule_core::{
 };
 use rmule_primitives::UserHash;
 use std::net::IpAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Everything the ledger owes a caller in one pass: both directions accrue,
 /// an unknown peer is zeroed rather than an error, the first SUI key is
@@ -55,8 +55,11 @@ fn accrues_both_directions_and_guards_the_bound_key(store: &mut DurableCreditSto
     assert_eq!(store.totals(stranger).unwrap(), CreditTotals::default());
     assert_eq!(store.public_key(stranger).unwrap(), None);
 
+    let snapshot = store.snapshot().unwrap();
+    let seen = snapshot[0].last_seen;
+    assert_ne!(seen, 0, "a row written is a row seen");
     assert_eq!(
-        store.snapshot().unwrap(),
+        snapshot,
         vec![PeerCredit {
             key: peer,
             totals: CreditTotals {
@@ -64,6 +67,7 @@ fn accrues_both_directions_and_guards_the_bound_key(store: &mut DurableCreditSto
                 downloaded: 1,
             },
             public_key: Some(key_a),
+            last_seen: seen,
         }]
     );
 }
@@ -202,6 +206,48 @@ fn a_proof_in_one_family_leaves_the_other_alone() {
     ledger.prove(peer, v6);
     assert_eq!(ledger.proof(peer, v4), CreditProof::Proved);
     assert_eq!(ledger.proof(peer, v6), CreditProof::Proved);
+}
+
+/// aMule drops a record 150 days unseen at load (`ClientCreditsList.cpp:169`).
+/// The ring holds no clock of its own, so a row ages whether or not a
+/// `clients.met` was ever written, a proof with no byte moved counts as seen,
+/// and a row inside the window is kept.
+#[test]
+fn a_row_unseen_for_150_days_leaves_at_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (stale, proved) = (
+        UserHash::from_bytes([0x0F; UserHash::BYTE_LEN]),
+        UserHash::from_bytes([0x10; UserHash::BYTE_LEN]),
+    );
+    let at: IpAddr = "203.0.113.1".parse().unwrap();
+    let start = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let opened = |days: u64| {
+        let store = open_durable_store(dir.path()).unwrap();
+        DurableCreditStore::opened_at(store, start + days * 86_400)
+    };
+    {
+        let ledger = opened(0);
+        ledger.record_download(stale, 5_000_000).unwrap();
+        ledger.bind_public_key(proved, b"key").unwrap();
+        ledger.checkpoint_at(start).unwrap();
+    }
+    {
+        let ledger = opened(149);
+        assert_eq!(ledger.totals(stale).unwrap().downloaded, 5_000_000);
+        ledger.prove(proved, at);
+        ledger.checkpoint_at(start + 149 * 86_400).unwrap();
+    }
+    let ledger = opened(151);
+    assert_eq!(ledger.totals(stale).unwrap(), CreditTotals::default());
+    let rows = ledger.snapshot().unwrap();
+    assert_eq!(
+        rows.iter().map(|row| row.key).collect::<Vec<_>>(),
+        vec![proved],
+        "the stale row left the store; the proved one was seen"
+    );
 }
 
 /// Accrual is a memory step (ADR-0031, ADR-0083): a store whose one writer is

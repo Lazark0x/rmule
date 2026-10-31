@@ -89,7 +89,10 @@ weak key rather than strengthening it.
 - **Durability.** The credit ring lives in the typed store (ADR-0083). When a
   `clients.met` directory is configured, the ring is seeded from aMule's `clients.met` at
   start (only peers the store has never met) and written back to it at shutdown, in
-  aMule's byte format.
+  aMule's byte format. A row keeps when it last accrued or proved its key and leaves the
+  ring at the first open 150 days after, written file or not (`ClientCreditsList.cpp:142`,
+  `:169`). A hello alone does not stamp it: a row aged out that way holds nothing earned
+  since.
 
 ## Consequences
 

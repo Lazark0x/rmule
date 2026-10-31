@@ -9,10 +9,12 @@ use rmule_primitives::{PartHash, ServerEndpoint, UserHash};
 use rmule_store::{Ladder, Schema};
 
 use super::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
+use crate::credit::CreditStore;
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
 use crate::server_list::{ManagedServer, ServerListStore, ServerMerge};
 use crate::storage::{DownloadRepository, ResolvedAuthority};
 use crate::store::app_config::DurableAppConfig;
+use crate::store::credit::DurableCreditStore;
 use crate::store::download::DurableDownloadRepository;
 use crate::store::registry::DurableSharedFileRegistry;
 use crate::{
@@ -22,7 +24,7 @@ use crate::{
 
 /// Every table the version-1 store declared, as it declared it.
 fn schema_v1() -> Schema {
-    super::credit::schema()
+    super::credit::schema_v1()
         .merge(super::download::schema_v1())
         .merge(super::registry::schema_v1())
         .merge(super::app_config::schema_v1())
@@ -43,6 +45,7 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
     };
     let peer_hashes = vec![PartHash::from_bytes([0x41; 16])];
     let distrusted = UserHash::from_bytes([0x51; UserHash::BYTE_LEN]);
+    let credited = UserHash::from_bytes([0x52; UserHash::BYTE_LEN]);
     let shared = SharedFileEntry {
         file_hash: rmule_primitives::FileHash::from_bytes([0x61; 16]),
         file_size: 2_000,
@@ -70,6 +73,7 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
                 distrusted,
             )?;
             super::registry::share_v1(txn, &shared)?;
+            super::credit::row_v1(txn, credited, 5_000_000)?;
             super::app_config::add_server_v1(txn, &server, "kept server")?;
             Ok::<_, rmule_store::StoreError>(key)
         })
@@ -77,6 +81,13 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
     };
 
     let store = open_durable_store(dir.path()).unwrap();
+    let credit = DurableCreditStore::new(Arc::clone(&store));
+    assert_eq!(credit.totals(credited).unwrap().downloaded, 5_000_000);
+    assert_ne!(
+        credit.snapshot().unwrap()[0].last_seen,
+        0,
+        "it ages from the climb"
+    );
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     let id = DownloadId::from_u64(key);
     let record = repo.load_download(id).unwrap();

@@ -65,6 +65,9 @@ pub struct PeerCredit {
     pub totals: CreditTotals,
     /// The peer's bound SUI public key, or `None` if it never proved one.
     pub public_key: Option<Vec<u8>>,
+    /// When the peer last accrued or proved its key, in Unix seconds; `0` for
+    /// a peer the ring holds no such record of.
+    pub last_seen: u64,
 }
 
 /// Outcome of binding a peer's Secure User Identification public key to its

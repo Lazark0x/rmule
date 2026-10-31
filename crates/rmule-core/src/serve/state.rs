@@ -18,6 +18,7 @@
 //! decision sequence instead of only through a live `ServeTask` loopback rig.
 
 mod aich;
+mod conduct;
 mod connection;
 mod dial_back;
 mod exchange;

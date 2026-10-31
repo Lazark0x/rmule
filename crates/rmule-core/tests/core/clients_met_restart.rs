@@ -154,6 +154,7 @@ fn seeding_skips_peers_the_ring_already_knows() {
                 downloaded: 0,
             },
             public_key: None,
+            last_seen: 0,
         },
         1_900_000_000,
     );
@@ -165,6 +166,7 @@ fn seeding_skips_peers_the_ring_already_knows() {
                 downloaded: 9,
             },
             public_key: None,
+            last_seen: 0,
         },
         1_900_000_000,
     );
