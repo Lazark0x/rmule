@@ -26,7 +26,7 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -34,7 +34,7 @@ use clap::Args;
 use rmule_net::ed2k::ClientUdpSocket;
 use rmule_net::family::FamilySelection;
 use rmule_net::natt::{
-    ClientUdpNattSink, NattCrypt, NattDemux, NattIdentity, NattOwnHash, NattSender, TunnelRegistry,
+    ClientUdpNattSink, NattCrypt, NattDemux, NattIdentity, NattOwnHash, NattSender,
 };
 use rmule_peer::natt::{
     CapsFrame, HelloNattClaim, NattConnectOptions, NattFrame, NattFrameType, NattTransport,
@@ -138,7 +138,6 @@ pub(crate) async fn run_caps_utp(args: NattCapsUtpArgs) -> Result<()> {
             NattIdentity { local: local_claim },
             Arc::clone(&identity) as Arc<dyn NattOwnHash>,
             Arc::clone(&sender),
-            Arc::new(Mutex::new(TunnelRegistry::new())),
         )
         .context("start the NAT-T demux and its engines")?,
     );
