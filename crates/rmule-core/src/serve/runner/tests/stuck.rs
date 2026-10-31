@@ -5,6 +5,7 @@
 
 use super::aich::{said, serving, shared};
 use super::*;
+#[cfg(unix)]
 use rmule_peer::PartRanges;
 
 /// More than the link's two queues hold, so a loop that waits for room parks.
