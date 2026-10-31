@@ -155,6 +155,9 @@ impl DownloadState {
             // The worker reaches its peer over a link another holds: told,
             // the source's standing unchanged until its `Connected`.
             PeerWorkerEvent::LinkShared { turn } => {
+                if turn == crate::service::LinkTurn::Riding {
+                    self.rides_a_link(peer);
+                }
                 out.push(Decision::Emit(DownloadEvent::LinkShared {
                     download_id: self.download_id,
                     peer,
@@ -310,7 +313,7 @@ impl DownloadState {
                 match asker {
                     Some((root, asker)) => {
                         if let Some(place) = self.sources.dial_place(asker) {
-                            self.standings.asked(&place.names, now);
+                            self.standings.asked_recovery(&place.names, now);
                         }
                         self.awaiting_recovery
                             .insert(part_index, (asker, assembled));

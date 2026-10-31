@@ -1,5 +1,5 @@
-//! Who holds a peer's standing and on which clock the next holder asks
-//! (ADR-0107 invariants 12 and 14).
+//! Who holds a peer's standing, on which clock the next holder asks, and
+//! the peer's **Ask Score** (ADR-0107 invariants 12, 14 and 17).
 
 use std::net::Ipv4Addr;
 
@@ -188,4 +188,105 @@ fn the_peer_clock_outlives_the_holder_that_stamped_it() {
         waiter.role(&place(None, true)),
         Role::Inherits { asked_at: full_ask }
     );
+}
+
+/// `count` fast asks at `from`, one second apart, after a first ask a second
+/// before; the last ask's instant.
+fn fast_asks(run: &StandingSeat, from: Instant, count: u32) -> Instant {
+    let names = [peer()];
+    run.asked(&names, from - Duration::from_secs(1));
+    for n in 0..count {
+        run.asked(&names, from + Duration::from_secs(u64::from(n)));
+    }
+    from + Duration::from_secs(u64::from(count))
+}
+
+/// The score is the peer's, not the name's: a name learned after the asks
+/// reads what the first name heard, and a polite ask takes one off both.
+/// Stock's `m_Aggressiveness` sits on the one client (`UploadClient.cpp:806-822`).
+#[test]
+fn a_name_learned_late_reads_the_peers_score() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    let last = fast_asks(&run, t0, 3);
+
+    let hash = AskName::User(rmule_primitives::UserHash::from_bytes([7; 16]));
+    let both = [peer(), hash];
+    let polite = last + MIN_REQUEST_TIME;
+    run.asked(&both, polite);
+
+    let locked = standings.lock().expect("registry");
+    assert_eq!(locked.score(&[hash]), 8);
+    assert_eq!(locked.score(&[peer()]), 8);
+}
+
+/// A recovery ask stamps the clock and takes nothing off, since 2.3.3 never
+/// scored it and our count must not read lower than the uploader's.
+#[test]
+fn a_recovery_ask_takes_nothing_off_the_score() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    let last = fast_asks(&run, t0, 3);
+
+    let recovery = last + MIN_REQUEST_TIME;
+    run.asked_recovery(&[peer()], recovery);
+    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 9);
+    assert_eq!(run.last_ask(&place(None, true)), Some(recovery));
+}
+
+/// The TCP fallback to an unanswered ping is the one ask the plain clock lets
+/// through inside 590 s. It scores like any other if the ping arrived, so a
+/// score with no room holds it to the ping's stamp, and no ask of ours goes
+/// past 9.
+#[test]
+fn a_fallback_with_no_room_in_the_score_waits_for_the_pings_clock() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    let fallback = Place {
+        after_ping: true,
+        ..place(None, true)
+    };
+
+    let last = fast_asks(&run, t0, 2);
+    let ping = last + MIN_REQUEST_TIME;
+    run.pinged(&[peer()], ping);
+    assert!(
+        !run.clock_holds(&fallback, ping + Duration::from_secs(20)),
+        "5 and 3 leave room"
+    );
+
+    run.asked(&[peer()], ping + Duration::from_secs(20));
+    let ping = ping + Duration::from_secs(20) + MIN_REQUEST_TIME;
+    run.pinged(&[peer()], ping);
+    assert!(
+        run.clock_holds(&fallback, ping + Duration::from_secs(20)),
+        "7 and 3 is past 9"
+    );
+    assert!(!run.clock_holds(&fallback, ping + MIN_REQUEST_TIME));
+}
+
+/// A stamp with a score outlives the two periods a bare one gets, since the
+/// uploader holds its client until its queue purge an hour on
+/// (`UploadQueue.cpp:86`); past that the score goes with the client.
+#[test]
+fn a_scored_stamp_stays_until_the_uploaders_purge() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    let last = fast_asks(&run, t0, 1);
+
+    let elsewhere = [AskName::Endpoint(PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::new(10, 0, 0, 2),
+        4662,
+    )))];
+    run.asked(&elsewhere, last + STAMP_KEPT + Duration::from_secs(1));
+    run.publish(Vec::new());
+    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 3);
+
+    run.asked(&elsewhere, last + SCORE_KEPT + Duration::from_secs(1));
+    run.publish(Vec::new());
+    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 0);
 }

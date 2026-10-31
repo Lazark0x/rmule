@@ -18,6 +18,8 @@
 //! here and nothing else: no run reads another's book or tells it anything.
 //! A **stamp** is also the peer's one ask clock: every ask reads it and stamps
 //! it as it leaves, and none leaves inside [`MIN_REQUEST_TIME`] (invariant 14).
+//! Each stamp carries the peer's **Ask Score** as stock computes it, the one
+//! thing a Link Rider may spend to ask inside that clock (invariant 17).
 //! A **left place** keeps, past the run that made it, a place at the peer and
 //! its last ask, per file and name (invariant 15): a Resume or a re-add is a
 //! new run, and the book that held them is gone.
@@ -42,6 +44,34 @@ pub(crate) const MIN_REQUEST_TIME: Duration = Duration::from_secs(590);
 /// the newest stamp, the longest a standing waits between asks (aMule
 /// `FILEREASKTIME * 2` for a source holding nothing we need).
 const STAMP_KEPT: Duration = Duration::from_millis(2 * 1_300_000);
+
+/// How long a stamp with a score is kept: the uploader's own queue purge
+/// (`MAX_PURGEQUEUETIME`, `UploadQueue.cpp:86`), the shortest it can hold the
+/// client the score is on.
+const SCORE_KEPT: Duration = Duration::from_secs(60 * 60);
+
+/// What an ask inside [`MIN_REQUEST_TIME`] adds to the peer's **Ask Score**
+/// (`UploadClient.cpp:806-807`).
+const FAST_ASK: u16 = 3;
+
+/// The highest **Ask Score** an ask of ours may leave: stock bans at 10
+/// (`UploadClient.cpp:810`), and this keeps the margin of one.
+const MOST_SCORE: u16 = 9;
+
+/// How an ask reached the peer, which says how it reads the clock and how
+/// stock scores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ask {
+    /// A UDP reask: scored (`ClientUDPSocket.cpp:194`), and only a TCP ask
+    /// past it is its fallback.
+    Ping,
+    /// A slot ask (`ClientTCPSocket.cpp:601`).
+    Slot,
+    /// An AICH recovery ask: on the clock always, and unscored on 2.3.3
+    /// though 3.1.0 scores it (`ClientTCPSocket.cpp:1768`), so it takes
+    /// nothing off.
+    Recovery,
+}
 
 /// One record holding a standing, as its run publishes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,6 +191,8 @@ struct Stamp {
     /// The last ask that was no ping.
     tcp_asked_at: Option<Instant>,
     named: Option<(FileHash, Instant)>,
+    /// The peer's **Ask Score** after that ask.
+    score: u16,
 }
 
 impl Stamp {
@@ -170,6 +202,7 @@ impl Stamp {
             asked_at,
             tcp_asked_at: None,
             named: None,
+            score: 0,
         }
     }
 
@@ -283,7 +316,7 @@ impl QueueStandings {
             .iter()
             .filter_map(|name| self.stamps.get(name))
             .filter_map(|stamp| {
-                if place.after_ping {
+                if place.after_ping && self.has_room(place) {
                     stamp.tcp_asked_at
                 } else {
                     Some(stamp.asked_at)
@@ -292,10 +325,28 @@ impl QueueStandings {
             .max()
     }
 
+    /// The peer's **Ask Score**, the highest any of `names` carries: a name
+    /// learned late has not heard the asks before it.
+    fn score(&self, names: &[AskName]) -> u16 {
+        names
+            .iter()
+            .filter_map(|name| self.stamps.get(name))
+            .map(|stamp| stamp.score)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether an ask inside the clock leaves the peer's **Ask Score** at
+    /// [`MOST_SCORE`] or under.
+    fn has_room(&self, place: &Place) -> bool {
+        self.score(&place.names) + FAST_ASK <= MOST_SCORE
+    }
+
     /// Take `download`'s places as they stand now, and fold their slot asks
     /// into the stamps; a stamp no place carries goes once it is
     /// [`STAMP_KEPT`] older than the newest. A Pooled Place's ask is the
-    /// record's own claim on its next fill, nothing the peer read.
+    /// record's own claim on its next fill, nothing the peer read. An ask
+    /// was scored as it left, so nothing folded here scores.
     fn publish(&mut self, download: DownloadId, file: FileHash, places: Vec<Place>) {
         for place in places.iter().filter(|place| !place.pooled) {
             let Some(asked) = place.asked else { continue };
@@ -352,13 +403,27 @@ impl QueueStandings {
         self.withdraw(download);
     }
 
-    /// The peer `names` names was asked at `now`, by TCP or not.
-    fn stamp(&mut self, names: &[AskName], now: Instant, tcp: bool) {
+    /// The peer `names` names was asked at `now`: stamp it, and score the
+    /// ask as stock does (`CheckForAggressive`, `UploadClient.cpp:795-825`).
+    fn stamp(&mut self, names: &[AskName], now: Instant, ask: Ask) {
+        let last = names
+            .iter()
+            .filter_map(|name| self.stamps.get(name))
+            .map(|stamp| stamp.asked_at)
+            .max();
+        let score = self.score(names);
+        let score = match last {
+            None => score,
+            Some(last) if now.saturating_duration_since(last) < MIN_REQUEST_TIME => {
+                score + FAST_ASK
+            }
+            Some(_) if ask == Ask::Recovery => score,
+            Some(_) => score.saturating_sub(1),
+        };
         for name in names {
-            self.stamps
-                .entry(*name)
-                .or_insert(Stamp::new(now))
-                .asked(now, tcp);
+            let stamp = self.stamps.entry(*name).or_insert(Stamp::new(now));
+            stamp.asked(now, ask != Ask::Ping);
+            stamp.score = score;
         }
     }
 
@@ -368,8 +433,12 @@ impl QueueStandings {
         };
         let carried = &self.by_name;
         self.stamps.retain(|name, stamp| {
-            carried.contains_key(name)
-                || newest.saturating_duration_since(stamp.asked_at) < STAMP_KEPT
+            let kept = if stamp.score > 0 {
+                SCORE_KEPT
+            } else {
+                STAMP_KEPT
+            };
+            carried.contains_key(name) || newest.saturating_duration_since(stamp.asked_at) < kept
         });
         self.left
             .retain(|_, left| newest.saturating_duration_since(left.asked_at) < STAMP_KEPT);
@@ -469,6 +538,17 @@ impl StandingSeat {
             .is_some_and(|at| now.saturating_duration_since(at) < MIN_REQUEST_TIME)
     }
 
+    /// Whether the peer's clock forbids a Link Rider of the peer `place`
+    /// names an ask at `now`: it runs, and the **Ask Score** has no room for
+    /// a fast ask (invariant 17).
+    pub(crate) fn clock_holds_rider(&self, place: &Place, now: Instant) -> bool {
+        let standings = self.lock();
+        !standings.has_room(place)
+            && standings
+                .last_ask(place)
+                .is_some_and(|at| now.saturating_duration_since(at) < MIN_REQUEST_TIME)
+    }
+
     /// The peer's last ask, as it binds the record `place` names.
     pub(crate) fn last_ask(&self, place: &Place) -> Option<Instant> {
         self.lock().last_ask(place)
@@ -481,12 +561,17 @@ impl StandingSeat {
 
     /// A ping left for the peer `names` names at `now`.
     pub(crate) fn pinged(&self, names: &[AskName], now: Instant) {
-        self.lock().stamp(names, now, false);
+        self.lock().stamp(names, now, Ask::Ping);
     }
 
-    /// A slot ask or a recovery ask left for the peer `names` names at `now`.
+    /// A slot ask left for the peer `names` names at `now`.
     pub(crate) fn asked(&self, names: &[AskName], now: Instant) {
-        self.lock().stamp(names, now, true);
+        self.lock().stamp(names, now, Ask::Slot);
+    }
+
+    /// A recovery ask left for the peer `names` names at `now`.
+    pub(crate) fn asked_recovery(&self, names: &[AskName], now: Instant) {
+        self.lock().stamp(names, now, Ask::Recovery);
     }
 }
 

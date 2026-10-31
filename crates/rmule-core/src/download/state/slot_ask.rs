@@ -47,6 +47,9 @@ pub(super) struct SlotAsks {
     /// Offered workers that probe nothing: they take the grant at their
     /// connection, off the parts their record heard (ADR-0107).
     take_at_connect: HashSet<PeerEndpoint>,
+    /// Workers seated on a link they did not dial: Link Riders, whose ask may
+    /// spend the peer's **Ask Score** (ADR-0107 invariant 17).
+    riding: HashSet<PeerEndpoint>,
 }
 
 impl SlotAsks {
@@ -73,6 +76,7 @@ impl SlotAsks {
         self.passed.remove(&peer);
         self.offered.remove(&peer);
         self.take_at_connect.remove(&peer);
+        self.riding.remove(&peer);
         let asking = self.hash_set.is_some_and(|(asker, _)| asker == peer);
         if asking {
             self.hash_set = None;
@@ -96,9 +100,10 @@ impl DownloadState {
     /// costs that link at aMule's 40 s silent-link close.
     /// A worker opened on a grant its link carries takes it instead, asking
     /// nothing the uploader would score (ADR-0107). Any other ask reads the
-    /// peer's clock, a rider's and a first ask's alike: inside it nothing
-    /// leaves and the worker goes (invariant 14), and an ask that does leave
-    /// stamps the peer there and then.
+    /// peer's clock: inside it nothing leaves and the worker goes (invariant
+    /// 14), unless the worker rides a link it did not dial and the **Ask
+    /// Score** has room (invariant 17). An ask that does leave stamps and
+    /// scores the peer there and then.
     pub(super) fn ask_on_probe(
         &mut self,
         now: Instant,
@@ -117,10 +122,14 @@ impl DownloadState {
             return;
         }
         let place = self.sources.dial_place(peer);
-        if place
-            .as_ref()
-            .is_some_and(|place| self.standings.clock_holds(place, now))
-        {
+        let held = place.as_ref().is_some_and(|place| {
+            if self.slot_asks.riding.contains(&peer) {
+                self.standings.clock_holds_rider(place, now)
+            } else {
+                self.standings.clock_holds(place, now)
+            }
+        });
+        if held {
             self.on_peers_clock(now, peer, out);
             return;
         }
@@ -128,6 +137,13 @@ impl DownloadState {
             self.standings.asked(&place.names, now);
         }
         self.ask_slot(peer, out);
+    }
+
+    /// `peer`'s worker took its turn on a link it did not dial.
+    pub(super) fn rides_a_link(&mut self, peer: PeerEndpoint) {
+        if self.worker_slots.contains_key(&peer) {
+            self.slot_asks.riding.insert(peer);
+        }
     }
 
     /// `peer`'s worker opened on a grant its uploader gave unasked: until it

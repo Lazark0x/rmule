@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::download::queue_standings::{QueueStandings, SharedQueueStandings, StandingSeat};
+use crate::service::LinkTurn;
 
 const SAME_FILE: [u8; 16] = [0x11; 16];
 
@@ -139,12 +140,11 @@ fn a_slot_holder_resumed_past_the_clock_is_dialed_at_once() {
     );
 }
 
-/// A rider's turn comes with the peer's clock running: it sends no slot ask,
-/// so a set of small files from one seeder scores nothing (`CheckForAggressive`
-/// at `ClientTCPSocket.cpp:601`), and it asks by TCP on the peer's clock, as
-/// stock's swap waits for the reask (`DownloadClient.cpp:1498`).
+/// A worker that reached the peer by its own road, with the peer's clock
+/// running, sends no slot ask whatever room the Ask Score has: only a Link
+/// Rider has a link to lose (invariant 17).
 #[test]
-fn a_rider_inside_the_clock_sends_no_slot_ask_and_waits_for_the_reask() {
+fn a_dialed_worker_inside_the_clock_sends_no_slot_ask_and_waits_for_the_reask() {
     let standings = QueueStandings::shared();
     let mut holder = of_file(&standings, 1, [1; 16]);
     let _ = holder.start(t0());
@@ -167,6 +167,132 @@ fn a_rider_inside_the_clock_sends_no_slot_ask_and_waits_for_the_reask() {
         "{probed:?}"
     );
     assert!(spawned(&probed).is_empty(), "{probed:?}");
+}
+
+/// Run `id` of a file of its own, waiting on the peer's standing, is called
+/// to the link and seated on it at `turn`: what its probe's answer does.
+fn rider_takes_its_turn(
+    standings: &SharedQueueStandings,
+    id: u8,
+    turn: Instant,
+) -> (DownloadState, Vec<Decision>) {
+    let mut rider = of_file(standings, u64::from(id), [id; 16]);
+    let started = rider.start(turn);
+    assert!(spawned(&started).is_empty(), "{started:?}");
+    let called = rider.on_link_called(turn, peer(1));
+    assert_eq!(spawned(&called), vec![peer(1)]);
+    let _ = rider.on_worker_event(
+        turn,
+        peer(1),
+        PeerWorkerEvent::LinkShared {
+            turn: LinkTurn::Riding,
+        },
+    );
+    let answered = probed(&mut rider, turn, peer(1));
+    (rider, answered)
+}
+
+/// A download holding the peer's slot, its grant on the link.
+fn holder(standings: &SharedQueueStandings) -> DownloadState {
+    let mut holder = of_file(standings, 1, [1; 16]);
+    let _ = holder.start(t0());
+    let _ = connect(&mut holder, t0(), peer(1));
+    holder.hold_standings();
+    holder
+}
+
+/// Two downloads of one peer ride one link: the second's turn comes inside
+/// the clock, and its ask leaves on that link, 3 points the score has room
+/// for, where a refusal would cost a second link a reask away. Stock's own
+/// swap waits (`DownloadClient.cpp:1498`); the score does not ask it to
+/// (`UploadClient.cpp:806-818`).
+#[test]
+fn a_rider_with_room_in_the_score_asks_on_the_link_inside_the_clock() {
+    let standings = QueueStandings::shared();
+    let _holder = holder(&standings);
+
+    let turn = t0() + Duration::from_secs(60);
+    let (_, answered) = rider_takes_its_turn(&standings, 2, turn);
+    assert!(asked_slot(&answered), "{answered:?}");
+    assert!(
+        !answered
+            .iter()
+            .any(|d| matches!(d, Decision::Emit(DownloadEvent::PeerRetired { .. }))),
+        "{answered:?}"
+    );
+}
+
+/// Six small files from one peer: the first ask scores nothing, three fast
+/// asks take the score to 9, and the fourth, which would make it 12 and ban us
+/// at 10 (`UploadClient.cpp:806-818`), stays home, as does the one behind it.
+/// The next ask leaves on the clock, polite, at 590 s past the last, and the
+/// 1 it takes off is no room for a fast one.
+#[test]
+fn six_files_of_one_peer_stop_before_the_fourth_fast_ask_and_resume_on_the_clock() {
+    let standings = QueueStandings::shared();
+    let _holder = holder(&standings);
+
+    let mut riders = Vec::new();
+    let mut last_ask = t0();
+    for id in 2..=4 {
+        last_ask += Duration::from_secs(5);
+        let (rider, answered) = rider_takes_its_turn(&standings, id, last_ask);
+        assert!(asked_slot(&answered), "file {id}: {answered:?}");
+        riders.push(rider);
+    }
+    for id in 5..=6 {
+        let turn = last_ask + Duration::from_secs(5);
+        let (rider, answered) = rider_takes_its_turn(&standings, id, turn);
+        assert!(!asked_slot(&answered), "file {id}: {answered:?}");
+        assert!(
+            answered.iter().any(|d| matches!(
+                d,
+                Decision::Emit(DownloadEvent::PeerRetired {
+                    reason: PeerRetirementReason::OnPeersClock,
+                    ..
+                })
+            )),
+            "file {id}: {answered:?}"
+        );
+        rider.hold_standings();
+        riders.push(rider);
+    }
+
+    let (_, fast) = rider_takes_its_turn(
+        &standings,
+        7,
+        last_ask + MIN_REQUEST_TIME - Duration::from_secs(1),
+    );
+    assert!(!asked_slot(&fast), "still on the clock: {fast:?}");
+
+    let polite = last_ask + MIN_REQUEST_TIME;
+    let (_, answered) = rider_takes_its_turn(&standings, 8, polite);
+    assert!(asked_slot(&answered), "past the clock: {answered:?}");
+
+    let (_, fast) = rider_takes_its_turn(&standings, 9, polite + Duration::from_secs(5));
+    assert!(!asked_slot(&fast), "8 and 3 is past 9: {fast:?}");
+}
+
+/// A record refused its ride asks by TCP when the clock lets it.
+#[test]
+fn a_rider_past_the_score_is_asked_on_the_clock() {
+    let standings = QueueStandings::shared();
+    let _holder = holder(&standings);
+    let turn = t0() + Duration::from_secs(5);
+    let _keep: Vec<_> = (2..=4)
+        .map(|id| rider_takes_its_turn(&standings, id, turn).0)
+        .collect();
+
+    let (mut refused, _) = rider_takes_its_turn(&standings, 5, turn);
+    refused.hold_standings();
+    assert_eq!(
+        asked_by_tcp(&refused.on_tick(turn + MIN_REQUEST_TIME - Duration::from_secs(1))),
+        Vec::new()
+    );
+    assert_eq!(
+        asked_by_tcp(&refused.on_tick(turn + MIN_REQUEST_TIME)),
+        vec![peer(1)]
+    );
 }
 
 /// The same rider past the score asks, and its ask stamps the peer there and
