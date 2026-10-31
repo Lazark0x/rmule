@@ -187,8 +187,8 @@ impl DurableCreditStore {
         Self::opened_at(store, unix_now())
     }
 
-    /// [`Self::new`] at `now` in Unix seconds: a row unseen for
-    /// [`CREDIT_EXPIRY_SECS`] leaves the ring, as aMule drops it at load
+    /// [`Self::new`] at `now` in Unix seconds: a row unseen for 150 days
+    /// leaves the ring, as aMule drops it at load
     /// (`ClientCreditsList.cpp:142`, `:169`). A row that will not leave the
     /// store this time is gone from this run and tried at the next.
     #[must_use]

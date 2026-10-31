@@ -215,7 +215,7 @@ impl ServeState {
     /// `peer`'s link bound the key its session proved `user_hash` holds
     /// (ADR-0041): the client on it is identified while its hello carries
     /// that hash. The place it proved from is tracked: another hash there is
-    /// a change ([`on_hash_seen`](super::ServeState::on_hash_seen)).
+    /// a change, as `HashTrack` reads it.
     pub(in crate::serve) fn on_identity_bound(
         &mut self,
         now: Instant,
