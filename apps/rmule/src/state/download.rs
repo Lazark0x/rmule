@@ -311,6 +311,10 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             let text = Sentence::owned(words::rows_unreadable(rows));
             note(state, text)
         }
+        E::PartFilesAdopted { parts } => {
+            let text = Sentence::owned(words::part_files_adopted(parts));
+            note(state, text)
+        }
         E::StoreStopped => note(state, Sentence::fixed(words::STORE_STOPPED)),
         E::VolumeStopped {
             download_id,

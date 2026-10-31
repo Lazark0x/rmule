@@ -406,6 +406,9 @@ impl DownloadEvent {
             D::RowsUnreadable { rows } => {
                 Record::new("download.rows_unreadable").count("rows", u64::from(*rows))
             }
+            D::PartFilesAdopted { parts } => {
+                Record::new("download.part_files_adopted").count("parts", u64::from(*parts))
+            }
             D::StoreStopped => Record::new("download.store_stopped"),
             D::VolumeStopped {
                 download_id,

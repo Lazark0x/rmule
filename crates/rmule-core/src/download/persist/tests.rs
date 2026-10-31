@@ -9,6 +9,7 @@ use super::{
     PersistError, check_held_part_file, distrusted_at_start, hold_part_file, part_file_changed,
     record_failure, write_through_held,
 };
+use crate::DownloadPaths;
 use crate::content::{HeldPartFile, PartFileChange};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::runner::RunnerContext;
@@ -16,6 +17,7 @@ use crate::download::runner::test_context::{Held, runner_context};
 use crate::durable::VerifiedPartRecord;
 use crate::error::DownloadFailure;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost, VolumeStop};
+use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
 
 const UNKNOWN: DownloadId = DownloadId::from_u64(9);
@@ -165,4 +167,32 @@ async fn a_failure_the_store_cannot_record_is_told_after_the_failure() {
             download_id: UNKNOWN
         }))
     ));
+}
+
+/// The line is what lets a part file outlive the store, so a run that holds
+/// its file has written it.
+#[tokio::test]
+async fn a_held_part_file_has_its_link_beside_it() {
+    let (runner, _held) = context();
+    let dir = tempfile::tempdir().unwrap();
+    let link = rmule_testkit::file_link("beside.bin", &[0x6D; 64]);
+    let paths = DownloadPaths::from_final_path(dir.path().join("beside.bin"));
+    let id = runner
+        .rt
+        .store
+        .create_download(&link, None, &paths, None)
+        .unwrap()
+        .id();
+    hold_part_file(&runner, id).await.unwrap();
+
+    let line = crate::content::part_link::beside(paths.part_path()).unwrap();
+    for _ in 0..500 {
+        if line.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let linked = crate::content::part_link::linked_parts(dir.path());
+    assert_eq!(linked[0].link, link);
+    assert_eq!(linked[0].part_path, paths.part_path());
 }

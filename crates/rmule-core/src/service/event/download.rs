@@ -573,6 +573,12 @@ pub enum DownloadEvent {
         /// How many.
         rows: u32,
     },
+    /// Part files the store had no row for were taken back as Paused
+    /// downloads (ADR-0083); a resume proves what each holds.
+    PartFilesAdopted {
+        /// How many.
+        parts: u32,
+    },
     /// A failed write stopped the store (ADR-0083): nothing is recorded from
     /// here on until rmule starts again.
     StoreStopped,

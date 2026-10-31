@@ -31,7 +31,7 @@ mod run;
 mod seeds;
 mod stopping;
 
-pub(super) use restore::attach_downloads;
+pub(super) use restore::{adopt_part_files, attach_downloads};
 pub(super) use run::DownloadRuntime;
 use run::RunStart;
 pub(super) use stopping::Stopping;

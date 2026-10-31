@@ -30,6 +30,7 @@ pub struct ContentFileStore;
 mod checked;
 pub(crate) mod free_space;
 mod held;
+pub(crate) mod part_link;
 mod sparse;
 
 pub(crate) use checked::CheckedReadError;
@@ -165,13 +166,16 @@ impl ContentFileStore {
         })
     }
 
-    /// Remove the `.part` file, the Hole Probe's file beside it and any
+    /// Remove the `.part` file, its link line, the Hole Probe's file beside it and any
     /// Completion Copy a past process or a failed delete left at the
     /// destination, which no later move would. Idempotent: an already-absent
     /// file is success, so a cancel after a finalize is not an error.
     pub async fn delete_part(paths: &DownloadPaths) -> Result<(), CoreError> {
         remove_if_present(paths.part_path()).await?;
         remove_if_present(&copy_path(paths.final_path())).await?;
+        if let Some(line) = part_link::beside(paths.part_path()) {
+            remove_if_present(&line).await?;
+        }
         match sparse::probe_path(paths.part_path()) {
             Some(probe) => remove_if_present(&probe).await,
             None => Ok(()),

@@ -137,6 +137,16 @@ pub fn cancelled_file_left(part_path: &Path) -> String {
     )
 }
 
+/// Part files the store had no row for, taken back paused.
+#[must_use]
+pub fn part_files_adopted(parts: u32) -> String {
+    format!(
+        "{} the store had lost {} back, paused; resume to check what each holds",
+        crate::units::count(u64::from(parts), "part file", "part files"),
+        if parts == 1 { "is" } else { "are" }
+    )
+}
+
 /// Rows of the download table that would not read at attach.
 #[must_use]
 pub fn rows_unreadable(rows: u32) -> String {
@@ -395,6 +405,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
         }
         D::CancelledFileLeft { part_path, .. } => cancelled_file_left(part_path),
         D::RowsUnreadable { rows } => rows_unreadable(*rows),
+        D::PartFilesAdopted { parts } => part_files_adopted(*parts),
         D::StoreStopped => STORE_STOPPED.to_string(),
         D::VolumeStopped {
             directory, stop, ..

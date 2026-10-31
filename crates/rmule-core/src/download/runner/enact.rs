@@ -171,6 +171,11 @@ where
                 {
                     Err(_) => queue.push_front(Decision::Fail(DownloadFailure::StoreFailed)),
                     Ok(disproved) => {
+                        crate::download::persist::hash_set_learned(
+                            ctx.runner,
+                            ctx.download_id,
+                            &hashes,
+                        );
                         refetch_disproved(ctx, &disproved, queue);
                         served::rule_range(ctx.runner, ctx.download_id, &hashes);
                     }

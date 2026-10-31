@@ -20,15 +20,16 @@
 //! pause, keep every verified part and reach no verdict.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use ed2k::digest::Digest;
-use rmule_primitives::{Ed2kFileLink, PartHash, UserHash};
+use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, PartHashSet, UserHash};
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
 use crate::content::{
     HeldCheckFailed, HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation,
-    probe_holes,
+    part_link, probe_holes,
 };
 use crate::download::runner::RunnerContext;
 use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
@@ -55,6 +56,39 @@ pub(crate) fn store_failed(what: &'static str) -> impl Fn(CoreError) -> Download
         tracing::warn!(%error, "{what}");
         DownloadFailure::StoreFailed
     }
+}
+
+/// Keep the link beside the part file, off the run's way (ADR-0083). A line
+/// that fails costs only the rescue it would have allowed.
+fn keep_link_line(part_path: PathBuf, link: String) {
+    tokio::task::spawn_blocking(move || {
+        if let Err(error) = part_link::keep(&part_path, &link) {
+            tracing::warn!(%error, "the line beside a part file could not be written");
+        }
+    });
+}
+
+/// The run learned its Part Hash Set: the line says so, since a part is
+/// verified only under one, and a line without it could prove none of them.
+pub(crate) fn hash_set_learned<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    hashes: &[PartHash],
+) {
+    let Ok(record) = runner.rt.store.load_download(download_id) else {
+        return;
+    };
+    let Ok(Ed2kLink::File(mut link)) = Ed2kLink::parse(record.canonical_link()) else {
+        return;
+    };
+    let Ok(set) = PartHashSet::from_hashes(link.size, hashes.to_vec()) else {
+        return;
+    };
+    link.part_hash_set = Some(set);
+    keep_link_line(
+        record.paths().part_path().to_path_buf(),
+        Ed2kLink::File(link).to_string(),
+    );
 }
 
 /// Open the run's part file and hold it (ADR-0094): created for a download
@@ -97,6 +131,7 @@ pub(super) async fn hold_part_file<S, P>(
                 ));
             }
             *held = Some(file.recorded_in(runner.rt.store.store_directory()));
+            keep_link_line(part_path.to_path_buf(), record.canonical_link().to_owned());
             let diagnostics = &runner.rt.diagnostics;
             diagnostics.part_file_read(download_id, allocated);
             if runner.hole_probed.swap(true, Ordering::SeqCst) {

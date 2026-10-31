@@ -792,6 +792,10 @@ _Avoid_: profile dir, workspace, config dir
 The Core Setting naming where new downloads keep their part files (ADR-0115). Defaults to `Temp` in the **Data Directory**; never the download directory, a shared directory, inside one, or holding one. A download keeps the part path placed at its start when the setting changes.
 _Avoid_: incoming, cache dir
 
+**Part Link Line**:
+The dot-prefixed file beside a part file, `.<name>.part.link`: one line, the file's canonical ed2k link, with its Part Hash Set once one is known (ADR-0083). What lets a part file outlive the store: attach takes back a part file in the **Temp Directory** that no row holds as a Paused download, every part recorded as a claim the resume's re-hash proves.
+_Avoid_: sidecar
+
 **Durable Store**:
 The single on-disk home of every durable seam — download records, the Shared File Registry and its Had Set, the credit ledger, identities and the server list — opened once per process and owned by core. Seams are views over it, not files of their own; a change that must hold across seams can be one atomic step.
 _Avoid_: database file (there is one, but callers see seams), config file, cache

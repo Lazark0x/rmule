@@ -5,19 +5,21 @@
 //! restore pace, never all in one tick.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::content::ContentFileStore;
+use crate::content::part_link::{self, LinkedPart};
+use crate::content::{ContentFileStore, on_pool};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
 use crate::served_downloads::ServedDownloads;
 use crate::service::{DownloadEvent, DownloadId, send_download_event};
 use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::store::download::DurableDownloadRepository;
-use crate::{DownloadFailure, DownloadLifecycle};
+use crate::{DownloadFailure, DownloadLifecycle, DownloadPaths};
 
 use super::super::CoreActor;
 
@@ -184,6 +186,36 @@ where
                 Vec::new()
             }
         }
+    }
+}
+
+/// Take back every part file in the Temp Directory the store has no row for
+/// (ADR-0083), said once for all of them. Runs before the rows are read, so
+/// each is listed as any Paused download is.
+pub(in crate::service::actor) async fn adopt_part_files(
+    store: &DurableDownloadRepository,
+    temp_dir: Option<PathBuf>,
+    download_dir: Option<PathBuf>,
+    evt_tx: &mpsc::Sender<CoreEvent>,
+) {
+    let (Some(temp_dir), Some(download_dir)) = (temp_dir, download_dir) else {
+        return;
+    };
+    let linked = on_pool(move || part_link::linked_parts(&temp_dir)).await;
+    let mut parts = 0;
+    for LinkedPart { part_path, link } in linked {
+        let Some(name) = part_path.file_stem().map(PathBuf::from) else {
+            continue;
+        };
+        let paths = DownloadPaths::new(download_dir.join(name), part_path);
+        match store.adopt(&link, &paths) {
+            Ok(Some(_)) => parts += 1,
+            Ok(None) => {}
+            Err(error) => tracing::warn!(%error, "a part file could not be taken back"),
+        }
+    }
+    if parts > 0 {
+        send_download_event(evt_tx, DownloadEvent::PartFilesAdopted { parts }).await;
     }
 }
 

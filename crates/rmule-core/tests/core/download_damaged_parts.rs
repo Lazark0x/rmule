@@ -14,7 +14,7 @@ use rmule_core::{
     DownloadId, DownloadLifecycle, DownloadPaths, DownloadRepository, DurableDownloadRepository,
     PartFault, RestartOutcome, StorageIntegrityFault, VerifiedPartRecord, open_durable_store,
 };
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, ServerEndpoint};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, Ed2kLink, ServerEndpoint};
 use rmule_testkit::{PendingPeerTransfer, file_link, two_high_id_sources};
 
 use crate::fixture::next_expected;
@@ -437,4 +437,64 @@ async fn a_cancel_stores_first_tells_a_refused_delete_and_attach_tries_again() {
     core_on(&store).shutdown().await;
     assert!(!paths.part_path().exists(), "swept at attach");
     assert_eq!(repo.cancelled_part_files().unwrap().len(), 0);
+}
+
+/// The store is gone and the part file stands: the line beside it brings the
+/// download back paused, and the resume's re-hash proves what holds, as it
+/// does for any record.
+#[tokio::test]
+async fn a_part_file_the_store_lost_comes_back_and_a_resume_proves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(&dir.path().join("data")).unwrap();
+    let temp = dir.path().join("Temp");
+    std::fs::create_dir(&temp).unwrap();
+    let (link, mut bytes) = three_part_link(0x40);
+    bytes[PART] ^= 0xFF;
+    let part_path = temp.join("lost.bin.part");
+    std::fs::write(&part_path, &bytes).unwrap();
+    let line = temp.join(".lost.bin.part.link");
+    std::fs::write(&line, format!("{}\n", Ed2kLink::File(link))).unwrap();
+
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings {
+            temp_dir: Some(temp),
+            ..rmule_testkit::in_download_dir(
+                rmule_core::CoreSettings::default(),
+                &dir.path().join("downloads"),
+            )
+        })
+        .source_lookup(two_high_id_sources())
+        .peer_transfer(PendingPeerTransfer)
+        .restore_at_attach()
+        .build();
+    next_expected(&mut core, "the part file taken back", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::PartFilesAdopted { parts: 1 })
+        )
+    })
+    .await;
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let id = repo.listed_downloads().unwrap()[0].id();
+    let record = repo.load_download(id).unwrap();
+    assert_eq!(record.lifecycle(), DownloadLifecycle::Paused);
+    assert_eq!(record.paths().part_path(), part_path);
+    assert_eq!(repo.verified_parts(id).unwrap().len(), 3);
+
+    resume(&mut core, id).await;
+    next_expected(&mut core, "the part that did not hold", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DamagedPartsDropped { .. })
+        )
+    })
+    .await;
+    core.shutdown().await;
+    let held: Vec<u32> = repo
+        .verified_parts(id)
+        .unwrap()
+        .iter()
+        .map(|part| part.part_index)
+        .collect();
+    assert_eq!(held, [0, 2]);
 }

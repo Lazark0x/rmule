@@ -432,6 +432,15 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         buddy: wiring.hello_adverts.buddy.clone(),
     });
     let remember_peers = wiring.settings.remember_peers;
+    if wiring.restore_at_attach {
+        download::adopt_part_files(
+            &wiring.store,
+            wiring.settings.temp_dir.clone(),
+            wiring.settings.download_dir.clone(),
+            &evt_tx,
+        )
+        .await;
+    }
     let (restoring, remembered) = download::attach_downloads(
         &wiring.store,
         &diagnostics,
