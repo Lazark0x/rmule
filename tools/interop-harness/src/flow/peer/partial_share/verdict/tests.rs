@@ -347,7 +347,7 @@ fn a_partial_share_pass_needs_every_owed_claim_and_a_read_wire() {
     let claim = |verdict, owed| Claim::new("a", verdict, "").owed(owed);
     let pass = claim(Verdict::Pass, true);
     let spare = claim(Verdict::NotRun, false);
-    assert_eq!(overall(&[spare.clone()], 0), Verdict::Observed);
+    assert_eq!(overall(std::slice::from_ref(&spare), 0), Verdict::Observed);
     assert_eq!(
         overall(&[pass.clone(), claim(Verdict::NotRun, true)], 0),
         Verdict::Observed

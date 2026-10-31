@@ -1,6 +1,6 @@
 //! One typed verdict and its one writer.
 //!
-//! Every flow ends in a [`Verdict`], and [`write`] is the only way one reaches
+//! Every flow ends in a [`Verdict`], and [`write()`] is the only way one reaches
 //! a run dir: a `<flow>-verdict.toml` whose top-level `verdict` is one of the
 //! words below. The Run Record, the exit status and a person reading the file
 //! all read the same word, so a run cannot say two things at once.
@@ -120,7 +120,7 @@ struct Report<'a> {
 /// Write `flow`'s `<dir>/<flow>-verdict.toml` from `verdict` and its `report`.
 ///
 /// # Errors
-/// As [`write`].
+/// As [`write()`].
 pub fn write_report(dir: &Path, flow: &str, verdict: Verdict, report: &str) -> Result<()> {
     let body = Report {
         scenario: flow,
