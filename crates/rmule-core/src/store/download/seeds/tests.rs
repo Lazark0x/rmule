@@ -144,3 +144,16 @@ fn upgrade_from_a_version_twelve_store_gives_no_seeds_and_keeps_every_download()
             .unwrap()
     );
 }
+
+#[test]
+fn a_seed_row_keeps_its_bytes() {
+    let row = super::SourceSeedRow {
+        ip: "192.0.2.1".parse().unwrap(),
+        port: 4662,
+        user_hash: None,
+        crypt: Some(3),
+        rank: SeedRank::Ranked,
+        written_at: 300,
+    };
+    crate::store::assert_pinned(&row, "00c0000201b62400010301ac02");
+}

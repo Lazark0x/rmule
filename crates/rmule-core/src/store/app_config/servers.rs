@@ -453,3 +453,26 @@ impl ServerListStore for DurableAppConfig {
         })
     }
 }
+
+#[cfg(test)]
+mod pinned {
+    use super::*;
+
+    #[test]
+    fn a_server_record_keeps_its_bytes() {
+        let row = ServerRecord {
+            endpoint: ServerEndpoint::new("127.0.0.1", 4661).unwrap(),
+            name: Ed2kText::from_bytes(b"s".to_vec()),
+            description: Ed2kText::from_bytes(Vec::new()),
+            priority: 1,
+            is_static: true,
+            fail_count: 300,
+            figures: None,
+            grants: None,
+            udp_crypt: None,
+            aux_ports: None,
+            listed_udp_flags: Some(7),
+        };
+        crate::store::assert_pinned(&row, "093132372e302e302e31b5240173000101ac02000000000107");
+    }
+}
