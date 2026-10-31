@@ -226,6 +226,8 @@ pub(crate) struct ClientUdpEngine<T> {
 }
 
 impl<T: ClientUdpTransport> ClientUdpEngine<T> {
+    // Each is a cell the one socket's front shares with its own subsystem.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         transport: T,
         crypt: PeerUdpCrypt,
