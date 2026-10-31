@@ -331,11 +331,13 @@ fn node_start(
 ) -> KadNodeStart {
     // Join: the forced self-lookup fires 3 min after start, then every 4 h;
     // the small-timer hello pass reaches a *merged* table (a v1/v2 nodes.dat
-    // seeds contacts, not dial candidates). The bootstrap dial loop arms
+    // seeds contacts, not dial candidates); the big timer refreshes what went
+    // quiet. The bootstrap dial loop arms
     // itself separately, when the driver seeds the dial list.
     let mut start = KadNodeStart::new(node, KadInstant::EPOCH)
         .self_lookup()
-        .small_timer();
+        .small_timer()
+        .big_timer(os_random_kad_id);
     if let Some(admission) = contact_admission {
         start = start.admission(admission);
     }

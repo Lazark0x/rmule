@@ -395,11 +395,13 @@ impl KadPumpState {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             } => out.push(KadPumpEffect::Spawn(Spawn::FindBuddy {
                 requester,
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             })),
             KadEvent::CallbackRelayRequested {
                 requester,

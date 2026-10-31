@@ -391,6 +391,9 @@ pub enum KadEvent {
         requester_hash: UserHash,
         /// The TCP port its buddy link is reached at.
         requester_tcp_port: u16,
+        /// A TCP firewall check to this IP is running, and the two links would
+        /// collide (aMule's `IsKadFirewallCheckIP`, `ClientList.cpp:913`).
+        check_collision: bool,
     },
     /// Our own buddy recruitment succeeded (ADR-0061, `0x5A KADEMLIA_FINDBUDDY_RES`,
     /// rmule-as-firewalled-node): a `0x5A` from an endpoint we sent a `0x51` to,

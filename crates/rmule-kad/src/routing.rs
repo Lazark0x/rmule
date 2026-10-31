@@ -587,7 +587,7 @@ impl KadRoutingTable {
     }
 
     /// The touched bucket with the oldest activity stamp: the next refresh
-    /// candidate. Bookkeeping only — refresh lookups are requester work.
+    /// candidate.
     #[must_use]
     pub fn stalest_bucket(&self) -> Option<(usize, KadInstant)> {
         self.buckets
@@ -595,5 +595,12 @@ impl KadRoutingTable {
             .enumerate()
             .filter_map(|(index, bucket)| bucket.last_activity.map(|at| (index, at)))
             .min_by_key(|&(index, at)| (at, index))
+    }
+
+    /// Stamp a bucket's activity: a refresh lookup has just left for it.
+    pub(crate) fn touch_bucket(&mut self, index: usize, now: KadInstant) {
+        if let Some(bucket) = self.buckets.get_mut(index) {
+            bucket.last_activity = Some(now);
+        }
     }
 }

@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rmule_primitives::FileHash;
 use tokio::sync::mpsc;
 
+use super::buddy_service::FindBuddyAsk;
 use super::{BuddyService, DialBack};
 use crate::adapters::kad_runtime::KadPumpCommand;
 use crate::adapters::kad_runtime::pump_state::{
@@ -227,14 +228,19 @@ impl Enactor {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
+                check_collision,
             } => {
                 return self
                     .buddy_service
                     .find_buddy_requested(
-                        requester,
-                        buddy_id,
-                        requester_hash,
-                        requester_tcp_port,
+                        FindBuddyAsk {
+                            requester,
+                            buddy_id,
+                            requester_hash,
+                            requester_tcp_port,
+                            requester_known: self.peer_roster.knows(requester.ip),
+                            check_collision,
+                        },
                         &self.reach,
                     )
                     .map(|(requester, buddy_id)| {

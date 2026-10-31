@@ -23,18 +23,36 @@ pub(crate) struct BuddyService {
     pub(crate) own_tcp_port: u16,
 }
 
+/// A `0x51`, with what the node and the roster know of its sender.
+pub(super) struct FindBuddyAsk {
+    pub(super) requester: Ipv4Endpoint,
+    pub(super) buddy_id: KadId,
+    pub(super) requester_hash: UserHash,
+    pub(super) requester_tcp_port: u16,
+    /// aMule's `FindClientByIP` (`ClientList.cpp:909`): a client we already
+    /// track needs no relay.
+    pub(super) requester_known: bool,
+    /// A TCP firewall check to this IP is running.
+    pub(super) check_collision: bool,
+}
+
 impl BuddyService {
     /// A firewalled peer asked this node to be its buddy. The accept is the
     /// `0x5A` answer the brain sends the node, never sent from here: the
     /// answer takes the pump's one non-blocking path to the node's inbox.
     pub(super) fn find_buddy_requested(
         &self,
-        requester: Ipv4Endpoint,
-        buddy_id: KadId,
-        requester_hash: UserHash,
-        requester_tcp_port: u16,
+        ask: FindBuddyAsk,
         reach: &crate::reachability::SharedSelfReach,
     ) -> Option<(Ipv4Endpoint, KadId)> {
+        let FindBuddyAsk {
+            requester,
+            buddy_id,
+            requester_hash,
+            requester_tcp_port,
+            requester_known,
+            check_collision,
+        } = ask;
         let Self {
             slot: buddy_slot,
             identity: our_buddy_identity,
@@ -58,12 +76,8 @@ impl BuddyService {
             // The `0x51`'s own source: the UDP mapping a
             // NAT-T endpoint hint names (ADR-0091).
             requester_udp: requester,
-            // The known-client + firewall-check-collision feeds are the
-            // same ADR-0058 runtime state the dial-back guards await; until
-            // they wire, only the self-recruit guard is live.
-            // `[pending]` the known-client + collision feeds.
-            requester_known: false,
-            check_collision: false,
+            requester_known,
+            check_collision,
             is_self: OwnListenEndpoint::current(own, own_tcp_port).matches(buddy_tcp),
         };
         let posture = buddy_serve_posture(reach);

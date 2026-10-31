@@ -316,6 +316,7 @@ fn inbound_findbuddy_and_callback_requests_surface_as_core_decided_events() {
                 buddy_id: id(0x33),
                 requester_hash: rmule_kad::UserHash::from_bytes([0x44; 16]),
                 requester_tcp_port: 4664,
+                check_collision: false,
             }
         ]
     );

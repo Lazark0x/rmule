@@ -93,6 +93,23 @@ impl KadId {
         m
     }
 
+    /// An ID at bucket `bucket` of this one, its low bits taken from `random`:
+    /// `bucket` leading zeros of distance, then a one (aMule's
+    /// `CRoutingZone::RandomLookup`, `RoutingZone.cpp:819-827`).
+    #[must_use]
+    pub(crate) fn inside_bucket(&self, bucket: usize, random: Self) -> Self {
+        let lead = 1_u128 << (127 - bucket.min(127));
+        let distance = lead | (Self::magnitude(&random.0) & (lead - 1));
+        let magnitude = Self::magnitude(&self.0) ^ distance;
+        let mut bytes = [0; Self::BYTE_LEN];
+        for (word, chunk) in bytes.chunks_exact_mut(4).enumerate() {
+            #[allow(clippy::cast_possible_truncation)] // the shift leaves 32 bits.
+            let value = (magnitude >> (96 - word * 32)) as u32;
+            chunk.copy_from_slice(&value.to_le_bytes());
+        }
+        Self(bytes)
+    }
+
     /// The XOR distance from this ID to `target`. Smaller is closer, matching how
     /// aMule ranks contacts for a lookup (capture-proven, ADR-0043).
     #[must_use]
@@ -102,5 +119,24 @@ impl KadId {
             *out = a ^ b;
         }
         KadDistance(Self::magnitude(&xor))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_id_inside_a_bucket_sits_at_that_bucket_s_distance() {
+        let own = KadId::from_bytes([0x5A; KadId::BYTE_LEN]);
+        let random = KadId::from_bytes([0xC3; KadId::BYTE_LEN]);
+        for bucket in [0, 1, 31, 32, 64, 127] {
+            let target = own.inside_bucket(bucket, random);
+            assert_eq!(
+                own.distance(&target).leading_zeros() as usize,
+                bucket,
+                "bucket {bucket}"
+            );
+        }
     }
 }

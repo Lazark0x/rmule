@@ -428,3 +428,38 @@ fn an_answered_contact_is_not_regreeted_until_its_alive_window_lapses() {
         "an answer in the contact's second hour holds it out for 1.5 h: {greetings:?}"
     );
 }
+
+#[test]
+fn a_bucket_quiet_for_an_hour_draws_one_lookup_inside_it_every_ten_seconds() {
+    fn random_id() -> KadId {
+        KadId::from_bytes([0xC3; 16])
+    }
+    let mut n = KadNode::new(KadNodeStart::new(config(), T0).big_timer(random_id));
+    let hour = KadNode::BIG_TIMER_INTERVAL;
+    merge(&mut n, vec![merged(0x8F, 1), merged(0x4F, 2)]);
+    n.handle_datagram(T0, ep(1), &hello_res_bytes(0x8F));
+    let _ = drain_split(&mut n);
+
+    n.tick(T0 + (hour - SECOND));
+    assert_eq!(drain_split(&mut n).0, vec![], "not before the hour");
+
+    // The silent hour lapsed the join: heard again, the node goes on.
+    let at = T0 + hour;
+    n.handle_datagram(at, ep(1), &ping_bytes());
+    let _ = drain_split(&mut n);
+    n.tick(at);
+    let (sent, _) = drain_split(&mut n);
+    assert!(
+        sent.iter().any(|(_, bytes)| bytes[1] == 0x21),
+        "the refresh"
+    );
+
+    n.tick(at + (KadNode::BIG_TIMER_SPACING - SECOND));
+    assert_eq!(drain_split(&mut n).0, vec![], "inside the spacing");
+    n.tick(at + KadNode::BIG_TIMER_SPACING);
+    let (sent, _) = drain_split(&mut n);
+    assert!(
+        sent.iter().any(|(_, bytes)| bytes[1] == 0x21),
+        "the next bucket"
+    );
+}

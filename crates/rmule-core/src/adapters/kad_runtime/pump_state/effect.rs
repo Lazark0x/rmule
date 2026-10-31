@@ -268,6 +268,7 @@ pub(crate) enum Spawn {
         buddy_id: KadId,
         requester_hash: UserHash,
         requester_tcp_port: u16,
+        check_collision: bool,
     },
     /// ADR-0061 open-node relay over the held buddy link.
     CallbackRelay {

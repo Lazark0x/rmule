@@ -94,6 +94,10 @@ pub(crate) enum KadWalkPurpose {
     /// proper. It has no terminal fan-out; convergence just ends the walk (the
     /// warming is the lookup traffic itself, not a search or publish).
     SelfLookup { target: KadId },
+    /// The big timer's **refresh lookup** (`CRoutingZone::RandomLookup`): a walk
+    /// toward a random ID of a quiet bucket, whose only yield is the contacts
+    /// its answers name. No terminal fan-out.
+    RefreshLookup { target: KadId },
     /// The **FINDBUDDY walk** (ADR-0061 firewalled-node recruitment, aMule
     /// `Search.cpp#L784`): walk toward `~ourKadID` and ask the closest
     /// responded contact to be our buddy (`0x51`). Its terminal action is a
@@ -129,6 +133,7 @@ impl KadWalkPurpose {
             Self::SearchKeyword { target }
             | Self::PublishKeyword { target }
             | Self::SelfLookup { target }
+            | Self::RefreshLookup { target }
             | Self::FindBuddy { target }
             | Self::UdpFirewallHelpers { target } => target,
             Self::CallbackWalk { buddy_id, .. } => buddy_id,
@@ -580,7 +585,10 @@ impl KadLookupWalk {
     fn converge(&mut self, now: KadInstant, actions: &mut Vec<KadWalkAction>) {
         // A self-lookup has no terminal action — it warmed the neighborhood by
         // walking, and simply ends. No `0x34`/`0x44` fan-out, empty table or not.
-        if let KadWalkPurpose::SelfLookup { .. } = self.purpose {
+        if matches!(
+            self.purpose,
+            KadWalkPurpose::SelfLookup { .. } | KadWalkPurpose::RefreshLookup { .. }
+        ) {
             self.complete = true;
             actions.push(KadWalkAction::Complete {
                 outcome: KadWalkOutcome::SelfLookup,

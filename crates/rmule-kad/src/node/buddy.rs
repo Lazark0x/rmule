@@ -159,12 +159,19 @@ impl KadNode {
                 buddy_id,
                 requester_hash,
                 requester_tcp_port,
-            } => self.emit_event(KadEvent::FindBuddyRequested {
-                requester: Ipv4Endpoint::new(from.ip(), from.udp_port()),
-                buddy_id,
-                requester_hash,
-                requester_tcp_port,
-            }),
+            } => {
+                let check_collision = self
+                    .firewall
+                    .as_ref()
+                    .is_some_and(|firewall| firewall.is_check_ip(from.ip(), now));
+                self.emit_event(KadEvent::FindBuddyRequested {
+                    requester: Ipv4Endpoint::new(from.ip(), from.udp_port()),
+                    buddy_id,
+                    requester_hash,
+                    requester_tcp_port,
+                    check_collision,
+                });
+            }
             // `0x5A`: an answer to our own recruitment. Accept only from a tracked
             // `0x51` target whose echoed buddyID XOR-inverts to our Kad ID (aMule's
             // `CHECK_TRACKED_PACKET` + `GetKadID() == check`); else drop it.

@@ -34,6 +34,7 @@
 //! vocabulary a driver speaks lives in `config`, `command`, `event` and
 //! `diagnostic`, re-exported here.
 
+mod big_timer;
 mod buddy;
 mod command;
 mod config;
@@ -347,6 +348,11 @@ pub struct KadNode {
     /// `start + 3 min`, then re-armed `+ 4 h` on each fire. Left `None` by
     /// routing-only nodes (the mesh sim), which run no join cadence.
     next_self_lookup: Option<KadInstant>,
+    /// The big timer's next look at the table; `None` on a node that runs none.
+    next_big_timer: Option<KadInstant>,
+    /// Where a refresh lookup's random ID comes from: the node holds no
+    /// randomness of its own.
+    refresh_target: Option<fn() -> KadId>,
     /// When the next **small-timer hello pass** fires, or `None`
     /// until a driver starts the node with [`KadNodeStart::small_timer`] —
     /// aMule's per-zone `OnSmallTimer` minute, which greets each bucket's oldest
@@ -409,6 +415,8 @@ impl KadNode {
             bootstrap_dial_list: BootstrapDialList::new(),
             next_bootstrap_dial: None,
             next_self_lookup: None,
+            next_big_timer: None,
+            refresh_target: None,
             next_small_timer: None,
             last_bootstrap: None,
         }
@@ -456,6 +464,7 @@ impl KadNode {
             .chain(self.keyword_publish_next_wake())
             .chain(self.next_bootstrap_dial)
             .chain(self.next_self_lookup)
+            .chain(self.next_big_timer)
             .chain(self.next_small_timer)
             .min()
     }
@@ -624,6 +633,7 @@ impl KadNode {
         self.tick_bootstrap_dials(now);
         self.tick_self_lookup(now);
         self.tick_small_timer(now);
+        self.tick_big_timer(now);
         // Last, so a walk that ended in this tick has freed its slot.
         self.drive_walk_starts(now);
     }

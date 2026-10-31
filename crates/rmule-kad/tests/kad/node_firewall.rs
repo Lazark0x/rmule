@@ -145,6 +145,32 @@ fn an_armed_node_piggybacks_a_version_gated_check_on_hello_traffic() {
     );
 }
 
+/// A `0x51` from an IP we are running a TCP check on would collide with the
+/// link the check draws (`ClientList.cpp:913`), and the node says so.
+#[test]
+fn a_buddy_request_from_a_checked_ip_is_marked_as_a_collision() {
+    let mut node = self_checking_node();
+    hello_from(&mut node, T0, 1, 8);
+    let _ = drain(|| node.poll_output());
+    let mut request = vec![0xE4, 0x51];
+    request.extend_from_slice(&[0x33; 16]);
+    request.extend_from_slice(&[0x44; 16]);
+    request.extend_from_slice(&[0x38, 0x12]);
+
+    node.handle_datagram(T0, endpoint(1, 4701), &request);
+    node.handle_datagram(T0, endpoint(2, 4702), &request);
+    let collisions: Vec<bool> = events(&drain(|| node.poll_output()))
+        .into_iter()
+        .filter_map(|event| match event {
+            KadEvent::FindBuddyRequested {
+                check_collision, ..
+            } => Some(check_collision),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(collisions, vec![true, false]);
+}
+
 /// The check names our crypt stance, as aMule's
 /// `GetMyConnectOptions(true, false)` does (`KademliaUDPListener.cpp:182`), so
 /// the helper can dial back obfuscated under a policy that requires it. The
