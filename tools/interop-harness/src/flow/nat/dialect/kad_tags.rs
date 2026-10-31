@@ -546,6 +546,11 @@ pub(super) fn drive(
         buddy_v6,
     ));
     claims.extend(download_claims(stage, &download, &storer_log, &hello));
+    // The legs above end minutes before the one below can: printed here, a
+    // run stopped inside it still says what they drew.
+    for claim in &claims {
+        println!("ipv6-kad-tags claim {} {}", claim.outcome, claim.name);
+    }
     // Last: its bodies take the hosts the legs above have finished with.
     claims.extend(emuleqt::drive(bench, options, stage)?);
     Ok((claims, String::new()))
