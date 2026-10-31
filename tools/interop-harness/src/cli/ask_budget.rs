@@ -37,6 +37,16 @@ pub(crate) struct AskBudgetArgs {
     /// per server (`udp-rounds.txt`); the TCP verdict is written for sixteen.
     #[arg(long, default_value_t = ASK_BUDGET_DOWNLOADS)]
     pub(crate) downloads: u8,
+    /// List ed2k-server beside the login, tapped on UDP: a round passes the
+    /// connected server over.
+    #[arg(long)]
+    pub(crate) also_ed2ksrv: bool,
+    /// The ed2k-server image `--also-ed2ksrv` runs.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_IMAGE)]
+    pub(crate) ed2ksrv_image: String,
+    /// The ed2k-server bench config `--also-ed2ksrv` renders.
+    #[arg(long, default_value = crate::cli::nat::DEFAULT_ED2KSRV_CONFIG)]
+    pub(crate) ed2ksrv_config: PathBuf,
     /// Score this retained run dir's tap again instead of driving the flow.
     #[arg(long)]
     pub(crate) rescore: Option<PathBuf>,
@@ -87,5 +97,8 @@ pub(crate) fn ask_budget(args: AskBudgetArgs) -> Result<()> {
         probe_image: &args.probe_image,
         capture_image: &args.capture.capture_image,
         downloads: args.downloads,
+        also_ed2ksrv: args
+            .also_ed2ksrv
+            .then_some((args.ed2ksrv_image.as_str(), args.ed2ksrv_config.as_path())),
     })
 }

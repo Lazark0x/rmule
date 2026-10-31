@@ -10,7 +10,8 @@ use anyhow::{Context, Result};
 use clap::Args;
 use rmule_core::KadEnableConfig;
 use rmule_core::{
-    CoreCommand, CoreConfig, CoreEvent, ServeCommand as CoreServeCommand, open_durable_store,
+    CoreCommand, CoreConfig, CoreEvent, ManagedServer, ServeCommand as CoreServeCommand,
+    ServerListCommand, open_durable_store,
 };
 use rmule_kad::KadId;
 use rmule_primitives::{Ed2kLink, ServerEndpoint};
@@ -54,6 +55,10 @@ pub(crate) struct DownloadStartArgs {
     /// eD2k server endpoint as `host:port`.
     #[arg(long)]
     server: String,
+    /// A further server to list beside the login, as `host:port`: the UDP
+    /// rounds pass the connected server over, so they need one.
+    #[arg(long)]
+    also_server: Option<String>,
     /// ED2K file link (`ed2k://|file|<name>|<size>|<hash>|...|/`); repeat
     /// for several downloads in the one core.
     #[arg(long, required = true)]
@@ -256,6 +261,14 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     let began = tokio::time::Instant::now();
     let mut crypt_flips = crypt_flip::CryptFlips::new(args.peer_crypt_flip.clone());
     crate::node::connect(&core, &server).await?;
+    if let Some(text) = &args.also_server {
+        let also = ServerEndpoint::parse_host_port(text)
+            .with_context(|| format!("parse server endpoint {text}"))?;
+        core.send(CoreCommand::ServerList(ServerListCommand::AddServer {
+            server: ManagedServer::listed(also),
+        }))
+        .await?;
+    }
     for (file, out) in files.into_iter().zip(&args.out) {
         core.send(crate::output::start(file, Some(server.clone()), out)?)
             .await?;

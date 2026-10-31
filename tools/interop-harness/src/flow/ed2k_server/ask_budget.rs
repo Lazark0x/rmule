@@ -10,16 +10,19 @@
 //! records rmule's asks and its `OP_FOUNDSOURCES`, read per hash, and every
 //! FIN or RST on rmule's server link.
 //!
-//! The same tap keeps rmule's server-UDP datagrams. `--downloads 40` against
-//! ed2k-server draws the Server Pace's round: `udp-rounds.txt` holds rmule's
-//! datagrams with their spacing and the files each asked for (at most one
-//! datagram a second, 35 files a server, `DownloadQueue.cpp:868-958`). The TCP
-//! verdict's fifteen and a sixteenth are read only at sixteen downloads.
+//! `--downloads 40 --also-ed2ksrv` draws the Server Pace's round instead: a
+//! round passes the connected server over (`DownloadQueue.cpp:887-891`), so
+//! rmule logs in to Lugdunum and lists ed2k-server, and a tap on ed2k-server
+//! writes `udp-rounds.txt` with rmule's datagrams, their spacing and the files
+//! each asked for (at most one datagram a second, 35 files a server,
+//! `DownloadQueue.cpp:868-958`). The TCP verdict's fifteen and a sixteenth are
+//! read only at sixteen downloads.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs;
 use std::net::Ipv4Addr;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -28,6 +31,7 @@ use crate::artifacts::RunLayout;
 use crate::docker::RunContainer;
 use crate::flow::bench::{Bench, CaptureSidecar, DEFAULT_TAP_INTERFACE, ED2K_SERVER_PORT};
 use crate::flow::ed2k_server::rmule_tools::run_to_exit;
+use crate::flow::ed2k_server::search_wire::{ED2KSRV_IP, start_ed2ksrv};
 use crate::flow::pcap;
 
 mod udp_rounds;
@@ -52,6 +56,7 @@ fn sharer_ip() -> String {
     format!("{}.72", prefix())
 }
 const PCAP: &str = "lugdunum.pcap";
+const ED2KSRV_PCAP: &str = "ed2ksrv-udp.pcap";
 /// The fake sharer, shared with the sx1-gate leg.
 const FAKE_SOURCE: &str = include_str!("../peer/sx1_gate/fake_source.py");
 /// How many downloads the TCP budget's verdict is written for.
@@ -91,6 +96,8 @@ pub struct AskBudgetOptions<'a> {
     pub capture_image: &'a str,
     /// How many downloads rmule starts.
     pub downloads: u8,
+    /// List this ed2k-server, its image and config, beside the login.
+    pub also_ed2ksrv: Option<(&'a str, &'a Path)>,
 }
 
 /// `count` file hashes, upper-case hex, distinct and asymmetric.
@@ -135,6 +142,24 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             bpf: &bpf,
         };
         bench.start_extra(&tap, sidecar.container(), "run the Lugdunum tap")?;
+        let listed = options
+            .also_ed2ksrv
+            .map(|(image, config)| -> Result<String> {
+                let ed2ksrv = start_ed2ksrv(&mut bench, image, config, &root, timeout)?;
+                let tap = format!("{ed2ksrv}-tap");
+                let sidecar = CaptureSidecar {
+                    image: options.capture_image,
+                    name: &tap,
+                    target_container: &ed2ksrv,
+                    interface: DEFAULT_TAP_INTERFACE,
+                    host_dir: root.clone(),
+                    pcap_file: ED2KSRV_PCAP,
+                    bpf: "udp",
+                };
+                bench.start_extra(&tap, sidecar.container(), "run the ed2k-server tap")?;
+                Ok(tap)
+            })
+            .transpose()?;
 
         let fake = format!("{server}-sharer");
         let container = RunContainer::new(options.probe_image.to_owned())
@@ -181,6 +206,10 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
             args.push("--out".into());
             args.push(format!("/w/dl/out-{i:02}.bin"));
         }
+        if listed.is_some() {
+            args.push("--also-server".into());
+            args.push(format!("{ED2KSRV_IP}:4661"));
+        }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let rmule = format!("{server}-rmule16");
         run_to_exit(
@@ -193,6 +222,9 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
         )?;
         bench.stop_extra(&fake);
         bench.stop_extra(&tap);
+        if let Some(tap) = &listed {
+            bench.stop_extra(tap);
+        }
         write_verdicts(&root, &hashes)
     })();
 
@@ -218,7 +250,13 @@ fn write_verdicts(root: &std::path::Path, hashes: &[String]) -> Result<()> {
     let verdict = score(&root.join(PCAP), hashes)?;
     fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
     print!("{verdict}");
-    let datagrams = pcap::udp4_datagrams(&root.join(PCAP))?;
+    let listed = root.join(ED2KSRV_PCAP);
+    let tap = if listed.exists() {
+        listed
+    } else {
+        root.join(PCAP)
+    };
+    let datagrams = pcap::udp4_datagrams(&tap)?;
     let rounds = udp_rounds::score(&datagrams, rmule_ip().parse()?);
     fs::write(root.join("udp-rounds.txt"), &rounds).context("write the UDP rounds")?;
     print!("{rounds}");
