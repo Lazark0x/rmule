@@ -30,6 +30,13 @@ pub(crate) enum DecodedServerFrame {
     SearchResultSkipped {
         reason: SearchResultSkipReason,
     },
+    /// A source answer that does not decode: dropped, as aMule's
+    /// `CServerSocket::ProcessPacket` stays connected over wrong sources
+    /// (stock 2.3.3 `ServerSocket.cpp:617-619`).
+    FoundSourcesSkipped {
+        opcode: u8,
+        reason: &'static str,
+    },
 }
 
 /// Umbrella for every server-pushed packet rmule decodes. Unknown well-formed
@@ -118,6 +125,9 @@ impl ServerPacket {
                 opcode: Opcode::SearchResult.as_u8(),
                 reason: reason.as_static_str(),
             }),
+            DecodedServerFrame::FoundSourcesSkipped { opcode, reason } => {
+                Err(Ed2kError::InvalidPayload { opcode, reason })
+            }
         }
     }
 
@@ -134,7 +144,14 @@ impl ServerPacket {
                 Err(reason) => DecodedServerFrame::SearchResultSkipped { reason },
             });
         }
-        Self::decode_edonkey(packet).map(DecodedServerFrame::Packet)
+        let source_answer = packet.opcode() == Opcode::FoundSources.as_u8()
+            || packet.opcode() == Opcode::FoundSourcesObfu.as_u8();
+        match Self::decode_edonkey(packet) {
+            Err(Ed2kError::InvalidPayload { opcode, reason }) if source_answer => {
+                Ok(DecodedServerFrame::FoundSourcesSkipped { opcode, reason })
+            }
+            decoded => decoded.map(DecodedServerFrame::Packet),
+        }
     }
 
     /// Decode a plain (non-packed) eDonkey-protocol [`Packet`] into a

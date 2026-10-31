@@ -772,12 +772,24 @@ async fn run_session<L: ServerLink>(
                     Some(Ed2kEvent::CommandRejected { command, reason }) => {
                         tracing::debug!(?command, ?reason, "the session refused a command");
                     }
-                    // A login rejection mid-session or the driver dropping its
-                    // send half (None) ends the session, failing all parked
-                    // lookups via the drain below rather than stranding them.
+                    // A link's end or the driver dropping its send half (None)
+                    // ends the session, failing all parked lookups via the
+                    // drain below rather than stranding them. A rejection comes
+                    // only before the login; after it the server's refusal of
+                    // one command is `ServerRejectedCommand`.
                     Some(Ed2kEvent::Disconnected { .. })
                     | Some(Ed2kEvent::LoginRejected)
                     | None => break,
+                    // The server discarded our last command (`OP_REJECT`), or
+                    // sent a source answer that does not decode: the link
+                    // stays (stock 2.3.3 `ServerSocket.cpp:599-603`, `:617-619`),
+                    // and a lookup it leaves unanswered runs out its own bound.
+                    Some(Ed2kEvent::ServerRejectedCommand) => {
+                        tracing::info!("the server rejected our last command");
+                    }
+                    Some(Ed2kEvent::FoundSourcesSkipped { opcode, reason }) => {
+                        tracing::info!(opcode, reason, "a source answer did not decode");
+                    }
                     // The server could not route a Low-ID callback we requested
                     // (`OP_CALLBACK_FAIL`, ADR-0039). It carries no id, so it
                     // cannot be attributed to a specific pending callback; the

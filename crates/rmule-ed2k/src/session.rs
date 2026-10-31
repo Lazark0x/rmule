@@ -483,6 +483,10 @@ impl Ed2kSession {
                 self.core
                     .push_event(Ed2kEvent::SearchResultSkipped { reason });
             }
+            Ok(DecodedServerFrame::FoundSourcesSkipped { opcode, reason }) => {
+                self.core
+                    .push_event(Ed2kEvent::FoundSourcesSkipped { opcode, reason });
+            }
             Err(error) => {
                 self.close(CloseReason::ProtocolViolation(SessionError::Packet(error)));
             }
@@ -513,12 +517,17 @@ impl Ed2kSession {
             return;
         }
         if matches!(server_packet, ServerPacket::Reject(_)) {
-            // Server-side explicit refusal. Emit the LoginRejected event
-            // so consumers see the typed signal, then close immediately —
-            // the runtime note documents that aMule treats OP_REJECT as
-            // terminal (server FINs next). A non-typed `ServerClosed`
-            // here would lose the "explicitly refused vs. socket dropped"
-            // distinction that consumers need for retry decisions.
+            // After the login the server discarded one command and the link
+            // stays, as aMule only logs it (stock 2.3.3
+            // `ServerSocket.cpp:599-603`): closing would re-login and send
+            // every offer and source ask again.
+            if matches!(self.state, State::LoggedIn) {
+                self.core.push_event(Ed2kEvent::ServerRejectedCommand);
+                return;
+            }
+            // Before the id there is no session to keep. The typed event
+            // tells a refusal from a dropped socket, which a retry decision
+            // needs; aMule logs too and waits for the server's close.
             let event = Ed2kEvent::from_server_packet(&server_packet);
             self.core.push_event(event);
             self.close(CloseReason::LoginRejected);

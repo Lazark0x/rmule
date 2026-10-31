@@ -100,6 +100,11 @@ pub(crate) fn event_to_toml(event: &Ed2kEvent) -> String {
             s
         }
         Ed2kEvent::LoginRejected => "type = \"LoginRejected\"\n".to_owned(),
+        Ed2kEvent::ServerRejectedCommand => "type = \"ServerRejectedCommand\"\n".to_owned(),
+        Ed2kEvent::FoundSourcesSkipped { opcode, reason } => format!(
+            "type = \"FoundSourcesSkipped\"\nopcode = {opcode}\nreason = {}\n",
+            toml_basic_string(reason)
+        ),
         Ed2kEvent::ServerMessageReceived { text } => format!(
             "type = \"ServerMessageReceived\"\ntext_len = {}\n",
             text.as_bytes().len()

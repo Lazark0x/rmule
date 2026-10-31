@@ -225,6 +225,9 @@ pub enum Ed2kEvent {
     },
     /// The server refused the login; the session is over.
     LoginRejected,
+    /// After the login, the server discarded our last command (`OP_REJECT`);
+    /// the session goes on.
+    ServerRejectedCommand,
     /// The server sent a free-text message — a banner, a rule, or a notice.
     ServerMessageReceived {
         /// The message, byte-faithful: server banners are routinely not UTF-8.
@@ -283,6 +286,13 @@ pub enum Ed2kEvent {
     SearchResultSkipped {
         /// Why it was unusable.
         reason: SearchResultSkipReason,
+    },
+    /// A source answer did not decode and was dropped; the session goes on.
+    FoundSourcesSkipped {
+        /// The opcode it came under.
+        opcode: u8,
+        /// Why it was unusable.
+        reason: &'static str,
     },
     /// A firewalled peer asked us, through the server, to dial it back.
     PeerCallbackRequested {
@@ -435,6 +445,10 @@ impl fmt::Display for Ed2kEvent {
                 write!(f, "s2c login_accepted client_id={}", client_id.as_u32())
             }
             Ed2kEvent::LoginRejected => write!(f, "s2c login_rejected"),
+            Ed2kEvent::ServerRejectedCommand => write!(f, "s2c server_rejected_command"),
+            Ed2kEvent::FoundSourcesSkipped { opcode, reason } => {
+                write!(f, "s2c found_sources_skipped opcode={opcode:#04x} reason={reason}")
+            }
             Ed2kEvent::ServerMessageReceived { text } => {
                 write!(f, "s2c server_message text_len={}", text.as_bytes().len())
             }
