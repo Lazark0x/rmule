@@ -24,6 +24,23 @@ async fn a_cancel_with_no_live_workers_returns_without_the_shutdown_timeout() {
     );
 }
 
+/// A worker let go mid-dial leaves with no terminal fact of its own: the end
+/// of its stream is the answer, and the stop does not burn the cap for it.
+#[tokio::test(start_paused = true)]
+async fn a_stream_that_ended_ends_the_wait_for_its_worker() {
+    let (tx, mut rx) = mpsc::channel::<WorkerFact>(1);
+    let peer = PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
+        [10, 0, 0, 1].into(),
+        4662,
+    ));
+    tx.send((WorkerId(1), peer, None)).await.unwrap();
+    let start = tokio::time::Instant::now();
+
+    await_worker_shutdown(&mut rx, HashSet::from([WorkerId(1)])).await;
+
+    assert_eq!(start.elapsed(), Duration::ZERO);
+}
+
 /// A worker that never answers `Shutdown` with its own `Disconnected` — an
 /// aborted task, or one wedged past recovery — must not hang the drain
 /// forever: the wait is still capped at `WORKER_SHUTDOWN_TIMEOUT`.
