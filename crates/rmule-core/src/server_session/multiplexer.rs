@@ -746,17 +746,37 @@ async fn run_session<L: ServerLink>(
                         // Nothing reached the wire, so it holds no place.
                         searches.related_refused().await;
                     }
-                    // A login rejection mid-session, the driver dropping its
-                    // send half (None), or the server rejecting a command we
-                    // sent (`CommandRejected` carries no file hash to target one
-                    // waiter — e.g. RequestSources when not logged in, or a
-                    // large-file request an old server can't serve) ends the
-                    // session, failing all parked lookups via the drain below
-                    // rather than stranding them: a rejected command is a
-                    // session-level fault, not one lookup's.
+                    // A lookup the server cannot take is skipped at the session's
+                    // gate, the one ask and nothing else (aMule's
+                    // `DownloadQueue.cpp:1083-1084`). Nothing reached the wire,
+                    // so no answer comes: the ask ends empty here, the file's
+                    // next lookup comes round on the download's own budget.
+                    Some(Ed2kEvent::CommandRejected {
+                        command: Ed2kCommandKind::RequestSources { file_hash },
+                        reason,
+                    }) => {
+                        tracing::debug!(
+                            file_hash = %file_hash.to_hex_upper(),
+                            ?reason,
+                            "source lookup skipped at the session's gate"
+                        );
+                        for reply in pending.remove(&file_hash).into_iter().flatten() {
+                            let _ = reply.send(Ok(Vec::new()));
+                        }
+                    }
+                    // Every other refusal is as local: nothing left, the link
+                    // is as healthy as it was, and what the command was for
+                    // has its own clock (a search its answer wait, an
+                    // introduction its ledger timeout). A refusal never ends a
+                    // session.
+                    Some(Ed2kEvent::CommandRejected { command, reason }) => {
+                        tracing::debug!(?command, ?reason, "the session refused a command");
+                    }
+                    // A login rejection mid-session or the driver dropping its
+                    // send half (None) ends the session, failing all parked
+                    // lookups via the drain below rather than stranding them.
                     Some(Ed2kEvent::Disconnected { .. })
                     | Some(Ed2kEvent::LoginRejected)
-                    | Some(Ed2kEvent::CommandRejected { .. })
                     | None => break,
                     // The server could not route a Low-ID callback we requested
                     // (`OP_CALLBACK_FAIL`, ADR-0039). It carries no id, so it

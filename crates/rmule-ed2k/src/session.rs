@@ -305,7 +305,9 @@ impl Ed2kSession {
             Ed2kCommand::RequestSources { target } => {
                 if !matches!(self.state, State::LoggedIn) {
                     self.reject_command(
-                        Ed2kCommandKind::RequestSources,
+                        Ed2kCommandKind::RequestSources {
+                            file_hash: target.file_hash(),
+                        },
                         CommandRejectReason::NotLoggedIn,
                     );
                     return;
@@ -319,7 +321,9 @@ impl Ed2kSession {
                     GetSourcesRequest::Large { target }
                 } else {
                     self.reject_command(
-                        Ed2kCommandKind::RequestSources,
+                        Ed2kCommandKind::RequestSources {
+                            file_hash: target.file_hash(),
+                        },
                         CommandRejectReason::UnsupportedServerCapability {
                             capability: ServerCapability::LargeFiles,
                         },

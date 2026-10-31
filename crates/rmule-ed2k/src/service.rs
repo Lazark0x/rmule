@@ -98,8 +98,12 @@ pub enum Ed2kCommandKind {
     Search,
     /// [`Ed2kCommand::QueryMoreResults`].
     QueryMoreResults,
-    /// [`Ed2kCommand::RequestSources`].
-    RequestSources,
+    /// [`Ed2kCommand::RequestSources`], naming the file: a refused lookup ends
+    /// that file's ask, and only that file's.
+    RequestSources {
+        /// The file the refused lookup asked about.
+        file_hash: FileHash,
+    },
     /// [`Ed2kCommand::RequestCallback`].
     RequestCallback,
     /// [`Ed2kCommand::RequestHolepunch`].
@@ -414,7 +418,7 @@ impl Ed2kEvent {
 
 /// Compact one-line diagnostic summary of a server-connection event — the
 /// co-located projection `rmule-tools` prints (the `s2c` prefix marks a
-/// server→client fact; `CommandRejected` and `Disconnected` are local/terminal,
+/// server→client fact; `CommandRejected` is local and `Disconnected` terminal,
 /// so they carry no direction). Exhaustive by design: a new [`Ed2kEvent`]
 /// variant fails to compile until its projection lands here, keeping the label
 /// in the enum's own crate rather than re-walked by every consumer.

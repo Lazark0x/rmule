@@ -216,7 +216,7 @@ pub(crate) fn command_kind_label(kind: &Ed2kCommandKind) -> &'static str {
         Ed2kCommandKind::RequestServerList => "RequestServerList",
         Ed2kCommandKind::Search => "Search",
         Ed2kCommandKind::QueryMoreResults => "QueryMoreResults",
-        Ed2kCommandKind::RequestSources => "RequestSources",
+        Ed2kCommandKind::RequestSources { .. } => "RequestSources",
         Ed2kCommandKind::RequestCallback => "RequestCallback",
         Ed2kCommandKind::RequestHolepunch => "RequestHolepunch",
         Ed2kCommandKind::UpdateIpv6 => "UpdateIpv6",

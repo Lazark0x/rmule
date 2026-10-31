@@ -22,7 +22,7 @@ fn request_sources_before_login_emits_command_rejection() {
     assert!(matches!(
         session.poll_output(),
         Some(Output::Event(Ed2kEvent::CommandRejected {
-            command: Ed2kCommandKind::RequestSources,
+            command: Ed2kCommandKind::RequestSources { .. },
             reason: CommandRejectReason::NotLoggedIn,
         }))
     ));
@@ -122,7 +122,7 @@ fn large_request_without_capability_is_rejected() {
     assert!(matches!(
         session.poll_output(),
         Some(Output::Event(Ed2kEvent::CommandRejected {
-            command: Ed2kCommandKind::RequestSources,
+            command: Ed2kCommandKind::RequestSources { .. },
             reason: CommandRejectReason::UnsupportedServerCapability {
                 capability: ServerCapability::LargeFiles,
             },
@@ -205,7 +205,7 @@ fn a_file_one_byte_past_old_max_file_size_is_asked_in_the_large_form() {
     assert!(matches!(
         plain.poll_output(),
         Some(Output::Event(Ed2kEvent::CommandRejected {
-            command: Ed2kCommandKind::RequestSources,
+            command: Ed2kCommandKind::RequestSources { .. },
             reason: CommandRejectReason::UnsupportedServerCapability {
                 capability: ServerCapability::LargeFiles,
             },

@@ -349,8 +349,11 @@ async fn a_dropped_link_fails_every_parked_lookup() {
     ));
 }
 
+/// aMule's `SendLocalSrcRequest` skips the one ask (`DownloadQueue.cpp:1083-1084`):
+/// a refused lookup ends empty, the other file's stays parked, and the link
+/// goes on carrying asks.
 #[tokio::test]
-async fn a_command_rejection_fails_the_lookup() {
+async fn a_refused_lookup_ends_empty_and_the_session_stays_up() {
     let (evt_tx, evt_rx) = mpsc::channel(8);
     let (cmd_tx, mut cmd_rx) = mpsc::channel(8);
     let handle = ServerSession::spawn(
@@ -362,27 +365,108 @@ async fn a_command_rejection_fails_the_lookup() {
         test_sinks(SharedOwnIdentity::default()),
     );
 
-    let h = handle.clone();
-    let lookup = tokio::spawn(async move { h.lookup_sources(target(0xAA)).await });
+    let refused = {
+        let h = handle.clone();
+        tokio::spawn(async move { h.lookup_sources(target(0xAA)).await })
+    };
+    assert!(matches!(
+        cmd_rx.recv().await.unwrap(),
+        Ed2kCommand::RequestSources { .. }
+    ));
+    let parked = {
+        let h = handle.clone();
+        tokio::spawn(async move { h.lookup_sources(target(0xBB)).await })
+    };
     assert!(matches!(
         cmd_rx.recv().await.unwrap(),
         Ed2kCommand::RequestSources { .. }
     ));
 
-    // The server rejects the request (no file hash on the event): the
-    // session ends and the parked lookup fails promptly instead of hanging
-    // until the link drops.
     evt_tx
         .send(Ed2kEvent::CommandRejected {
-            command: Ed2kCommandKind::RequestSources,
-            reason: CommandRejectReason::NotLoggedIn,
+            command: Ed2kCommandKind::RequestSources {
+                file_hash: target(0xAA).file_hash(),
+            },
+            reason: CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
         })
         .await
         .unwrap();
-    assert!(matches!(
-        lookup.await.unwrap(),
-        Err(DownloadFailure::ServerDisconnected)
-    ));
+
+    let outcome = refused.await.unwrap().expect("the ask ends, the link does not");
+    assert!(outcome.sources.is_empty());
+    assert!(handle.is_alive(), "the session outlives the refusal");
+    assert!(!parked.is_finished(), "the other file's ask is still out");
+
+    evt_tx
+        .send(Ed2kEvent::SourcesFound {
+            file_hash: target(0xBB).file_hash(),
+            sources: Vec::new(),
+            tail: SourceListTail::Read { sentinels: 0 },
+        })
+        .await
+        .unwrap();
+    assert!(parked.await.unwrap().is_ok());
+}
+
+/// A refusal is local: nothing reached the wire, so the link is as healthy as
+/// it was. Whatever the command, the session goes on taking requests.
+#[tokio::test]
+async fn no_refused_command_ends_the_session() {
+    let (evt_tx, evt_rx) = mpsc::channel(16);
+    let (cmd_tx, mut cmd_rx) = mpsc::channel(16);
+    let handle = ServerSession::spawn(
+        FakeLink {
+            events: evt_rx,
+            sent: cmd_tx,
+        },
+        client_id(),
+        test_sinks(SharedOwnIdentity::default()),
+    );
+
+    let refusals = [
+        (Ed2kCommandKind::RequestServerList, CommandRejectReason::NotLoggedIn),
+        (Ed2kCommandKind::QueryMoreResults, CommandRejectReason::NotLoggedIn),
+        (Ed2kCommandKind::Search, CommandRejectReason::NotLoggedIn),
+        (Ed2kCommandKind::RequestCallback, CommandRejectReason::NotLoggedIn),
+        (
+            Ed2kCommandKind::RequestHolepunch,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LowIdHolepunch,
+            },
+        ),
+        (
+            Ed2kCommandKind::UpdateIpv6,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::Ipv6Update,
+            },
+        ),
+        (
+            Ed2kCommandKind::OfferFiles,
+            CommandRejectReason::UnsupportedServerCapability {
+                capability: ServerCapability::LargeFiles,
+            },
+        ),
+    ];
+    for (command, reason) in refusals {
+        evt_tx
+            .send(Ed2kEvent::CommandRejected { command, reason })
+            .await
+            .unwrap();
+    }
+
+    let h = handle.clone();
+    let lookup = tokio::spawn(async move { h.lookup_sources(target(0xCC)).await });
+    assert!(
+        matches!(
+            cmd_rx.recv().await,
+            Some(Ed2kCommand::RequestSources { .. })
+        ),
+        "the link still carries asks"
+    );
+    assert!(handle.is_alive());
+    lookup.abort();
 }
 
 #[tokio::test(start_paused = true)]

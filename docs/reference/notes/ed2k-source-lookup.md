@@ -124,12 +124,12 @@ pub enum ServerCapability {
 }
 
 Ed2kEvent::CommandRejected {
-    command: Ed2kCommandKind,
+    command: Ed2kCommandKind, // RequestSources { file_hash } and the rest
     reason: CommandRejectReason,
 }
 ```
 
-`NotLoggedIn` applies to commands such as `RequestServerList` or `RequestSources` before the session has accepted login. `UnsupportedServerCapability { capability: LargeFiles }` applies when a large-file `RequestSources` command reaches a logged-in server that did not advertise large-file support.
+`NotLoggedIn` applies to commands such as `RequestServerList` or `RequestSources` before the session has accepted login. `UnsupportedServerCapability { capability: LargeFiles }` applies when a large-file `RequestSources` command reaches a logged-in server that did not advertise large-file support. `RequestSources` names its file in the event, and a refused lookup ends empty, aMule's skip (`DownloadQueue.cpp:1083-1084`). A refusal is local: no refused command ends the session.
 
 `rmule-tools` may support source-lookup packet inspection in this slice, but only as an offline fixture tool:
 
