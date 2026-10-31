@@ -77,8 +77,10 @@ exception, Port prediction, gated on our own observed mapping.**
   Only a shorter one is malformed.
 - **Sharing the client-UDP socket.** Demux by protocol byte, then frame type. `0xB2` is on
   the never-obfuscated whitelist (ADR-0046). Transport frames are obfuscated when a key is
-  known; the KEY frame (`0xB2/0xFF`, our 16-byte hash, once per endpoint per 10 s on a uTP
-  `ST_SYN` or a QUIC long header) supplies it, offered with a zero hash before identity.
+  known; the KEY frame (`0xB2/0xFF`, our 16-byte hash, once per endpoint per 10 s) supplies it,
+  offered with a zero hash before identity. It precedes an opening packet **we** send: our own
+  uTP `ST_SYN`, or any QUIC long header, a responder's included. An inbound `ST_SYN` draws
+  `ST_STATE` and no KEY, so an accepted uTP Tunnel asserts no hash of ours.
   **Signalling under `0xC5` is unobfuscated on purpose**: a punch that fails to deobfuscate
   is indistinguishable from one that never arrived. Kad and NAT-T share the one client-UDP
   socket (ADR-0057), so the mapping a buddy observes at the recruit is the mapping a punch
@@ -258,7 +260,7 @@ Invariants:
 The responder's expectation lives 120 s where eMuleAI's lives 30 s, because the requester
 re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
 
-### Security (the nine corrections, all adopted, and three of rmule's own)
+### Security (the nine corrections, all adopted, and four of rmule's own)
 
 1. **Observed source > public claimed hint > hint as lookup key.** A claim is adopted only when
    the observed source is unusable and the claim is public. Arm 3 resolves nothing in core,
@@ -281,8 +283,8 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
    and an active transfer survives a caps change.
 10. **Tunnel admission is by expectation.** An opening packet (a uTP `ST_SYN`, a QUIC long
     header) from an endpoint the Tunnel Registry holds no slot for opens one only when its
-    source IP is expected, and is otherwise dropped before the engine: no `ST_STATE`, no KEY
-    frame. The key is the IP because a hint, an introduction or an acted rendezvous names the
+    source IP is expected, and is otherwise dropped before the engine, unanswered. The key is
+    the IP because a hint, an introduction or an acted rendezvous names the
     peer's address while a NAT, or a prediction leg, leaves its port open. Three facts expect an
     IP: a **Punch Expectation** the NAT-T Front holds for it; a live relation in the **Peer
     Roster** (ADR-0059) — kno dials uTP to every peer whose hello claims bit 1
@@ -314,14 +316,31 @@ re-dials for its whole 120 s budget and each `librqbit-utp` opener is sent once.
     not age: the peer's KEY only follows its opener, so nothing would ever restate it, and the
     10-minute TTL bounds a mapping nothing is riding. A KEY frame whose hash differs from it is
     refused. A NAT rebinding moves the endpoint, never the hash at one endpoint, so only a spoof
-    loses anything.
+    loses anything. The hash an endpoint is **named** by outranks any KEY, key or no key yet: the
+    hash our dial aimed at, then the hello's. A first KEY that contradicts the name is refused;
+    a KEY that landed before the name is replaced by it, and an endpoint that sent no KEY stays
+    unkeyed, because a name is no request for obfuscation. The name leaves with the slot. What
+    is left open: an accepted Tunnel has no name before its hello, so a forged first KEY keys
+    our sends until the hello reads, which is the 40 s hello wait at worst and costs that Tunnel.
 12. **A Tunnel names nobody until its hello does.** An accepted Tunnel exists at the `ST_SYN`,
     so an address, however lone its pending peer, attributes nothing: a forged opener or a CGNAT
-    neighbour must not end a traversal. The attempt, its dials, its holds and the expectation
-    stand until the hello, whose hash and endpoint the serve triage reports to the front for
-    every accepted Tunnel, whichever road then takes it. That one report ends the charge and the
-    attempt of the peer the hello named, so a dial-back lands as before. A Tunnel that closes
-    unidentified leaves the expectation and the holds as it found them.
+    neighbour must not end a traversal. A dialed Tunnel proves only that something answered at
+    the address aimed at. The attempt, its dials, its holds and the expectation stand until the
+    hello, whose hash and endpoint the serve triage reports to the front for every Tunnel, either
+    direction, whichever road then takes it. That one report ends the charge and the attempt of
+    the peer the hello named, so a dial-back lands as before. A dial stays in flight while its
+    Tunnel waits for that hello. A hello naming somebody else, or a Tunnel that closes
+    unidentified, gives the dial back to its schedule, so a `Mismatch` leaves a claim whose
+    attempt is still dialing and ends on its own budget. A Tunnel that closes unidentified
+    leaves the expectation and the holds as it found them.
+13. **A punch takes one crypt target.** The server's burst obfuscates from `0x61` byte 29, and
+    the front's own punches, a released burst, a re-dial's burst, a keepalive, go through the same
+    client-UDP send gate. The front holds one stance per peer, written by whoever stated it: the
+    reach's source record, byte 29, the connect-options byte of a relayed rendezvous, then the
+    hello. The hello binds the target to the path, which is what a keepalive reads, because a
+    path outlives the attempt that opened it. A stance goes with the last ledger that could punch
+    that peer; a peer nobody stated a stance for is punched plain. The Prediction Plan's Fan and
+    Probe legs write the socket directly and stay plain.
 
 The acting path also keeps a sender gate eMuleAI lacks: a relayed rendezvous is acted on only
 when its carrier is our buddy — the held TCP link by address, or the buddy's exact UDP endpoint

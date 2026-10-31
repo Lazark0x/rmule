@@ -94,8 +94,8 @@ its own address and a new row is mapped, as RFC 6887 §8.4 recommends.
   half-life; a permanent IGD1 lease is re-verified every 30 minutes; floor 4 s), the same
   for IPv4 and IPv6.
 - PCP and NAT-PMP epochs are validated (§8.5 drift and reordering tolerances); a reset
-  re-adds every mapping 100 ms apart. A reset reported by a probe re-adds in whatever phase
-  it lands, so **an answer that belongs to an outstanding re-add is the re-add's in any
+  re-adds every mapping 100 ms apart. A reset re-adds in whatever phase it lands, on a probe's
+  answer or on a mapping's, so **an answer that belongs to an outstanding re-add is the re-add's in any
   phase**: it settles the lease as a renewal does, and an open trial of the same row takes
   the next answer.
 - **A wake is work the next tick does.** A lease is renewable while renewals fire (mapped,
