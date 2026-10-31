@@ -261,6 +261,7 @@ where
                     continue;
                 }
                 if let Some(tx) = &ctx.runner.rt.client_udp_tx {
+                    ctx.state.on_ping_left(at, peer);
                     let _ = tx.send(ping).await;
                 }
             }

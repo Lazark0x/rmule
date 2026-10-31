@@ -16,12 +16,21 @@ fn run(standings: &SharedQueueStandings, id: u64) -> DownloadState {
 }
 
 fn of_file(standings: &SharedQueueStandings, id: u64, file: [u8; 16]) -> DownloadState {
+    posed(standings, id, file, tcp_only_posture())
+}
+
+fn posed(
+    standings: &SharedQueueStandings,
+    id: u64,
+    file: [u8; 16],
+    posture: SourcingPosture,
+) -> DownloadState {
     let download = DownloadId::from_u64(id);
     let mut state = DownloadState::new(
         download,
         file_hash_only_content(ONE_PART),
         no_facts(),
-        tcp_only_posture(),
+        posture,
         CALLBACK_TIMEOUT,
         crate::download::connection_budget::BudgetSeat::ceiling(1),
     )
@@ -215,6 +224,50 @@ fn a_record_waiting_on_another_downloads_standing_is_outside_the_gates() {
     assert!(spawned(&started).is_empty(), "{started:?}");
     assert_eq!(waiter.known_sources(), 1);
     assert_eq!(waiter.listed_sources(), 0);
+}
+
+/// A ping is an ask (ADR-0107 invariant 14): it waits on the peer's clock
+/// though the last ask was another download's recovery ask, which names no
+/// file, and whatever the ping's own period says.
+#[test]
+fn a_ping_inside_the_clock_of_another_downloads_recovery_ask_stays_home() {
+    let standings = QueueStandings::shared();
+    let mut holding = posed(&standings, 1, [1; 16], live_posture());
+    let _ = holding.start(t0());
+    queue_and_hang_up(&mut holding, peer(1), true, 5);
+    holding.hold_standings();
+
+    let window = t0() + FILE_REASK_TIME - UDP_REASK_LEAD;
+    StandingSeat::new(
+        Arc::clone(&standings),
+        DownloadId::from_u64(2),
+        FileHash::from_bytes([2; 16]),
+    )
+    .asked_recovery(&[peer(1).into()], window - Duration::from_secs(60));
+
+    let held = holding.on_tick(window);
+    assert!(pinged(&held).is_empty(), "{held:?}");
+}
+
+/// A ping another download held back never left: it stamps nothing and
+/// scores nothing, and the one that leaves starts the clock.
+#[test]
+fn a_ping_stamps_the_peer_as_it_leaves() {
+    let standings = QueueStandings::shared();
+    let mut holding = posed(&standings, 1, [1; 16], live_posture());
+    let _ = holding.start(t0());
+    queue_and_hang_up(&mut holding, peer(1), true, 5);
+    holding.hold_standings();
+
+    let window = t0() + FILE_REASK_TIME - UDP_REASK_LEAD;
+    assert_eq!(pinged(&holding.on_tick(window)), vec![contact(peer(1))]);
+    holding.on_ping_held(window, peer(1));
+    let again = window + REASK_RECHECK;
+    assert_eq!(pinged(&holding.on_tick(again)), vec![contact(peer(1))]);
+    holding.on_ping_left(again, peer(1));
+
+    let place = holding.sources.dial_place(peer(1)).expect("the place");
+    assert!(holding.standings.clock_holds(&place, again));
 }
 
 /// Two downloads of one peer ride one link: the second's turn comes inside

@@ -140,6 +140,14 @@ impl DownloadState {
         self.sources.holds_standing(at)
     }
 
+    /// The ping to `peer` left at `now`: the peer's clock runs from here
+    /// (ADR-0107 invariant 14).
+    pub(crate) fn on_ping_left(&self, now: Instant, peer: PeerEndpoint) {
+        if let Some(place) = self.sources.dial_place(peer) {
+            self.standings.pinged(&place.names, now);
+        }
+    }
+
     /// The ping to `peer` could not leave at `now`: another download's ping
     /// holds its endpoint (ADR-0107). Its window is looked at again shortly,
     /// and the TCP full ask keeps its time.

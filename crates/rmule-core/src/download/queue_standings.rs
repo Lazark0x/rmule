@@ -11,7 +11,7 @@
 //! Each run holds one [`StandingSeat`] and republishes its **places** — every
 //! record holding a standing, and as **Pooled Places** every record still in a
 //! lane, under its **Ask Names** — after every step, never by hand, and stamps
-//! each ping and TCP full ask its sweep sends. A **stamp**
+//! each ping and slot ask as it leaves. A **stamp**
 //! per name keeps the peer's last ask and the download whose slot ask it last
 //! read, past the place that made it, so a download the standing passes to
 //! asks on the peer's clock. A **Source Handover** (ADR-0090) is a role read

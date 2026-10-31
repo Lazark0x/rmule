@@ -34,6 +34,7 @@
 //!
 //! Every clock read is an instant the brain hands in.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use rmule_kad::KadId;
@@ -42,7 +43,6 @@ use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{Ipv4Endpoint, PeerCrypt, PeerEndpoint, UserHash};
 
 use super::SourceBook;
-use super::asks::AskName;
 use super::purge::PurgeKind;
 use super::record::{Lane, Live, RecordId, Stage};
 use crate::download::queue_standings::{MIN_REQUEST_TIME, Role, StandingSeat};
@@ -594,16 +594,19 @@ impl SourceBook {
             .map(|(&id, _)| id)
             .collect();
         queued.sort_unstable();
-        let roles: Vec<(RecordId, Vec<AskName>, Role)> = queued
+        let roles: Vec<_> = queued
             .into_iter()
             .filter_map(|id| {
                 let place = self.place(self.records.get(&id)?)?;
                 let role = standings.role(&place);
-                Some((id, place.names, role))
+                Some((id, place, role))
             })
             .collect();
         let mut due = Vec::new();
-        for (id, names, role) in roles {
+        // A ping stamps as it leaves, past this sweep: one peer's names take
+        // one here.
+        let mut swept = HashSet::new();
+        for (id, place, role) in roles {
             let sx_due = self.source_ask_due(id, now);
             let Some(record) = self.records.get_mut(&id) else {
                 continue;
@@ -635,6 +638,12 @@ impl SourceBook {
             if elapsed < period.saturating_sub(UDP_REASK_LEAD) {
                 continue;
             }
+            if standings.clock_holds(&place, now)
+                || place.names.iter().any(|name| swept.contains(name))
+            {
+                standing.recheck_at = Some(now + REASK_RECHECK);
+                continue;
+            }
             let buddy = record
                 .candidate
                 .and_then(|candidate| candidate.buddy)
@@ -648,7 +657,7 @@ impl SourceBook {
                 (true, _) if !sx_due => {
                     standing.udp_pending = true;
                     standing.recheck_at = None;
-                    standings.pinged(&names, now);
+                    swept.extend(place.names);
                     due.push(Reask::Ping {
                         peer,
                         contact,
@@ -658,7 +667,7 @@ impl SourceBook {
                 (false, Some(buddy)) => {
                     standing.udp_pending = true;
                     standing.recheck_at = None;
-                    standings.pinged(&names, now);
+                    swept.extend(place.names);
                     due.push(Reask::ThroughBuddy {
                         peer,
                         contact,

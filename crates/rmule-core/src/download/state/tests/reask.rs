@@ -90,8 +90,21 @@ fn queue_and_hang_up_at(
     rank: u16,
     at: Instant,
 ) {
-    let identity = udp.then(|| reaskable(SOURCE).identity());
+    let identity = udp.then(|| reaskable(hash_at(peer)).identity());
     queue_and_hang_up_as(state, peer, identity, rank, at);
+}
+
+/// The User Hash of the client at `at`: a shared hash is one peer's clock, so
+/// each address states its own.
+fn hash_at(at: PeerEndpoint) -> UserHash {
+    if at == peer(1) {
+        return SOURCE;
+    }
+    let mut bytes = [0x5E; UserHash::BYTE_LEN];
+    for (byte, digit) in bytes.iter_mut().zip(at.to_string().bytes().rev()) {
+        *byte = digit;
+    }
+    UserHash::from_bytes(bytes)
 }
 
 /// The hello of a source `user_hash` that states its client-UDP contact at
