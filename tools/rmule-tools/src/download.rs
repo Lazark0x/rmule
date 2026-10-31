@@ -362,6 +362,11 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
                     .await?;
                     continue;
                 }
+                Gate::Resume => {
+                    let ids: Vec<u64> = endings.queued().collect();
+                    served::resume(&mut core, &ids).await?;
+                    continue;
+                }
                 Gate::Add => {
                     if let Some((text, out)) = add_file {
                         let Ed2kLink::File(file) = Ed2kLink::parse(text)

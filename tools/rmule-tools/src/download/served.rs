@@ -3,8 +3,9 @@
 //! Directory, the download directory's first-share confirm, whole files shared
 //! beside the downloads, a run that keeps serving after its downloads end, a
 //! wall-clock stamp on every event line, and two gate files — one that pauses
-//! every download mid-run, one that ends the run — so a harness decides the
-//! moment from what it has seen rather than from a guessed delay.
+//! every download mid-run, and with `--pause-toggle` resumes them as it goes,
+//! one that ends the run — so a harness decides the moment from what it has
+//! seen rather than from a guessed delay.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -145,6 +146,10 @@ pub(crate) struct GateArgs {
     /// (ADR-0113 §"A paused download").
     #[arg(long)]
     pub(crate) pause_gate: Option<PathBuf>,
+    /// Resume once the pause gate is gone and pause again when it is back, so
+    /// a run can cycle.
+    #[arg(long, requires = "pause_gate")]
+    pub(crate) pause_toggle: bool,
     /// Once the pause has been asked for, share this whole file too, so the
     /// share trigger re-announces while the downloads are paused; repeat for
     /// several.
@@ -172,6 +177,8 @@ pub(crate) enum Gate {
     Shut,
     /// The pause gate appeared: pause now, once.
     Pause,
+    /// The toggled pause gate went: resume now.
+    Resume,
     /// The add gate appeared: start the further download, once.
     Add,
     /// The stop gate appeared: end the run.
@@ -181,6 +188,7 @@ pub(crate) enum Gate {
 /// The gates of one run and whether the pause has fired.
 pub(crate) struct Gates {
     pause: Option<PathBuf>,
+    toggle: bool,
     stop: Option<PathBuf>,
     add: Option<PathBuf>,
     paused: bool,
@@ -199,6 +207,7 @@ impl Gates {
         });
         Self {
             pause: args.pause_gate.clone(),
+            toggle: args.pause_toggle,
             stop: args.stop_gate.clone(),
             add: args.add_gate.clone(),
             paused: false,
@@ -217,14 +226,20 @@ impl Gates {
         }
     }
 
-    /// Look at the gates: the stop gate wins, and the pause fires once.
+    /// Look at the gates: the stop gate wins, and the pause fires once, or
+    /// once per appearance under the toggle.
     pub(crate) fn look(&mut self) -> Gate {
         if self.stop.as_deref().is_some_and(Path::exists) {
             return Gate::Stop;
         }
-        if !self.paused && self.pause.as_deref().is_some_and(Path::exists) {
+        let raised = self.pause.as_deref().is_some_and(Path::exists);
+        if !self.paused && raised {
             self.paused = true;
             return Gate::Pause;
+        }
+        if self.toggle && self.paused && !raised {
+            self.paused = false;
+            return Gate::Resume;
         }
         if !self.added && self.add.as_deref().is_some_and(Path::exists) {
             self.added = true;
@@ -273,6 +288,26 @@ pub(crate) async fn pause_then_share(
     Ok(())
 }
 
+/// Resume each of `ids` and say so.
+///
+/// # Errors
+/// If the core no longer takes commands.
+pub(crate) async fn resume(core: &mut Core, ids: &[u64]) -> Result<()> {
+    for &id in ids {
+        core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
+            download_id: DownloadId::from_u64(id),
+        }))
+        .await?;
+    }
+    let listed: Vec<String> = ids.iter().map(u64::to_string).collect();
+    println!(
+        "download resumed_at_gate ids={} at_unix_ms={}",
+        listed.join(","),
+        unix_ms()
+    );
+    Ok(())
+}
+
 /// The wall clock in Unix milliseconds.
 pub(crate) fn unix_ms() -> u128 {
     SystemTime::now()
@@ -293,6 +328,7 @@ mod tests {
         let stop = dir.path().join("stop");
         let mut gates = Gates::new(&GateArgs {
             pause_gate: Some(pause.clone()),
+            pause_toggle: false,
             add_gate: None,
             add_file: None,
             add_out: None,
@@ -307,6 +343,31 @@ mod tests {
         assert_eq!(gates.look(), Gate::Stop);
     }
 
+    /// Under the toggle the gate's going resumes and its return pauses again.
+    #[tokio::test]
+    async fn the_toggled_gate_cycles() {
+        let dir = tempfile::tempdir().unwrap();
+        let pause = dir.path().join("pause");
+        let mut gates = Gates::new(&GateArgs {
+            pause_gate: Some(pause.clone()),
+            pause_toggle: true,
+            add_gate: None,
+            add_file: None,
+            add_out: None,
+            share_after_pause: Vec::new(),
+            stop_gate: None,
+        });
+        assert_eq!(gates.look(), Gate::Shut);
+        for _ in 0..2 {
+            std::fs::write(&pause, b"").unwrap();
+            assert_eq!(gates.look(), Gate::Pause);
+            assert_eq!(gates.look(), Gate::Shut);
+            std::fs::remove_file(&pause).unwrap();
+            assert_eq!(gates.look(), Gate::Resume);
+            assert_eq!(gates.look(), Gate::Shut);
+        }
+    }
+
     /// The add gate starts its download once however long its file stays.
     #[tokio::test]
     async fn the_add_gate_fires_once() {
@@ -314,6 +375,7 @@ mod tests {
         let add = dir.path().join("add");
         let mut gates = Gates::new(&GateArgs {
             pause_gate: None,
+            pause_toggle: false,
             add_gate: Some(add.clone()),
             add_file: Some("link".to_owned()),
             add_out: Some(dir.path().join("out")),
