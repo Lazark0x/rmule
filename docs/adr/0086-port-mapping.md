@@ -59,6 +59,10 @@ its own address and a new row is mapped, as RFC 6887 §8.4 recommends.
   breaks ties. Grace is 3 s, extended once to 15 s while a backend is still working and
   nothing is available (miniupnpc's description fetch takes about 7 s on an ordinary LAN). A
   probe answering after the round closed is adopted if the round ended empty.
+- **A round holds each protocol once.** A probe carries its round and its answer echoes it.
+  An answer from an earlier round counts for nothing in this one: it neither closes a
+  protocol's turn nor makes it available. Its epoch reset still re-adds, because that is a
+  fact about the gateway rather than about the round.
 - A trial asks for, and is graded on, only the rows its protocol can express. Each family
   is graded **Exact** (every row granted on its own port) > **Mismatched** (all granted,
   some port differs) > **Partial** > **None**. A trial's standing is two grades compared in
@@ -90,7 +94,15 @@ its own address and a new row is mapped, as RFC 6887 §8.4 recommends.
   half-life; a permanent IGD1 lease is re-verified every 30 minutes; floor 4 s), the same
   for IPv4 and IPv6.
 - PCP and NAT-PMP epochs are validated (§8.5 drift and reordering tolerances); a reset
-  re-adds every mapping 100 ms apart.
+  re-adds every mapping 100 ms apart. A reset reported by a probe re-adds in whatever phase
+  it lands, so **an answer that belongs to an outstanding re-add is the re-add's in any
+  phase**: it settles the lease as a renewal does, and an open trial of the same row takes
+  the next answer.
+- **A wake is work the next tick does.** A lease is renewable while renewals fire (mapped,
+  or the incumbent during a re-race) and no re-add is outstanding on it. That one predicate
+  picks the rows a tick fires and the `renew_at` the runtime sleeps until, so a past-due row
+  is either fired, which moves it up its rung, or is no wake at all. An outstanding re-add
+  ends with its answer, and the runtime always answers (below).
 - No protocol available, or every trial `None`: back off 30 s → 30 minutes. Three
   consecutive renewal failures on one mapping: a full reprobe. The first Low ID after a
   High ID triggers one reprobe.
