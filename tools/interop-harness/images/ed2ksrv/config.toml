@@ -1,6 +1,6 @@
 # Bench config for the third-party `ed2k-server` image — the audit's
 # "bench-fit" table, key for key. Every key upstream added since, down to
-# v0.9.85, keeps its default; the ones a bench run leans on are named below.
+# v0.9.86, keeps its default; the ones a bench run leans on are named below.
 #
 # Bind-mounted over the image's baked upstream config:
 #   -v .../images/ed2ksrv/config.toml:/etc/ed2k-server/config.toml:ro

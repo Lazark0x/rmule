@@ -1,6 +1,6 @@
 # Third-party eD2k index server `andrey23127/ed2k-server` (Rust, MIT) for the
 # interop bench, rmule's first server counterparty. The pin of record is
-# `pin.env`, audited at v0.9.85 (`878fc830`); this image is that audit's
+# `pin.env`, audited at v0.9.86 (`e74aca70`); this image is that audit's
 # "bench-fit" recipe.
 #
 # Build context is the SERVER SOURCE TREE, not this directory (the source is not
