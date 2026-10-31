@@ -233,10 +233,9 @@ fn a_kad_buddy_row_becomes_a_punchable_candidate_and_never_a_server_callback() {
     let decisions = via_kad(&mut state, vec![kad_buddy_row(0x81)]);
 
     assert!(
-        !decisions.iter().any(|d| matches!(
-            d,
-            Decision::RequestCallback { .. }
-        )),
+        !decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { .. })),
         "no server can be asked to relay for a Kad row: {decisions:?}"
     );
     assert!(
@@ -298,8 +297,7 @@ fn global_sightings_open_no_road_for_a_bare_low_id_global_without_callback_capab
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::RequestCallback { .. }
-                | Decision::FallToNatTraversal { .. }
+            Decision::RequestCallback { .. } | Decision::FallToNatTraversal { .. }
         )),
         "a Low-ID global source stays unusable when rmule cannot be called back: {decisions:?}"
     );
@@ -342,10 +340,9 @@ fn a_sentinel_ipv6_source_is_pooled_and_dialed_rather_than_called_back() {
         "the IPv6 source must be dialed in its own family: {decisions:?}"
     );
     assert!(
-        !decisions.iter().any(|d| matches!(
-            d,
-            Decision::RequestCallback { .. }
-        )),
+        !decisions
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { .. })),
         "an IPv6 source needs no broker: {decisions:?}"
     );
 }

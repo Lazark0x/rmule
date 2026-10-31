@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_primitives::{
-    AddressFamily, ClientEncryptKey, DatagramSenderAddress, FileHash, Ipv4Endpoint,
-    Ipv6Endpoint, PeerEndpoint, UserHash, encrypt_datagram_client,
+    AddressFamily, ClientEncryptKey, DatagramSenderAddress, FileHash, Ipv4Endpoint, Ipv6Endpoint,
+    PeerEndpoint, UserHash, encrypt_datagram_client,
 };
 use tokio::sync::mpsc;
 use tokio::time::timeout;

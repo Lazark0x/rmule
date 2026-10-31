@@ -56,7 +56,7 @@ subcommands).
   injects its own `CoreSettings` per core, where a TCP port of `0` takes one the OS
   assigns and presents the port bound — each hello reads the listener's port as it is
   sent, so a download begun before the bind, or before the listener restarted on another
-  port, presents the one bound now, as does its global callback request, and a Kad start
+  port, presents the one bound now, and a Kad start
   binds the listener first (ADR-0095); the store refuses `0`. The Kad UDP Key and the
   Kad ID are read from core's store at build, so `EnableKad` carries neither. Likewise
   `StartDownload` names the file only: core places it in the download directory its

@@ -61,6 +61,7 @@ async fn the_sweep_pings_one_server_per_tick_a_named_one_at_its_address() {
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask: Duration::from_secs(16_200),
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[(
             "srv.example.org",
@@ -109,6 +110,7 @@ async fn the_sweep_walks_past_recently_pinged_servers_until_reask_elapses() {
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -150,6 +152,7 @@ fn crypt_sweep(
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask: Duration::from_secs(16_200),
+        key_floor: Duration::from_secs(1_200),
         crypt,
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     }
@@ -346,10 +349,12 @@ async fn an_imported_list_is_probed_in_a_burst_then_refreshed_at_the_steady_pace
         seal: plain_seal(Arc::clone(&transport)),
         facts: test_facts(&servers).0,
         challenges: StatusChallenges::default(),
-        entropy: fixed_entropy,
+        // A whole hour of jitter is none: every server comes due at the window.
+        entropy: || 3600,
         first_contact_tick,
         tick,
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -403,6 +408,7 @@ async fn at_attach_the_burst_takes_the_stale_and_the_unanswered_and_holds_the_fr
         first_contact_tick: Duration::from_millis(250),
         tick: Duration::from_secs(5),
         reask,
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };
@@ -467,6 +473,7 @@ async fn dead_servers_are_pinged_at_the_steady_pace_only() {
         first_contact_tick,
         tick,
         reask: Duration::from_secs(20 * 60),
+        key_floor: Duration::from_secs(1_200),
         crypt: plain_arm(),
         resolver: crate::name_resolver::FakeNameResolver::knowing(&[]),
     };

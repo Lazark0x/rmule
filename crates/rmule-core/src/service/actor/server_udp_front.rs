@@ -68,6 +68,7 @@ pub(super) fn spawn_server_udp_front(
             first_contact_tick: config.status_ping_first_contact_tick,
             tick: config.status_ping_tick,
             reask: config.status_ping_reask,
+            key_floor: config.status_ping_key_floor,
             crypt: crate::server_udp::CryptPingArm {
                 policy: obfuscation.clone(),
                 // The crypt-ping probe's public-IP precondition (ADR-0046,

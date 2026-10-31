@@ -21,8 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use rmule_ed2k::{GlobFoundSources, GlobGetSources, GlobGetSources2};
 use rmule_primitives::{
-    FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, ServerUdpFlags,
-    SourceLookupTarget,
+    FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, ServerUdpFlags, SourceLookupTarget,
 };
 use tokio::sync::mpsc;
 
@@ -196,9 +195,9 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::server_pace::{SourceCount, UDP_SOURCE_GATE};
     use crate::server_udp::ServerUdpEngine;
     use crate::server_udp::tests::{plain_seal, seal_over, udp};
-    use crate::server_pace::{SourceCount, UDP_SOURCE_GATE};
     use crate::source_discovery::{Discoverable, SourceDiscovery};
     use rmule_ed2k::Opcode;
     use rmule_primitives::{
@@ -535,6 +534,37 @@ mod tests {
         )));
         channel.ask(&due).await;
         assert_eq!(transport.sends.lock().unwrap().len(), 1);
+    }
+
+    /// A server not yet heard this run is asked in the form its row holds
+    /// from an earlier run or `server.met`, as aMule reads its flags from
+    /// there: one datagram for both files, not one for each.
+    #[tokio::test]
+    async fn a_server_not_heard_this_run_is_asked_in_the_form_its_row_holds() {
+        let transport = Arc::new(RecordingTransport {
+            sends: Mutex::new(Vec::new()),
+        });
+        let listed = ServerEndpoint::new("10.0.0.7", 4661).unwrap();
+        let row = crate::server_list::ManagedServer {
+            listed_udp_flags: Some(ServerUdpFlags::from_bits(ServerUdpFlags::EXT_GETSOURCES)),
+            ..crate::server_list::ManagedServer::listed(listed.clone())
+        };
+        let (_facts, level) = crate::server_list::test_facts_rows(vec![row]);
+        level.set_connected_server(Some((
+            ServerEndpoint::new("10.0.0.1", 4661).unwrap(),
+            rmule_ed2k::ServerGrants::default(),
+        )));
+        let channel = channel_in(level, Arc::clone(&transport), vec![listed], &[]);
+
+        let targets = [
+            SourceLookupTarget::new(FileHash::from_bytes([0x11; 16]), 4096),
+            SourceLookupTarget::new(FileHash::from_bytes([0x22; 16]), 8192),
+        ];
+        walk_round(&channel, &targets).await;
+
+        let sends = transport.sends.lock().unwrap().clone();
+        assert_eq!(sends.len(), 1);
+        assert_eq!(sends[0].1.len(), 2 + 16 + 16);
     }
 
     #[tokio::test]

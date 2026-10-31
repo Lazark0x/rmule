@@ -161,11 +161,14 @@ pub struct CoreConfig {
     /// one refresh `0x96` per tick across the list (aMule `UDPSERVERSTATTIME`,
     /// 5 s).
     pub status_ping_tick: Duration,
-    /// The per-server status re-ask window (ADR-0052): 20 min,
-    /// aMule's `UDPSERVSTATMINREASKTIME` floor — the shortest interval the
-    /// family itself ever re-pings one server at. A server pinged within it is
-    /// walked past, not re-asked.
+    /// The per-server status re-ask window (ADR-0052): 4.5 h, aMule's
+    /// `UDPSERVSTATREASKTIME`. A server pinged within it, less up to an hour
+    /// of jitter, is walked past, not re-asked.
     pub status_ping_reask: Duration,
+    /// The least time between two pings of one server when its UDP key has
+    /// expired (ADR-0052): 20 min, aMule's `UDPSERVSTATMINREASKTIME`, the
+    /// shortest interval the family ever re-pings one server at.
+    pub status_ping_key_floor: Duration,
     /// The crypt-ping reply grace before a plain fallback (aMule's 20 s
     /// `CryptPingReplyPending` window, ADR-0046).
     pub crypt_ping_grace: Duration,
@@ -304,7 +307,8 @@ impl Default for CoreConfig {
             global_source_tick: Duration::from_secs(1),
             status_ping_first_contact_tick: Duration::from_millis(250),
             status_ping_tick: Duration::from_secs(5),
-            status_ping_reask: Duration::from_secs(20 * 60),
+            status_ping_reask: Duration::from_secs(16_200),
+            status_ping_key_floor: Duration::from_secs(20 * 60),
             crypt_ping_grace: Duration::from_secs(20),
             server_udp_port: 0,
             address_families: FamilySelection::default(),

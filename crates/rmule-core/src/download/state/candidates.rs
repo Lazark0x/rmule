@@ -258,9 +258,8 @@ impl DownloadState {
             return Vec::new();
         }
         // The selector reads `taken` only to refuse falling back from
-        // something that was never a callback. On the server road both forms
-        // are a server relaying an invitation — the connected server (`0x1C`,
-        // ADR-0039) or the source's own (`OP_GLOBCALLBACKREQUEST`, ADR-0051);
+        // something that was never a callback. On the server road it is the
+        // connected server relaying an invitation (`0x1C`, ADR-0039);
         // on the buddy road it is the `0x52` the buddy relays; on
         // the direct-UDP road it is the `0x95` the candidate itself answers.
         let taken = match pending.road {

@@ -248,6 +248,7 @@ pub(crate) mod tests {
             first_contact_tick: Duration::from_millis(250),
             tick: Duration::from_secs(5),
             reask: Duration::from_secs(1_200),
+            key_floor: Duration::from_secs(1_200),
             crypt: plain_arm(),
             resolver,
         };
@@ -395,7 +396,8 @@ pub(crate) mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_dead_server_pinged_alone_does_not_say_the_network_is_down() {
         let (live, dead) = (server("127.0.0.1", 4661), server("127.0.0.2", 4799));
-        let (sweep, engine, diagnostics) = round_trip_harness(&[live.clone(), dead.clone()]);
+        let (mut sweep, engine, diagnostics) = round_trip_harness(&[live.clone(), dead.clone()]);
+        sweep.reask = Duration::from_secs(16_200);
         let mut state = SweepState::default();
 
         sweep.ping_next(&mut state).await;

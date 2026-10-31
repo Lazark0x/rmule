@@ -205,11 +205,7 @@ fn an_exchanged_low_id_row_is_called_back_through_the_server_it_names() {
             low_id: low(7),
             kad_port: None,
         });
-        assert_eq!(
-            asked,
-            Vec::from_iter(expected),
-            "a row naming {named}"
-        );
+        assert_eq!(asked, Vec::from_iter(expected), "a row naming {named}");
     }
 }
 

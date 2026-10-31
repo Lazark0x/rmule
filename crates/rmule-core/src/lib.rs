@@ -124,10 +124,10 @@ mod secured_identity;
 mod serve;
 mod served_downloads;
 mod server_capabilities;
-mod server_pace;
 /// The managed server list: model, store seam, and server.met acquisition
 /// (ADR-0080).
 mod server_list;
+mod server_pace;
 mod server_session;
 mod server_udp;
 mod service;

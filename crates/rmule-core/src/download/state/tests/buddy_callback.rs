@@ -108,8 +108,7 @@ fn a_capable_downloader_asks_an_amule_rows_buddy_for_a_callback() {
     assert!(
         !decisions.iter().any(|d| matches!(
             d,
-            Decision::FallToNatTraversal { .. }
-                | Decision::RequestCallback { .. }
+            Decision::FallToNatTraversal { .. } | Decision::RequestCallback { .. }
         )),
         "no server is asked and nothing can punch an aMule row: {decisions:?}"
     );

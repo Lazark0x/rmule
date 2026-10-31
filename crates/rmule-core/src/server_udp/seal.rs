@@ -112,6 +112,16 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
         (crypt.obfuscation_udp_port != 0).then_some((key, crypt.obfuscation_udp_port))
     }
 
+    /// Whether `server`'s UDP key was learned under a public address we no
+    /// longer hold, so only a fresh status answer can key it again.
+    pub(crate) fn key_expired(&self, server: Ipv4Endpoint) -> bool {
+        let Some(own) = self.own.public_ip().filter(|_| self.policy.armed()) else {
+            return false;
+        };
+        self.crypt_facts(server)
+            .is_some_and(|(crypt, udp_flags)| crypt.expired_under(udp_flags, own))
+    }
+
     /// `server`'s crypt facts and UDP flags: this run's record first, else
     /// the ones its row saved — the order the receive side finds a server by
     /// its obfuscation port in ([`obfuscation_source`](Self::obfuscation_source)).

@@ -447,7 +447,10 @@ impl fmt::Display for Ed2kEvent {
             Ed2kEvent::LoginRejected => write!(f, "s2c login_rejected"),
             Ed2kEvent::ServerRejectedCommand => write!(f, "s2c server_rejected_command"),
             Ed2kEvent::FoundSourcesSkipped { opcode, reason } => {
-                write!(f, "s2c found_sources_skipped opcode={opcode:#04x} reason={reason}")
+                write!(
+                    f,
+                    "s2c found_sources_skipped opcode={opcode:#04x} reason={reason}"
+                )
             }
             Ed2kEvent::ServerMessageReceived { text } => {
                 write!(f, "s2c server_message text_len={}", text.as_bytes().len())

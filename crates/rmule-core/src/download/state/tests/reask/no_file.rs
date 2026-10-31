@@ -107,10 +107,9 @@ fn a_called_back_source_that_lacks_the_file_is_not_called_back_again() {
     let answered = answers_no_file(&mut state, t0(), peer(9));
     assert!(retired_lacking(&answered, peer(9)), "{answered:?}");
     assert!(
-        !answered.iter().any(|d| matches!(
-            d,
-            Decision::RequestCallback { .. }
-        )),
+        !answered
+            .iter()
+            .any(|d| matches!(d, Decision::RequestCallback { .. })),
         "it is not called back again: {answered:?}"
     );
 

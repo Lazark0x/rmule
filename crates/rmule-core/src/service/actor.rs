@@ -41,9 +41,7 @@ use crate::adapters::{
 use crate::buddy_link::SharedBuddySlot;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::credit::SharedCreditStore;
-use crate::global_sources::{
-    GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList,
-};
+use crate::global_sources::{GlobalDiscoveryChannel, GlobalSourceRegistry, SharedServerList};
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::own_identity::SharedOwnIdentity;
