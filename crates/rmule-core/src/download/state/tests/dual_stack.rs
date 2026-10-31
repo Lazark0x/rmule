@@ -294,10 +294,10 @@ fn a_source_that_connected_is_redialled_when_sighted_again() {
     assert_eq!(sight_single(&mut state), vec![PeerEndpoint::V4(v4())]);
 }
 
-/// Spent lasts one to two re-ask periods, not the run: a source that was only
-/// momentarily down comes back on a sighting once it has sat one out.
+/// Spent lasts stock's window, not the run: a source that was only momentarily
+/// down comes back on a sighting once it has sat that out.
 #[test]
-fn a_spent_endpoint_is_redialled_after_it_sits_out_a_reask_period() {
+fn a_spent_endpoint_is_redialled_after_it_sits_out_its_window() {
     let mut state = exchanging_state(DialPosition::default());
     let _ = sight_single(&mut state);
     let _ = end(

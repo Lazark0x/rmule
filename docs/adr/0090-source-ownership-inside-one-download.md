@@ -281,7 +281,7 @@ Invariants every transition keeps:
 2. **Merge, never duplicate.** A sighting of a held source merges its facts into the owner's
    record; the book's one sighting entry is the one pooling seam, including for `0x9E`
    sources.
-3. **One failed dial per endpoint per re-ask period**, whichever road dialed it.
+3. **One failed dial per endpoint per dead-source window**, whichever road dialed it.
 4. **Bad data is not re-pooled.** A proven sender of bad data for this file — an
    AICH-attributed block, a failed part's sole contributor, the sole sender of two differing
    copies of one cell, the sole old writer of a cell a verified refetch disproves (ADR-0117

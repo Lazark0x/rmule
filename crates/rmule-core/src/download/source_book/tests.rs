@@ -1,6 +1,6 @@
 //! ADR-0090's invariants asserted through the **Source Book**'s interface: one
 //! owner per source, a sighting merges rather than duplicates, one failed dial
-//! per endpoint per re-ask period, bad data never re-pooled — and the merge
+//! per endpoint per dead-source window, bad data never re-pooled — and the merge
 //! rule's rank when the wire proves two held records one peer.
 
 use std::collections::HashSet;
@@ -260,8 +260,8 @@ fn a_queued_source_is_dialed_at_the_ipv6_its_session_revised() {
     );
 }
 
-/// Invariant 3: a failed dial spends its endpoint for one to two re-ask
-/// periods, whichever road dialed it. A dual-stack source falls to its other
+/// Invariant 3: a failed dial spends its endpoint for stock's dead-source
+/// window, whichever road dialed it. A dual-stack source falls to its other
 /// half once; its second failure falls nowhere.
 #[test]
 fn a_failed_dial_spends_its_endpoint_for_stocks_window() {

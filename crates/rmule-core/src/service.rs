@@ -402,8 +402,8 @@ pub enum PeerRetirementReason {
     /// one, asked again on the ordinary cadence (ADR-0057). Alive and honest.
     NoFreePart,
     /// The peer said it does not have the file (`OP_FILEREQANSNOFIL`): its
-    /// record is spent for this download under every name it holds, for the
-    /// re-ask period, as aMule dead-lists it (ADR-0090). Honest, so not
+    /// record is spent for this file under every name it holds, on stock's
+    /// per-file window, as aMule dead-lists it (ADR-0090). Honest, so not
     /// distrusted.
     FileNotFound,
     /// The link this worker waited on, behind another download of the same
