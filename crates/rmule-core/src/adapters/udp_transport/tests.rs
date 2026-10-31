@@ -12,7 +12,6 @@ use rmule_primitives::{
     AddressFamily, ClientEncryptKey, DatagramSenderAddress, FileHash, Ipv4Endpoint, Ipv6Endpoint,
     PeerEndpoint, UserHash, encrypt_datagram_client,
 };
-use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use crate::buddy_link::SharedBuddySlot;
@@ -160,20 +159,4 @@ async fn an_ipv6_reask_on_the_bound_family_pair_decrypts_under_the_35_byte_key()
     );
 
     engine_task.abort();
-}
-
-/// A transport that records every `send_to` and never receives, so the
-/// relay's only activity is the callback send under test.
-struct RecordingTransport {
-    sent_tx: mpsc::Sender<(Ipv4Endpoint, Vec<u8>)>,
-}
-
-impl ServerUdpTransport for RecordingTransport {
-    async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
-        let _ = self.sent_tx.send((to, datagram)).await;
-    }
-
-    async fn recv(&self) -> Option<(Vec<u8>, Ipv4Endpoint)> {
-        std::future::pending().await
-    }
 }
