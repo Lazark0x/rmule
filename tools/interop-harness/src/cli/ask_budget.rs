@@ -34,7 +34,7 @@ pub(crate) struct AskBudgetArgs {
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_SECS)]
     pub(crate) timeout: u64,
     /// Downloads rmule starts. Past 35 the tap draws the UDP round's cap
-    /// per server (`udp-rounds.txt`); the TCP verdict is written for sixteen.
+    /// per server; the TCP verdict is written for sixteen.
     #[arg(long, default_value_t = ASK_BUDGET_DOWNLOADS)]
     pub(crate) downloads: u8,
     /// List ed2k-server beside the login, tapped on UDP: a round passes the

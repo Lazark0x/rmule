@@ -567,41 +567,39 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
             collect_amule_logfile(&bench.docker, options.layout, "sharer", &sharer);
         }
 
-        // Score the retained tap: the verdict file is what a re-score reads.
-        verdict::write(
-            options.layout.root(),
-            &verdict::EmitRun {
-                pcap: &capture_dir.join("emit-reask.pcap"),
-                rmule: rmule_ip.trim().parse().context("rmule address")?,
-                sharer: sharer_ip.trim().parse().context("sharer address")?,
-                file_hash: parse_ed2k_file_hash(&links[0])?,
-                file_size: fs::metadata(options.layout.synthetic_shared_file())
-                    .context("stat the shared file")?
-                    .len(),
-                crypt: options.peer_crypt.is_some(),
-                flips: super::udp_reask::tap::Flip::read_run_dir(options.layout.root()),
-            },
-        )?;
-        // Two downloads queued at one sharer: the peer is asked once a cycle,
-        // not once per download (ADR-0107, "One peer, one queue standing").
-        if options.two_downloads {
-            standing::write(
+        // Score the retained tap: the verdict file is what a re-score reads. A
+        // leg owns its run: its window holds no reask, so the verdicts that
+        // ask for one would read `FAIL` by design beside the leg's own.
+        let run = standing::StandingRun {
+            pcap: &capture_dir.join("emit-reask.pcap"),
+            rmule: rmule_ip.trim().parse().context("rmule address")?,
+            sharer: sharer_ip.trim().parse().context("sharer address")?,
+        };
+        if !options.two_downloads && options.pause_cycles.is_none() {
+            verdict::write(
                 options.layout.root(),
-                &standing::StandingRun {
-                    pcap: &capture_dir.join("emit-reask.pcap"),
-                    rmule: rmule_ip.trim().parse().context("rmule address")?,
-                    sharer: sharer_ip.trim().parse().context("sharer address")?,
+                &verdict::EmitRun {
+                    pcap: run.pcap,
+                    rmule: run.rmule,
+                    sharer: run.sharer,
+                    file_hash: parse_ed2k_file_hash(&links[0])?,
+                    file_size: fs::metadata(options.layout.synthetic_shared_file())
+                        .context("stat the shared file")?
+                        .len(),
+                    crypt: options.peer_crypt.is_some(),
+                    flips: super::udp_reask::tap::Flip::read_run_dir(options.layout.root()),
                 },
             )?;
+        }
+        // Two downloads queued at one sharer: the peer is asked once a cycle,
+        // not once per download (ADR-0107, "One peer, one queue standing").
+        if options.two_downloads && options.hand_over_upload_kib.is_none() {
+            standing::write(options.layout.root(), &run)?;
         }
         if let Some(cycles) = options.pause_cycles {
             pause_cycles::write(
                 options.layout.root(),
-                &standing::StandingRun {
-                    pcap: &capture_dir.join("emit-reask.pcap"),
-                    rmule: rmule_ip.trim().parse().context("rmule address")?,
-                    sharer: sharer_ip.trim().parse().context("sharer address")?,
-                },
+                &run,
                 cycles,
                 &options
                     .layout
@@ -610,11 +608,7 @@ pub fn run_peer_udp_reask_emit(options: PeerUdpReaskEmitOptions<'_>) -> Result<(
             )?;
         }
         if options.hand_over_upload_kib.is_some() {
-            hand_over::write(
-                options.layout.root(),
-                rmule_ip.trim().parse().context("rmule address")?,
-                sharer_ip.trim().parse().context("sharer address")?,
-            )?;
+            hand_over::write(options.layout.root(), run.rmule, run.sharer)?;
         }
         Ok(())
     })();

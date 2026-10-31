@@ -392,8 +392,8 @@ pub(crate) fn write(root: &Path, run: &EmitRun<'_>) -> Result<Verdict> {
     Ok(verdict)
 }
 
-/// Score the run dir a finished emit flow (or an archive) left behind; a
-/// two-download run's standing verdict is re-taken beside it.
+/// Score the run dir a finished emit flow (or an archive) left behind: the
+/// leg's own verdict, or the reask's in a run with no leg.
 ///
 /// # Errors
 /// If an artifact cannot be read or the verdict cannot be written.
@@ -410,17 +410,17 @@ pub fn score_run_dir(
         .len();
     let pcap = root.join("emit-reask-capture/emit-reask.pcap");
     if root.join(super::hand_over::VERDICT).exists() {
-        super::hand_over::write(root, rmule, sharer)?;
+        return super::hand_over::write(root, rmule, sharer);
     }
     if root.join("synthetic").join(super::SECOND_LINK).exists() {
-        super::standing::write(
+        return super::standing::write(
             root,
             &super::standing::StandingRun {
                 pcap: &pcap,
                 rmule,
                 sharer,
             },
-        )?;
+        );
     }
     write(
         root,

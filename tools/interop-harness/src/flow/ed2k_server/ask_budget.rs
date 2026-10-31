@@ -13,10 +13,10 @@
 //! `--downloads 40 --also-ed2ksrv` draws the Server Pace's round instead: a
 //! round passes the connected server over (`DownloadQueue.cpp:887-891`), so
 //! rmule logs in to Lugdunum and lists ed2k-server, and a tap on ed2k-server
-//! writes `udp-rounds.txt` with rmule's datagrams, their spacing and the files
-//! each asked for (at most one datagram a second, 35 files a server,
-//! `DownloadQueue.cpp:868-958`). The TCP verdict's fifteen and a sixteenth are
-//! read only at sixteen downloads.
+//! writes `ask-budget-udp-rounds-verdict.toml` with rmule's datagrams, their
+//! spacing and the files each asked for (at most one datagram a second, 35
+//! files a server, `DownloadQueue.cpp:868-958`). The TCP verdict's fifteen and
+//! a sixteenth are read only at sixteen downloads.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -291,11 +291,11 @@ pub fn rescore_ask_budget(run_dir: &Path, downloads: u8, view: RoundsView) -> Re
     write_verdicts(&root, &hashes(downloads), view)
 }
 
-/// Write the verdict and `udp-rounds.txt` from the taps under `root`.
+/// Write the run's verdicts from the taps under `root`: the TCP budget's for
+/// the sixteen downloads it is written for, and the UDP rounds' when the run
+/// listed a server to reach or took another count. A run with one verdict
+/// keeps the rounds it did not judge in that verdict's report.
 fn write_verdicts(root: &Path, hashes: &[String], view: RoundsView) -> Result<()> {
-    let (verdict, report) = score(&root.join(PCAP), hashes)?;
-    verdict::write_report(root, "ask-budget", verdict, &report)?;
-    print!("verdict={verdict} {report}");
     let mut datagrams = Vec::new();
     for tap in view.taps() {
         let path = root.join(tap);
@@ -307,14 +307,23 @@ fn write_verdicts(root: &Path, hashes: &[String], view: RoundsView) -> Result<()
         datagrams.extend(pcap::udp4_datagrams(&path)?);
     }
     datagrams.sort_by(|a, b| a.at.total_cmp(&b.at));
-    let rounds = udp_rounds::score(
+    let (rounds_verdict, rounds) = udp_rounds::score(
         &datagrams,
         rmule_ip().parse()?,
         view.taps(),
         view.must_reach()?,
     );
-    fs::write(root.join("udp-rounds.txt"), &rounds).context("write the UDP rounds")?;
-    print!("{rounds}");
+    let budget = hashes.len() == usize::from(DOWNLOADS);
+    if budget {
+        let (verdict, report) = score(&root.join(PCAP), hashes)?;
+        let report = format!("{report}\nudp rounds, {rounds_verdict}:\n{rounds}");
+        verdict::write_report(root, "ask-budget", verdict, &report)?;
+        print!("verdict={verdict} {report}");
+    }
+    if !budget || view.must_reach()?.is_some() {
+        verdict::write_report(root, "ask-budget-udp-rounds", rounds_verdict, &rounds)?;
+        print!("udp_rounds={rounds_verdict} {rounds}");
+    }
     Ok(())
 }
 
