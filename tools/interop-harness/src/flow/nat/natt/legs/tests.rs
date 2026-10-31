@@ -110,6 +110,41 @@ fn a_transport_frame_that_arrived_fails_the_symmetric_negative() {
 
 /// `natt-caps-utp`: a CAPS-ACK counted on kno's own attachment contradicts the absence.
 #[test]
+fn a_requiring_target_passes_on_an_obfuscated_burst_and_fails_on_a_plain_one() {
+    let claim = "a-target-that-requires-the-crypt-layer-is-punched-through-it";
+    let run = |plain, obfuscated| {
+        punch_wire_claims(
+            NattFlow::ServerPunchCone,
+            &wire(&[
+                ("holepunch-datagrams-from-a", plain),
+                ("obfuscated-punch-from-a", obfuscated),
+            ]),
+        )
+    };
+    let obfuscated = run(0, 19);
+    assert_eq!(named(&obfuscated, claim).outcome, "held", "{obfuscated:?}");
+    assert_eq!(
+        named(
+            &obfuscated,
+            "both-peers-burst-at-the-endpoint-the-server-named"
+        )
+        .outcome,
+        "held",
+        "an obfuscated burst is a burst: {obfuscated:?}"
+    );
+    let plain = run(19, 0);
+    assert_ne!(named(&plain, claim).outcome, "held", "{plain:?}");
+    let untouched = punch_wire_claims(
+        NattFlow::ServerPunchCone,
+        &wire(&[("holepunch-datagrams-from-a", 19)]),
+    );
+    assert!(
+        !untouched.iter().any(|row| row.name == claim),
+        "{untouched:?}"
+    );
+}
+
+#[test]
 fn a_caps_ack_on_the_wire_fails_its_absence() {
     let name = "no-caps-ack-crossed-the-wire";
     let silent = caps_utp_wire_claims(&wire(&[("caps-ack-in", 0)]));

@@ -158,6 +158,10 @@ pub(crate) fn drive(
     Vec<crate::flow::taps::TapRow>,
 )> {
     let flow = options.flow;
+    let crypt_target = options.target_requires_crypt;
+    if crypt_target && flow != NattFlow::ServerPunchCone {
+        bail!("--target-requires-crypt runs on natt-server-punch-cone only");
+    }
     // Requester first. Every row but the one-symmetric one stands both peers
     // behind `nat_type`.
     let peer_types = flow.peer_nat_types().unwrap_or([nat_type; 2]);
@@ -313,10 +317,15 @@ pub(crate) fn drive(
                 .filter(|_| index == 1)
                 .map(|file| file.path.as_path()),
         };
-        let extra = observers
+        let mut extra = observers
             .as_ref()
             .map(|observers| observers.driver_args(index))
             .unwrap_or_default();
+        if crypt_target {
+            // Peer A asks and peer B is asked: B requires, A can.
+            let policy = if index == 1 { "required" } else { "supported" };
+            extra.extend(["--peer-crypt".to_owned(), policy.to_owned()]);
+        }
         start_driver(bench, options, peer, &plan, &server_v4, &extra)?;
     }
 
@@ -397,7 +406,7 @@ pub(crate) fn drive(
         bench,
         &server_taps,
         &gateway_taps,
-        wire_rows(&server_v4, &peers),
+        wire_rows(&server_v4, &peers, crypt_target),
     )?;
     let taps = server_taps.rows(&bench.docker, "ip")?;
     let prediction = match &observers {

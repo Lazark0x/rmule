@@ -103,6 +103,11 @@ pub(crate) struct NattServerPunchArgs {
     /// Where to write the row.
     #[arg(long)]
     out: PathBuf,
+    /// Arm this peer's obfuscation policy (`CoreSettings::obfuscation`): the
+    /// login states it, so the server's `0x61` tells the other peer. Off
+    /// unless passed.
+    #[arg(long, value_enum)]
+    peer_crypt: Option<crate::serve::PeerCryptPolicyArg>,
     /// Port prediction: the knob, the Kad observers that tell the node
     /// its own mapping, and the gate that waits for them.
     #[command(flatten)]
@@ -171,6 +176,7 @@ pub(crate) async fn run_server_punch(args: NattServerPunchArgs) -> Result<()> {
         nickname: args.nickname.clone(),
         tcp_port: args.listen.port(),
         udp_port: args.udp_port,
+        obfuscation: args.peer_crypt.map(rmule_core::ObfuscationPolicy::from),
         ..rmule_core::CoreSettings::default()
     })
     .user_hash(our_hash);

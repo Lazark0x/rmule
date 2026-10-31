@@ -726,6 +726,11 @@ pub(crate) struct NattArgs {
     /// its own mapping. `natt-server-punch-one-symmetric` always does.
     #[arg(long)]
     pub(crate) port_prediction: bool,
+    /// `natt-server-punch-cone` only: the target requires the crypt layer and
+    /// the requester supports it, so the `0x61` tells the requester to punch
+    /// obfuscated, and the verdict reads that off the WAN taps.
+    #[arg(long)]
+    pub(crate) target_requires_crypt: bool,
     /// The rmule-tools driver image the NAT-T drivers run from.
     #[arg(long, default_value = DEFAULT_RMULE_TOOLS_IMAGE)]
     pub(crate) rmule_tools_image: String,
@@ -826,6 +831,7 @@ pub(crate) fn natt(args: NattArgs) -> Result<()> {
         low_id_buddy: args.low_id_buddy,
         no_server: args.no_server,
         port_prediction: args.port_prediction,
+        target_requires_crypt: args.target_requires_crypt,
         capture_image: &args.capture.capture_image,
         capture_build_context: &args.capture.capture_build_context,
         rmule_tools_image: &args.rmule_tools_image,

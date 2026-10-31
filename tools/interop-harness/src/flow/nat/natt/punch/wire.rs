@@ -96,7 +96,7 @@ pub(in crate::flow::nat::natt) fn collect_driver_log(bench: &Bench, peer: &Peer)
 /// The `0x60` and `0x61` ride the eD2k **session**, so they are eD2k frames
 /// counted off the reassembled server link — a frame need not open its
 /// segment. The `0x9F` keepalive and the `0xA1` punch are datagrams.
-pub(super) fn wire_rows(server_v4: &str, peers: &[Peer]) -> Vec<ScopedRow> {
+pub(super) fn wire_rows(server_v4: &str, peers: &[Peer], crypt_target: bool) -> Vec<ScopedRow> {
     let server_row = |name: &str, bpf: WireFilter| ScopedRow {
         request: WireRowRequest {
             name: name.to_owned(),
@@ -135,6 +135,21 @@ pub(super) fn wire_rows(server_v4: &str, peers: &[Peer]) -> Vec<ScopedRow> {
                 },
             });
         };
+        // The `0xA1` under the crypt layer: eight bytes of header, then the
+        // two of the frame, and a first byte that is no protocol's. Cut on the
+        // other gateway, so the server's keepalive cannot read as a punch.
+        if crypt_target {
+            let other = &peers[(index + 1) % peers.len()];
+            gateway_row(
+                format!("obfuscated-punch-from-{}", peer.name),
+                format!(
+                    "udp and src host {} and dst host {} and udp[4:2] = 18 \
+                     and udp[8] != 0xc5 and udp[8] != 0xb2 and udp[8] != 0xe3",
+                    peer.gateway_wan, other.gateway_wan
+                ),
+                "wan",
+            );
+        }
         // Post-translation, on this peer's own gateway: what actually left.
         gateway_row(
             format!("holepunch-datagrams-from-{}", peer.name),

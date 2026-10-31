@@ -75,6 +75,9 @@ pub struct NattOptions<'a> {
     /// both-hard pair a negative and never a port scan. The one-symmetric row
     /// always runs with it.
     pub port_prediction: bool,
+    /// `natt-server-punch-cone` with a target that requires the crypt layer
+    /// and a requester that supports it.
+    pub target_requires_crypt: bool,
     /// `natt-udp-selfcheck-amule`'s Low-ID-buddy recipe: an `ed2ksrv` gives the rmule
     /// root a Low ID, aMule's UDP verdict is held firewalled until it holds
     /// that root as its buddy, then released, then the file is shared.

@@ -654,7 +654,10 @@ fn sum_rows(wire: &[WireRow], prefix: &str) -> i64 {
 /// to introduce.
 fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
     let cone = flow != NattFlow::ServerPunchSymmetric;
-    let punches: i64 = sum_rows(wire, "holepunch-datagrams-from-");
+    let plain_punches: i64 = sum_rows(wire, "holepunch-datagrams-from-");
+    // Cut only on a run whose target requires the crypt layer.
+    let obfuscated_punches: i64 = sum_rows(wire, "obfuscated-punch-from-");
+    let punches = plain_punches + obfuscated_punches.max(0);
     let mut claims = vec![
         Claim::about(
             "the-server-received-one-holepunch-request",
@@ -722,6 +725,20 @@ fn punch_wire_claims(flow: NattFlow, wire: &[WireRow]) -> Vec<Claim> {
             ),
         )
     });
+    if obfuscated_punches >= 0 {
+        let plain_from_requester = packets(wire, "holepunch-datagrams-from-a");
+        let obfuscated_from_requester = packets(wire, "obfuscated-punch-from-a");
+        claims.push(Claim::about(
+            "a-target-that-requires-the-crypt-layer-is-punched-through-it",
+            obfuscated_from_requester >= 1 && plain_from_requester == 0,
+            Evidence::RmuleOnly,
+            format!(
+                "the requester's burst at the target crossed its WAN tap as \
+                 {obfuscated_from_requester} obfuscated datagrams and \
+                 {plain_from_requester} plain `0xA1`; byte 29 of the `0x61` is what told it",
+            ),
+        ));
+    }
     if !cone {
         // **Counterparty-zero, read on both taps.** A `0xB2` that left the LAN
         // and never crossed the WAN would be a bench fault; a `0xB2` that
