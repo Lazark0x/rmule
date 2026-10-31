@@ -44,6 +44,9 @@ fn credit_ring_survives_a_clients_met_save_and_load_cycle() {
     ring.record_upload(hash(0xA1), 10 * 1024 * 1024).unwrap();
     ring.record_download(hash(0xA1), 3 * 1024 * 1024).unwrap();
     ring.record_upload(hash(0xB2), (6u64 << 32) + 42).unwrap();
+    // Both were last seen at `now`: `clients.met` carries a row's own stamp
+    // (`ClientCreditsList.cpp:199`), and `now` is the load's clock as well.
+    ring.checkpoint_at(u64::from(now)).unwrap();
 
     // Persist → forget → reload → reseed a brand-new ring.
     save_clients_met(dir.path(), &ring.snapshot().unwrap(), now).unwrap();
@@ -75,6 +78,7 @@ fn a_ring_saved_long_ago_expires_on_load() {
 
     let ring = DurableCreditStore::new(rmule_testkit::memory_store());
     ring.record_upload(hash(0xD4), 123_456).unwrap();
+    ring.checkpoint_at(u64::from(saved_at)).unwrap();
     save_clients_met(dir.path(), &ring.snapshot().unwrap(), saved_at).unwrap();
 
     let just_within = load_clients_met(dir.path(), saved_at + EXPIRY_SECS).unwrap();

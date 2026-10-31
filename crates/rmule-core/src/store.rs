@@ -119,10 +119,11 @@ pub(crate) fn durable_schema() -> Schema {
 }
 
 /// Every table store version 12 held: today's less the download seeds, with
-/// the server list as it was before the aux-ports list.
+/// the server list as it was before the aux-ports list and the credit row as
+/// it was before it kept when it was last seen.
 #[cfg(test)]
 pub(crate) fn durable_schema_v12() -> Schema {
-    credit::schema()
+    credit::schema_v1()
         .merge(download::schema_v12())
         .merge(registry::schema())
         .merge(had_set::schema())
