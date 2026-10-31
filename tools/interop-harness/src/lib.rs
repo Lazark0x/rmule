@@ -21,3 +21,4 @@ pub mod nat;
 pub mod readiness;
 pub mod rmule;
 pub mod run_record;
+pub mod verdict;

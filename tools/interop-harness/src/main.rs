@@ -9,12 +9,13 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand};
 
 mod cli;
 
 use rmule_interop_harness::docker::Docker;
+use rmule_interop_harness::run_record;
 
 use crate::cli::bootstrap::{
     Ed2kKadHandoffArgs, V2NodesDatHarvestArgs, ed2k_kad_handoff, http_bootstrap_cold_start,
@@ -485,13 +486,20 @@ fn main() -> Result<()> {
     let reads_only = cli.command.reads_only();
     let scored = cli.command.scored_run_dir().map(Path::to_owned);
     let result = dispatch(cli.command);
-    if !reads_only {
-        rmule_interop_harness::run_record::finish(result.is_err());
+    let outcome = if !reads_only {
+        let outcome = run_record::finish(result.is_err());
         sweep_dangling_bench_stage_images();
+        outcome
     } else if let (Some(run_dir), Ok(())) = (scored, &result) {
-        rmule_interop_harness::run_record::rescored(&run_dir);
+        Some(run_record::rescored(&run_dir))
+    } else {
+        None
+    };
+    result?;
+    if let Some(outcome) = outcome.filter(|outcome| outcome.failed()) {
+        bail!("the run's outcome is {outcome}: its verdict file holds the claims");
     }
-    result
+    Ok(())
 }
 
 impl HarnessCommand {

@@ -17,6 +17,7 @@
 //! rewrites it; [`rescored`] adds its time to the top-level `rescored_at` list.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -27,6 +28,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::docker::Docker;
+use crate::verdict::{self, Verdict};
 
 /// The record's file name inside a run dir.
 pub const FILE_NAME: &str = "run.toml";
@@ -53,9 +55,9 @@ struct Record {
     finished_unix_ms: Option<u128>,
     #[serde(skip_serializing_if = "Option::is_none")]
     duration_ms: Option<u128>,
-    /// `pass`, `fail`, `skip` or `error`; see [`outcome`].
+    /// How the run ended; see [`Outcome`].
     #[serde(skip_serializing_if = "Option::is_none")]
-    outcome: Option<&'static str>,
+    outcome: Option<Outcome>,
     /// Image tag to image id, for every counterparty and driver image started.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     counterparty_images: BTreeMap<String, String>,
@@ -216,49 +218,68 @@ pub fn rmule_pin() -> String {
     format!("{commit}{dirty} {binary}")
 }
 
-/// The run's outcome from how it ended and what its verdict files say: `error`
-/// when the flow returned an error, `fail` when any verdict reads `FAIL`,
-/// `skip` when every verdict reads `SKIPPED`, `pass` otherwise (the flow
-/// completed; the verdict files carry the finer reading).
-fn outcome(run_dir: &Path, errored: bool) -> &'static str {
-    if errored {
-        return "error";
-    }
-    let mut verdicts = Vec::new();
-    collect_verdicts(run_dir, &mut verdicts);
-    if verdicts.iter().any(|verdict| verdict == "FAIL") {
-        "fail"
-    } else if !verdicts.is_empty() && verdicts.iter().all(|verdict| verdict == "SKIPPED") {
-        "skip"
-    } else {
-        "pass"
+/// How a run ended, as its record and the exit status say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Outcome {
+    /// Every verdict reads `PASS`.
+    Pass,
+    /// The verdicts stop short of `PASS` and none reads `FAIL`.
+    Observed,
+    /// A verdict reads `FAIL`, however the flow ended.
+    Fail,
+    /// Every verdict reads `SKIPPED`.
+    Skip,
+    /// The flow returned an error and no verdict reads `FAIL`.
+    Error,
+    /// No verdict, or one nobody can read: the run proves nothing.
+    Unknown,
+}
+
+impl Outcome {
+    /// Whether the harness exits non-zero on this outcome.
+    #[must_use]
+    pub const fn failed(self) -> bool {
+        matches!(self, Self::Fail | Self::Error)
     }
 }
 
-fn collect_verdicts(dir: &Path, found: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_verdicts(&path, found);
-        } else if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("-verdict.toml"))
-            && let Ok(text) = fs::read_to_string(&path)
-            && let Ok(value) = text.parse::<toml::Table>()
-            && let Some(verdict) = value.get("verdict").and_then(toml::Value::as_str)
-        {
-            found.push(verdict.to_owned());
-        }
+impl fmt::Display for Outcome {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Pass => "pass",
+            Self::Observed => "observed",
+            Self::Fail => "fail",
+            Self::Skip => "skip",
+            Self::Error => "error",
+            Self::Unknown => "unknown",
+        })
+    }
+}
+
+/// The run's outcome from how it ended and what its verdict files say.
+fn outcome(run_dir: &Path, errored: bool) -> Outcome {
+    let verdicts = verdict::found_under(run_dir);
+    let all = |word| verdicts.iter().all(|found| *found == Some(word));
+    if verdicts.contains(&Some(Verdict::Fail)) {
+        Outcome::Fail
+    } else if errored {
+        Outcome::Error
+    } else if verdicts.is_empty() || verdicts.contains(&None) {
+        Outcome::Unknown
+    } else if all(Verdict::Skipped) {
+        Outcome::Skip
+    } else if all(Verdict::Pass) {
+        Outcome::Pass
+    } else {
+        Outcome::Observed
     }
 }
 
 /// Close the record: when the run ended, how long it took and how it ended.
-/// Called whether the flow failed or not.
-pub fn finish(errored: bool) {
+/// Called whether the flow failed or not; `None` when no record is open.
+pub fn finish(errored: bool) -> Option<Outcome> {
+    let mut ended = None;
     with_open(|open| {
         if open.record.rmule_binary_sha256.is_none()
             && let Some(path) = open
@@ -270,18 +291,22 @@ pub fn finish(errored: bool) {
         }
         open.record.finished_unix_ms = Some(unix_ms());
         open.record.duration_ms = Some(open.started.elapsed().as_millis());
-        open.record.outcome = Some(outcome(&open.run_dir, errored));
+        ended = Some(outcome(&open.run_dir, errored));
+        open.record.outcome = ended;
     });
+    ended
 }
 
 /// A re-score of a retained run: add its time to the `rescored_at` list of
-/// its `run.toml` and change nothing else. A run dir without a record (one
-/// from before the record existed) is left alone.
-pub fn rescored(run_dir: &Path) {
+/// its `run.toml` and change nothing else, then say what its verdicts now
+/// come to. A run dir without a record (one from before the record existed)
+/// is left alone.
+pub fn rescored(run_dir: &Path) -> Outcome {
     let path = run_dir.join(FILE_NAME);
     if let Ok(text) = fs::read_to_string(&path) {
         let _ = fs::write(&path, with_rescore(&text, unix_ms()));
     }
+    outcome(run_dir, false)
 }
 
 /// `text` with `at` added to its top-level `rescored_at` list. The list sits
@@ -318,20 +343,29 @@ mod tests {
         .unwrap();
     }
 
-    /// Any FAIL fails the run, all-SKIPPED skips it, an error beats both, and
-    /// verdicts under a flow's subdirectory count.
+    /// A failed verdict is `fail` however the flow ended; an error with none
+    /// is `error`; no verdict, or one nobody can read, proves nothing; only
+    /// PASS throughout is `pass`. Verdicts under a subdirectory count.
     #[test]
     fn the_outcome_reads_the_verdict_files_and_how_the_flow_ended() {
         let run = tempfile::tempdir().unwrap();
+        assert_eq!(outcome(run.path(), false).to_string(), "unknown");
+        assert_eq!(outcome(run.path(), true).to_string(), "error");
         let nested = run.path().join("nat");
         std::fs::create_dir(&nested).unwrap();
         verdict(&nested, "a", "SKIPPED");
-        assert_eq!(outcome(run.path(), false), "skip");
-        verdict(run.path(), "b", "OBSERVED");
-        assert_eq!(outcome(run.path(), false), "pass");
-        verdict(run.path(), "c", "FAIL");
-        assert_eq!(outcome(run.path(), false), "fail");
-        assert_eq!(outcome(run.path(), true), "error");
+        assert_eq!(outcome(run.path(), false).to_string(), "skip");
+        verdict(run.path(), "b", "PASS");
+        assert_eq!(outcome(run.path(), false).to_string(), "observed");
+        std::fs::remove_file(nested.join("a-verdict.toml")).unwrap();
+        assert_eq!(outcome(run.path(), false).to_string(), "pass");
+        verdict(run.path(), "c", "OBSERVED");
+        assert_eq!(outcome(run.path(), false).to_string(), "observed");
+        verdict(run.path(), "d", "unheard-of");
+        assert_eq!(outcome(run.path(), false).to_string(), "unknown");
+        verdict(run.path(), "e", "FAIL");
+        assert_eq!(outcome(run.path(), false).to_string(), "fail");
+        assert_eq!(outcome(run.path(), true).to_string(), "fail");
     }
 
     /// Two re-scores of a record with a table leave one top-level list of
