@@ -42,6 +42,26 @@ mesh sim can flood them:
    increment before check, decay one count per `60 / rate` seconds, drop over the limit,
    a 12-minute cleanup sweep, and a LAN-mode bypass.
 
+**Send gate: rmule obeys the table it enforces.** Stock has no sender gate; it is held by
+its walk pace alone, and a peer's count outlives anything we do. rmule sends through one
+**Kad Send Gate**, keyed `(ip, opcode)`, over the same table the flood limiter reads:
+`0x21`, `0x33`, `0x34`, `0x43`, `0x44`, `0x52`. Each key leaves one count of stock's minute
+unspent and spaces sends at `65 s / rate`, the 5 s margin for link jitter that clears
+aMule's strict `>` and eMule's token floor. An early send is held, not dropped, because a
+drop at the peer costs the same silence and a count as well; the walk that owns it extends
+that query's deadline or its answer window by the hold. A send more than four spacings out
+is refused and the walk moves on. The gate is the node's, in memory and bounded, so a Kad
+restart forgets it; the one count held back is what that costs.
+
+**Walk starts, in stock's pace.** Source publishes start at most 3 at once and 2 s apart
+(`Constants.h:37,39`, `SharedFileList.cpp:836-856`); source searches at most 5 at once and
+1 s apart (`Constants.h:33-35`, `PartFile.cpp:1514`, 2.3.3's values, 3.1.0's default of 30
+being a preference). The node owns both, as due lists it drains on its own clock: a command
+registers, the tick starts. Neither starts while the node has no live contact or, for a
+publish, before its self-lookup ended or while firewalled with nothing to publish, so an
+empty walk never spends a 5 hour due time. A republish is due 5 h after its own start, so
+the 2 s pace at start spreads every later round too.
+
 **Ban: the node reports, core enforces on peer TCP.** At `count > 5 × rate`
 ([PacketTracking.cpp#L212](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/PacketTracking.cpp#L212))
 the node emits `KadEvent::FloodOffenderDetected`. Core's `BanStore` (IP to banned-until,
