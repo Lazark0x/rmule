@@ -1,3 +1,5 @@
+//! What a volume answers when `dir` is not there, and by hand on real volumes.
+
 use std::path::Path;
 
 use super::{free_bytes, is_fat};
