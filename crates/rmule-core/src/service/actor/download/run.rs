@@ -3,7 +3,7 @@
 //! `Completing`: its Served Download installed and leased to the run
 //! (ADR-0113), the runner spawned, and the run entered in the Download Set —
 //! and stopping it for a Pause or a Cancel, through its Completion Gate
-//! (ADR-0115), its Served Download taken back.
+//! (ADR-0115), its Served Download taken back when its task has ended.
 
 use std::sync::Arc;
 
@@ -17,10 +17,11 @@ use crate::adapters::{
 };
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason};
-use crate::service::activity::ActiveDownload;
-use crate::service::{CoreCommandRejectReason, DownloadId, FinishedActivity};
+use crate::service::activity::{ActiveDownload, JOIN_GRACE};
+use crate::service::{CoreCommandRejectReason, DownloadCommand, DownloadId, FinishedActivity};
 
 use super::super::CoreActor;
+use super::stopping::Stop;
 
 /// What a run starts from besides its row.
 pub(in crate::service::actor) struct RunStart {
@@ -80,11 +81,11 @@ where
         self.served_moved().await;
     }
 
-    /// Stop the run of `download_id` for `reason`, join it, and take back
-    /// its Served Download. A move whose file is in place is no longer the
-    /// operator's to stop: it refuses with
-    /// [`CoreCommandRejectReason::DownloadCompleting`]. `Ok(false)` when the
-    /// download has no run.
+    /// Tell the run of `download_id` to stop for `reason`. Its act finishes
+    /// in [`Self::on_run_ended`], once its task has ended: `Ok(true)` says so,
+    /// `Ok(false)` that the download has no run. A move whose file is in place
+    /// is no longer the operator's to stop: it refuses with
+    /// [`CoreCommandRejectReason::DownloadCompleting`].
     pub(in crate::service::actor) async fn stop_run(
         &mut self,
         download_id: DownloadId,
@@ -95,9 +96,58 @@ where
             return Ok(false);
         };
         let _ = active.stop_tx.send(reason);
-        let _ = active.handle.await;
-        self.take_back_served(active.file_hash, active.run);
+        let stop = Stop {
+            file_hash: active.file_hash,
+            run: active.run,
+            reason,
+            held: Vec::new(),
+        };
+        self.stopping.begin(download_id, active.handle, stop);
         Ok(true)
+    }
+
+    /// A stopped run's task has ended: take back its Served Download, finish
+    /// the act that stopped it, and take up what waited for it.
+    pub(in crate::service::actor) async fn on_run_ended(&mut self, download_id: DownloadId) {
+        for command in self.finish_stop(download_id).await {
+            self.on_download_command(command).await;
+        }
+    }
+
+    /// The commands that waited for this stop.
+    async fn finish_stop(&mut self, download_id: DownloadId) -> Vec<DownloadCommand> {
+        let Some(stop) = self.stopping.finish(download_id) else {
+            return Vec::new();
+        };
+        self.take_back_served(stop.file_hash, stop.run);
+        match stop.reason {
+            StopReason::Pause => self.paused(download_id).await,
+            StopReason::Cancel => {
+                // Running, waiting its turn or at rest alike: a download with
+                // no run is still the operator's to drop (ADR-0094).
+                self.activities.take_restoring(download_id);
+                self.cancel(download_id).await;
+            }
+            // Nothing stops a run for this; it is a run's standing order.
+            StopReason::Active => {}
+        }
+        stop.held
+    }
+
+    /// Finish every stop under way before Quit goes on, bounded so a run that
+    /// cannot end costs Quit one wait. Each act is the operator's and is kept;
+    /// what waited behind it is dropped with the session.
+    pub(in crate::service::actor) async fn finish_stops(&mut self) {
+        let _ = tokio::time::timeout(JOIN_GRACE, async {
+            while !self.stopping.is_empty() {
+                let download_id = self.stopping.next_ended().await;
+                self.finish_stop(download_id).await;
+            }
+        })
+        .await;
+        for download_id in self.stopping.downloads() {
+            self.finish_stop(download_id).await;
+        }
     }
 }
 

@@ -140,6 +140,28 @@ impl<L> Activities<L> {
         self.downloads.contains_key(&download_id)
     }
 
+    /// The ledger's reading of a run's finish notice: `run`'s entry, when it
+    /// is still the one the Download Set holds, filed for a free-space wait
+    /// when the notice asks. A late notice files nothing either: the
+    /// operator's Pause since then ended the wait before it began.
+    pub(super) fn take_finished(
+        &mut self,
+        download_id: DownloadId,
+        run: RunNumber,
+        awaits_space: bool,
+    ) -> Option<ActiveDownload> {
+        if !self
+            .download(download_id)
+            .is_some_and(|active| active.run == run)
+        {
+            return None;
+        }
+        if awaits_space {
+            self.await_space(download_id);
+        }
+        self.take_download(download_id)
+    }
+
     /// Stop or death: take `download_id`'s run out for its retire.
     pub(super) fn take_download(&mut self, download_id: DownloadId) -> Option<ActiveDownload> {
         self.downloads.remove(&download_id)

@@ -166,9 +166,9 @@ async fn a_download_not_completed_is_never_cleared() {
         "{answer:?}"
     );
 
-    core.send(CoreCommand::Download(
-        DownloadCommand::ClearCompletedDownloads,
-    ))
+    core.send(CoreCommand::Download(DownloadCommand::ClearDownloads {
+        download_ids: vec![id],
+    }))
     .await
     .unwrap();
     // The pause after it is answered in order, so a clear it raced would
@@ -258,7 +258,13 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
         "{recovered:?}"
     );
 
-    let answer = clear(&mut core, DownloadCommand::ClearCompletedDownloads).await;
+    let answer = clear(
+        &mut core,
+        DownloadCommand::ClearDownloads {
+            download_ids: vec![id],
+        },
+    )
+    .await;
     assert!(
         matches!(answer, CoreEvent::Download(DownloadEvent::DownloadCleared { download_id }) if download_id == id),
         "{answer:?}"

@@ -53,14 +53,11 @@ impl TransfersView {
         match key.code {
             KeyCode::Char('y') => {
                 self.overlay = Overlay::None;
-                ViewOutcome::Emit(Action::Commands(
-                    counted
-                        .iter()
-                        .map(|&download_id| {
-                            CoreCommand::Download(DownloadCommand::ClearDownload { download_id })
-                        })
-                        .collect(),
-                ))
+                ViewOutcome::Emit(Action::Commands(vec![CoreCommand::Download(
+                    DownloadCommand::ClearDownloads {
+                        download_ids: counted.to_vec(),
+                    },
+                )]))
             }
             KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
                 self.overlay = Overlay::None;
@@ -135,18 +132,14 @@ mod tests {
     }
 
     fn cleared_ids(outcome: ViewOutcome) -> Vec<DownloadId> {
-        let ViewOutcome::Emit(Action::Commands(commands)) = outcome else {
+        let ViewOutcome::Emit(Action::Commands(mut commands)) = outcome else {
             panic!("expected the answer to send commands");
         };
-        commands
-            .into_iter()
-            .map(|command| match command {
-                CoreCommand::Download(DownloadCommand::ClearDownload { download_id }) => {
-                    download_id
-                }
-                other => panic!("expected ClearDownload, got {other:?}"),
-            })
-            .collect()
+        assert_eq!(commands.len(), 1, "one command, however many rows");
+        match commands.remove(0) {
+            CoreCommand::Download(DownloadCommand::ClearDownloads { download_ids }) => download_ids,
+            other => panic!("expected ClearDownloads, got {other:?}"),
+        }
     }
 
     /// The answer clears what the question counted: a download that completes

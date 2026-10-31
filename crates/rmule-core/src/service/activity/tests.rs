@@ -63,6 +63,32 @@ async fn a_started_download_is_held_until_it_is_taken_once() {
     assert!(set.download(id(2)).is_some());
 }
 
+/// A volume stop ended the run, the operator's Pause took it out of the set,
+/// and only then is the run's notice read: the download stays paused.
+#[tokio::test]
+async fn a_late_finish_notice_files_no_free_space_wait() {
+    let mut set = Activities::<()>::default();
+    set.download_started(id(1), run(7));
+    set.take_download(id(1));
+
+    let finished = set.take_finished(id(1), crate::download::RunNumber::new(7), true);
+
+    assert!(finished.is_none());
+    assert!(!set.space_awaited());
+}
+
+/// A run that stopped on its own for free space leaves the set and waits.
+#[tokio::test]
+async fn a_run_s_own_finish_notice_files_its_free_space_wait() {
+    let mut set = Activities::<()>::default();
+    set.download_started(id(1), run(7));
+
+    let finished = set.take_finished(id(1), crate::download::RunNumber::new(7), true);
+
+    assert!(finished.is_some());
+    assert_eq!(set.awaiting_space(), vec![id(1)]);
+}
+
 #[test]
 fn restoring_leaves_in_store_order_each_with_its_own_seeds() {
     let seeds = [(id(3), vec![seed(1)]), (id(4), Vec::new())].into();

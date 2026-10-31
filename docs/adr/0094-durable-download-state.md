@@ -137,9 +137,9 @@ a clear removes is hidden. Clearing removes the record (row, verified parts, pro
 distrusted peers, in one transaction), its resting diagnostics row and its Transfers row
 (`DownloadCleared`), and never the file, its registry entry, its share totals or the Had Set.
 Only a completed download is cleared (`DownloadNotCompleted` otherwise; a run still in the set
-has not been shared yet). Commands: `ClearDownload`, `ClearCompletedDownloads`. In the TUI, a
+has not been shared yet). Commands: `ClearDownload`, and `ClearDownloads`, which names the rows it clears. In the TUI, a
 completed row's menu offers **Clear from list**, and `C` in Transfers clears every completed
-download after one confirm.
+download after one confirm, with one command.
 
 ## Consequences
 

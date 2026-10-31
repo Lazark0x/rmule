@@ -542,6 +542,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         server_udp,
         own_identity,
         user_hash,
+        stopping: Default::default(),
         download_runtime,
         client_udp_reask_rx,
         client_udp_reply_tx,

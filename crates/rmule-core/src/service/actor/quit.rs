@@ -50,11 +50,14 @@ where
         // Aborted rather than stopped: a stop writes the lifecycle
         // (`Paused`/`Cancelled`), and a quit must leave the store saying
         // `Active` so the next start recovers the download as it was.
-        if !self.activities.downloads_idle() {
+        if !self.activities.downloads_idle() || !self.stopping.is_empty() {
             announce(&self.evt_tx, QuitStep::Download).await;
             // Each run's last ranking, written before the runs are aborted
             // (ADR-0109, "Source Seeds").
             self.write_source_seeds();
+            // A stop the operator asked for is kept: its run ends and its row
+            // says so, unlike the runs below.
+            self.finish_stops().await;
             let ids: Vec<_> = self.activities.downloads().map(|(id, _)| id).collect();
             for download_id in ids {
                 if let Some(download) = self.retire_download(download_id) {

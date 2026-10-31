@@ -202,9 +202,9 @@ async fn clearing_completed_downloads_leaves_the_live_part_file() {
     .await;
     let (id, final_path) = completed.unwrap();
     live.core
-        .send(CoreCommand::Download(
-            DownloadCommand::ClearCompletedDownloads,
-        ))
+        .send(CoreCommand::Download(DownloadCommand::ClearDownloads {
+            download_ids: vec![id],
+        }))
         .await
         .unwrap();
     next_expected(&mut live.core, "the completed one cleared", |event| {

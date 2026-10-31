@@ -81,8 +81,14 @@ pub enum DownloadCommand {
         /// The completed download to forget.
         download_id: DownloadId,
     },
-    /// Forget every completed download at once — aMule's "Clear completed".
-    ClearCompletedDownloads,
+    /// Forget these completed downloads with one command, however many: the
+    /// ones the operator's "Clear completed" counted, never one that completed
+    /// since. One that is not completed, or that is still being shared, is
+    /// skipped without a refusal.
+    ClearDownloads {
+        /// The completed downloads to forget.
+        download_ids: Vec<DownloadId>,
+    },
 }
 
 /// What a [`DownloadCommand::StartDownload`] does when the name it gives is

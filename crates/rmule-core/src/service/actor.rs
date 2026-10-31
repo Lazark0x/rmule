@@ -54,7 +54,7 @@ use crate::source_discovery::SourceDiscovery;
 use crate::store::download::DurableDownloadRepository;
 use crate::store::registry::DurableSharedFileRegistry;
 
-use self::download::DownloadRuntime;
+use self::download::{DownloadRuntime, Stopping};
 use super::activity::{Activities, GlobalSearchContext, ServerUdpFront, unix_now};
 use super::{CoreCommand, CoreConfig, CoreEvent, FinishedActivity};
 
@@ -318,6 +318,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// builder wrote into `own_identity`; the Core Settings' credentials are
     /// composed with it into the wire identity ([`Self::identity`]).
     user_hash: rmule_primitives::UserHash,
+    /// The runs told to stop whose tasks have not ended.
+    stopping: Stopping,
     /// The spawn-invariant runner runtime, built once; the two
     /// download arms clone their `DownloadTask` out of it.
     download_runtime: DownloadRuntime<S, P>,
@@ -595,24 +597,16 @@ where
                     let generation = *kad_ended_rx.borrow_and_update();
                     self.on_kad_ended(generation).await;
                 }
+                // A stopped run's task has ended: its act finishes here, not
+                // in the command arm that told it (ADR-0069).
+                download_id = self.stopping.next_ended() => self.on_run_ended(download_id).await,
                 // A run's finished file is in place (ADR-0115): its row and
                 // the end of its Served Download are one step.
                 Some(report) = in_place_rx.recv() => self.on_final_file_in_place(report).await,
                 Some(finished) = finished_rx.recv() => {
                     let download_id = match finished {
                         FinishedActivity::Download(download_id, run, awaits_space) => {
-                            // A download that ended on its own (a death,
-                            // ADR-0093) retires here; one a stop already
-                            // retired is gone from the ledger, or replaced by
-                            // a later run, so its late notice retires nothing.
-                            if self.activities.download(download_id).is_some_and(|active| active.run == run)
-                                && let Some(active) = self.retire_download(download_id)
-                            {
-                                self.take_back_served(active.file_hash, active.run);
-                            }
-                            if awaits_space {
-                                self.activities.await_space(download_id);
-                            }
+                            self.on_run_finished(download_id, run, awaits_space);
                             download_id
                         }
                         FinishedActivity::Search(search_id, run) => {

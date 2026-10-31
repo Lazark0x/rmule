@@ -10,7 +10,7 @@ use crate::adapters::{
 };
 use crate::content::{ContentFileStore, RestoredProgress, Revalidation, free_space, on_pool};
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{StopReason, file_link_from_record};
+use crate::download::{RunNumber, StopReason, file_link_from_record};
 use crate::service::activity::ActiveDownload;
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId, RestartOutcome,
@@ -29,10 +29,12 @@ mod placement;
 mod restore;
 mod run;
 mod seeds;
+mod stopping;
 
 pub(super) use restore::attach_downloads;
 pub(super) use run::DownloadRuntime;
 use run::RunStart;
+pub(super) use stopping::Stopping;
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -43,6 +45,11 @@ where
 {
     /// Enact one download command against the live activity ledger.
     pub(super) async fn on_download_command(&mut self, command: DownloadCommand) {
+        // A download in the middle of a stop answers once it has stopped, so
+        // commands about it run in the order they were sent.
+        let Some(command) = self.stopping.hold(command) else {
+            return;
+        };
         match command {
             DownloadCommand::StartDownload {
                 file,
@@ -132,13 +139,15 @@ where
             DownloadCommand::CancelDownload { download_id } => {
                 match self.stop_run(download_id, StopReason::Cancel).await {
                     Err(reason) => return self.reject(reason).await,
+                    // `on_run_ended` finishes it.
+                    Ok(true) => return,
                     Ok(false) if !self.holds_place(download_id) => {
                         return self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     }
-                    Ok(_) => {}
+                    Ok(false) => {}
                 }
-                // Running, waiting its turn or at rest alike: a download with
-                // no run is still the operator's to drop (ADR-0094).
+                // Waiting its turn or at rest alike: a download with no run
+                // is still the operator's to drop (ADR-0094).
                 self.activities.take_restoring(download_id);
                 self.cancel(download_id).await;
             }
@@ -147,6 +156,8 @@ where
                 // back as it lets its part file go (ADR-0113).
                 match self.stop_run(download_id, StopReason::Pause).await {
                     Err(reason) => return self.reject(reason).await,
+                    // `on_run_ended` finishes it.
+                    Ok(true) => return,
                     // A download waiting for free space is at rest already:
                     // the operator's Pause ends the wait (ADR-0094).
                     Ok(false)
@@ -155,31 +166,19 @@ where
                     {
                         return self.reject(CoreCommandRejectReason::UnknownDownload).await;
                     }
-                    Ok(_) => {}
+                    Ok(false) => {}
                 }
-                let _ = self
-                    .wiring
-                    .store
-                    .set_lifecycle(download_id, DownloadLifecycle::Paused);
-                tracing::info!(download_id = download_id.as_u64(), "download paused");
-                send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id });
+                self.paused(download_id).await;
             }
             DownloadCommand::ClearDownload { download_id } => {
                 if let Err(reason) = self.clear(download_id).await {
                     self.reject(reason).await;
                 }
             }
-            DownloadCommand::ClearCompletedDownloads => {
-                let completed = match self.wiring.store.completed_downloads() {
-                    Ok(completed) => completed,
-                    Err(error) => {
-                        tracing::warn!(%error, "the completed downloads could not be read");
-                        return;
-                    }
-                };
-                for download_id in completed {
-                    // One whose completion is still being shared is skipped;
-                    // the next clear takes it.
+            DownloadCommand::ClearDownloads { download_ids } => {
+                for download_id in download_ids {
+                    // One whose completion is still being shared, or that is
+                    // no longer completed, is skipped; the next clear takes it.
                     let _ = self.clear(download_id).await;
                 }
             }
@@ -198,6 +197,17 @@ where
                 }
             }
         }
+    }
+
+    /// A download with no run left is paused: the row says so, and the front
+    /// end hears it.
+    async fn paused(&mut self, download_id: DownloadId) {
+        let _ = self
+            .wiring
+            .store
+            .set_lifecycle(download_id, DownloadLifecycle::Paused);
+        tracing::info!(download_id = download_id.as_u64(), "download paused");
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id });
     }
 
     /// A `StartDownload` whose file a live download already holds: its
@@ -571,6 +581,24 @@ where
                     "a download could not resume with its free space back"
                 );
             }
+        }
+    }
+
+    /// A run's finish notice. A download that ended on its own (a death,
+    /// ADR-0093) retires here; one a stop already retired is gone from the
+    /// ledger, or replaced by a later run, so its late notice retires nothing.
+    pub(super) fn on_run_finished(
+        &mut self,
+        download_id: DownloadId,
+        run: RunNumber,
+        awaits_space: bool,
+    ) {
+        if let Some(active) = self
+            .activities
+            .take_finished(download_id, run, awaits_space)
+        {
+            self.wiring.file_known.download_ended(active.file_hash);
+            self.take_back_served(active.file_hash, active.run);
         }
     }
 
