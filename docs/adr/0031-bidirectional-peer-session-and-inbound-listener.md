@@ -202,10 +202,15 @@ scheduling is (ADR-0026).
   | a reask reply | a wait on a socket, so never | `try_send`; a datagram the full queue refuses is lost as any datagram may be |
 
   The first read of the share set is the one thing a peer's input waits for, so the
-  first ask is answered from it: the activity awaits it before the loop starts or, while
-  the Registry Check's first look is unfinished, the loop holds peers' inputs while the
-  read that look's end starts is out. After that a read is off the loop, and an ask
-  meanwhile is answered from the set before it.
+  first ask is answered from it, and no shared file is called unknown because nobody
+  has read the set: `OP_FILEREQANSNOFIL` and the reask's `OP_FILENOTFOUND` cost the asker
+  this source, and an unanswered name ask costs it the link's first request. The
+  activity awaits that read before the loop starts or, while the Registry Check's first
+  look is unfinished, the loop holds what links say and reask pings until the read that
+  look's end starts has landed. A read made before that end is no set at all, not an
+  empty one. A look that cannot run offers nothing, so the hold takes nothing from the
+  peers it holds. After the first read a read is off the loop, and an ask meanwhile is
+  answered from the set before it.
 - **A slot's flow.** A slot holder's asked ranges wait in its **Serve Flow**, in the
   Serve State. One read of a flow is out at a time, so its blocks land in the order
   they were asked, go down one Link Outbox in that order, and are deflated one at a
