@@ -98,9 +98,6 @@ impl PublishSchedule {
 pub(super) struct WalkStarts {
     next_publish: KadInstant,
     next_search: KadInstant,
-    /// Whether the self-lookup ended (`SetPublish`, `SearchManager.cpp:335`).
-    /// True from the start on a node with no self-lookup armed.
-    pub(super) publishing: bool,
     /// The last drive's answer for [`KadNode::next_wake`]: `None` while a gate
     /// is shut, because what opens one wakes the node itself.
     pub(super) wake: Option<KadInstant>,
@@ -111,7 +108,6 @@ impl WalkStarts {
         Self {
             next_publish: KadInstant::EPOCH,
             next_search: KadInstant::EPOCH,
-            publishing: true,
             wake: None,
         }
     }
@@ -182,10 +178,12 @@ impl KadNode {
         self.walk_starts.wake = publish_wake.into_iter().chain(search_wake).min();
     }
 
-    /// `SharedFileList.cpp:773`: joined, the self-lookup ended, and a row to
-    /// state, which a firewalled node with no buddy lacks.
+    /// `SharedFileList.cpp:773`: joined, and a row to state, which a firewalled
+    /// node with no buddy lacks. Stock's third gate, `GetPublish`, waits for the
+    /// first self-lookup to end (`SearchManager.cpp:335`); rmule does not, and
+    /// publishes into a table only as warm as joining left it.
     fn publish_gate_open(&self, now: KadInstant) -> bool {
-        self.joined(now) && self.walk_starts.publishing && self.has_publish_row()
+        self.joined(now) && self.has_publish_row()
     }
 
     fn publish_walks(&self) -> usize {

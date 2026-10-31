@@ -344,12 +344,7 @@ impl KadNode {
                     // A self-lookup has no terminal fan-out and no completion
                     // event: the `SelfLookupStarted` at launch is the whole
                     // signal. The walk is dropped by the `retain` below.
-                    KadWalkOutcome::SelfLookup => {
-                        if matches!(purpose, KadWalkPurpose::SelfLookup { .. }) {
-                            self.walk_starts.publishing = true;
-                        }
-                    }
-                    KadWalkOutcome::UdpFirewallHelpers => {}
+                    KadWalkOutcome::SelfLookup | KadWalkOutcome::UdpFirewallHelpers => {}
                     KadWalkOutcome::FindBuddy { asked } => {
                         self.emit_event(KadEvent::BuddyWalkEnded { asked });
                     }

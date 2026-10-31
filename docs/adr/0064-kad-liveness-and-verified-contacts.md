@@ -57,9 +57,10 @@ restart forgets it; the one count held back is what that costs.
 (`Constants.h:37,39`, `SharedFileList.cpp:836-856`); source searches at most 5 at once and
 1 s apart (`Constants.h:33-35`, `PartFile.cpp:1514`, 2.3.3's values, 3.1.0's default of 30
 being a preference). The node owns both, as due lists it drains on its own clock: a command
-registers, the tick starts. Neither starts while the node has no live contact or, for a
-publish, before its self-lookup ended or while firewalled with nothing to publish, so an
-empty walk never spends a 5 hour due time. A republish is due 5 h after its own start, so
+registers, the tick starts. Neither starts before the node has heard someone or, for a
+publish, while firewalled with nothing to publish, so an empty walk never spends a 5 hour due
+time. Stock also holds publishing until its first self-lookup ends, three minutes in; rmule
+does not yet. A republish is due 5 h after its own start, so
 the 2 s pace at start spreads every later round too.
 
 **The Ask Clock: a re-ask is the file's, not the run's.** Stock re-asks a file at
