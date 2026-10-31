@@ -201,6 +201,22 @@ fn holder(standings: &SharedQueueStandings) -> DownloadState {
     holder
 }
 
+/// The source gates read aMule's `GetSourceCount`, `m_SrcList` alone: a record
+/// waiting on another download's standing is its A4AF list.
+#[test]
+fn a_record_waiting_on_another_downloads_standing_is_outside_the_gates() {
+    let standings = QueueStandings::shared();
+    let mut holding = of_file(&standings, 1, [1; 16]);
+    let _ = holding.start(t0());
+    queue_and_hang_up(&mut holding, peer(1), false, 3);
+    holding.hold_standings();
+    let mut waiter = of_file(&standings, 2, [2; 16]);
+    let started = waiter.start(t0());
+    assert!(spawned(&started).is_empty(), "{started:?}");
+    assert_eq!(waiter.known_sources(), 1);
+    assert_eq!(waiter.listed_sources(), 0);
+}
+
 /// Two downloads of one peer ride one link: the second's turn comes inside
 /// the clock, and its ask leaves on that link, 3 points the score has room
 /// for, where a refusal would cost a second link a reask away. Stock's own

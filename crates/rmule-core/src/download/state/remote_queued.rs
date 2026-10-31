@@ -275,6 +275,12 @@ impl DownloadState {
     pub(crate) fn known_sources(&self) -> u32 {
         self.sources.held()
     }
+
+    /// aMule's `GetSourceCount`, what the source gates read: no record waiting
+    /// on another download's standing, as `m_SrcList` holds no A4AF client.
+    pub(crate) fn listed_sources(&self) -> u32 {
+        self.sources.counts().known
+    }
 }
 
 /// The download event's word for why the requester ignored a reply.

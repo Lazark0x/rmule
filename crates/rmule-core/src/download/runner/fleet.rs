@@ -591,7 +591,7 @@ where
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
                 publish_exchange_pool(&ctx);
-                source_count.publish(ctx.state.known_sources());
+                source_count.publish(ctx.state.listed_sources());
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {
