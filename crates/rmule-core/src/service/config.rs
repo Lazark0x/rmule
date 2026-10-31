@@ -177,7 +177,8 @@ pub struct CoreConfig {
     /// first-publish latency; the protocol cadences below gate actual sends.
     pub kad_sweep_interval: Duration,
     /// eMule's per-file Kad source re-ask spacing (`KADEMLIAREASKTIME`,
-    /// aMule `Constants.h`: 1 hour). A download is re-asked no more often.
+    /// aMule `Constants.h`: 1 hour), the unit of the **Ask Clock**: the Nth
+    /// ask waits N of these, up to 7.
     pub kad_reask_interval: Duration,
     /// How often the serve task purges waiters that stopped reasking or whose
     /// file was unshared (aMule `CUploadQueue::Process`) — the
