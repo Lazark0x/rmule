@@ -481,6 +481,16 @@ async fn a_stop_that_cannot_end_holds_up_no_other_command() {
     core.send(CoreCommand::DumpFileHistory).await.unwrap();
 
     while !matches!(next_event(&mut core).await, CoreEvent::FileHistory { .. }) {}
+
+    // Quit keeps the operator's Pause and is not held by the run either.
+    tokio::time::timeout(rmule_testkit::HANG_GUARD, core.shutdown())
+        .await
+        .expect("quit ends the run that could not stop");
+    let repo = DurableDownloadRepository::new(store);
+    assert_eq!(
+        repo.load_download(download_id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused
+    );
 }
 
 struct HoldingPeerTransfer {

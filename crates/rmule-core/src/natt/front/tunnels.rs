@@ -405,7 +405,7 @@ pub(super) fn spawn_adopter(
                 .as_ref()
                 .and_then(crate::service::WeakOutbox::upgrade)
             {
-                let _ = events.send(CoreEvent::NattTunnelRisen {
+                events.send(CoreEvent::NattTunnelRisen {
                     peer: at,
                     transport,
                     role,

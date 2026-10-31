@@ -573,7 +573,7 @@ impl ServerFacts {
         else {
             return;
         };
-        let _ = events.send(event);
+        events.send(event);
     }
 }
 

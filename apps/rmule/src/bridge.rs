@@ -4,7 +4,7 @@
 //! feeds the single [`Action`] bus.
 //!
 //! Two tasks (ADR-0069, "The bridge is two tasks"), so neither wait holds the
-//! other: [`forward_commands`] may wait for the inbox's room, and [`run`] may
+//! other: `forward_commands` may wait for the inbox's room, and `run` may
 //! wait for the bus. `run`'s lifecycle *edges* await bus capacity (`UiState`
 //! folds them), its byte *levels* are dropped when the bus is full (the next
 //! tick supersedes them), and a missed data tick is skipped, never replayed.
@@ -337,6 +337,9 @@ async fn run<H: CoreHandle>(
                     }
                     let _ = ack.send(());
                 }
+                // Nothing forwards past quit: a later `CoreClient::send` is
+                // `CoreStopped`.
+                forwarder.abort();
                 return;
             }
         }

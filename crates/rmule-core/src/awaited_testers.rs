@@ -96,7 +96,7 @@ impl LateKadHelper {
         else {
             return;
         };
-        let _ = events.send(CoreEvent::KadHelperTestLate {
+        events.send(CoreEvent::KadHelperTestLate {
             helper: self.helper,
             late_by: self.late_by,
             admission,

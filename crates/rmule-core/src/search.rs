@@ -393,7 +393,7 @@ impl SearchTask {
     }
 
     async fn emit(&self, event: SearchEvent) {
-        let _ = self.evt_tx.send(event.into());
+        self.evt_tx.send(event.into());
     }
 
     /// Move the leg picture and say so, once per real change.

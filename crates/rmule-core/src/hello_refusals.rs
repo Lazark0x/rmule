@@ -55,7 +55,7 @@ impl SharedHelloRefusals {
         };
         installed.diagnostics.count_peer_hello_refused();
         if let Some(events) = installed.events.upgrade() {
-            let _ = events.send(CoreEvent::PeerHelloRefused { refusal });
+            events.send(CoreEvent::PeerHelloRefused { refusal });
         }
     }
 }

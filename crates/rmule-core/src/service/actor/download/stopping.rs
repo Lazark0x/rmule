@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use rmule_primitives::FileHash;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 
 use crate::download::{RunNumber, StopReason};
 use crate::service::{DownloadCommand, DownloadId};
@@ -24,17 +24,24 @@ pub(super) struct Stop {
     pub(super) held: Vec<DownloadCommand>,
 }
 
+/// One stop's entry: its act, and the run it waits for.
+struct Entry {
+    stop: Stop,
+    run_task: AbortHandle,
+}
+
 /// Every stop under way.
 #[derive(Default)]
 pub(in crate::service::actor) struct Stopping {
-    stops: HashMap<DownloadId, Stop>,
+    stops: HashMap<DownloadId, Entry>,
     ended: JoinSet<DownloadId>,
 }
 
 impl Stopping {
     /// Watch `handle` to its end, with `stop` waiting for it.
     pub(super) fn begin(&mut self, download_id: DownloadId, handle: JoinHandle<()>, stop: Stop) {
-        self.stops.insert(download_id, stop);
+        let run_task = handle.abort_handle();
+        self.stops.insert(download_id, Entry { stop, run_task });
         self.ended.spawn(async move {
             let _ = handle.await;
             download_id
@@ -48,7 +55,7 @@ impl Stopping {
             DownloadCommand::StartDownload { file, .. } => self
                 .stops
                 .iter()
-                .find(|(_, stop)| stop.file_hash == file.file_hash)
+                .find(|(_, entry)| entry.stop.file_hash == file.file_hash)
                 .map(|(download_id, _)| *download_id),
             DownloadCommand::PauseDownload { download_id }
             | DownloadCommand::ResumeDownload { download_id }
@@ -57,8 +64,8 @@ impl Stopping {
             DownloadCommand::ClearDownloads { .. } => None,
         };
         match stopping.and_then(|download_id| self.stops.get_mut(&download_id)) {
-            Some(stop) => {
-                stop.held.push(command);
+            Some(entry) => {
+                entry.stop.held.push(command);
                 None
             }
             None => Some(command),
@@ -80,7 +87,7 @@ impl Stopping {
 
     /// `download_id`'s stop, for its act to finish.
     pub(super) fn finish(&mut self, download_id: DownloadId) -> Option<Stop> {
-        self.stops.remove(&download_id)
+        self.stops.remove(&download_id).map(|entry| entry.stop)
     }
 
     /// Whether a stop is under way.
@@ -88,8 +95,12 @@ impl Stopping {
         self.stops.is_empty()
     }
 
-    /// Every download with a stop under way.
-    pub(super) fn downloads(&self) -> Vec<DownloadId> {
+    /// End every run still stopping; the downloads they belong to. An
+    /// aborted run lets go of the event stream, whose end is Quit's.
+    pub(super) fn abort_all(&self) -> Vec<DownloadId> {
+        for entry in self.stops.values() {
+            entry.run_task.abort();
+        }
         self.stops.keys().copied().collect()
     }
 }

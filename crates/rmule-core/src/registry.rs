@@ -197,7 +197,7 @@ where
                     (event, AutoShared::Refused(file_hash))
                 }
             };
-            let _ = evt_tx.send(event.into());
+            evt_tx.send(event.into());
             Some(shared)
         }
         // No command issuer to reject to on auto-share, but a durable registry

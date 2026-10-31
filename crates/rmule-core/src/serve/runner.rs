@@ -904,7 +904,7 @@ async fn say_told(evt_tx: &crate::service::Outbox, outcome: AnnounceOutcome) {
 }
 
 async fn send_serve_event(evt_tx: &crate::service::Outbox, event: ServeEvent) {
-    let _ = evt_tx.send(CoreEvent::Serve(event));
+    evt_tx.send(CoreEvent::Serve(event));
 }
 
 #[cfg(test)]

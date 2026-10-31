@@ -641,7 +641,7 @@ impl Runtime {
                 return;
             };
             if let Some(events) = events.upgrade() {
-                let _ = events.send(CoreEvent::MappingReleaseKept {
+                events.send(CoreEvent::MappingReleaseKept {
                     mapping,
                     protocol,
                     external_port,

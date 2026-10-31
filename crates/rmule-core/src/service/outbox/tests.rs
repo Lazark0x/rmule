@@ -87,6 +87,17 @@ fn past_the_room_notes_and_levels_shed_and_every_edge_stays() {
 }
 
 #[test]
+fn a_subject_that_only_moves_is_never_counted_as_lost() {
+    let (outbox, mut stream) = outbox_with_room(LevelHandle::default(), 8);
+    for value in 0..1000 {
+        outbox.send(rank(1, value));
+    }
+    let read = drain(&mut stream);
+    assert_eq!(read.len(), 1, "{read:?}");
+    assert_eq!(rank_of(&read[0]), Some(999));
+}
+
+#[test]
 fn edges_alone_past_the_room_are_all_kept() {
     let (outbox, mut stream) = outbox_with_room(LevelHandle::default(), 4);
     for id in 0..32 {

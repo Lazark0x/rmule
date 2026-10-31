@@ -112,7 +112,7 @@ pub struct EventStream {
 }
 
 impl EventStream {
-    /// The next event, or `None` once every [`Outbox`] is gone and the queue
+    /// The next event, or `None` once every Outbox is gone and the queue
     /// is empty. Cancel safe: an event is taken only as this resolves.
     pub async fn recv(&mut self) -> Option<CoreEvent> {
         loop {
@@ -131,7 +131,7 @@ impl EventStream {
     ///
     /// [`TryRecvError::Empty`] with nothing queued,
     /// [`TryRecvError::Disconnected`] with nothing queued and every
-    /// [`Outbox`] gone.
+    /// Outbox gone.
     pub fn try_recv(&mut self) -> Result<CoreEvent, TryRecvError> {
         let mut queue = self.shared.lock();
         match queue.pop() {
@@ -216,7 +216,9 @@ impl Queue {
         if self.unread {
             return None;
         }
-        let shed = (self.slots.len() >= self.shed_at).then(|| self.shed());
+        let shed = (self.slots.len() >= self.shed_at)
+            .then(|| self.make_room())
+            .flatten();
         let slot = match weight {
             Weight::Edge => Slot::Edge(event),
             Weight::Note => Slot::Note(event),
@@ -242,11 +244,22 @@ impl Queue {
         }
     }
 
+    /// Close the holes superseded Levels left, and shed only if that was not
+    /// enough, so a subject that only ever moves is never counted as lost.
+    fn make_room(&mut self) -> Option<u64> {
+        self.slots.retain(|slot| !matches!(slot, Slot::Superseded));
+        for (index, slot) in self.slots.iter().enumerate() {
+            if let Slot::Level(key, _) = slot {
+                self.levels.insert(key.clone(), self.first + index as u64);
+            }
+        }
+        (self.slots.len() >= self.shed_at).then(|| self.shed())
+    }
+
     /// Drop every Level and Note and say so with one Edge, which takes in
     /// the count of a shed the reader has not read, so sheds alone never grow
     /// the queue. The count of this shed alone is what it returns.
     fn shed(&mut self) -> u64 {
-        let before = self.slots.len();
         let mut dropped = 0;
         let mut unread = 0;
         self.slots.retain(|slot| match slot {
@@ -261,7 +274,6 @@ impl Queue {
             }
             Slot::Superseded => false,
         });
-        self.first += (before - self.slots.len()) as u64;
         self.levels.clear();
         self.slots.push_back(Slot::Edge(CoreEvent::EventsShed {
             count: dropped + unread,

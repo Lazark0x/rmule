@@ -145,7 +145,7 @@ where
             }
         })
         .await;
-        for download_id in self.stopping.downloads() {
+        for download_id in self.stopping.abort_all() {
             self.finish_stop(download_id).await;
         }
     }

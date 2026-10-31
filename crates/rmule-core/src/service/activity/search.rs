@@ -267,7 +267,7 @@ impl ActiveSearch {
         match end_rx.try_recv() {
             Ok(SearchEnd::Ended) => {}
             Ok(SearchEnd::Panicked) => {
-                let _ = evt_tx.send(
+                evt_tx.send(
                     SearchEvent::SearchFailed {
                         search_id,
                         reason: SearchFailure::TaskPanicked,
@@ -315,7 +315,7 @@ where
 }
 
 async fn say_cancelled(search_id: SearchId, evt_tx: &crate::service::Outbox) {
-    let _ = evt_tx.send(SearchEvent::SearchCancelled { search_id }.into());
+    evt_tx.send(SearchEvent::SearchCancelled { search_id }.into());
 }
 
 #[cfg(test)]

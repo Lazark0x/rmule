@@ -89,7 +89,7 @@ impl PeerReacher {
     ) -> PeerReachRoute {
         let route = self.road(peer, retire).await;
         tracing::debug!(peer = ?peer.tcp, ?route, "peer reach routed (ADR-0061)");
-        let _ = self.wiring.events.send(CoreEvent::PeerReachRouted {
+        self.wiring.events.send(CoreEvent::PeerReachRouted {
             peer: peer.tcp,
             route,
         });

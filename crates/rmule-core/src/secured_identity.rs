@@ -79,7 +79,7 @@ impl SharedSecuredIdentities {
             }
             Ok(KeyBinding::Mismatch) => {
                 if let Some(events) = installed.events.upgrade() {
-                    let _ = events.send(CoreEvent::SecuredIdentityMismatch { user_hash });
+                    events.send(CoreEvent::SecuredIdentityMismatch { user_hash });
                 }
                 KeyProof::Mismatch
             }
