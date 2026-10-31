@@ -173,3 +173,23 @@ fn unsolicited_hashset_answer_does_not_precache() {
         "hash set requested despite the planted answer: {out:?}"
     );
 }
+
+/// A frame declared past what any peer honestly sends: a hash set of the
+/// largest file a peer can offer is under 460 KiB. The header alone closes
+/// the link, so nothing of the body is ever held.
+#[test]
+fn a_frame_declared_past_the_peer_ceiling_closes_at_its_header() {
+    let mut session = identified_session();
+    let declared = 1_048_577_u32;
+    let mut header = vec![0xE3];
+    header.extend_from_slice(&declared.to_le_bytes());
+
+    session.handle_bytes(&header);
+
+    let out = drain(|| session.poll_output());
+    assert!(
+        out.iter()
+            .any(|output| matches!(output, rmule_peer::PeerOutput::Close(_))),
+        "{out:?}"
+    );
+}

@@ -10,16 +10,29 @@ const EMULE_PROTOCOL_BYTE: u8 = 0xC5;
 const PACKED_ED2K_PROTOCOL_BYTE: u8 = 0xD4;
 const PACKET_HEADER_LEN: usize = 5;
 
-/// Maximum decoded length (opcode + payload) the framer accepts.
-///
-/// A hostile peer can declare `length = u32::MAX` in the frame header
-/// (~4 GiB), so without a cap the decoder would happily report a
-/// `TruncatedPacket` with `needed = 4 GiB+5`, and a streaming caller
-/// that pre-allocates `needed` bytes would OOM. 16 MiB sits well above
-/// any wire-realistic packet — the welcome burst is < 1 KiB, the
-/// (future) compression transport caps inflation at 250 KB — and well
-/// below any plausible allocation budget.
-const MAX_FRAME_LEN: u32 = 16 * 1024 * 1024;
+/// The largest declared length (opcode plus payload) a reader takes, per
+/// protocol: the header is judged before a byte of the body is held, so a
+/// stranger's frame costs what its protocol honestly needs and no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameCeiling(u32);
+
+impl FrameCeiling {
+    /// Stock's reader: a body of up to 2,000,000 bytes behind its opcode
+    /// (`EMSocket.cpp:41`, `:211`, `Packet.cpp:175`), a frame no stock peer
+    /// or stock client would ever take.
+    pub const STOCK: Self = Self(2_000_001);
+
+    /// A ceiling of `declared_len` bytes, opcode included.
+    #[must_use]
+    pub const fn new(declared_len: u32) -> Self {
+        Self(declared_len)
+    }
+}
+
+/// The ceiling of a reader that holds no protocol: a tool walking a capture.
+/// A hostile `length = u32::MAX` must not read as a `TruncatedPacket` a
+/// streaming caller would pre-allocate for.
+const ANY_PROTOCOL_CEILING: FrameCeiling = FrameCeiling(16 * 1024 * 1024);
 
 /// Which of the three eD2k framings a packet uses, named by its marker byte.
 ///
@@ -112,6 +125,14 @@ impl Packet {
     /// unknown marker, [`PrimitiveError::InvalidPacketLength`] on a zero or
     /// over-ceiling declared length.
     pub fn decode(bytes: &[u8]) -> Result<(Self, usize)> {
+        Self::decode_within(bytes, ANY_PROTOCOL_CEILING)
+    }
+
+    /// [`decode`](Self::decode) under the ceiling of the protocol being read.
+    ///
+    /// # Errors
+    /// As [`decode`](Self::decode), the ceiling being `ceiling`.
+    pub fn decode_within(bytes: &[u8], ceiling: FrameCeiling) -> Result<(Self, usize)> {
         if bytes.len() < PACKET_HEADER_LEN {
             return Err(PrimitiveError::TruncatedPacket {
                 needed: PACKET_HEADER_LEN,
@@ -126,7 +147,7 @@ impl Packet {
             protocol => return Err(PrimitiveError::UnsupportedProtocolByte { protocol }),
         };
         let length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
-        if length == 0 || length > MAX_FRAME_LEN {
+        if length == 0 || length > ceiling.0 {
             return Err(PrimitiveError::InvalidPacketLength { length });
         }
 

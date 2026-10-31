@@ -127,3 +127,30 @@ fn second_id_change_re_assigns_instead_of_closing() {
 
     assert_still_live(&mut session);
 }
+
+/// The ceiling stock's reader holds a server to (`EMSocket.cpp:41`, `:211`):
+/// a body of 2,000,000 bytes behind its opcode is still a frame, one byte
+/// more closes the link at the header.
+#[test]
+fn a_frame_past_stocks_ceiling_closes_at_its_header() {
+    let header = |declared: u32| {
+        let mut header = vec![0xE3];
+        header.extend_from_slice(&declared.to_le_bytes());
+        header
+    };
+
+    let mut session = crate::fixture::logged_in_session(0);
+    session.handle_bytes(&header(2_000_001));
+    assert_still_live(&mut session);
+
+    let mut session = crate::fixture::logged_in_session(0);
+    session.handle_bytes(&header(2_000_002));
+    let outputs = drain(|| session.poll_output());
+    assert!(
+        outputs.iter().any(|output| matches!(
+            output,
+            Output::Close(CloseReason::ProtocolViolation(_))
+        )),
+        "{outputs:?}"
+    );
+}

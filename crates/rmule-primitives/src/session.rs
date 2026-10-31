@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use crate::{Packet, PrimitiveError};
+use crate::{FrameCeiling, Packet, PrimitiveError};
 
 /// One effect drained from a sans-I/O TCP session, generic over the
 /// per-protocol event vocabulary `E` and close-reason vocabulary `C`.
@@ -43,22 +43,19 @@ pub enum SessionOutput<E, C> {
 /// (dispatch, states, commands, events, close-reason vocabularies) stays
 /// in the embedding session.
 pub struct SessionCore<E, C> {
+    ceiling: FrameCeiling,
     in_buf: Vec<u8>,
     out_queue: VecDeque<SessionOutput<E, C>>,
     closed: bool,
 }
 
-impl<E, C> Default for SessionCore<E, C> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<E, C> SessionCore<E, C> {
-    /// An open session with an empty input buffer and nothing queued.
+    /// An open session with an empty input buffer and nothing queued, reading
+    /// frames up to its protocol's `ceiling`.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(ceiling: FrameCeiling) -> Self {
         Self {
+            ceiling,
             in_buf: Vec::new(),
             out_queue: VecDeque::new(),
             closed: false,
@@ -135,7 +132,8 @@ impl<E, C> SessionCore<E, C> {
             this.in_buf.extend_from_slice(bytes);
         }
         loop {
-            let decoded = Packet::decode(&core(session).in_buf);
+            let this = core(session);
+            let decoded = Packet::decode_within(&this.in_buf, this.ceiling);
             match decoded {
                 Ok((packet, consumed)) => {
                     core(session).in_buf.drain(..consumed);

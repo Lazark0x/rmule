@@ -4,7 +4,7 @@
 //! embedding session shaped like the real protocol sessions: protocol
 //! state next to the core, every close routed through one wrapper.
 
-use rmule_primitives::{Packet, PacketProtocol, SessionCore, SessionOutput, session};
+use rmule_primitives::{FrameCeiling, Packet, PacketProtocol, SessionCore, SessionOutput, session};
 
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
@@ -26,7 +26,7 @@ struct TestSession {
 impl TestSession {
     fn new() -> Self {
         Self {
-            core: SessionCore::new(),
+            core: SessionCore::new(FrameCeiling::STOCK),
             close_on_opcode: None,
         }
     }

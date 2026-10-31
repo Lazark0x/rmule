@@ -21,8 +21,8 @@ _Avoid_: DTO, model, POJO
 **Packet**:
 The eD2k frame envelope: a protocol byte (**eDonkey**, **eMule**, or the packed
 `0xD4` spelling), a length prefix, an opcode, and the payload. Decoding
-enforces a frame ceiling so a malformed length cannot make a reader allocate on
-a counterparty's word. The envelope alone — every opcode body lives in the
+enforces a **Frame Ceiling** so a malformed length cannot make a reader allocate
+on a counterparty's word; each protocol's session names its own. The envelope alone — every opcode body lives in the
 protocol crate that owns it.
 _Avoid_: message, frame header, datagram
 

@@ -8,8 +8,8 @@
 use std::sync::Arc;
 
 use rmule_primitives::{
-    Capabilities, ClientId, ClientIdentity, CryptStance, Packet, PrimitiveError, SearchQuery,
-    ServerEndpoint, SessionCore, SessionOutput, pack_if_smaller,
+    Capabilities, ClientId, ClientIdentity, CryptStance, FrameCeiling, Packet, PrimitiveError,
+    SearchQuery, ServerEndpoint, SessionCore, SessionOutput, pack_if_smaller,
 };
 
 use crate::{
@@ -116,7 +116,7 @@ impl Ed2kSession {
             ipv6_advert: None,
             udp_ports_advert: None,
             offer_pace_request: false,
-            core: SessionCore::new(),
+            core: SessionCore::new(FrameCeiling::STOCK),
         }
     }
 

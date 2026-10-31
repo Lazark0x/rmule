@@ -102,7 +102,8 @@ and `OP_HELLOANSWER` read strictly, and every client's reaction to rmule's hello
 so is every later offset); a tag, string, `BLOB` or field running past the frame (a
 length is never believed beyond the bytes present); a hash-size byte other than 16 (the
 answer has no size field to echo). The declared tag count sizes no reservation, and a
-frame is at most 16 MiB (`rmule_primitives::packet`), so accepting more never means
+frame is at most 1 MiB (`PEER_FRAME_CEILING`, under stock's 2,000,000 at
+`EMSocket.cpp:41`, past the 460 KiB hash set of the largest file), so accepting more never means
 allocating on a peer's word.
 
 | Rule | aMule | eMule | rmule | Status | Test |

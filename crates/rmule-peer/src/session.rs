@@ -54,7 +54,7 @@ pub use self::source_exchange::SourceExchangeSupport;
 
 use std::collections::HashMap;
 
-use rmule_primitives::{FileHash, Packet, PeerEndpoint, SessionCore};
+use rmule_primitives::{FileHash, FrameCeiling, Packet, PeerEndpoint, SessionCore};
 
 use crate::capability::{MiscOptions1, MiscOptions2, UdpPortsAdvert};
 use crate::handshake::{PeerHandshakeContext, SecureIdentConfig};
@@ -64,6 +64,12 @@ use crate::software::SoftwareEvidence;
 use self::download::{CompressedBlocksInFlight, FileFlow};
 use self::multipacket::PendingMultipacketAnswer;
 use self::secure_ident::SuiState;
+
+/// The peer link's **Frame Ceiling**: the largest honest frame a peer sends is
+/// a hash set, 28,256 rows of 36 bytes with its AICH half at the most for the
+/// largest file (256 GiB, at 9.28 MB a part), under 1 MiB. Stock's reader takes
+/// 2,000,000 bytes from anyone (`EMSocket.cpp:41`); 500 links would be 1 GiB.
+const PEER_FRAME_CEILING: FrameCeiling = FrameCeiling::new(1024 * 1024);
 
 /// The protocol phase of the conversation — the one piece of bookkeeping
 /// every leg reads.
@@ -208,7 +214,7 @@ impl PeerSession {
             peer,
             ctx,
             state,
-            core: SessionCore::new(),
+            core: SessionCore::new(PEER_FRAME_CEILING),
             per_file: HashMap::new(),
             compressed_blocks_in_flight: CompressedBlocksInFlight::default(),
             active_slot: None,

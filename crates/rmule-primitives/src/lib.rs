@@ -71,7 +71,7 @@ pub use obfuscation::{
     derive_server_keys, is_plaintext_marker,
 };
 pub use packed_frame::{SkipReason, inflate, pack_if_smaller};
-pub use packet::{Packet, PacketProtocol};
+pub use packet::{FrameCeiling, Packet, PacketProtocol};
 pub use peer::PeerEndpoint;
 pub use peer_crypt::{OutboundCrypt, PeerCrypt};
 pub use search::{
