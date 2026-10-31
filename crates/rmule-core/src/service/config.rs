@@ -145,9 +145,13 @@ pub struct CoreConfig {
     /// candidate tried. A callback round-trips server-relay → peer-dial, a
     /// distinct latency regime from a slot wait, so it is its own knob.
     pub callback_timeout: Duration,
-    /// How often the server-UDP global source discovery task (ADR-0051) sweeps
-    /// the managed server list for active downloads' sources.
+    /// The Server Pace's spacing (ADR-0051): from the end of one UDP source
+    /// round to the start of the next, aMule's `UDPSERVERREASKTIME`.
     pub global_source_interval: Duration,
+    /// The Server Pace's tick (ADR-0051): one source datagram per tick across
+    /// every server, aMule's ten passes of a 100 ms `Process` and eMule's
+    /// `UDPSEARCHSPEED`.
+    pub global_source_tick: Duration,
     /// The status-ping sweep's first-contact pace (ADR-0052): a
     /// server never probed this run — a fresh import, or every row at start —
     /// is probed at one per tick, 250 ms (eMuleAI's `UDPSEARCHSPEED`, the
@@ -296,7 +300,8 @@ impl Default for CoreConfig {
             server_session_holds: Duration::from_secs(600),
             server_reconnect_attempts: crate::RECONNECT_ATTEMPTS,
             callback_timeout: Duration::from_secs(30),
-            global_source_interval: Duration::from_secs(60),
+            global_source_interval: Duration::from_secs(1300),
+            global_source_tick: Duration::from_secs(1),
             status_ping_first_contact_tick: Duration::from_millis(250),
             status_ping_tick: Duration::from_secs(5),
             status_ping_reask: Duration::from_secs(20 * 60),

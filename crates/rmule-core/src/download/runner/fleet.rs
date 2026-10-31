@@ -228,12 +228,15 @@ where
     // channel's engine so found sources route to `*_sources_rx`; the one RAII
     // guard deregisters on any exit (including `?`-propagated failures). The
     // global channel ignores the size; the Kad channel carries it on the wire.
+    // Both read the run's source count at their gate (ADR-0051).
+    let source_count = crate::server_pace::SourceCount::default();
     let (global_sources_tx, mut global_sources_rx) = mpsc::channel(16);
     let _global_source_guard = register(
         &runner.rt.global_source_registry,
         file.file_hash,
         file.size,
         global_sources_tx,
+        source_count.clone(),
     );
     let (kad_sources_tx, mut kad_sources_rx) = mpsc::channel(16);
     let _kad_source_guard = register(
@@ -241,6 +244,7 @@ where
         file.file_hash,
         file.size,
         kad_sources_tx,
+        source_count.clone(),
     );
     // A later link's sources for this file (ADR-0089's amendment): the
     // run holds the inbox for its life, so none is taken by a repair's rerun
@@ -587,6 +591,7 @@ where
                 told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
                 publish_seeds(&ctx);
                 publish_exchange_pool(&ctx);
+                source_count.publish(ctx.state.known_sources());
                 continue;
             }
             Some((udp_src, datagram)) = reask_reply_rx.recv() => {

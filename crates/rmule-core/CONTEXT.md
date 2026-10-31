@@ -475,6 +475,17 @@ a second download's ping to the endpoint waits until the first is answered or la
 the 20 s lead; a reply nothing asked for drops (ADR-0107).
 _Avoid_: reply fan-out (a reply reaches the one download that asked)
 
+**Server Pace**:
+The one owner of how often UDP source asks reach servers (ADR-0051): a sans-I/O walk
+driven with explicit time. One datagram per tick across every server, at most 35 files
+to a server in a round, the file walk carrying over from server to server, and 1300 s
+from the end of a round to the start of the next. Its clock is the Core's, so a run's
+Pause, Cancel or re-add leaves it standing; a process restart starts it over. Beside it
+live the source gates every road reads: 100 sources for a UDP round, 50 for a Kad ask,
+270 for a TCP re-ask.
+_Avoid_: sweep interval, global re-ask (the 60 s sweep is gone), Source Ask Budget (that
+paces TCP `OP_GETSOURCES`)
+
 **Source Ask Budget**:
 How many `OP_GETSOURCES` the **Download Set** may put on one server session: fifteen in
 any five minutes, counted per **Session Generation** — aMule's one frame and its spacing.
@@ -1430,8 +1441,9 @@ _Avoid_: Kad lookup (the walk is the node's concern, not Core's), DHT search (ke
 
 **Source Discovery Engine**:
 The one Core mechanism behind per-download source discovery: an active-download
-registry (file hash → sink), an ask-cadence sweep (due-check per file; the global
-channel re-asks every sweep, Kad honors `KADEMLIAREASKTIME`), answer routing, and an
+registry (file hash → sink), an ask-cadence sweep (due-check per file; a file at the
+channel's source gate is left out; the global channel takes one **Server Pace** step
+each sweep, Kad honors `KADEMLIAREASKTIME`), answer routing, and an
 RAII deregistration guard — generic over a **Discovery Channel** adapter. Two
 adapters exist: the server-UDP global sweep (ADR-0051) and the Kad channel
 (ADR-0043). Distinct from **Source Discovery Policy**, which is the per-download

@@ -302,6 +302,18 @@ impl DiagnosticsState {
         })
     }
 
+    /// The UDP flags the listed row reached at `server` holds; `None` for an
+    /// unlisted server or a row that holds none.
+    pub(crate) fn listed_udp_flags(&self, server: Ipv4Endpoint) -> Option<ServerUdpFlags> {
+        self.with_health(|inner| {
+            inner
+                .servers
+                .iter()
+                .find(|row| inner.server_health.resolved.udp_endpoint_of(row) == Some(server))
+                .and_then(ManagedServer::udp_flags)
+        })
+    }
+
     /// Whether a server session is up: the global source sweep asks only
     /// then (ADR-0051's amendment; aMule `DownloadQueue.cpp:870`).
     pub(crate) fn server_session_up(&self) -> bool {

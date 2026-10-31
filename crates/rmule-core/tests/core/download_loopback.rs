@@ -254,6 +254,7 @@ async fn global_discovery_rescues_a_download_with_no_connected_server_source() {
     // Short sweep interval so discovery fires promptly in the test.
     let config = CoreConfig {
         global_source_interval: Duration::from_millis(50),
+        global_source_tick: Duration::from_millis(50),
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, rmule_testkit::memory_store())

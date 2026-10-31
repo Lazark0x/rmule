@@ -154,6 +154,7 @@ async fn per_server_global_callback_adopts_low_id_peer_and_downloads_a_part() {
     let p = free_port().await;
     let config = CoreConfig {
         global_source_interval: Duration::from_millis(50),
+        global_source_tick: Duration::from_millis(50),
         ..CoreConfig::default()
     };
     let mut core = Core::builder(config, rmule_testkit::memory_store())

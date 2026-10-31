@@ -17,7 +17,8 @@ use super::{KadDiscoveryChannel, KadPublisher, KadSourceRegistry};
 use crate::adapters::KadSourceChannel;
 use crate::registry::{ShareSource, SharedFileEntry};
 use crate::registry_check::{WithheldReason, WithheldRows};
-use crate::source_discovery::SourceDiscovery;
+use crate::server_pace::SourceCount;
+use crate::source_discovery::{Discoverable, SourceDiscovery};
 use crate::store::registry::DurableSharedFileRegistry;
 
 /// A fake Kad channel: records every issued publish and (when configured)
@@ -86,7 +87,13 @@ fn engine<C: KadSourceChannel>(
     sweep: Duration,
     reask: Duration,
 ) -> SourceDiscovery<KadDiscoveryChannel<C>> {
-    SourceDiscovery::new(KadDiscoveryChannel::new(channel), downloads, sweep, reask)
+    SourceDiscovery::new(
+        KadDiscoveryChannel::new(channel),
+        downloads,
+        sweep,
+        reask,
+        crate::server_pace::KAD_SOURCE_GATE,
+    )
 }
 
 #[tokio::test]
@@ -100,7 +107,14 @@ async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
 
     let downloads: KadSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
     let (sink_tx, mut sink_rx) = mpsc::channel(8);
-    downloads.lock().unwrap().insert(file_hash, (4096, sink_tx));
+    downloads.lock().unwrap().insert(
+        file_hash,
+        Discoverable {
+            file_size: 4096,
+            sink: sink_tx,
+            sources: SourceCount::default(),
+        },
+    );
 
     let task = tokio::spawn(
         engine(

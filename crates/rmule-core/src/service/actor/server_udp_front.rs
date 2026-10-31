@@ -107,12 +107,17 @@ pub(super) fn spawn_server_udp_front(
                 // The same store gates the ask form per server (the 0x94
                 // upgrade, ADR-0052).
                 server_capabilities,
+                crate::server_pace::UdpRounds::new(
+                    config.global_source_interval,
+                    config.global_source_tick,
+                ),
                 inboxes.sources,
             ),
             global_source_registry.clone(),
-            config.global_source_interval,
-            // Global cadence: re-ask every sweep (ADR-0051).
+            config.global_source_tick,
+            // The Server Pace paces this channel, not the engine (ADR-0051).
             Duration::ZERO,
+            crate::server_pace::UDP_SOURCE_GATE,
         )
         .run(),
     ));

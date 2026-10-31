@@ -1,8 +1,8 @@
 //! The server-UDP global source **Discovery Channel** (ADR-0051): the
-//! [`SourceDiscovery`](crate::source_discovery) adapter that batches active
-//! downloads' file hashes into `OP_GLOBGETSOURCES` datagrams, fans one at every
-//! managed server, and maps each `OP_GLOBFOUNDSOURCES` answer's sources back to
-//! the answering server's TCP endpoint. High-ID vs Low-ID filtering lives in
+//! [`SourceDiscovery`](crate::source_discovery) adapter that puts the **Server
+//! Pace**'s asks on the wire, one `OP_GLOBGETSOURCES` datagram per step, and
+//! maps each `OP_GLOBFOUNDSOURCES` answer's sources back to the answering
+//! server's TCP endpoint. High-ID vs Low-ID filtering lives in
 //! `DownloadState::on_sightings` (`Channel::Global`), so this adapter forwards every answered
 //! source unchanged.
 //!
@@ -11,7 +11,7 @@
 //! this channel consumes the engine's `0x9B` inbox. Asks go out through the
 //! **Server-UDP Seal** (fire-and-forget sends need no demux), and the runner's
 //! per-server Low-ID callbacks (ADR-0051) likewise leave through it in
-//! `adapters::relay_global_callbacks` — so this adapter is purely ask cadence
+//! `adapters::relay_global_callbacks` — so this adapter is purely ask forming
 //! + answer receive.
 //!
 //! It asks only while a server session is up (ADR-0051's amendment), as
@@ -24,18 +24,16 @@ use std::sync::{Arc, Mutex};
 
 use rmule_ed2k::{GlobFoundSources, GlobGetSources, GlobGetSources2};
 use rmule_primitives::{
-    ClientId, FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, SourceLookupTarget,
+    ClientId, FileHash, Ipv4Endpoint, PeerSource, ServerEndpoint, ServerUdpFlags,
+    SourceLookupTarget,
 };
 use tokio::sync::mpsc;
 
 use crate::adapters::ServerUdpTransport;
 use crate::server_capabilities::{SharedServerCapabilities, capability_flags, server_tcp_key};
+use crate::server_pace::{UdpAsk, UdpRounds};
 use crate::server_udp::{ServerUdpDatagram, ServerUdpSeal};
 use crate::source_discovery::{DiscoveryChannel, DiscoveryRegistry};
-
-/// aMule `MAX_FILES_PER_UDP_PACKET` — keeps an `OP_GLOBGETSOURCES` datagram
-/// under ~512 bytes (`docs/reference/notes/server-udp.md`).
-const MAX_HASHES_PER_DATAGRAM: usize = 31;
 
 /// A global answer routed to a download: sources tagged with the **source-server**
 /// that answered (a Low-ID global source's callback must target its own
@@ -83,6 +81,8 @@ pub(crate) struct GlobalDiscoveryChannel<T> {
     /// The capability store (ADR-0052) gating each server's ask form: the
     /// `0x94` upgrade, the large-file skip, and the per-datagram packing.
     capabilities: SharedServerCapabilities,
+    /// The UDP rounds, one step per sweep of the engine.
+    rounds: Mutex<UdpRounds>,
     /// The engine's demuxed `OP_GLOBFOUNDSOURCES` datagrams (ADR-0051). A
     /// tokio mutex because `next_answer` awaits while holding it — harmless,
     /// as only the one discovery task ever takes it.
@@ -93,11 +93,24 @@ pub(crate) struct GlobalDiscoveryChannel<T> {
 }
 
 impl<T: ServerUdpTransport> GlobalDiscoveryChannel<T> {
+    /// `server`'s UDP flags: what it proved this run, else what its row holds
+    /// from an earlier run or `server.met`, as aMule reads its flags from
+    /// there, else none: the legacy form.
+    fn flags_of(&self, server: &ServerEndpoint) -> ServerUdpFlags {
+        capability_flags(&self.capabilities, server)
+            .or_else(|| {
+                let key = server_tcp_key(server)?;
+                self.session.listed_udp_flags(key)
+            })
+            .unwrap_or_default()
+    }
+
     pub(crate) fn new(
         seal: ServerUdpSeal<T>,
         servers: SharedServerList,
         session: crate::diagnostics::DiagnosticsState,
         capabilities: SharedServerCapabilities,
+        rounds: UdpRounds,
         inbox: mpsc::Receiver<ServerUdpDatagram>,
     ) -> Self {
         Self {
@@ -105,6 +118,7 @@ impl<T: ServerUdpTransport> GlobalDiscoveryChannel<T> {
             servers,
             session,
             capabilities,
+            rounds: Mutex::new(rounds),
             inbox: tokio::sync::Mutex::new(inbox),
             pending: Mutex::new(VecDeque::new()),
         }
@@ -138,67 +152,46 @@ impl<T: ServerUdpTransport> GlobalDiscoveryChannel<T> {
 impl<T: ServerUdpTransport> DiscoveryChannel for GlobalDiscoveryChannel<T> {
     type Answer = GlobalAnswer;
 
-    /// One sweep's ask: query every server for every due download, in the
-    /// form that server's proven capabilities allow (ADR-0052, aMule
-    /// `SendNextUDPPacket`):
-    ///
-    /// - `ExtGetSources2` advertised → the `0x94` size-extended query
-    ///   (unlocking files past 4 GiB); otherwise the legacy bare-hash `0x9A`.
-    /// - A large file is skipped entirely toward a server without proven
-    ///   `LargeFiles` support ("UDP Request for sources on a large file
-    ///   ignored") — under either opcode.
-    /// - `ExtGetSources` advertised → up to 31 files per datagram; a server
-    ///   without it accepts one per datagram.
-    ///
-    /// Idle when nothing is due, no server is set, or no server session is
-    /// up (aMule `DownloadQueue.cpp:870`): the due files wait for the first
-    /// sweep after a login.
+    /// One step of the UDP round: the Server Pace says who hears what, and
+    /// this forms it for that server's proven capabilities (ADR-0052, aMule
+    /// `SendNextUDPPacket`): `ExtGetSources2` advertised → the `0x94`
+    /// size-extended query (unlocking files past 4 GiB); otherwise the legacy
+    /// bare-hash `0x9A`. The swept list holds IPv4 literals at their standard
+    /// port; a row with no literal is not asked.
     async fn ask(&self, targets: &[SourceLookupTarget]) {
-        if !self.session.server_session_up() {
-            return;
-        }
-        let servers: Vec<ServerEndpoint> = self
+        let swept: Vec<ServerEndpoint> = self
             .servers
             .lock()
             .expect("global source server list")
-            .clone();
-        if targets.is_empty() || servers.is_empty() {
+            .iter()
+            .filter(|server| server_tcp_key(server).is_some())
+            .cloned()
+            .collect();
+        let ask = self.rounds.lock().expect("udp rounds").next_ask(
+            tokio::time::Instant::now(),
+            self.session.server_session_up(),
+            &swept,
+            targets,
+            |server| self.flags_of(server),
+        );
+        let Some(UdpAsk {
+            server,
+            flags,
+            targets,
+        }) = ask
+        else {
             return;
-        }
-        for server in &servers {
-            // The swept list holds IPv4 literals at their standard port.
-            let Some(key) = server_tcp_key(server) else {
-                continue;
-            };
-            let flags = capability_flags(&self.capabilities, server).unwrap_or_default();
-            let askable: Vec<SourceLookupTarget> = targets
-                .iter()
-                .filter(|target| {
-                    // aMule `SendNextUDPPacket` skips an `IsLargeFile` file
-                    // toward a server without large-file UDP support.
-                    !rmule_primitives::is_large_file(target.file_size())
-                        || flags.supports_large_files()
-                })
-                .copied()
-                .collect();
-            let per_datagram = if flags.supports_ext_get_sources() {
-                MAX_HASHES_PER_DATAGRAM
-            } else {
-                1
-            };
-            for batch in askable.chunks(per_datagram) {
-                let datagram = if flags.supports_ext_get_sources2() {
-                    GlobGetSources2::new(batch.to_vec())
-                        .encode_packet()
-                        .encode_udp()
-                } else {
-                    let hashes: Vec<FileHash> =
-                        batch.iter().map(|target| target.file_hash()).collect();
-                    GlobGetSources::new(hashes).encode_packet().encode_udp()
-                };
-                self.seal.send(key, datagram).await;
-            }
-        }
+        };
+        let Some(key) = server_tcp_key(&server) else {
+            return;
+        };
+        let datagram = if flags.supports_ext_get_sources2() {
+            GlobGetSources2::new(targets).encode_packet().encode_udp()
+        } else {
+            let hashes: Vec<FileHash> = targets.iter().map(|target| target.file_hash()).collect();
+            GlobGetSources::new(hashes).encode_packet().encode_udp()
+        };
+        self.seal.send(key, datagram).await;
     }
 
     async fn next_answer(&self) -> Option<(FileHash, GlobalAnswer)> {
@@ -229,12 +222,28 @@ mod tests {
     use super::*;
     use crate::server_udp::ServerUdpEngine;
     use crate::server_udp::tests::{plain_seal, seal_over, udp};
-    use crate::source_discovery::SourceDiscovery;
+    use crate::server_pace::{SourceCount, UDP_SOURCE_GATE};
+    use crate::source_discovery::{Discoverable, SourceDiscovery};
     use rmule_ed2k::Opcode;
     use rmule_primitives::{
         Packet, PacketProtocol, ServerCryptDirection, decrypt_datagram_server,
         encrypt_datagram_server,
     };
+
+    /// Rounds that step at every ask, one round per test.
+    fn test_rounds() -> UdpRounds {
+        UdpRounds::new(Duration::from_secs(3600), Duration::ZERO)
+    }
+
+    /// Step `channel` through more asks than any test's round has datagrams.
+    async fn walk_round<T: ServerUdpTransport>(
+        channel: &GlobalDiscoveryChannel<T>,
+        targets: &[SourceLookupTarget],
+    ) {
+        for _ in 0..8 {
+            channel.ask(targets).await;
+        }
+    }
 
     /// A fake transport: on any `send_to`, it enqueues one `OP_GLOBFOUNDSOURCES`
     /// datagram answering `known_hash` with `source` from where the ask went
@@ -312,7 +321,14 @@ mod tests {
 
         let registry: GlobalSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
         let (sink_tx, mut sink_rx) = mpsc::channel(8);
-        registry.lock().unwrap().insert(file_hash, (4096, sink_tx));
+        registry.lock().unwrap().insert(
+            file_hash,
+            Discoverable {
+                file_size: 4096,
+                sink: sink_tx,
+                sources: SourceCount::default(),
+            },
+        );
 
         let servers: SharedServerList = Arc::new(Mutex::new(vec![
             ServerEndpoint::new("127.0.0.1", 4661).unwrap(),
@@ -337,12 +353,18 @@ mod tests {
             servers,
             in_session(),
             SharedServerCapabilities::default(),
+            test_rounds(),
             inboxes.sources,
         );
-        // Global cadence: re-ask every sweep (reask == ZERO), as ADR-0051.
         let task = tokio::spawn(
-            SourceDiscovery::new(channel, registry, Duration::from_millis(10), Duration::ZERO)
-                .run(),
+            SourceDiscovery::new(
+                channel,
+                registry,
+                Duration::from_millis(10),
+                Duration::ZERO,
+                UDP_SOURCE_GATE,
+            )
+            .run(),
         );
 
         let (server, routed) = tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
@@ -416,7 +438,14 @@ mod tests {
         let engine_task = tokio::spawn(engine.run());
         let registry: GlobalSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
         let (sink_tx, mut sink_rx) = mpsc::channel(8);
-        registry.lock().unwrap().insert(file_hash, (4096, sink_tx));
+        registry.lock().unwrap().insert(
+            file_hash,
+            Discoverable {
+                file_size: 4096,
+                sink: sink_tx,
+                sources: SourceCount::default(),
+            },
+        );
         let channel = GlobalDiscoveryChannel::new(
             seal,
             Arc::new(Mutex::new(vec![
@@ -424,11 +453,18 @@ mod tests {
             ])),
             in_session(),
             capabilities,
+            test_rounds(),
             inboxes.sources,
         );
         let task = tokio::spawn(
-            SourceDiscovery::new(channel, registry, Duration::from_millis(10), Duration::ZERO)
-                .run(),
+            SourceDiscovery::new(
+                channel,
+                registry,
+                Duration::from_millis(10),
+                Duration::ZERO,
+                UDP_SOURCE_GATE,
+            )
+            .run(),
         );
 
         let (server, routed) = tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
@@ -495,6 +531,7 @@ mod tests {
             Arc::new(Mutex::new(servers)),
             session,
             capabilities,
+            test_rounds(),
             inbox_rx,
         )
     }
@@ -550,10 +587,10 @@ mod tests {
         // large though a `u32` still holds it.
         let large_size = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
         let large = SourceLookupTarget::new(FileHash::from_bytes([0x22; 16]), large_size);
-        channel.ask(&[small, large]).await;
+        walk_round(&channel, &[small, large]).await;
 
         let sends = transport.sends.lock().unwrap().clone();
-        assert_eq!(sends.len(), 2, "one datagram per server this sweep");
+        assert_eq!(sends.len(), 2, "one datagram per server this round");
 
         // The upgraded server gets one 0x94 with both entries — the large
         // file in its [0 u32][u64] escape form.
@@ -598,7 +635,7 @@ mod tests {
             SourceLookupTarget::new(FileHash::from_bytes([0x11; 16]), 4096),
             SourceLookupTarget::new(FileHash::from_bytes([0x22; 16]), 8192),
         ];
-        channel.ask(&targets).await;
+        walk_round(&channel, &targets).await;
 
         let sends = transport.sends.lock().unwrap().clone();
         let to_bare: Vec<_> = sends.iter().filter(|(s, _)| s == &udp(&bare, 4)).collect();
