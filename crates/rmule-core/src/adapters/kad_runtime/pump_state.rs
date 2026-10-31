@@ -505,9 +505,10 @@ impl KadPumpState {
                 tracing::debug!(asked, "FINDBUDDY walk ended (ADR-0061)");
             }
             KadEvent::CallbackWalkEnded { buddy_id, end } => {
-                if let Some((reply, reason)) = self.callback_walks.ended(buddy_id, end) {
-                    out.push(KadPumpEffect::CallbackWalkRetired { reply, reason });
-                }
+                out.extend(self.callback_walks.ended(buddy_id, end));
+            }
+            KadEvent::BuddyCallbackPaced { buddy_id, pace } => {
+                out.extend(self.callback_walks.paced(buddy_id, pace));
             }
             KadEvent::BuddyFound {
                 buddy,

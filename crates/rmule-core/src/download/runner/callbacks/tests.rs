@@ -81,6 +81,7 @@ fn context(registry: &AwaitedInbound) -> CallbackContext {
         },
         mpsc::channel(4).0,
         mpsc::channel(4).0,
+        mpsc::channel(4).0,
         registry.clone(),
     )
 }

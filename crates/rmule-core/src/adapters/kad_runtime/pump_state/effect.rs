@@ -17,7 +17,7 @@ use rmule_kad::{KadId, KadPublishPosture};
 use rmule_primitives::{FileHash, Ipv4Endpoint, SearchResult, UserHash};
 
 use super::keyword_subscribers::SearchSink;
-use crate::adapters::kad_runtime::CallbackWalkReply;
+use crate::adapters::kad_runtime::CallbackReply;
 use crate::address_learning::AddressObservation;
 use crate::diagnostics::{KadFirewallCheck, NattRetirement};
 use crate::firewalled::link::RecruitedBuddy;
@@ -46,8 +46,14 @@ pub(crate) enum KadPumpEffect {
     /// download's full channel turns away leaves the candidate to its slot's
     /// own deadline.
     CallbackWalkRetired {
-        reply: CallbackWalkReply,
+        reply: CallbackReply,
         reason: NattRetirement,
+    },
+    /// The **Callback Pace** holds this download's `0x52`: its callback wait
+    /// starts after `leaves_in`.
+    CallbackHeld {
+        reply: CallbackReply,
+        leaves_in: std::time::Duration,
     },
     /// A write to **Address Learning**, answered with a fresh `Sampled`.
     Address(AddressWrite),

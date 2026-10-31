@@ -50,6 +50,7 @@ mod node_lookup;
 // Reachability: the firewall self-checks, the UDP helper protocol, and buddy
 // recruitment for a node that fails them.
 mod node_buddy;
+mod node_callback_pace;
 mod node_callback_walk;
 mod node_extern_port;
 mod node_firewall;

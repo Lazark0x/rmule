@@ -3,7 +3,7 @@
 //! discovered sources — server-UDP global (ADR-0051) and Kad (ADR-0043) —
 //! that backfill the candidate pool while the download runs.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rmule_peer::natt::CALLBACK_SILENCE_FALLBACK;
 use rmule_primitives::PeerEndpoint;
@@ -173,6 +173,17 @@ impl DownloadState {
         }
         self.release_callback_slot(now, key)
     }
+    /// The **Callback Pace** holds `key`'s `0x52` for `leaves_in` (ADR-0061):
+    /// nothing has been asked yet, so the road's callback wait, and the 12 s
+    /// silence beside it, start when it leaves. A road that ended meanwhile
+    /// has nothing to move.
+    pub(crate) fn on_callback_held(&mut self, now: Instant, key: CallbackKey, leaves_in: Duration) {
+        let callback_timeout = self.callback_timeout;
+        if let Some(road) = self.sources.road_mut(key) {
+            road.wait_from(now + leaves_in, callback_timeout);
+        }
+    }
+
     /// The buddy callback's second spelling (ADR-0061): aMule through 3.1.0
     /// writes `TAG_BUDDYHASH` big-endian (captured), every current family
     /// word-ordered, and the row cannot say which family wrote it. The held

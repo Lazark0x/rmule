@@ -3,14 +3,16 @@
 //! them and only once the node holds the whole desired state; a full inbox
 //! holds the core back rather than the pump, and the ask goes out on room.
 
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
-use rmule_kad::{KadCallbackWalkEnd, KadCommand};
+use rmule_kad::{KadCallbackPace, KadCallbackWalkEnd, KadCommand};
 use tokio::sync::mpsc;
 
 use super::*;
 use crate::adapters::CallbackKey;
-use crate::adapters::kad_runtime::{CallbackWalkAsk, CallbackWalkReply, KadPumpCommand};
+use crate::adapters::kad_runtime::{
+    BuddyCallbackAsk, CallbackReply, CallbackWalkAsk, KadPumpCommand,
+};
 use crate::diagnostics::NattRetirement;
 
 fn target(byte: u8) -> SourceLookupTarget {
@@ -153,7 +155,7 @@ fn a_publish_leaves_only_once_the_node_holds_the_advertised_ipv6_it_names() {
     );
 }
 
-fn walk_ask(reply: CallbackWalkReply) -> KadPumpCommand {
+fn walk_ask(reply: CallbackReply) -> KadPumpCommand {
     KadPumpCommand::CallbackWalk(CallbackWalkAsk {
         buddy_id: BUDDY_ID,
         file_hash: FileHash::from_bytes([0x5C; FileHash::BYTE_LEN]),
@@ -164,16 +166,18 @@ fn walk_ask(reply: CallbackWalkReply) -> KadPumpCommand {
 
 const BUDDY_ID: KadId = KadId::from_bytes([0x7A; KadId::BYTE_LEN]);
 
-fn waiter(low: u32) -> CallbackWalkReply {
+fn waiter(low: u32) -> CallbackReply {
     // The brain never sends on it; the driver does.
     let (retire_tx, _) = mpsc::channel(1);
-    CallbackWalkReply {
+    let (held_tx, _) = mpsc::channel(1);
+    CallbackReply {
         key: CallbackKey {
             server: None,
             low_id: rmule_primitives::ClientId::from_u32(low),
             kad_port: None,
         },
         retire_tx,
+        held_tx,
     }
 }
 
@@ -216,6 +220,95 @@ fn each_callback_walk_verdict_retires_the_download_that_asked() {
         [KadPumpEffect::CallbackWalkRetired {
             reply: first,
             reason: NattRetirement::BuddyNotFound,
+        }]
+    );
+}
+
+fn buddy_ask(reply: CallbackReply) -> KadPumpCommand {
+    KadPumpCommand::BuddyCallback(BuddyCallbackAsk {
+        buddy_udp: Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 9), 4672),
+        buddy_id: BUDDY_ID,
+        file_hash: FileHash::from_bytes([0x5C; FileHash::BYTE_LEN]),
+        tcp_port: 4662,
+        reply,
+    })
+}
+
+fn paced(pace: KadCallbackPace) -> KadPumpInput {
+    KadPumpInput::Event(KadEvent::BuddyCallbackPaced {
+        buddy_id: BUDDY_ID,
+        pace,
+    })
+}
+
+/// Two downloads behind one buddy: the node answers each `0x52` in the order
+/// the brain told them, so each verdict reaches the download that asked, and
+/// one that left costs nobody a message.
+#[test]
+fn each_callback_pace_verdict_reaches_the_download_that_asked() {
+    let now = Instant::now();
+    let mut state = started(None, behind_nat(), now);
+    let (first, second, third) = (waiter(1), waiter(2), waiter(3));
+    for reply in [first, second.clone(), third.clone()] {
+        step(&mut state, command(buddy_ask(reply), behind_nat()), now);
+    }
+    let leaves_in = Duration::from_secs(40);
+
+    assert_eq!(state.handle(paced(KadCallbackPace::Left), now), []);
+    assert_eq!(
+        state.handle(paced(KadCallbackPace::Held { leaves_in }), now),
+        [KadPumpEffect::CallbackHeld {
+            reply: second,
+            leaves_in,
+        }]
+    );
+    assert_eq!(
+        state.handle(paced(KadCallbackPace::Refused), now),
+        [KadPumpEffect::CallbackWalkRetired {
+            reply: third,
+            reason: NattRetirement::CallbackNotSent,
+        }]
+    );
+}
+
+/// A walk's held sends move its download's wait, and a walk whose every send
+/// the pace refused sent nothing, so its road ends at once.
+#[test]
+fn a_walk_the_pace_held_or_refused_tells_its_download() {
+    let now = Instant::now();
+    let mut state = started(None, behind_nat(), now);
+    let (first, second) = (waiter(1), waiter(2));
+    let leaves_in = Duration::from_secs(40);
+
+    step(
+        &mut state,
+        command(walk_ask(first.clone()), behind_nat()),
+        now,
+    );
+    assert_eq!(
+        state.handle(
+            walk_ended(KadCallbackWalkEnd::Held {
+                asked: 2,
+                leaves_in
+            }),
+            now
+        ),
+        [KadPumpEffect::CallbackHeld {
+            reply: first,
+            leaves_in,
+        }]
+    );
+
+    step(
+        &mut state,
+        command(walk_ask(second.clone()), behind_nat()),
+        now,
+    );
+    assert_eq!(
+        state.handle(walk_ended(KadCallbackWalkEnd::Refused), now),
+        [KadPumpEffect::CallbackWalkRetired {
+            reply: second,
+            reason: NattRetirement::CallbackNotSent,
         }]
     );
 }

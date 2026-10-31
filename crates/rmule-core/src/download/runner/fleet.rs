@@ -202,10 +202,15 @@ where
     // front's loop.
     let (retire_tx, mut retire_rx) =
         mpsc::channel::<(CallbackKey, crate::diagnostics::NattRetirement)>(8);
+    // The Callback Pace holds a `0x52` (ADR-0061): the wait starts when it
+    // leaves. Bounded and never awaited, like the retire queue; a full queue
+    // leaves the road on the deadline it had.
+    let (held_tx, mut held_rx) = mpsc::channel::<(CallbackKey, std::time::Duration)>(8);
     let callbacks = CallbackContext::new(
         callback_facts,
         adopt_tx,
         retire_tx,
+        held_tx,
         runner.rt.awaited_inbound.clone(),
     );
     // This download's Download and Queued relations end with the run on every
@@ -437,6 +442,10 @@ where
                 // The accept-router adopted a called-back Low-ID peer (ADR-0039 /
                 // ADR-0051): it lands in the slot the brain names, or not at all.
                 adopt(&mut ctx, reported, worker).await?;
+                continue;
+            }
+            Some((key, leaves_in)) = held_rx.recv() => {
+                ctx.state.on_callback_held(now(), key, leaves_in);
                 continue;
             }
             Some((key, reason)) = retire_rx.recv() => {

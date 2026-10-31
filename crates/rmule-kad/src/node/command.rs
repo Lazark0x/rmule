@@ -273,7 +273,9 @@ pub enum KadCommand {
     /// firewalled client as `OP_CALLBACK` over the link it holds; the client
     /// then dials us at `tcp_port`. Plaintext always, as aMule sends it: the
     /// buddy's Kad version is unknown (`BaseClient.cpp:2141-2149`). The
-    /// admission decision and the dial-back adoption are core-side.
+    /// admission decision and the dial-back adoption are core-side. It leaves
+    /// through the **Callback Pace**, which answers each command with
+    /// [`BuddyCallbackPaced`](crate::KadEvent::BuddyCallbackPaced).
     RequestBuddyCallback {
         /// The buddy's Kad UDP endpoint, from the source row.
         buddy: KadNodeEndpoint,

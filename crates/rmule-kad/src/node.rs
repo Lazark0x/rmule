@@ -35,6 +35,7 @@
 //! `diagnostic`, re-exported here.
 
 mod buddy;
+mod callback_pace;
 mod command;
 mod config;
 mod contact;
@@ -55,7 +56,7 @@ pub use self::command::KadCommand;
 pub use self::config::{KadContactAdmission, KadNodeConfig, KadReachability, UdpFirewallHelper};
 pub use self::diagnostic::KadNodeDiagnostic;
 pub use self::event::{
-    KadCallbackWalkEnd, KadEvent, KadOutput, KadPublishRejection, RoutingCensus,
+    KadCallbackPace, KadCallbackWalkEnd, KadEvent, KadOutput, KadPublishRejection, RoutingCensus,
 };
 pub use self::start::{KadNodeStart, KadObfuscation, KadSelfCheck};
 
@@ -320,6 +321,8 @@ pub struct KadNode {
     /// must match (aMule's `CHECK_TRACKED_PACKET(KADEMLIA_FINDBUDDY_REQ)`). Empty
     /// until [`recruit_buddy`](Self::recruit_buddy) emits; pruned as windows lapse.
     buddy_recruit: Vec<(Ipv4Addr, KadInstant)>,
+    /// The one gate every `0x52` leaves through (ADR-0061).
+    callback_pace: callback_pace::CallbackPace,
     /// The **Kad Keyword Store** this node serves inbound `0x43`/`0x33` from
     /// (ADR-0062).
     keyword_store: KeywordStore,
@@ -400,6 +403,7 @@ impl KadNode {
             publish_posture: crate::KadPublishPosture::Reachable,
             publish_connect_options: None,
             buddy_recruit: Vec::new(),
+            callback_pace: callback_pace::CallbackPace::default(),
             keyword_store: KeywordStore::new(),
             keyword_publisher: KeywordPublisher::new(),
             keyword_searches: Vec::new(),
@@ -451,6 +455,7 @@ impl KadNode {
             .chain(firewall)
             .chain(udp_firewall)
             .chain(buddy_recruits)
+            .chain(self.callback_pace.next_wake())
             .chain(self.keyword_sweep_next_wake())
             .chain(self.keyword_publish_next_wake())
             .chain(self.next_bootstrap_dial)
@@ -529,7 +534,7 @@ impl KadNode {
                 buddy_id,
                 file_hash,
                 tcp_port,
-            } => self.request_buddy_callback(buddy, buddy_id, file_hash, tcp_port),
+            } => self.request_buddy_callback(now, buddy, buddy_id, file_hash, tcp_port),
             KadCommand::CallbackWalk {
                 buddy_id,
                 file_hash,
@@ -542,6 +547,7 @@ impl KadNode {
     /// unmatched bootstrap solicitations. Idempotent between deadlines; the
     /// driver calls it at (or after) [`next_wake`](Self::next_wake).
     pub fn tick(&mut self, now: KadInstant) {
+        self.release_held_callbacks(now);
         self.source_store.tick(now);
         let stored_before = self.keyword_store.len();
         self.keyword_store.tick(now);

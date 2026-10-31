@@ -84,6 +84,45 @@ fn source_derived_a_silent_primary_callback_earns_one_fallback_spelling_callback
     assert!(released(&ended, key), "then the road ends: {ended:?}");
 }
 
+/// The **Callback Pace** holds the fallback, which the stock window shuts at
+/// the end of the primary's wait: it is deferred, and its wait counts from
+/// when it leaves, so the road does not end on a `0x52` the buddy has not yet
+/// had the chance to relay.
+#[test]
+fn a_held_fallback_gets_its_whole_wait_from_when_it_leaves() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+
+    let lapsed = t0() + CALLBACK_TIMEOUT;
+    assert_eq!(asks(&state.on_tick(lapsed)).len(), 1);
+    let leaves_in = Duration::from_secs(35);
+    state.on_callback_held(lapsed, key, leaves_in);
+
+    let leaves = lapsed + leaves_in;
+    assert_eq!(state.next_wake(), Some(leaves + CALLBACK_TIMEOUT));
+    let early = state.on_tick(t0() + CALLBACK_TIMEOUT * 2);
+    assert!(!released(&early, key), "still ahead of the wait: {early:?}");
+    assert!(released(&state.on_tick(leaves + CALLBACK_TIMEOUT), key));
+}
+
+/// A second download's primary, held behind the first's: its silence has not
+/// begun, so the fallback waits a whole callback wait past the leaving.
+#[test]
+fn a_held_primary_earns_no_fallback_until_a_whole_wait_past_its_leaving() {
+    let mut state = callback_state(Vec::new(), Vec::new(), true, 1);
+    let opened = via_kad(&mut state, vec![row(PRIMARY, buddy_udp())]);
+    let key = super::buddy_callback::buddy_key(&opened);
+    let leaves_in = Duration::from_secs(64);
+    state.on_callback_held(t0(), key, leaves_in);
+
+    assert!(asks(&state.on_tick(t0() + CALLBACK_TIMEOUT)).is_empty());
+    assert_eq!(
+        asks(&state.on_tick(t0() + leaves_in + CALLBACK_TIMEOUT)),
+        vec![(PRIMARY.word_swapped(), true)],
+    );
+}
+
 /// A primary that drew its dial-back is done: the wait never lapses, so no
 /// fallback ever leaves.
 #[test]

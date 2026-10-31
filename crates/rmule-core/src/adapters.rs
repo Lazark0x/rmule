@@ -65,9 +65,9 @@ pub(crate) use ipv6_advert::SharedIpv6Advert;
 #[cfg(test)]
 pub(crate) use kad_runtime::KadPumpCommand;
 pub(crate) use kad_runtime::{
-    BuddyCallbackAsk, CallbackWalkAsk, CallbackWalkReply, KadPresenceChanges, KadPresenceLease,
-    KadPresenceView, SharedKadBootstrap, SharedKadPump, request_kad_buddy_callback,
-    request_kad_callback_walk, request_kad_recheck,
+    BuddyCallbackAsk, CallbackReply, CallbackWalkAsk, HeldSender, KadPresenceChanges,
+    KadPresenceLease, KadPresenceView, SharedKadBootstrap, SharedKadPump,
+    request_kad_buddy_callback, request_kad_callback_walk, request_kad_recheck,
 };
 pub(crate) use peer_link::{AwaitedGrant, GrantSender, LinkName, LinkOffer, SharedPeerLinks};
 pub(crate) use peer_transfer::advertises_complete;

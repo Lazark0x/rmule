@@ -110,6 +110,7 @@ impl PeerReacher {
         let retire = Retire {
             key: pending.key,
             tx: pending.retire_tx,
+            held_tx: pending.held_tx,
         };
         match pending.road {
             DownloadAsk::BuddyCallback { file_hash } => {
@@ -390,6 +391,7 @@ impl PeerReacher {
                     buddy_id: buddy.buddy_id,
                     file_hash,
                     tcp_port,
+                    reply: retire.reply(),
                 },
             )
             .then_some(buddy_udp),
@@ -400,10 +402,7 @@ impl PeerReacher {
                         buddy_id: buddy.buddy_id,
                         file_hash,
                         tcp_port,
-                        reply: crate::adapters::CallbackWalkReply {
-                            key: retire.key,
-                            retire_tx: retire.tx.clone(),
-                        },
+                        reply: retire.reply(),
                     },
                 ) {
                     tracing::info!(
@@ -544,9 +543,20 @@ impl PeerReacher {
 struct Retire {
     key: CallbackKey,
     tx: mpsc::Sender<(CallbackKey, NattRetirement)>,
+    /// Where the **Callback Pace** says it holds the road's `0x52`.
+    held_tx: crate::adapters::HeldSender,
 }
 
 impl Retire {
+    /// Where the `0x52`'s fate is reported.
+    fn reply(&self) -> crate::adapters::CallbackReply {
+        crate::adapters::CallbackReply {
+            key: self.key,
+            retire_tx: self.tx.clone(),
+            held_tx: self.held_tx.clone(),
+        }
+    }
+
     /// Tell the candidate that the road it was asked down never opened: the
     /// one owner that would otherwise report its end was never created, so
     /// without this the slot waits out its deadline for an ask that never

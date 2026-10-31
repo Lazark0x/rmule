@@ -21,8 +21,8 @@ use rmule_peer::PartBitmap;
 use rmule_primitives::Ed2kFileLink;
 
 use crate::adapters::{
-    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, PeerWorker,
-    RetireSender,
+    AdoptSender, AdoptionBrief, AwaitedInbound, AwaitedInboundHandle, CallbackKey, HeldSender,
+    PeerWorker, RetireSender,
 };
 use crate::download::state::LowIdCandidate;
 
@@ -34,6 +34,7 @@ use super::CallbackFacts;
 ///   for the brain on the loop's tick, the source of rmule's own contact
 ///   for a per-server global callback's `OP_GLOBCALLBACKREQUEST` payload, and
 ///   the live session a key minted with no server resolves against.
+/// - `held_tx`: where the Callback Pace says it holds a road's `0x52`.
 /// - `retire_tx`: the road not taken — where the NAT-T front reports that the
 ///   **Traversal Attempt** beside a callback retired, tagged with its key
 ///   (ADR-0091).
@@ -44,6 +45,7 @@ use super::CallbackFacts;
 pub(super) struct CallbackContext {
     pub(super) facts: CallbackFacts,
     pub(super) retire_tx: RetireSender,
+    pub(super) held_tx: HeldSender,
     adopt_tx: AdoptSender,
     registry: AwaitedInbound,
     awaiting: HashMap<CallbackKey, AwaitedInboundHandle>,
@@ -57,11 +59,13 @@ impl CallbackContext {
         facts: CallbackFacts,
         adopt_tx: AdoptSender,
         retire_tx: RetireSender,
+        held_tx: HeldSender,
         registry: AwaitedInbound,
     ) -> Self {
         Self {
             facts,
             retire_tx,
+            held_tx,
             adopt_tx,
             registry,
             awaiting: HashMap::new(),

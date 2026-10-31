@@ -126,6 +126,9 @@ impl Enactor {
             KadPumpEffect::CallbackWalkRetired { reply, reason } => {
                 let _ = reply.retire_tx.try_send((reply.key, reason));
             }
+            KadPumpEffect::CallbackHeld { reply, leaves_in } => {
+                let _ = reply.held_tx.try_send((reply.key, leaves_in));
+            }
             KadPumpEffect::Address(write) => {
                 match write {
                     AddressWrite::Observe(observation) => {

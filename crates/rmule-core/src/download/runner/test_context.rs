@@ -151,6 +151,7 @@ pub(super) fn loop_ctx<'a, S, P>(
     let (fact_tx, fact_rx) = mpsc::channel(8);
     let (adopt_tx, _adopt_rx) = mpsc::channel(4);
     let (retire_tx, _retire_rx) = mpsc::channel(4);
+    let (held_tx, _held_rx) = mpsc::channel(4);
     LoopCtx {
         state,
         runner,
@@ -188,6 +189,7 @@ pub(super) fn loop_ctx<'a, S, P>(
             },
             adopt_tx,
             retire_tx,
+            held_tx,
             runner.rt.awaited_inbound.clone(),
         ),
         queued_relations: std::collections::HashSet::new(),

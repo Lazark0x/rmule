@@ -395,6 +395,7 @@ where
                             },
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;
@@ -448,6 +449,7 @@ where
                             road: DownloadAsk::DirectUdp,
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;
@@ -492,6 +494,7 @@ where
                             road: DownloadAsk::Traversal(silence),
                             key: candidate.key(),
                             retire_tx: ctx.callbacks.retire_tx.clone(),
+                            held_tx: ctx.callbacks.held_tx.clone(),
                         },
                     })
                     .await;

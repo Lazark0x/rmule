@@ -462,6 +462,8 @@ pub(crate) struct PendingCallback {
     /// Where a road that never opened is reported, exactly as one that
     /// retired is.
     pub(crate) retire_tx: mpsc::Sender<(CallbackKey, crate::diagnostics::NattRetirement)>,
+    /// Where the **Callback Pace** says it holds this road's `0x52`.
+    pub(crate) held_tx: crate::adapters::HeldSender,
 }
 
 /// Which road a [`DownloadReach`] asks Peer Reach to enact. The brain has

@@ -25,7 +25,7 @@ use rmule_kad::{KadCommand, KadId};
 
 use super::keyword_subscribers::{SearchSink, lead_keyword};
 use super::{Delivery, KadPumpEffect, KadPumpState, NodeCommand};
-use crate::adapters::kad_runtime::{CallbackWalkReply, KadPumpCommand};
+use crate::adapters::kad_runtime::{CallbackReply, KadPumpCommand};
 use crate::search::KadKeywordEnd;
 
 /// The core's asks the node has not taken yet, in the order the core sent
@@ -53,7 +53,10 @@ enum Then {
     KeywordWalk(KadId),
     /// The download waiting on a Callback Walk, remembered once the node took
     /// the walk.
-    CallbackWaiter(KadId, CallbackWalkReply),
+    CallbackWaiter(KadId, CallbackReply),
+    /// The download waiting on the **Callback Pace**'s verdict on its `0x52`,
+    /// remembered once the node took it.
+    PaceWaiter(KadId, CallbackReply),
 }
 
 impl Asks {
@@ -161,7 +164,10 @@ impl KadPumpState {
             ),
             // ADR-0061 route 4: the `0x52` to a firewalled source's buddy,
             // which relays it over the link it holds.
-            KadPumpCommand::BuddyCallback(ask) => (ask.node_command(), Then::Nothing),
+            KadPumpCommand::BuddyCallback(ask) => (
+                ask.node_command(),
+                Then::PaceWaiter(ask.buddy_id, ask.reply),
+            ),
             KadPumpCommand::CallbackWalk(ask) => (
                 ask.node_command(),
                 Then::CallbackWaiter(ask.buddy_id, ask.reply),
@@ -196,6 +202,9 @@ impl KadPumpState {
         match (ask.then, delivery) {
             (Then::CallbackWaiter(buddy_id, reply), Delivery::Landed) => {
                 self.callback_walks.took(buddy_id, reply);
+            }
+            (Then::PaceWaiter(buddy_id, reply), Delivery::Landed) => {
+                self.callback_walks.sent(buddy_id, reply);
             }
             (Then::KeywordWalk(target), Delivery::NodeGone) => {
                 self.keywords.complete(target, KadKeywordEnd::NotTaken, out);

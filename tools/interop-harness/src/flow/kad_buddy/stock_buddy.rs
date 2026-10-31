@@ -30,8 +30,9 @@
 //! (`ClientTCPSocket.cpp:1636-1641`). So rmule's first `0x52`, the eMule
 //! layout, is relayed and dies in silence. The second reads the row byte for
 //! byte, and the leg's last claim asks for its dial-back. Run `1793423850` did
-//! not get one: the fallback leaves after the road's 30 s, and the buddy takes
+//! not get one: the fallback left after the road's 30 s, and the buddy takes
 //! one `KADEMLIA_CALLBACK_REQ` a minute per IP (`PacketTracking.cpp:158-160`).
+//! The node's **Callback Pace** now holds it past that minute.
 //!
 //! A `0x94` is stricter: `OP_REASKCALLBACKUDP` is relayed only under the
 //! buddy's own bytes (`ClientUDPSocket.cpp:151`), so it needs the reading
@@ -72,8 +73,9 @@ pub(crate) const STOCK_BUDDY_RMULE_KAD_ID: [u8; 16] = [
 const OPEN_BUDGET: Duration = Duration::from_secs(420);
 const TCP_OPEN_LINE: &str = "Connected to Kad (ok)";
 const UDP_OPEN_LINE: &str = "New Kad Firewallstate (UDP): Open";
-/// The road's wait, rmule's `callback_timeout`, with the tap's slack.
-const ROAD_WAIT_SECS: std::ops::RangeInclusive<f64> = 29.0..=33.0;
+/// The Callback Pace's 65 s between two `0x52` to one IP, with the tap's
+/// slack: stock's window is strictly more than 60 s.
+const CALLBACK_SPACING_SECS: std::ops::RangeInclusive<f64> = 64.0..=69.0;
 /// How soon aMule dials after the `0x99` that names it.
 const DIAL_BACK_SECS: f64 = 5.0;
 
@@ -162,11 +164,11 @@ impl Road<'_> {
                 silent && self.relays.first().map(|(_, check)| check) == primary.map(|(_, c)| c),
             ),
             (
-                "the-fallback-0x52-came-after-the-roads-wait",
+                "the-fallback-0x52-left-past-the-stock-window",
                 primary
                     .zip(fallback)
                     .is_some_and(|((sent, _), (retried, _))| {
-                        ROAD_WAIT_SECS.contains(&(retried - sent))
+                        CALLBACK_SPACING_SECS.contains(&(retried - sent))
                     }),
             ),
             (
@@ -285,9 +287,9 @@ mod tests {
     #[test]
     fn the_silent_primary_and_the_answered_fallback_hold_every_claim() {
         let claims = Road {
-            requests: &[(100.0, other_layout(ID)), (130.1, ID)],
-            relays: &[(100.0, other_layout(ID)), (130.1, ID)],
-            dials: &[130.2],
+            requests: &[(100.0, other_layout(ID)), (165.1, ID)],
+            relays: &[(100.0, other_layout(ID)), (165.1, ID)],
+            dials: &[165.2],
         }
         .claims(ID);
         assert_eq!(held(&claims).len(), claims.len());
@@ -298,20 +300,20 @@ mod tests {
     #[test]
     fn a_dial_back_on_the_primary_breaks_the_silence() {
         let claims = Road {
-            requests: &[(100.0, other_layout(ID)), (130.1, ID)],
-            relays: &[(100.0, other_layout(ID)), (130.1, ID)],
-            dials: &[100.5, 130.2],
+            requests: &[(100.0, other_layout(ID)), (165.1, ID)],
+            relays: &[(100.0, other_layout(ID)), (165.1, ID)],
+            dials: &[100.5, 165.2],
         }
         .claims(ID);
         assert!(!held(&claims).contains(&claims[1].0));
     }
 
     #[test]
-    fn a_fallback_outside_the_roads_wait_is_not_the_fallback() {
+    fn a_fallback_inside_the_stock_window_breaks_the_spacing_claim() {
         let claims = Road {
-            requests: &[(100.0, other_layout(ID)), (112.0, ID)],
+            requests: &[(100.0, other_layout(ID)), (130.1, ID)],
             relays: &[(100.0, other_layout(ID))],
-            dials: &[112.1],
+            dials: &[130.2],
         }
         .claims(ID);
         assert!(!held(&claims).contains(&claims[2].0));

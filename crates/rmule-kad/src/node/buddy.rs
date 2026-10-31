@@ -4,7 +4,8 @@
 
 use rmule_primitives::Ipv4Endpoint;
 
-use super::{KadEvent, KadNode, KadNodeDiagnostic};
+use super::callback_pace::{CallbackOffer, CallbackSend, CallbackSendRoad};
+use super::{KadCallbackPace, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::{BuddyMessage, confirms_recruitment, recruitment_target};
 use crate::{KadEnvelope, KadId, KadInstant, KadNodeEndpoint};
 
@@ -75,13 +76,15 @@ impl KadNode {
         self.send_envelope(requester, &answer.encode());
     }
 
-    /// Emit a plaintext `0x52 KADEMLIA_CALLBACK_REQ` to `buddy` — the emit behind
-    /// [`RequestBuddyCallback`](crate::KadCommand::RequestBuddyCallback).
-    /// Bypasses the obfuscation matrix on purpose: aMule sends this one
-    /// unencrypted because nothing tells it the buddy's Kad version, and a
-    /// buddy that is also a stored crypt contact must still read it.
+    /// Offer a plaintext `0x52 KADEMLIA_CALLBACK_REQ` to `buddy` — the emit behind
+    /// [`RequestBuddyCallback`](crate::KadCommand::RequestBuddyCallback) — and
+    /// say what the **Callback Pace** made of it. Bypasses the obfuscation
+    /// matrix on purpose: aMule sends this one unencrypted because nothing
+    /// tells it the buddy's Kad version, and a buddy that is also a stored
+    /// crypt contact must still read it.
     pub(super) fn request_buddy_callback(
         &mut self,
+        now: KadInstant,
         buddy: KadNodeEndpoint,
         buddy_id: KadId,
         file_hash: rmule_primitives::FileHash,
@@ -92,10 +95,45 @@ impl KadNode {
             file_hash,
             requester_tcp_port: tcp_port,
         };
-        self.outputs.push_back(super::KadOutput::Datagram {
-            to: buddy,
-            bytes: request.encode().encode(),
-        });
+        let pace = self.pace_callback(
+            now,
+            CallbackSend {
+                to: buddy,
+                envelope: request.encode(),
+                road: CallbackSendRoad::Clear,
+            },
+        );
+        self.emit_event(KadEvent::BuddyCallbackPaced { buddy_id, pace });
+    }
+
+    /// The one way a `0x52` leaves: through the **Callback Pace**, at once when
+    /// its IP's window is open.
+    pub(super) fn pace_callback(&mut self, now: KadInstant, send: CallbackSend) -> KadCallbackPace {
+        match self.callback_pace.offer(now, send) {
+            CallbackOffer::Leave(send) => {
+                self.send_callback(&send);
+                KadCallbackPace::Left
+            }
+            CallbackOffer::Held(leaves_in) => KadCallbackPace::Held { leaves_in },
+            CallbackOffer::Refused => KadCallbackPace::Refused,
+        }
+    }
+
+    /// Every held `0x52` whose window has opened goes out.
+    pub(super) fn release_held_callbacks(&mut self, now: KadInstant) {
+        while let Some(send) = self.callback_pace.take_due(now) {
+            self.send_callback(&send);
+        }
+    }
+
+    fn send_callback(&mut self, send: &CallbackSend) {
+        match send.road {
+            CallbackSendRoad::Clear => self.outputs.push_back(super::KadOutput::Datagram {
+                to: send.to,
+                bytes: send.envelope.encode(),
+            }),
+            CallbackSendRoad::Contact => self.send_envelope(send.to, &send.envelope),
+        }
     }
 
     /// Consume a `0x51`/`0x5A`/`0x52` buddy/callback datagram (ADR-0061). The node

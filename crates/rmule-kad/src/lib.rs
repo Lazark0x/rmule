@@ -55,8 +55,8 @@ pub use messages::{
     MISC_OPTIONS_ACK_REQUEST, MISC_OPTIONS_TCP_FIREWALLED, MISC_OPTIONS_UDP_FIREWALLED,
 };
 pub use node::{
-    KadCallbackWalkEnd, KadCommand, KadContactAdmission, KadEvent, KadNode, KadNodeConfig,
-    KadNodeDiagnostic, KadNodeStart, KadObfuscation, KadOutput, KadPublishRejection,
+    KadCallbackPace, KadCallbackWalkEnd, KadCommand, KadContactAdmission, KadEvent, KadNode,
+    KadNodeConfig, KadNodeDiagnostic, KadNodeStart, KadObfuscation, KadOutput, KadPublishRejection,
     KadReachability, KadSelfCheck, RoutingCensus, UdpFirewallHelper,
 };
 pub use nodes_dat::{CONTACT_FILE_LIMIT, MIN_CONTACTS_TO_WRITE, NodesDat, NodesDatError};

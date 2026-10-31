@@ -4,7 +4,9 @@
 
 mod callback_walk;
 mod cells;
-pub(crate) use callback_walk::{CallbackWalkAsk, CallbackWalkReply, request_kad_callback_walk};
+pub(crate) use callback_walk::{
+    CallbackReply, CallbackWalkAsk, HeldSender, request_kad_callback_walk,
+};
 pub use cells::{KadCells, KadPumpStandIn};
 mod handoff;
 mod node;
@@ -620,7 +622,7 @@ pub(crate) enum KadPumpCommand {
 }
 
 /// What a `0x52 KADEMLIA_CALLBACK_REQ` names, as the core actor resolved it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BuddyCallbackAsk {
     /// The buddy's Kad UDP endpoint, from the source row.
     pub(crate) buddy_udp: Ipv4Endpoint,
@@ -630,6 +632,8 @@ pub(crate) struct BuddyCallbackAsk {
     pub(crate) file_hash: rmule_primitives::FileHash,
     /// Where the target must dial us — our advertised TCP port.
     pub(crate) tcp_port: u16,
+    /// Where the **Callback Pace**'s verdict on this `0x52` goes.
+    pub(crate) reply: CallbackReply,
 }
 
 impl BuddyCallbackAsk {

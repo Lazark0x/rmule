@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use rmule_primitives::Informant;
 
-use super::{KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
+use super::callback_pace::{CallbackSend, CallbackSendRoad};
+use super::{KadCallbackPace, KadCallbackWalkEnd, KadEvent, KadNode, KadNodeDiagnostic};
 use crate::buddy::BuddyMessage;
 use crate::keyword_store::encode_search_key_req;
 use crate::lookup_walk::{KadLookupWalk, KadWalkAction, KadWalkOutcome, KadWalkPurpose};
@@ -212,6 +213,7 @@ impl KadNode {
         actions: Vec<KadWalkAction>,
     ) {
         let target = purpose.kad_target();
+        let mut callback_sends = CallbackWalkSends::default();
         for action in actions {
             match action {
                 KadWalkAction::SendLookup { contact } => self.send(
@@ -283,7 +285,15 @@ impl KadNode {
                             file_hash,
                             requester_tcp_port: tcp_port,
                         };
-                        self.send_envelope(contact.endpoint(), &request.encode());
+                        let pace = self.pace_callback(
+                            now,
+                            CallbackSend {
+                                to: contact.endpoint(),
+                                envelope: request.encode(),
+                                road: CallbackSendRoad::Contact,
+                            },
+                        );
+                        callback_sends.count(pace);
                     }
                 }
                 KadWalkAction::Complete { outcome } => match outcome {
@@ -331,16 +341,44 @@ impl KadNode {
                     KadWalkOutcome::CallbackWalk { asked } => {
                         self.emit_event(KadEvent::CallbackWalkEnded {
                             buddy_id: target,
-                            end: if asked == 0 {
-                                KadCallbackWalkEnd::NoneNear
-                            } else {
-                                KadCallbackWalkEnd::Asked(asked)
-                            },
+                            end: callback_sends.end(asked),
                         });
                     }
                 },
             }
         }
         self.walks.retain(|walk| !walk.is_complete());
+    }
+}
+
+/// What the **Callback Pace** made of one walk's sends, which go out together
+/// on the walk's convergence.
+#[derive(Default)]
+struct CallbackWalkSends {
+    refused: usize,
+    /// How long the send held longest waits.
+    held_longest: Option<Duration>,
+}
+
+impl CallbackWalkSends {
+    fn count(&mut self, pace: KadCallbackPace) {
+        match pace {
+            KadCallbackPace::Left => {}
+            KadCallbackPace::Held { leaves_in } => {
+                self.held_longest = self.held_longest.max(Some(leaves_in));
+            }
+            KadCallbackPace::Refused => self.refused += 1,
+        }
+    }
+
+    /// How a walk that met `near` contacts ended.
+    fn end(&self, near: usize) -> KadCallbackWalkEnd {
+        let asked = near - self.refused;
+        match self.held_longest {
+            _ if near == 0 => KadCallbackWalkEnd::NoneNear,
+            _ if asked == 0 => KadCallbackWalkEnd::Refused,
+            Some(leaves_in) => KadCallbackWalkEnd::Held { asked, leaves_in },
+            None => KadCallbackWalkEnd::Asked(asked),
+        }
     }
 }

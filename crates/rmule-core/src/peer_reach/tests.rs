@@ -92,6 +92,7 @@ fn pending(
     mpsc::Receiver<(CallbackKey, NattRetirement)>,
 ) {
     let (retire_tx, retire_rx) = mpsc::channel(4);
+    let (held_tx, _) = mpsc::channel(4);
     (
         PendingCallback {
             road,
@@ -101,6 +102,7 @@ fn pending(
                 kad_port: None,
             },
             retire_tx,
+            held_tx,
         },
         retire_rx,
     )
@@ -395,6 +397,9 @@ async fn a_download_buddy_callback_reaches_the_kad_node_or_walks_toward_the_budd
     let (ask, mut retire_rx) = pending(DownloadAsk::BuddyCallback {
         file_hash: file_hash(),
     });
+    let key = ask.key;
+    let retire_tx = ask.retire_tx.clone();
+    let held_tx = ask.held_tx.clone();
     assert_eq!(
         rig.reacher.reach(&punchable(), Some(ask)).await,
         PeerReachRoute::Buddy {
@@ -412,6 +417,11 @@ async fn a_download_buddy_callback_reaches_the_kad_node_or_walks_toward_the_budd
             buddy_id: buddy_id(),
             file_hash: file_hash(),
             tcp_port: LISTEN_PORT,
+            reply: crate::adapters::CallbackReply {
+                key,
+                retire_tx,
+                held_tx,
+            },
         }
     );
     assert!(retire_rx.try_recv().is_err());
