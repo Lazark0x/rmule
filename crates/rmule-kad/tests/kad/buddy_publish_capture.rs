@@ -93,7 +93,9 @@ fn the_captured_publish_decodes_to_the_firewalled_buddy_row() {
             encryption: Some(0),
             ipv6: None,
             buddy: Some(rmule_kad::KadBuddyContact {
-                buddy_id: KadId::from_bytes(RMULE_KAD_ID),
+                // Stock 2.3.3 writes the aMule layout, which the primary
+                // reading misses by one word swap.
+                buddy_id: KadId::from_bytes(kad_wire_id(RMULE_KAD_ID)),
                 buddy_udp: Some(Ipv4Endpoint::new(RMULE_IP, RMULE_KAD_UDP_PORT)),
                 buddy_ipv6: None,
                 buddy_udp_ipv6: None,
@@ -176,26 +178,25 @@ fn the_buddy_hash_is_upper_case_big_endian_not_the_wire_order() {
     );
 }
 
-/// The captured row's buddy ID in both of its spellings. The
-/// primary is the aMule reading this capture pins, unchanged; the fallback is
-/// the eMule 0.70b / eMuleAI `GetData()` reading of the same 32 characters,
-/// exactly one per-32-bit-word byte swap away. Against this aMule row the
-/// fallback names nobody — it exists for the other family's rows.
+/// The captured row's buddy ID in both of its readings. The primary is the
+/// eMule layout's, what the current families write; the fallback is the aMule
+/// reading this capture pins, exactly one per-32-bit-word byte swap away, and
+/// the one that names the buddy on this stock 2.3.3 row.
 #[test]
-fn the_captured_buddy_hash_keeps_its_primary_and_offers_the_word_swapped_fallback() {
+fn the_captured_stock_row_names_its_true_buddy_as_the_fallback() {
     let Kad2Message::PublishSourceReq { source, .. } = decoded() else {
         panic!("0x44 decodes to a publish");
     };
     let buddy = source.buddy.expect("a type-3 row names a buddy");
     assert_eq!(
         buddy.buddy_id,
-        KadId::from_bytes(RMULE_KAD_ID),
-        "the primary"
+        KadId::from_bytes(kad_wire_id(RMULE_KAD_ID)),
+        "the primary: the true ID with each four-byte word reversed"
     );
     assert_eq!(
         buddy.fallback_buddy_id(),
-        Some(KadId::from_bytes(kad_wire_id(RMULE_KAD_ID))),
-        "the fallback: the primary with each four-byte word reversed",
+        Some(KadId::from_bytes(RMULE_KAD_ID)),
+        "the fallback: the ID the stock publisher holds",
     );
 }
 
@@ -208,7 +209,8 @@ fn the_named_buddy_is_the_publishers_own_inverted_kad_id() {
         panic!("0x44 decodes to a publish");
     };
     let buddy = source.buddy.expect("a type-3 row names a buddy");
-    let complement: Vec<u8> = buddy.buddy_id.as_bytes().iter().map(|b| !b).collect();
+    let named = buddy.fallback_buddy_id().expect("an asymmetric ID");
+    let complement: Vec<u8> = named.as_bytes().iter().map(|b| !b).collect();
     assert_eq!(complement, AMULE_KAD_ID);
 }
 
@@ -368,7 +370,7 @@ fn a_callback_request_toward_the_captured_buddy_speaks_the_publishers_byte_order
         rmule_testkit::kad_node::T0,
         rmule_kad::KadCommand::RequestBuddyCallback {
             buddy: to,
-            buddy_id: buddy.buddy_id,
+            buddy_id: buddy.fallback_buddy_id().expect("an asymmetric ID"),
             file_hash: raw,
             tcp_port: 4662,
         },

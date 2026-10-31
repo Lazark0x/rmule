@@ -514,7 +514,7 @@ fn decode_published_source(
                         .try_as_str()
                         .ok()
                         .and_then(crate::source_result::hex_md4)
-                        .map(|be| KadId::from_bytes(crate::lookup::kad_wire_id(be))),
+                        .map(KadId::from_bytes),
                     _ => None,
                 },
             ),
@@ -583,9 +583,7 @@ fn encode_published_source(payload: &mut Vec<u8>, source: &KadPublishedSource) {
             (
                 TAG_BUDDYHASH,
                 TagValue::String(rmule_primitives::Ed2kText::from_utf8(
-                    crate::source_result::md4_hex(crate::lookup::kad_wire_id(
-                        *buddy.buddy_id.as_bytes(),
-                    )),
+                    crate::source_result::md4_hex(*buddy.buddy_id.as_bytes()),
                 )),
             )
         }),

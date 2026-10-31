@@ -259,7 +259,7 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
     ];
     // The buddy tags follow the source ones, in the publisher's own order
     // (`TAG_SERVERIP`, `TAG_SERVERPORT`, `TAG_BUDDYHASH`). `TAG_BUDDYHASH`
-    // goes out as the 32 hex characters aMule writes.
+    // goes out as it came in from a publish, a stored row's spelling unmoved.
     if let Some(buddy) = row.buddy {
         if let Some(udp) = buddy.buddy_udp {
             let [a, b, c, d] = udp.ip.octets();
@@ -279,7 +279,7 @@ fn encode_row(payload: &mut Vec<u8>, row: &KadSourceRow) {
         tags.push((
             TAG_BUDDYHASH,
             TagValue::String(rmule_primitives::Ed2kText::from_utf8(md4_hex(
-                crate::lookup::kad_wire_id(*buddy.buddy_id.as_bytes()),
+                *buddy.buddy_id.as_bytes(),
             ))),
         ));
     }
@@ -375,9 +375,8 @@ struct RowTags {
     buddy_ip_network_order: Option<u32>,
     /// `TAG_SERVERPORT`: the buddy's UDP port.
     buddy_port: Option<u16>,
-    /// `TAG_BUDDYHASH`, decoded from its 32 hex characters into the 16
-    /// big-endian bytes aMule's `CUInt128::ToByteArray` produced.
-    buddy_id_be: Option<[u8; KAD_ID_LEN]>,
+    /// `TAG_BUDDYHASH`, decoded from its 32 hex characters.
+    buddy_id: Option<KadId>,
     /// The row's `ip6` tag (ADR-0087), already past `IsUsableTagIdentity`.
     ipv6: Option<std::net::Ipv6Addr>,
     /// The row's `bi6` tag, gated alike; folded into the buddy contact, so a
@@ -458,7 +457,11 @@ fn apply_tag(tags: &mut RowTags, tag: &Tag) {
         (TAG_SERVERIP, value) => tags.buddy_ip_network_order = as_u32(value),
         (TAG_SERVERPORT, value) => tags.buddy_port = as_u16(value),
         (TAG_BUDDYHASH, TagValue::String(text)) => {
-            tags.buddy_id_be = text.try_as_str().ok().and_then(hex_md4);
+            tags.buddy_id = text
+                .try_as_str()
+                .ok()
+                .and_then(hex_md4)
+                .map(KadId::from_bytes);
         }
         _ => {}
     }
@@ -552,10 +555,8 @@ fn row_facts(tags: &RowTags, source_type: u8) -> KadSourceRowFacts {
             crate::net::may_name_a_host,
         ),
         connect_options: tags.connect_options.map(SourceCryptOptions::from_byte),
-        buddy: tags.buddy_id_be.map(|be| KadBuddyContact {
-            // The tag's big-endian bytes become `KadId`'s wire order under the
-            // same self-inverse word swap the row's source ID uses.
-            buddy_id: KadId::from_bytes(crate::lookup::kad_wire_id(be)),
+        buddy: tags.buddy_id.map(|buddy_id| KadBuddyContact {
+            buddy_id,
             buddy_udp: endpoint(
                 tags.buddy_ip_network_order,
                 tags.buddy_port,

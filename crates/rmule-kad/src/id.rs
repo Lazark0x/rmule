@@ -57,14 +57,23 @@ impl KadId {
     }
 
     /// These bytes with each four-byte word reversed — the one difference
-    /// between the two spellings of a 128-bit ID the eMule families write as
-    /// hex: aMule's `CUInt128::ToByteArray` (big-endian) and eMule 0.70b /
-    /// eMuleAI's `GetData()` (the raw little-endian words, eMuleAI
-    /// `srchybrid/kademlia/utils/UInt128.h:66` against `:214-220`). Self-inverse.
-    /// `TAG_BUDDYHASH` is the one field where the families disagree (ADR-0061).
+    /// between the two layouts of a 128-bit ID: `CUInt128::ToByteArray`
+    /// (big-endian) and eMule's `GetData()` (the raw little-endian words,
+    /// eMuleAI `srchybrid/kademlia/utils/UInt128.h:66` against `:214-220`).
+    /// Self-inverse. `TAG_BUDDYHASH` is the one field where the families
+    /// disagree (ADR-0061).
     #[must_use]
     pub const fn word_swapped(&self) -> Self {
         Self(rmule_primitives::kad_wire_id(self.0))
+    }
+
+    /// The bytes a `0x94` names this buddy by: big-endian, in every family,
+    /// because each stores the ID through `ToByteArray` and writes and
+    /// compares it raw (aMule `ClientList.cpp:929-930`, `ClientUDPSocket.cpp`
+    /// `md4cmp`; eMuleAI `BaseClient.cpp:3152`).
+    #[must_use]
+    pub const fn big_endian_bytes(&self) -> [u8; Self::BYTE_LEN] {
+        rmule_primitives::kad_wire_id(self.0)
     }
 
     /// The comparable 128-bit magnitude of these bytes under the proven Kad byte

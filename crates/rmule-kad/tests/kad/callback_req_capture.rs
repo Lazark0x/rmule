@@ -76,7 +76,8 @@ fn amules_callback_carries_the_rows_buddy_id_in_wire_order() {
     assert_eq!(frame.len(), 36);
     assert_eq!((frame[0], frame[1]), (KAD_PROTO, OP_CALLBACK_REQ));
     let buddy = row().buddy.expect("a type-3 row names its buddy");
-    assert_eq!(&frame[2..18], buddy.buddy_id.as_bytes());
+    let named = buddy.fallback_buddy_id().expect("an asymmetric ID");
+    assert_eq!(&frame[2..18], named.as_bytes());
     assert_eq!(
         kad_wire_id(frame[2..18].try_into().unwrap()),
         *b"\xCC\xDD\xEE\xFF\x88\x99\xAA\xBB\x44\x55\x66\x77\x00\x11\x22\x33",
@@ -108,7 +109,8 @@ fn amule_knos_callback_answers_a_bi6_row_through_its_ipv4_trio() {
     let frame = captured(KNO_FIXTURE_DIR, "callback_req_0x52.bin");
     assert_eq!(frame.len(), 36);
     assert_eq!((frame[0], frame[1]), (KAD_PROTO, OP_CALLBACK_REQ));
-    assert_eq!(&frame[2..18], buddy.buddy_id.as_bytes());
+    let named = buddy.fallback_buddy_id().expect("an asymmetric ID");
+    assert_eq!(&frame[2..18], named.as_bytes());
     assert_eq!(frame[18..34], answer[18..34], "the key the answer served");
     assert_eq!(le_u16(&frame[34..]), 4662);
 }

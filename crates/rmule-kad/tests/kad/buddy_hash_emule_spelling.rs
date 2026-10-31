@@ -14,7 +14,7 @@
 //! respelled that way, for the same pinned buddy ID the capture used — so the
 //! one thing this leg asserts beyond the capture is what the source says.
 
-use rmule_kad::{Kad2Message, KadId};
+use rmule_kad::{Kad2Message, KadBuddyContact, KadId, KadPublishedSource};
 use rmule_primitives::kad_wire_id;
 
 use super::buddy_publish_capture::{RMULE_KAD_ID, frame};
@@ -33,11 +33,11 @@ fn source_derived_emule_frame() -> Vec<u8> {
     f
 }
 
-/// Source-derived: an eMule-family row's primary reading is the wrong ID
-/// (aMule's big-endian decode of a word-ordered string), and its fallback is
-/// the true one — the buddy ID the publisher actually holds.
+/// Source-derived: an eMule-family row's primary reading is the buddy ID its
+/// publisher holds, the order aMule 3.2.0 reads it in (`6f47e2bad1`
+/// `Search.cpp`), and the fallback is the aMule reading of the same string.
 #[test]
-fn source_derived_emule_spelling_reads_the_true_buddy_id_as_the_fallback() {
+fn source_derived_emule_spelling_reads_the_true_buddy_id_first() {
     let rmule_kad::KadDecoded::Plain(envelope) =
         rmule_kad::decode_exact(&source_derived_emule_frame()).expect("well-formed")
     else {
@@ -51,12 +51,45 @@ fn source_derived_emule_spelling_reads_the_true_buddy_id_as_the_fallback() {
     let buddy = source.buddy.expect("a type-3 row names a buddy");
     assert_eq!(
         buddy.buddy_id,
-        KadId::from_bytes(kad_wire_id(RMULE_KAD_ID)),
-        "the aMule-spelling primary misreads an eMule row by one word swap",
+        KadId::from_bytes(RMULE_KAD_ID),
+        "the eMule reading comes first",
     );
     assert_eq!(
         buddy.fallback_buddy_id(),
-        Some(KadId::from_bytes(RMULE_KAD_ID)),
-        "the fallback is the buddy ID the eMule publisher meant",
+        Some(KadId::from_bytes(kad_wire_id(RMULE_KAD_ID))),
+        "the fallback is the aMule reading of the same characters",
+    );
+}
+
+/// The vector of `amule-org/amule` issue 1835: a source with Kad ID
+/// `123456789ABCDEF00FEDCBA987654321`, whose buddy ID's big-endian bytes aMule
+/// through 3.1.0 printed, and the string the eMule family, aMule 3.2.0 and
+/// current emule-qt print. rmule writes the second.
+#[test]
+fn a_firewalled_row_spells_its_buddy_as_the_current_families_read_it() {
+    let big_endian =
+        rmule_primitives::UserHash::from_hex("EDCBA9876543210FF0123456789ABCDE").unwrap();
+    let message = Kad2Message::PublishSourceReq {
+        file: KadId::from_bytes([0x11; 16]),
+        source_id: [0x22; 16],
+        source: KadPublishedSource {
+            source_type: Some(3),
+            tcp_port: Some(4662),
+            buddy: Some(KadBuddyContact {
+                buddy_id: KadId::from_bytes(kad_wire_id(*big_endian.as_bytes())),
+                buddy_udp: None,
+                buddy_ipv6: None,
+                buddy_udp_ipv6: None,
+            }),
+            ..KadPublishedSource::default()
+        },
+    };
+    let frame = message.encode();
+    assert!(
+        frame
+            .payload()
+            .windows(32)
+            .any(|window| window == b"87A9CBED0F214365563412F0DEBC9A78"),
+        "the row spells the eMule layout"
     );
 }
