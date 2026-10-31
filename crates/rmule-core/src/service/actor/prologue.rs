@@ -39,7 +39,7 @@ use super::{
 pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     mut wiring: CoreWiring<S, P, L, K>,
     inbox: crate::service::inbox::Inbox,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     diagnostics: crate::diagnostics::DiagnosticsState,
 ) where
     S: SourceLookupService,
@@ -54,8 +54,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         CoreEvent::ObfuscationPolicyAtStart {
             policy: wiring.hello_adverts.obfuscation.get(),
         },
-    )
-    .await;
+    );
     // Credit-ring restart continuity: the ring is seeded before
     // any activity can touch it.
     if let Some(dir) = wiring.clients_met_dir.as_deref() {
@@ -207,7 +206,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             // consumer already knows from the other two roles.
             if let Some(half_bound) = diagnostics.record_server_udp_bind(transport.binds()) {
                 tracing::warn!(%half_bound, "server-UDP Family Pair came up half");
-                send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound }).await;
+                send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound });
             }
             Some(spawn_server_udp_front(
                 Arc::new(transport),
@@ -314,7 +313,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                     if half_bound.forfeited(rmule_net::family::Consequence::Ipv4UdpAdvert) {
                         wiring.udp_ports_advert.withhold_client_udp();
                     }
-                    send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound }).await;
+                    send_event(&evt_tx, CoreEvent::SocketBoundWithoutFamily { half_bound });
                 }
                 let (reask_rx, reply_tx) = spawn_client_udp_front(
                     Arc::clone(&socket),
@@ -378,8 +377,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
                         port: wiring.settings.udp_port,
                         kind: error.kind(),
                     },
-                )
-                .await;
+                );
                 (None, None, None)
             }
         };

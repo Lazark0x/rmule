@@ -228,19 +228,19 @@ pub use server_session::build_peer_handshake_context;
 pub use service::LinkTurn;
 pub use service::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use service::{
-    BuddyDialFailure, CeilingLowered, ClientCredentials, CompletionStep, Core, CoreBuilder,
-    CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DEFAULT_SLOT_WAIT_TIMEOUT,
-    DialEnd, DialFailure, DownloadCommand, DownloadEvent, DownloadId, IdAssignment,
-    IgnoredReaskReply, Ipv6Probe, KadStopReason, KadUnavailableReason, LegNotSent, LoginClaim,
-    LoginCloseCause, LoginLink, LoginStep, NameTaken, NatTraversalUnavailableReason, NattConfig,
-    PartReleaseReason, PartsLost, PeerBuddy, PeerConnections, PeerReach, PeerReachDropReason,
-    PeerReachRoute, PeerRetirementReason, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
-    PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd,
-    RestartOutcome, ScanCommand, ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId,
-    SearchLegState, SearchLegs, ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason,
-    ServerConnectFailure, ServerConnectionEvent, ServerListCommand, ServerListEvent,
-    ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
-    VerificationAuthority, VolumeStop, descriptor_room,
+    BuddyDialFailure, CeilingLowered, ClientCredentials, CommandSender, CompletionStep, Core,
+    CoreBuilder, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
+    DEFAULT_SLOT_WAIT_TIMEOUT, DialEnd, DialFailure, DownloadCommand, DownloadEvent, DownloadId,
+    EventStream, IdAssignment, IgnoredReaskReply, Ipv6Probe, KadStopReason, KadUnavailableReason,
+    LegNotSent, LoginClaim, LoginCloseCause, LoginLink, LoginStep, NameTaken,
+    NatTraversalUnavailableReason, NattConfig, PartReleaseReason, PartsLost, PeerBuddy,
+    PeerConnections, PeerReach, PeerReachDropReason, PeerReachRoute, PeerRetirementReason,
+    PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
+    PurgedSource, QuitStep, RECONNECT_ATTEMPTS, ReconnectEnd, RestartOutcome, ScanCommand,
+    ScanEvent, SearchCommand, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
+    ServeCommand, ServeEvent, ServeStartFailure, ServeStopReason, ServerConnectFailure,
+    ServerConnectionEvent, ServerListCommand, ServerListEvent, ShareRejectReason, SharesWithheld,
+    SourcePurgeReason, SourceWait, SweepTally, VerificationAuthority, VolumeStop, descriptor_room,
 };
 pub use storage::{DownloadRepository, ResolvedAuthority};
 pub use store::app_config::DurableAppConfig;

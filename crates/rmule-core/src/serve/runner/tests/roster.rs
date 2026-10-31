@@ -15,7 +15,7 @@ async fn a_granted_upload_marks_the_peer_roster_known_and_its_release_forgets_it
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 9), 4662));
     let store = rmule_testkit::memory_store();
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(8);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let client_udp_tx: Option<mpsc::Sender<ClientUdpSend>> = None;
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
@@ -112,7 +112,7 @@ async fn a_waiter_leaving_forgets_the_peer_roster_mark(cause: crate::WaiterLeave
     let waiter = PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 10), 4662));
     let store = rmule_testkit::memory_store();
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
-    let (evt_tx, _evt_rx) = mpsc::channel::<CoreEvent>(8);
+    let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
     let client_udp_tx: Option<mpsc::Sender<ClientUdpSend>> = None;
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();
@@ -251,7 +251,7 @@ async fn a_stopped_serve_forgets_its_holder_and_its_waiter() {
         })
         .unwrap();
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let peer_roster = crate::peer_roster::SharedPeerRoster::default();

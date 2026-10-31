@@ -28,7 +28,7 @@ fn query() -> KeywordQuery {
 
 /// The next search event past the leg picture, which these tests do not
 /// assert on.
-async fn next_event(evt_rx: &mut mpsc::Receiver<CoreEvent>) -> SearchEvent {
+async fn next_event(evt_rx: &mut crate::service::EventStream) -> SearchEvent {
     match super::next_past_legs(evt_rx).await.expect("events open") {
         CoreEvent::Search(event) => event,
         other => panic!("expected a search event, got {other:?}"),
@@ -42,7 +42,7 @@ async fn a_kad_answer_later_than_the_quiet_window_is_kept_while_the_walk_is_live
     let live = LiveSearches::default();
     let (sweep_tx, sweep_rx) = oneshot::channel::<u32>();
     let (kad_tx, kad_rx) = crate::search::kad_keyword_leg();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let task = tokio::spawn(
         SearchTask {
@@ -102,7 +102,7 @@ async fn a_search_nobody_answers_completes_after_the_server_answer_wait() {
     let start = Instant::now();
     let (tcp_tx, tcp_rx) = mpsc::channel::<ServerSearchEvent>(8);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(12)).await;
@@ -147,7 +147,7 @@ async fn each_accepted_batch_restarts_the_quiet_window() {
     let start = Instant::now();
     let (tcp_tx, tcp_rx) = mpsc::channel::<ServerSearchEvent>(8);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let task = tokio::spawn(
         SearchTask {

@@ -59,12 +59,20 @@ fn fake_core_with(hang_on_shutdown: bool) -> (FakeCore, FakeCoreControls) {
     )
 }
 
-impl CoreHandle for FakeCore {
+impl CommandDoor for mpsc::Sender<CoreCommand> {
     async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
-        self.sent
-            .send(command)
+        mpsc::Sender::send(self, command)
             .await
             .map_err(|_| CoreError::ServiceStopped)
+    }
+}
+
+impl CoreHandle for FakeCore {
+    type Door = mpsc::Sender<CoreCommand>;
+    type QuitEvents = mpsc::Receiver<CoreEvent>;
+
+    fn door(&self) -> mpsc::Sender<CoreCommand> {
+        self.sent.clone()
     }
 
     async fn next_event(&mut self) -> Option<CoreEvent> {
@@ -275,7 +283,6 @@ async fn commands_reach_the_core_port() {
 
     handle
         .send(CoreCommand::DisconnectFromServer)
-        .await
         .expect("command lands");
     let mut forwarded = false;
     for _ in 0..4 {
@@ -306,7 +313,7 @@ async fn core_shutdown_announces_and_poisons_the_client() {
         }
     }
     // The bridge task has returned; the command door now refuses.
-    let refused = handle.send(CoreCommand::DumpDiagnostics).await;
+    let refused = handle.send(CoreCommand::DumpDiagnostics);
     assert_eq!(refused, Err(CoreClientError::CoreStopped));
 }
 
@@ -414,39 +421,35 @@ async fn grace_elapsed_sends_an_unconfirmed_flush_flash_before_the_ack() {
     );
 }
 
-/// The quit steps are facts of the run like any other: each reaches the Run
-/// Log as the core runs it, whether or not the UI is still there to hear it.
+/// A parked command path never holds the event path: the forwarder waits for
+/// the core's room on its own task, so the events behind it still reach the
+/// bus and the UI's send still returns at once (ADR-0069).
 #[tokio::test(start_paused = true)]
-async fn quit_steps_are_written_to_the_run_log_even_with_the_ui_gone() {
-    let (events_tx, events_rx) = mpsc::channel(4);
-    for step in [rmule_core::QuitStep::Search, rmule_core::QuitStep::Kad] {
-        events_tx
-            .send(CoreEvent::Quitting { step })
-            .await
-            .expect("room");
-    }
-    drop(events_tx);
-    let (action_tx, action_rx) = mpsc::channel(4);
-    drop(action_rx);
-    let written = Mutex::new(Vec::new());
-    forward_quit(
-        events_rx,
-        &action_tx,
-        &Default::default(),
-        |record, level| {
-            written.lock().expect("written").push(record.render(level));
-        },
-    )
-    .await;
+async fn a_full_inbox_holds_no_event_and_no_sender() {
+    let (mut core, controls) = fake_core();
+    let (room_tx, room_rx) = mpsc::channel(1);
+    core.sent = room_tx;
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let handle = spawn(core, action_tx, BridgeConfig::default());
 
-    let written = written.into_inner().expect("written");
-    let steps: Vec<&String> = written
-        .iter()
-        .filter(|line| line.contains("quit.step"))
-        .collect();
-    assert_eq!(steps.len(), 2, "{written:?}");
-    assert!(
-        steps[0].contains("step=search") && steps[1].contains("step=kad"),
-        "{written:?}"
-    );
+    // The first takes the door's one slot, the second parks the forwarder.
+    for _ in 0..200 {
+        handle
+            .send(CoreCommand::DumpDiagnostics)
+            .expect("handed over without waiting");
+    }
+    tokio::task::yield_now().await;
+    controls.events.send(queued(1)).await.expect("room");
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(Action::Core(event)) = action_rx.recv().await {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("the event path is not parked behind the commands");
+    assert!(matches!(forwarded, CoreEvent::Download(_)));
+    drop(room_rx);
 }

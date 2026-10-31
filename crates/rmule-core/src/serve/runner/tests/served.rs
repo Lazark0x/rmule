@@ -19,7 +19,7 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
     let mut askers = lease.take_askers().unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let serve = tokio::spawn(

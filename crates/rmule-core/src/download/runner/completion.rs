@@ -120,8 +120,7 @@ async fn complete_at<S, P>(
                 download_id,
                 part_index,
             },
-        )
-        .await;
+        );
     }
     if landed {
         store_destination(runner, download_id, paths.final_path())?;
@@ -473,8 +472,7 @@ async fn tell<S, P>(
             to: to.to_path_buf(),
             step,
         },
-    )
-    .await;
+    );
 }
 
 /// Sleep `wait`, or end with the run's stop.

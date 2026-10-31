@@ -219,7 +219,7 @@ where
                 self.start_offer_checks();
             }
             CheckReport::WatchUnavailable(_) => {
-                send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into()).await;
+                send_event(&self.evt_tx, ServeEvent::SharesUnwatched.into());
             }
         }
     }
@@ -271,8 +271,7 @@ where
                 since,
             }
             .into(),
-        )
-        .await;
+        );
     }
 
     /// A withheld row's file opens again: it is offered, unless it lies
@@ -288,7 +287,7 @@ where
         tracing::info!(file_hash = %file_hash.to_hex_upper(), "shared file offered again");
         self.wiring.file_known.share(file_hash);
         self.share_set_changed();
-        send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into()).await;
+        send_event(&self.evt_tx, ServeEvent::FileOffered { file_hash }.into());
     }
 
     /// A completing download's file in place at `path` joins the registry
@@ -346,7 +345,7 @@ where
     ) {
         match left {
             Ok(true) => {
-                send_event(&self.evt_tx, ServeEvent::FileUnshared { file_hash }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::FileUnshared { file_hash }.into());
                 self.registry_check.withheld.lift(file_hash);
                 self.wiring.file_known.unshare(file_hash);
                 self.share_set_changed();

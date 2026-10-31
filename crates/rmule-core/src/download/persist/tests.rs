@@ -4,7 +4,6 @@
 //! store call it makes is refused.
 
 use rmule_primitives::PartHash;
-use tokio::sync::mpsc;
 
 use super::{
     PersistError, check_held_part_file, distrusted_at_start, hold_part_file, part_file_changed,
@@ -150,7 +149,7 @@ async fn a_changed_part_file_the_store_cannot_count_is_told_without_a_count() {
 #[tokio::test]
 async fn a_failure_the_store_cannot_record_is_told_after_the_failure() {
     let store = DurableDownloadRepository::new(rmule_testkit::memory_store());
-    let (evt_tx, mut evt_rx) = mpsc::channel(4);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
 
     record_failure(&store, &evt_tx, UNKNOWN, DownloadFailure::PeerDisconnected).await;
     assert!(matches!(

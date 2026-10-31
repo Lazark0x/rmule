@@ -209,7 +209,7 @@ impl App {
                     if let Some(link) = self.pending_copy.take() {
                         tui.copy_to_clipboard(&link)?;
                     }
-                    self.flush_commands(now).await;
+                    self.flush_commands();
                     // ADR-0069: input redraws immediately; core bursts wait
                     // for the render tick and collapse into one frame.
                     if immediate && self.dirty {
@@ -306,7 +306,7 @@ impl App {
     /// Forward queued commands through the client, in order. A send failing
     /// means the core stopped — `Action::CoreClosed` follows on the bus and
     /// renders the honest state, so failures are not re-flashed here.
-    async fn flush_commands(&mut self, _now: Instant) {
+    fn flush_commands(&mut self) {
         if self.pending_commands.is_empty() {
             return;
         }
@@ -315,7 +315,7 @@ impl App {
             return;
         };
         for command in self.pending_commands.drain(..) {
-            if client.send(command).await.is_err() {
+            if client.send(command).is_err() {
                 break;
             }
         }
@@ -527,9 +527,21 @@ mod tests {
         mpsc::Receiver<rmule_core::CoreEvent>,
     );
 
-    impl crate::bridge::CoreHandle for HangingCore {
+    /// Takes every command and does nothing with it.
+    struct OpenDoor;
+
+    impl crate::bridge::CommandDoor for OpenDoor {
         async fn send(&self, _: rmule_core::CoreCommand) -> Result<(), rmule_core::CoreError> {
             Ok(())
+        }
+    }
+
+    impl crate::bridge::CoreHandle for HangingCore {
+        type Door = OpenDoor;
+        type QuitEvents = mpsc::Receiver<rmule_core::CoreEvent>;
+
+        fn door(&self) -> OpenDoor {
+            OpenDoor
         }
         async fn next_event(&mut self) -> Option<rmule_core::CoreEvent> {
             std::future::pending().await

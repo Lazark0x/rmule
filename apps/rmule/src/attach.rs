@@ -150,6 +150,7 @@ fn attach_failed(failure: AttachFailure, error: &dyn std::fmt::Display) -> Attac
 pub async fn attach<D: Deployment>(
     resolved: Option<DataDir>,
     deployment: &D,
+    run_log: rmule_core::run_log::LevelHandle,
 ) -> Result<Attachment<D::Fetcher>, AttachFailure> {
     let resolved = resolved.ok_or(AttachFailure::NoDataDir)?;
     let data_dir = resolved.path.clone();
@@ -243,6 +244,7 @@ pub async fn attach<D: Deployment>(
         // Settings' nickname and port, and the Kad identity is the store's,
         // read by core itself (ADR-0069).
         .restore_at_attach()
+        .run_log(run_log)
         // The Shared Directory List's guards (ADR-0101), the download
         // directory's among them: core never reads the environment, so the
         // home and the data directory are named here.

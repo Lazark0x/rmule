@@ -3,10 +3,13 @@
 //! `diagnostics_snapshot()` on the 1 Hz data tick, synthesizes rates, and
 //! feeds the single [`Action`] bus.
 //!
-//! Backpressure is coalescing (ADR-0069 §Dataflow): lifecycle *edges* await
-//! bus capacity (they must not be lost — `UiState` folds them), byte *levels*
-//! are dropped when the bus is full (the next tick supersedes them), and a
-//! missed data tick is skipped, never replayed.
+//! Two tasks (ADR-0069, "The bridge is two tasks"), so neither wait holds the
+//! other: [`forward_commands`] may wait for the inbox's room, and [`run`] may
+//! wait for the bus. `run`'s lifecycle *edges* await bus capacity (`UiState`
+//! folds them), its byte *levels* are dropped when the bus is full (the next
+//! tick supersedes them), and a missed data tick is skipped, never replayed.
+//! Core waits for neither: what the bus has no room for stays in the core's
+//! Outbox.
 //!
 //! # The graceful-shutdown door
 //!
@@ -26,8 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
-use rmule_core::{Core, CoreCommand, CoreError, CoreEvent};
+use rmule_core::{CommandSender, Core, CoreCommand, CoreError, CoreEvent, EventStream};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::action::Action;
@@ -38,10 +42,13 @@ use crate::rates::{RateSynthesizer, TransferRates};
 /// impl; tests drive a channel-backed fake (the repo's `ServerLink`/`FakeLink`
 /// precedent), which is what keeps the bridge provable without a live core.
 pub trait CoreHandle: Send + 'static {
-    /// Queue one command for the core. An `Err` says the core is no longer
-    /// there to take it, never that it refused the command — outcomes arrive
-    /// as events.
-    fn send(&self, command: CoreCommand) -> impl Future<Output = Result<(), CoreError>> + Send;
+    /// The door [`CoreHandle::door`] hands out.
+    type Door: CommandDoor;
+    /// The stream [`CoreHandle::quit`] hands back.
+    type QuitEvents: QuitEvents;
+    /// The door the command forwarder keeps. It does not keep the core open,
+    /// so [`CoreHandle::quit`] alone decides when the core stops.
+    fn door(&self) -> Self::Door;
     /// Await the next core event. Single-consumer: the bridge is the only
     /// caller, and `None` is core's end, not an idle moment.
     fn next_event(&mut self) -> impl Future<Output = Option<CoreEvent>> + Send;
@@ -52,12 +59,49 @@ pub trait CoreHandle: Send + 'static {
     /// the real `Core`, `Core::quit()` — the rest of the event stream, which
     /// names each quit step as it runs and ends once the persistence flush
     /// (the credit-checkpoint write) has happened.
-    fn quit(self) -> mpsc::Receiver<CoreEvent>;
+    fn quit(self) -> Self::QuitEvents;
+}
+
+/// The forwarder's side of the core.
+pub trait CommandDoor: Send + 'static {
+    /// Queue one command for the core. An `Err` says the core is no longer
+    /// there to take it, never that it refused the command — outcomes arrive
+    /// as events.
+    fn send(&self, command: CoreCommand) -> impl Future<Output = Result<(), CoreError>> + Send;
+}
+
+impl CommandDoor for CommandSender {
+    async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
+        CommandSender::send(self, command).await
+    }
+}
+
+/// The rest of the event stream once quit has begun.
+pub trait QuitEvents: Send {
+    /// The next event; `None` is quit's completion.
+    fn next(&mut self) -> impl Future<Output = Option<CoreEvent>> + Send;
+}
+
+impl QuitEvents for EventStream {
+    async fn next(&mut self) -> Option<CoreEvent> {
+        self.recv().await
+    }
+}
+
+/// A test's fake core hands back a plain channel.
+#[cfg(test)]
+impl QuitEvents for mpsc::Receiver<CoreEvent> {
+    async fn next(&mut self) -> Option<CoreEvent> {
+        self.recv().await
+    }
 }
 
 impl CoreHandle for Core {
-    async fn send(&self, command: CoreCommand) -> Result<(), CoreError> {
-        Core::send(self, command).await
+    type Door = CommandSender;
+    type QuitEvents = EventStream;
+
+    fn door(&self) -> CommandSender {
+        self.command_sender()
     }
 
     async fn next_event(&mut self) -> Option<CoreEvent> {
@@ -68,7 +112,7 @@ impl CoreHandle for Core {
         Core::diagnostics_snapshot(self)
     }
 
-    fn quit(self) -> mpsc::Receiver<CoreEvent> {
+    fn quit(self) -> EventStream {
         Core::quit(self)
     }
 }
@@ -80,10 +124,6 @@ pub struct BridgeConfig {
     pub snapshot_interval: Duration,
     /// EMA time constant for rate synthesis (spec band 3–5 s).
     pub ema_tau: Duration,
-    /// UI→core command queue depth (mirrors the core's own bound).
-    pub command_queue: usize,
-    /// The Run Log's level, read at every line the bridge writes.
-    pub run_log: rmule_core::run_log::LevelHandle,
 }
 
 impl Default for BridgeConfig {
@@ -91,8 +131,6 @@ impl Default for BridgeConfig {
         Self {
             snapshot_interval: Duration::from_secs(1),
             ema_tau: Duration::from_secs(4),
-            command_queue: 32,
-            run_log: rmule_core::run_log::LevelHandle::default(),
         }
     }
 }
@@ -132,7 +170,7 @@ const SHUTDOWN_GRACE_ELAPSED_FLASH: crate::words::Sentence =
 /// The UI-side handle the bridge returns: the in-process [`CoreClient`].
 #[derive(Clone)]
 pub struct BridgeHandle {
-    cmd_tx: mpsc::Sender<CoreCommand>,
+    cmd_tx: mpsc::UnboundedSender<CoreCommand>,
     /// The one-shot graceful-shutdown door, shared across
     /// clones so only the first caller's request is honoured; a second call
     /// (or one after the bridge task already ended on its own) finds it
@@ -147,10 +185,9 @@ impl std::fmt::Debug for BridgeHandle {
 }
 
 impl CoreClient for BridgeHandle {
-    async fn send(&self, command: CoreCommand) -> Result<(), CoreClientError> {
+    fn send(&self, command: CoreCommand) -> Result<(), CoreClientError> {
         self.cmd_tx
             .send(command)
-            .await
             .map_err(|_| CoreClientError::CoreStopped)
     }
 }
@@ -188,23 +225,48 @@ pub fn spawn<H: CoreHandle>(
     actions: mpsc::Sender<Action>,
     config: BridgeConfig,
 ) -> BridgeHandle {
-    let (cmd_tx, cmd_rx) = mpsc::channel(config.command_queue);
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    tokio::spawn(run(core, cmd_rx, shutdown_rx, actions, config));
+    let forwarder = tokio::spawn(forward_commands(core.door(), cmd_rx));
+    tokio::spawn(run(core, forwarder, shutdown_rx, actions, config));
     BridgeHandle {
         cmd_tx,
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     }
 }
 
+/// How the command forwarder ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Forwarded {
+    /// Every [`BridgeHandle`] dropped: the UI is shutting down.
+    UiGone,
+    /// The core stopped; the event stream's `None` follows and announces it.
+    CoreGone,
+}
+
+/// Hand each command to the core in order, waiting for the inbox's room here
+/// and nowhere the event path or the UI could feel it. The core's end drops
+/// `commands`, which turns every later `CoreClient::send` into `CoreStopped`.
+async fn forward_commands<D: CommandDoor>(
+    door: D,
+    mut commands: mpsc::UnboundedReceiver<CoreCommand>,
+) -> Forwarded {
+    while let Some(command) = commands.recv().await {
+        if door.send(command).await.is_err() {
+            return Forwarded::CoreGone;
+        }
+    }
+    Forwarded::UiGone
+}
+
 async fn run<H: CoreHandle>(
     mut core: H,
-    mut cmd_rx: mpsc::Receiver<CoreCommand>,
+    mut forwarder: JoinHandle<Forwarded>,
     mut shutdown_rx: oneshot::Receiver<ShutdownAck>,
     actions: mpsc::Sender<Action>,
     config: BridgeConfig,
 ) {
-    let run_log = config.run_log.clone();
+    let mut forwarding = true;
     let mut ticker = tokio::time::interval(config.snapshot_interval);
     // Latest-state-wins: a stalled tick is skipped, never burst-replayed.
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -214,7 +276,6 @@ async fn run<H: CoreHandle>(
         tokio::select! {
             event = core.next_event() => match event {
                 Some(event) => {
-                    rmule_core::run_log::write(&event.record(), run_log.get());
                     // Edges must not be lost: await capacity instead of
                     // dropping. Err means the UI is gone — stop bridging.
                     if actions.send(Action::Core(event)).await.is_err() {
@@ -222,9 +283,13 @@ async fn run<H: CoreHandle>(
                     }
                 }
                 None => {
-                    // Core stopped. Announce and end; the dropped command
-                    // receiver turns every later `CoreClient::send` into
-                    // `CoreStopped`.
+                    // Core stopped. Announce and end, ending the forwarder
+                    // with it so a later `CoreClient::send` is `CoreStopped`
+                    // even with no command in flight.
+                    if forwarding {
+                        forwarder.abort();
+                        let _ = (&mut forwarder).await;
+                    }
                     let _ = actions.send(Action::CoreClosed).await;
                     return;
                 }
@@ -240,17 +305,13 @@ async fn run<H: CoreHandle>(
                     taken_at,
                 }));
             }
-            command = cmd_rx.recv() => match command {
-                Some(command) => {
-                    if core.send(command).await.is_err() {
-                        // Command channel to the core is gone; the event
-                        // stream's `None` follows and announces the stop.
-                        tracing::debug!("core command channel closed");
-                    }
+            ended = &mut forwarder, if forwarding => {
+                forwarding = false;
+                if !matches!(ended, Ok(Forwarded::CoreGone)) {
+                    return;
                 }
-                // Every BridgeHandle dropped: the UI is shutting down.
-                None => return,
-            },
+                tracing::debug!("core command channel closed");
+            }
             ack = &mut shutdown_rx => {
                 // The graceful-shutdown door: honour at most
                 // once — a second `graceful_shutdown` call never reaches
@@ -258,7 +319,7 @@ async fn run<H: CoreHandle>(
                 if let Ok(ack) = ack {
                     let drained = tokio::time::timeout(
                         CORE_SHUTDOWN_GRACE,
-                        forward_quit(core.quit(), &actions, &run_log, rmule_core::run_log::write),
+                        forward_quit(core.quit(), &actions),
                     )
                     .await;
                     if drained.is_err() {
@@ -282,19 +343,12 @@ async fn run<H: CoreHandle>(
     }
 }
 
-/// Drain quit's event stream to its end — the flush — writing every fact to
-/// the Run Log through `write` and forwarding it onto the bus, so the UI names
-/// each quit step as the core runs it. A UI already gone stops the forwarding,
-/// never the drain or the log.
-async fn forward_quit(
-    mut events: mpsc::Receiver<CoreEvent>,
-    actions: &mpsc::Sender<Action>,
-    run_log: &rmule_core::run_log::LevelHandle,
-    write: impl Fn(&rmule_core::run_log::Record, rmule_core::run_log::Level),
-) {
+/// Drain quit's event stream to its end — the flush — forwarding each fact
+/// onto the bus, so the UI names each quit step as the core runs it. A UI
+/// already gone stops the forwarding, never the drain.
+async fn forward_quit(mut events: impl QuitEvents, actions: &mpsc::Sender<Action>) {
     let mut forwarding = true;
-    while let Some(event) = events.recv().await {
-        write(&event.record(), run_log.get());
+    while let Some(event) = events.next().await {
         if forwarding {
             forwarding = actions.send(Action::Core(event)).await.is_ok();
         }

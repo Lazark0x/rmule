@@ -115,7 +115,7 @@ where
                         .ended
                         .insert(dir.clone(), crate::DirectoryState::Declined);
                     self.install_directories();
-                    send_event(&self.evt_tx, ScanEvent::Declined { dir }.into()).await;
+                    send_event(&self.evt_tx, ScanEvent::Declined { dir }.into());
                     return;
                 }
                 Ok(answer) => Some(answer.is_some()),
@@ -239,8 +239,7 @@ where
                         replaces,
                     }
                     .into(),
-                )
-                .await;
+                );
             }
             ScanMessageKind::Report(report) => self.on_scan_report(dir, report).await,
             ScanMessageKind::RowsWanted(reply) => match self.known() {
@@ -259,8 +258,7 @@ where
                 send_event(
                     &self.evt_tx,
                     ScanEvent::WatchUnavailable { dir, reason }.into(),
-                )
-                .await;
+                );
             }
             ScanMessageKind::Ended(end) => self.retire_ended_scan(dir, end).await,
         }
@@ -273,7 +271,7 @@ where
                 let file_hash = entry.file_hash;
                 match self.wiring.registry.share(entry) {
                     Ok(()) => {
-                        send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into()).await;
+                        send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
                         self.row_shared(file_hash);
                     }
                     Err(error) => tracing::warn!(%error, "scanned file not shared"),
@@ -285,7 +283,7 @@ where
                 to,
             } => match self.wiring.registry.relocate(file_hash, &from, &to) {
                 Ok(true) => {
-                    send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into()).await;
+                    send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
                     self.row_shared(file_hash);
                 }
                 Ok(false) => {}
@@ -350,7 +348,7 @@ where
                         tracing::warn!(dir = %dir.display(), %error, "could not record the answer");
                     }
                 }
-                send_event(&self.evt_tx, ScanEvent::Finished { dir, summary }.into()).await;
+                send_event(&self.evt_tx, ScanEvent::Finished { dir, summary }.into());
             }
             ScanReport::RootMissing { since } => self.directory_missing(dir, since).await,
             ScanReport::RootReturned => {
@@ -365,24 +363,22 @@ where
                 }
                 self.scans_changed();
                 self.registry_check.tell(CheckInput::RecheckWithheld);
-                send_event(&self.evt_tx, ScanEvent::DirectoryReturned { dir }.into()).await;
+                send_event(&self.evt_tx, ScanEvent::DirectoryReturned { dir }.into());
             }
             ScanReport::WatchInterrupted(reason) => {
                 send_event(
                     &self.evt_tx,
                     ScanEvent::WatchInterrupted { dir, reason }.into(),
-                )
-                .await;
+                );
             }
             ScanReport::WatchRestored => {
-                send_event(&self.evt_tx, ScanEvent::WatchRestored { dir }.into()).await;
+                send_event(&self.evt_tx, ScanEvent::WatchRestored { dir }.into());
             }
             ScanReport::PathUnwatched { path, reason } => {
                 send_event(
                     &self.evt_tx,
                     ScanEvent::PathUnwatched { dir, path, reason }.into(),
-                )
-                .await;
+                );
             }
             ScanReport::NotHashed {
                 path,
@@ -398,15 +394,14 @@ where
                         os_code,
                     }
                     .into(),
-                )
-                .await;
+                );
             }
             ScanReport::LeftoverParts(paths) => {
                 tracing::info!(
                     count = paths.len(),
                     "part files left by ended downloads; not shared"
                 );
-                send_event(&self.evt_tx, ScanEvent::LeftoverParts { dir, paths }.into()).await;
+                send_event(&self.evt_tx, ScanEvent::LeftoverParts { dir, paths }.into());
             }
         }
     }
@@ -440,8 +435,7 @@ where
         send_event(
             &self.evt_tx,
             ScanEvent::DirectoryMissing { dir, since }.into(),
-        )
-        .await;
+        );
     }
 
     /// What the scan may know without reading a file: the registry, the
@@ -493,7 +487,7 @@ where
             }
         };
         self.scans_changed();
-        send_event(&self.evt_tx, event.into()).await;
+        send_event(&self.evt_tx, event.into());
     }
 
     /// The scans changed: the Registry Check learns which directories live,

@@ -408,7 +408,7 @@ async fn closed_by_us(stream: &mut tokio::net::TcpStream) -> bool {
 /// steps are reported.
 fn awaiting_loopback_login(
     serve: &RuntimeServeRuntimeService,
-    events: &mpsc::Sender<crate::CoreEvent>,
+    events: &crate::service::Outbox,
 ) -> crate::awaited_testers::AwaitingLogin {
     serve
         .session
@@ -422,7 +422,7 @@ fn awaiting_loopback_login(
 }
 
 /// The next port test step reported, within 2 s.
-async fn port_test_step(events: &mut mpsc::Receiver<crate::CoreEvent>) -> crate::LoginStep {
+async fn port_test_step(events: &mut crate::service::EventStream) -> crate::LoginStep {
     match timeout(Duration::from_secs(2), events.recv()).await {
         Ok(Some(crate::CoreEvent::ServerLogin { step, .. })) => step,
         other => panic!("no login step reported: {other:?}"),
@@ -438,7 +438,7 @@ async fn port_test_step(events: &mut mpsc::Receiver<crate::CoreEvent>) -> crate:
 async fn under_required_the_awaited_servers_plain_test_is_answered_and_served_nothing() {
     use tokio::io::AsyncWriteExt;
     let (mut serve, bound) = required_serve().await;
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let awaiting = awaiting_loopback_login(&serve, &events_tx);
 
     let (mut tester, answer) = plain_test_dial(bound).await;
@@ -488,7 +488,7 @@ async fn under_required_the_awaited_servers_plain_test_is_answered_and_served_no
 #[tokio::test]
 async fn under_required_a_plain_dial_after_the_login_was_answered_is_refused_and_reported_late() {
     let (serve, bound) = required_serve().await;
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     drop(awaiting_loopback_login(&serve, &events_tx));
 
     let (_tester, answer) = plain_test_dial(bound).await;
@@ -553,7 +553,7 @@ async fn outside_required_the_awaited_servers_test_is_served_as_a_peer_and_its_e
         )
         .await
         .unwrap();
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let awaiting = awaiting_loopback_login(&serve, &events_tx);
 
     let tester = tokio::spawn(plain_test_dial(bound));
@@ -594,7 +594,7 @@ async fn a_port_test_served_as_a_peer_and_let_go_by_core_names_rmule_as_the_clos
         )
         .await
         .unwrap();
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let _awaiting = awaiting_loopback_login(&serve, &events_tx);
 
     let tester = tokio::spawn(plain_test_dial(bound));
@@ -625,7 +625,7 @@ async fn a_port_test_served_as_a_peer_and_let_go_by_core_names_rmule_as_the_clos
 async fn under_required_a_kad_helpers_plain_connect_back_after_its_window_is_refused_and_reported_late()
  {
     let (serve, bound) = required_serve().await;
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let awaited = serve.session.own_identity().awaited_testers();
     awaited.install_events(events_tx.downgrade());
     let window = (

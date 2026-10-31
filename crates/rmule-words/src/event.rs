@@ -46,6 +46,7 @@ pub fn log_line(event: &CoreEvent) -> Sentence {
             external_port,
             kept,
         } => portmap::release_kept(mapping, *protocol, *external_port, kept),
+        CoreEvent::EventsShed { count } => super::app::events_shed(*count),
     }
 }
 

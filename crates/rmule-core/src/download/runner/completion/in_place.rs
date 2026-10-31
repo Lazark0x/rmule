@@ -55,8 +55,7 @@ pub(super) async fn finish<S, P>(
             download_id,
             final_path: final_path.to_path_buf(),
         },
-    )
-    .await;
+    );
     Ok(())
 }
 

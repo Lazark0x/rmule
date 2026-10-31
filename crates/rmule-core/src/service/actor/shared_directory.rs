@@ -274,8 +274,7 @@ where
         send_event(
             &self.evt_tx,
             ScanEvent::DownloadDirectoryRefused { dir, reason }.into(),
-        )
-        .await;
+        );
         false
     }
 
@@ -457,8 +456,7 @@ where
                 replaced: replaces,
             }
             .into(),
-        )
-        .await;
+        );
         self.reconcile().await;
         self.install_directories();
     }
@@ -507,7 +505,7 @@ where
             match ruling {
                 SetAsideRuling::Left(file_hash) => self.row_left(file_hash, Ok(true)).await,
                 SetAsideRuling::Moved(file_hash) => {
-                    send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into()).await;
+                    send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
                     self.row_shared(file_hash);
                 }
             }
@@ -517,8 +515,7 @@ where
         send_event(
             &self.evt_tx,
             ScanEvent::DirectoryRemoved { dir, files }.into(),
-        )
-        .await;
+        );
         self.reconcile().await;
         self.install_directories();
     }
@@ -528,8 +525,7 @@ where
         send_event(
             &self.evt_tx,
             ScanEvent::DirectoryRefused { dir, reason }.into(),
-        )
-        .await;
+        );
     }
 
     /// Show the list on the diagnostics level: each entry's state, read from

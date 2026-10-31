@@ -50,7 +50,7 @@ struct Bench {
     stop: watch::Sender<bool>,
     serve: tokio::task::JoinHandle<ServeOutcome<FakeServeRuntime>>,
     // Closed, either ends the loop.
-    _evt_rx: mpsc::Receiver<CoreEvent>,
+    _evt_rx: crate::service::EventStream,
     _share_changed_tx: mpsc::Sender<()>,
 }
 
@@ -59,7 +59,7 @@ async fn bench() -> Bench {
     let Leased { store, cell, .. } = leased(file, "/downloads/download.bin".into());
     let (accepts, accept_rx) = mpsc::channel::<ServeConnection>(8);
     let (dials, dialed_rx) = mpsc::channel(8);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let serve = tokio::spawn(

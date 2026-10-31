@@ -76,6 +76,7 @@ impl CoreEvent {
             } => login::kad_helper_test_late(*helper, *late_by, *admission),
             CoreEvent::ObfuscationPolicyAtStart { policy } => Record::new("obfuscation.policy")
                 .code("policy", crate::obfuscation_policy::policy_name(*policy)),
+            CoreEvent::EventsShed { count } => Record::new("events.shed").count("count", *count),
             CoreEvent::MappingReleaseKept {
                 mapping,
                 protocol,

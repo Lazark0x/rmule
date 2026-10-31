@@ -82,7 +82,7 @@ async fn rig(paused: bool) -> Rig {
     cell.look();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let (read_failed_tx, read_failed_rx) = std::sync::mpsc::channel();

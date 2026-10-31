@@ -35,7 +35,6 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
         .send(CoreCommand::Scan(ScanCommand::AddSharedDirectory {
             path: dir.path().to_path_buf(),
         }))
-        .await
         .expect("command lands through the seam");
 
     let mut state = UiState::default();
@@ -49,7 +48,6 @@ async fn a_real_core_share_round_trips_through_seam_bridge_and_fold() {
                         dir: dir.clone(),
                         share: true,
                     }))
-                    .await
                     .expect("the confirm lands through the seam");
             }
             let shared = matches!(
@@ -103,7 +101,6 @@ async fn the_injected_server_list_store_is_what_the_servers_tab_renders() {
         .send(CoreCommand::ServerList(ServerListCommand::AddServer {
             server: ManagedServer::listed(added.clone()),
         }))
-        .await
         .expect("command lands through the seam");
 
     // The level (data tick) and the edge (event stream) are two lanes with no
@@ -344,11 +341,10 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
             server: server.endpoint(),
         },
     ] {
-        handle.send(connect).await.expect("the connect lands");
+        handle.send(connect).expect("the connect lands");
     }
     handle
         .send(command)
-        .await
         .expect("command lands through the seam");
 
     tokio::time::timeout(HANG_GUARD, async {

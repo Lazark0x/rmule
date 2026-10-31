@@ -116,6 +116,7 @@ struct NodeParts {
     /// Whether attach listens and starts again the downloads the last process
     /// left running (ADR-0094); off, attach starts none.
     restore_at_attach: bool,
+    run_log: crate::run_log::LevelHandle,
     /// The managed server list the actor owns (ADR-0080), type-erased.
     server_list: SharedServerListStore,
     /// The one URL-acquisition capability core is given (ADR-0080), or `None`
@@ -385,6 +386,15 @@ where
         self.node.cells.session.clone()
     }
 
+    /// The Run Log level every event is written at, shared with the front
+    /// end that changes it: core writes the log itself, so it outlives any
+    /// reader of the event stream (ADR-0069, "The Run Log is written in core").
+    #[must_use]
+    pub fn run_log(mut self, level: crate::run_log::LevelHandle) -> Self {
+        self.node.run_log = level;
+        self
+    }
+
     /// Run as the operator's node from attach (ADR-0093, ADR-0094): bind the
     /// eD2k listener on the Core Settings' TCP port (the Serve activity, so
     /// the port mapping starts too) and start again every download the last
@@ -494,6 +504,7 @@ where
                 clients_met_dir: node.clients_met_dir,
                 share_guards: node.share_guards,
                 restore_at_attach: node.restore_at_attach,
+                run_log: node.run_log,
                 kad_id: node.kad_id,
                 kad_udp_key: node.kad_udp_key,
                 server_list: node.server_list,
@@ -766,6 +777,7 @@ impl Core {
                 clients_met_dir: None,
                 share_guards: crate::ShareGuards::default(),
                 restore_at_attach: false,
+                run_log: crate::run_log::LevelHandle::default(),
                 server_list: app_config,
                 server_list_fetcher: None,
             },

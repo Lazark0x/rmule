@@ -24,7 +24,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 
 use crate::server_session::{SearchStream, ServerSearchEvent, ServerSessionHandle};
 use crate::service::{
-    CoreEvent, LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
+    LegNotSent, SearchEvent, SearchFailure, SearchId, SearchLegState, SearchLegs,
 };
 
 mod attribution;
@@ -67,7 +67,7 @@ pub(crate) struct SearchTask {
     /// dropped, when there is no sweep: the global leg's settle signal.
     pub(crate) global_sweep: SweepDone,
     pub(crate) windows: SearchWindows,
-    pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    pub(crate) evt_tx: crate::service::Outbox,
     /// The search's stop: raised, or its sender dropped, the task ends at
     /// once and says nothing — its retire says `SearchCancelled`.
     pub(crate) cancel_rx: watch::Receiver<bool>,
@@ -393,7 +393,7 @@ impl SearchTask {
     }
 
     async fn emit(&self, event: SearchEvent) {
-        let _ = self.evt_tx.send(event.into()).await;
+        let _ = self.evt_tx.send(event.into());
     }
 
     /// Move the leg picture and say so, once per real change.

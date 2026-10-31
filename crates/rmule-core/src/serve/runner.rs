@@ -49,7 +49,7 @@ pub(crate) struct ServeTask<L> {
     pub(crate) serve_runtime: L,
     /// Seeds the brain's **Upload Slot Queue** (budget + cap from config).
     pub(crate) queue: UploadSlotQueue,
-    pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    pub(crate) evt_tx: crate::service::Outbox,
     pub(crate) stop_rx: watch::Receiver<bool>,
     pub(crate) share_changed_rx: mpsc::Receiver<()>,
     /// Serve halves of connections rmule *dialed* (to download) that the peer
@@ -575,7 +575,7 @@ struct ServeSinks<'a> {
     credit: &'a SharedCreditStore,
     /// The node's peer bans, where a hash thief's address goes.
     bans: &'a crate::ban_store::SharedBanStore,
-    evt_tx: &'a mpsc::Sender<CoreEvent>,
+    evt_tx: &'a crate::service::Outbox,
     /// The client-UDP send half reask replies ride out on; `None` until the
     /// live front binds.
     client_udp_tx: &'a Option<mpsc::Sender<ClientUdpSend>>,
@@ -889,7 +889,7 @@ async fn recv_reask(
 
 /// Raise what an announce did with the share set; an unsaid one raises
 /// nothing.
-async fn say_told(evt_tx: &mpsc::Sender<CoreEvent>, outcome: AnnounceOutcome) {
+async fn say_told(evt_tx: &crate::service::Outbox, outcome: AnnounceOutcome) {
     let event = match outcome {
         AnnounceOutcome::Announced { file_count } => ServeEvent::FilesAnnounced { file_count },
         AnnounceOutcome::Withheld { file_count, reason } => {
@@ -900,8 +900,8 @@ async fn say_told(evt_tx: &mpsc::Sender<CoreEvent>, outcome: AnnounceOutcome) {
     send_serve_event(evt_tx, event).await;
 }
 
-async fn send_serve_event(evt_tx: &mpsc::Sender<CoreEvent>, event: ServeEvent) {
-    let _ = evt_tx.send(CoreEvent::Serve(event)).await;
+async fn send_serve_event(evt_tx: &crate::service::Outbox, event: ServeEvent) {
+    let _ = evt_tx.send(CoreEvent::Serve(event));
 }
 
 #[cfg(test)]

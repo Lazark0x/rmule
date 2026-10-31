@@ -345,6 +345,9 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // So is a release that left a router port standing: the mapping rows
         // are the level, and the log pane says why the port was left alone.
         CoreEvent::MappingReleaseKept { .. } => false,
+        // The app fell behind the node: said once per shed, in the log pane
+        // too, so stale peer rows have a reason on the screen.
+        CoreEvent::EventsShed { count } => note(state, crate::words::app::events_shed(count)),
         // Our own posture: the Settings tab holds the value, the log pane the
         // line `apply` pushed.
         CoreEvent::ObfuscationPolicyAtStart { .. } | CoreEvent::ObfuscationPolicyChanged { .. } => {

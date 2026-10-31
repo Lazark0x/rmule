@@ -119,7 +119,7 @@ where
     F: Fetcher + Sync,
 {
     let outcome = acquire_kad_seeds(&mut config, own_id, bootstrap, fetcher).await;
-    client.send(CoreCommand::EnableKad(config)).await?;
+    client.send(CoreCommand::EnableKad(config))?;
     Ok(outcome)
 }
 
@@ -158,12 +158,9 @@ mod tests {
     }
 
     impl CoreClient for RecordingClient {
-        fn send(
-            &self,
-            command: CoreCommand,
-        ) -> impl Future<Output = Result<(), CoreClientError>> + Send {
+        fn send(&self, command: CoreCommand) -> Result<(), CoreClientError> {
             self.sent.lock().unwrap().push(command);
-            async { Ok(()) }
+            Ok(())
         }
     }
 

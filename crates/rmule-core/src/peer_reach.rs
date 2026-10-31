@@ -56,7 +56,7 @@ pub(crate) struct PeerReachWiring {
     pub(crate) obfuscation: crate::obfuscation_policy::SharedObfuscationPolicy,
     pub(crate) diagnostics: DiagnosticsState,
     /// Where each road taken is reported.
-    pub(crate) events: mpsc::Sender<CoreEvent>,
+    pub(crate) events: crate::service::Outbox,
 }
 
 /// **Peer Reach** itself: one per core, owned by the actor.
@@ -89,14 +89,10 @@ impl PeerReacher {
     ) -> PeerReachRoute {
         let route = self.road(peer, retire).await;
         tracing::debug!(peer = ?peer.tcp, ?route, "peer reach routed (ADR-0061)");
-        let _ = self
-            .wiring
-            .events
-            .send(CoreEvent::PeerReachRouted {
-                peer: peer.tcp,
-                route,
-            })
-            .await;
+        let _ = self.wiring.events.send(CoreEvent::PeerReachRouted {
+            peer: peer.tcp,
+            route,
+        });
         route
     }
 

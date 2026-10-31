@@ -208,7 +208,7 @@ where
             bytes_read: walked.bytes_read,
             took,
         };
-        send_event(&self.evt_tx, checked.into()).await;
+        send_event(&self.evt_tx, checked.into());
         let (progress, damaged) = match walked.revalidation {
             Revalidation::Restored { progress, damaged } => (progress, damaged),
             Revalidation::Condemned(fault) => {

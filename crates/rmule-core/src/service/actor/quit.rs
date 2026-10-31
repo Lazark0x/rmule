@@ -97,6 +97,6 @@ where
 }
 
 /// Report that quit's `step` begins.
-async fn announce(evt_tx: &tokio::sync::mpsc::Sender<CoreEvent>, step: QuitStep) {
-    send_event(evt_tx, CoreEvent::Quitting { step }).await;
+async fn announce(evt_tx: &crate::service::Outbox, step: QuitStep) {
+    send_event(evt_tx, CoreEvent::Quitting { step });
 }

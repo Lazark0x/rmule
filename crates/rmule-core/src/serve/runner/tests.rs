@@ -91,7 +91,7 @@ fn peer_at(ip: [u8; 4], tcp_port: u16) -> PeerEndpoint {
 }
 
 async fn next_serve_event(
-    rx: &mut mpsc::Receiver<CoreEvent>,
+    rx: &mut crate::service::EventStream,
     want: impl Fn(&ServeEvent) -> bool,
 ) -> ServeEvent {
     timeout(Duration::from_secs(5), async {
@@ -215,7 +215,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let diagnostics = crate::diagnostics::DiagnosticsState::new();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
@@ -453,7 +453,7 @@ async fn a_dropped_stop_sender_ends_the_serve_task() {
     let store = rmule_testkit::memory_store();
     let registry = DurableSharedFileRegistry::new(store.clone());
     let (_accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(1);
-    let (evt_tx, _evt_rx) = mpsc::channel::<CoreEvent>(16);
+    let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
@@ -531,7 +531,7 @@ async fn the_fifth_asker_from_one_address_is_served_silence_and_a_counter() {
         .unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(8);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));
@@ -668,7 +668,7 @@ async fn a_hash_only_name_ask_from_a_claimant_closes_the_connection_and_is_count
         .unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let credit: SharedCreditStore = Arc::new(DurableCreditStore::new(store));

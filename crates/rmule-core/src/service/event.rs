@@ -595,7 +595,7 @@ pub enum ServerConnectFailure {
 
 /// Top-level event from the core actor: a per-activity event, or a
 /// cross-activity fact. Thin wrapper so serve events are a new arm.
-// CoreEvent is sent over a low-frequency mpsc channel; the size imbalance
+// CoreEvent passes through the Outbox by value; the size imbalance
 // between Download(DownloadEvent) and the small cross-activity arms is
 // intentional (mirrors CoreCommand), so boxing would add indirection for no
 // measurable gain.
@@ -813,6 +813,14 @@ pub enum CoreEvent {
         external_port: u16,
         /// Why no delete went out.
         kept: crate::port_mapping::ReleaseKept,
+    },
+    /// The reader fell so far behind that the Outbox dropped `count` Levels
+    /// and Notes (ADR-0069, "The room"): per-peer detail a front end holds
+    /// may be stale from here on. Every Edge is still delivered, and the Run
+    /// Log has what was dropped.
+    EventsShed {
+        /// How many events were dropped.
+        count: u64,
     },
 }
 

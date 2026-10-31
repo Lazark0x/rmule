@@ -133,8 +133,7 @@ where
                 CoreEvent::CommandRejected {
                     reason: CoreCommandRejectReason::KadUnavailable(reason),
                 },
-            )
-            .await;
+            );
             return;
         };
         // The pair came up — but Kad rides its IPv4 half and no other
@@ -161,8 +160,7 @@ where
                         },
                     ),
                 },
-            )
-            .await;
+            );
             return;
         }
         // One lever: the activity always wires its own
@@ -190,8 +188,7 @@ where
                         KadUnavailableReason::TcpPortUnbound,
                     ),
                 },
-            )
-            .await;
+            );
             return;
         }
         let external = kad_config.kad_shutdown.take().and_then(|slot| slot.take());
@@ -353,8 +350,7 @@ where
                             KadUnavailableReason::StartFailed,
                         ),
                     },
-                )
-                .await;
+                );
             }
         }
     }
@@ -474,7 +470,7 @@ where
         };
         self.diagnostics
             .set_kad_state(crate::diagnostics::KadState::Off);
-        send_event(&self.evt_tx, CoreEvent::KadStopped { reason }).await;
+        send_event(&self.evt_tx, CoreEvent::KadStopped { reason });
     }
 }
 

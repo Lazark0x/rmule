@@ -53,7 +53,7 @@ where
     /// the lean Run Log states it.
     async fn on_set_obfuscation(&mut self, policy: Option<rmule_net::peer::ObfuscationPolicy>) {
         if self.wiring.hello_adverts.obfuscation.set(policy) {
-            super::send_event(&self.evt_tx, CoreEvent::ObfuscationPolicyChanged { policy }).await;
+            super::send_event(&self.evt_tx, CoreEvent::ObfuscationPolicyChanged { policy });
         }
     }
 }

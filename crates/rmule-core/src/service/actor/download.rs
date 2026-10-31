@@ -85,7 +85,7 @@ where
                             ?reason,
                             "download start refused",
                         );
-                        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
+                        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason });
                         return;
                     }
                 };
@@ -112,8 +112,7 @@ where
                         metadata,
                         file_path: record.file_path().to_path_buf(),
                     },
-                )
-                .await;
+                );
 
                 // A Served Download from its queueing on, against the link's
                 // set (ADR-0113).
@@ -163,8 +162,7 @@ where
                     .store
                     .set_lifecycle(download_id, DownloadLifecycle::Paused);
                 tracing::info!(download_id = download_id.as_u64(), "download paused");
-                send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id })
-                    .await;
+                send_download_event(&self.evt_tx, DownloadEvent::DownloadPaused { download_id });
             }
             DownloadCommand::ClearDownload { download_id } => {
                 if let Err(reason) = self.clear(download_id).await {
@@ -322,8 +320,7 @@ where
                 verified_parts: restored.verified_parts(),
                 verified_bytes: restored.verified_bytes(),
             },
-        )
-        .await;
+        );
         if let Some(outcome) = restarted {
             tracing::info!(
                 download_id = download_id.as_u64(),
@@ -336,8 +333,7 @@ where
                     download_id,
                     outcome,
                 },
-            )
-            .await;
+            );
         }
 
         let file = match file_link_from_record(&record) {
@@ -356,7 +352,7 @@ where
         {
             return Err(CoreCommandRejectReason::UnknownDownload);
         }
-        send_download_event(&self.evt_tx, DownloadEvent::DownloadResumed { download_id }).await;
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadResumed { download_id });
 
         // The run opens on the row at rest when there is one — its part
         // picture stands until the runner's first settle — and the level
@@ -421,8 +417,7 @@ where
                 download_id,
                 damaged,
             },
-        )
-        .await;
+        );
     }
 
     /// Discard what a failed download recorded and the part file its row
@@ -485,8 +480,7 @@ where
         send_download_event(
             &self.evt_tx,
             DownloadEvent::DownloadCancelled { download_id },
-        )
-        .await;
+        );
         self.end_served(download_id, crate::PartialEnd::Ended).await;
     }
 
@@ -522,7 +516,7 @@ where
         }
         self.diagnostics.remove_download(download_id);
         tracing::info!(download_id = download_id.as_u64(), "download cleared");
-        send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id }).await;
+        send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id });
         Ok(())
     }
 
@@ -545,7 +539,7 @@ where
     }
 
     async fn reject(&mut self, reason: CoreCommandRejectReason) {
-        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason }).await;
+        send_event(&self.evt_tx, CoreEvent::CommandRejected { reason });
     }
 
     /// The once-a-minute look at the downloads a Volume Stop paused for free

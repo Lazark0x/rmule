@@ -418,8 +418,7 @@ where
                 download_id: request.download_id,
                 client_id: outcome.client_id,
             },
-        )
-        .await;
+        );
     }
 
     // A degraded (serverless) start has no server sources: the book starts

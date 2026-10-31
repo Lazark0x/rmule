@@ -12,6 +12,7 @@ mod command;
 mod config;
 mod event;
 mod inbox;
+mod outbox;
 
 pub(crate) use self::activity::FinishedActivity;
 pub(crate) use self::inbox::SettingsDoor;
@@ -40,11 +41,13 @@ pub use self::event::{
     ServerListEvent, ShareRejectReason, SharesWithheld, SourcePurgeReason, SourceWait, SweepTally,
     VolumeStop,
 };
+pub use self::inbox::CommandSender;
+pub use self::outbox::EventStream;
+pub(crate) use self::outbox::{Outbox, WeakOutbox, outbox};
 
 use std::sync::Arc;
 
 use rmule_primitives::ClientIdentity;
-use tokio::sync::mpsc;
 
 use crate::CoreError;
 use crate::adapters::{
@@ -107,7 +110,7 @@ impl SearchId {
 /// one reader, so every fact is delivered once.
 pub struct Core {
     commands: inbox::CommandDoor,
-    evt_rx: mpsc::Receiver<CoreEvent>,
+    events: EventStream,
     diagnostics: crate::diagnostics::DiagnosticsState,
     settings: crate::CoreSettingsHandle,
     kad_id: crate::KadId,
@@ -135,11 +138,19 @@ impl Core {
         self.commands.send(command).await
     }
 
+    /// A door onto the same inbox for a task apart from this handle's owner.
+    /// It does not keep the core open.
+    #[must_use]
+    pub fn command_sender(&self) -> CommandSender {
+        self.commands.sender()
+    }
+
     /// Await the next fact from the session. `None` means the actor stopped and
-    /// no further event will ever arrive. Events are buffered by the channel, so
-    /// a slow reader delays them but does not lose them.
+    /// no further event will ever arrive. The Outbox holds what has not been
+    /// read and nothing in core waits for this: a slow reader delays its Edges
+    /// and misses superseded Levels (ADR-0069, "The Outbox").
     pub async fn next_event(&mut self) -> Option<CoreEvent> {
-        self.evt_rx.recv().await
+        self.events.recv().await
     }
 
     /// Shut the actor down and wait for its persistence flush. Closing the
@@ -159,16 +170,16 @@ impl Core {
     /// ending once the flush has happened. [`shutdown`](Self::shutdown) is
     /// this, drained unread; a front end that names quit's progress reads it.
     #[must_use = "the stream's end is quit's completion"]
-    pub fn quit(self) -> mpsc::Receiver<CoreEvent> {
+    pub fn quit(self) -> EventStream {
         let Self {
             commands,
-            evt_rx,
+            events,
             diagnostics: _,
             settings: _,
             kad_id: _,
         } = self;
         drop(commands);
-        evt_rx
+        events
     }
 
     fn spawn_with_dialed_serve<S, P, L, K>(
@@ -182,7 +193,7 @@ impl Core {
         K: KadRuntimeFactory,
     {
         let (commands, inbox) = inbox::inbox();
-        let (evt_tx, evt_rx) = mpsc::channel(32);
+        let (evt_tx, events) = outbox(wiring.run_log.clone());
         let diagnostics = crate::diagnostics::DiagnosticsState::new();
         let settings = crate::CoreSettingsHandle::running(
             store,
@@ -198,7 +209,7 @@ impl Core {
         ));
         Self {
             commands,
-            evt_rx,
+            events,
             diagnostics,
             settings,
             kad_id,
@@ -233,8 +244,8 @@ impl Core {
     }
 }
 
-pub(crate) async fn send_download_event(evt_tx: &mpsc::Sender<CoreEvent>, event: DownloadEvent) {
-    let _ = evt_tx.send(event.into()).await;
+pub(crate) fn send_download_event(evt_tx: &Outbox, event: DownloadEvent) {
+    evt_tx.send(event.into());
 }
 
 /// The **Reask Routes** the one shared client-UDP socket's downloader reply

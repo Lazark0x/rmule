@@ -31,7 +31,7 @@ struct Early {
     share_changed_tx: mpsc::Sender<()>,
     reask_tx: mpsc::Sender<ClientUdpDatagram>,
     client_udp_rx: mpsc::Receiver<ClientUdpSend>,
-    evt_rx: mpsc::Receiver<CoreEvent>,
+    evt_rx: crate::service::EventStream,
     withheld: WithheldRows,
     stop_tx: watch::Sender<bool>,
     serve: tokio::task::JoinHandle<super::super::ServeOutcome<FakeServeRuntime>>,
@@ -43,7 +43,7 @@ fn serving_before_the_look() -> Early {
     share_file(&registry);
     let withheld = WithheldRows::before_start_look();
     let (accept_tx, accept_rx) = mpsc::channel(4);
-    let (evt_tx, evt_rx) = mpsc::channel(64);
+    let (evt_tx, evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (share_changed_tx, share_changed_rx) = mpsc::channel(8);
     let (reask_tx, reask_rx) = mpsc::channel(4);

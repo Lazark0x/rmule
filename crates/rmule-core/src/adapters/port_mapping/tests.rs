@@ -17,7 +17,6 @@ use rmule_net::portmap::{
 };
 use rmule_primitives::{AddressFamily, Ipv4Endpoint, PeerEndpoint};
 use rmule_testkit::{FakeGateways, GrantPolicy, ScriptedBackend};
-use tokio::sync::mpsc;
 
 use crate::CoreEvent;
 use crate::address_learning::{SharedAddressLearning, SocketRole};
@@ -112,7 +111,7 @@ fn runtime_remembering(
     preferences: Arc<dyn PortMappingPreferences>,
 ) -> PortMappingHandle {
     // Nobody reads these events: the sender is gone before the first one.
-    let (events, _) = mpsc::channel(1);
+    let (events, _) = crate::service::outbox(Default::default());
     runtime_telling(
         gateways,
         addresses,
@@ -132,7 +131,7 @@ fn runtime_telling(
     diagnostics: &DiagnosticsState,
     own: &SharedOwnIdentity,
     preferences: Arc<dyn PortMappingPreferences>,
-    events: mpsc::WeakSender<CoreEvent>,
+    events: crate::service::WeakOutbox,
 ) -> PortMappingHandle {
     spawn_port_mapping(
         crate::port_mapping::PortMappingMode::Auto,
@@ -466,7 +465,7 @@ async fn quit_tells_every_release_the_gateway_kept_and_asks_them_at_once() {
         Duration::from_millis(1200),
     ));
     let diagnostics = DiagnosticsState::new();
-    let (events_tx, mut events) = mpsc::channel(8);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let handle = runtime_telling(
         FakeGateways::home_lan(),
         &addresses,

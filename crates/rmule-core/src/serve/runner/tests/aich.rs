@@ -29,7 +29,7 @@ async fn an_aich_root_ask_is_answered_from_the_tree_read_off_the_file() {
         .unwrap();
 
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (_share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let serve = tokio::spawn(
@@ -122,7 +122,7 @@ pub(super) async fn serving(
     store: Arc<rmule_store::Store>,
 ) -> ServeRig {
     let (accept_tx, accept_rx) = mpsc::channel::<ServeConnection>(4);
-    let (evt_tx, mut evt_rx) = mpsc::channel::<CoreEvent>(64);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(false);
     let (share_changed_tx, share_changed_rx) = mpsc::channel::<()>(1);
     let task = tokio::spawn(
@@ -170,7 +170,7 @@ pub(super) async fn serving(
 /// A serve task, and what keeps it running.
 pub(super) struct ServeRig {
     accept_tx: mpsc::Sender<ServeConnection>,
-    _events: mpsc::Receiver<CoreEvent>,
+    _events: crate::service::EventStream,
     stop_tx: watch::Sender<bool>,
     _share_changed_tx: mpsc::Sender<()>,
     task: tokio::task::JoinHandle<crate::serve::ServeOutcome<FakeServeRuntime>>,

@@ -124,8 +124,7 @@ where
         send_event(
             &self.evt_tx,
             SearchEvent::SearchStarted { search_id }.into(),
-        )
-        .await;
+        );
         self.run_search(
             search_id,
             stream,
@@ -227,8 +226,7 @@ where
             send_event(
                 &self.evt_tx,
                 SearchEvent::SearchRefused { search_id, reason }.into(),
-            )
-            .await;
+            );
             return;
         };
         let query: SearchQuery = query.into();
@@ -243,8 +241,7 @@ where
         send_event(
             &self.evt_tx,
             SearchEvent::SearchStarted { search_id }.into(),
-        )
-        .await;
+        );
         // No sweep and no Kad walk: the server leg is its only one, so the
         // search completes on the server's answer or its answer wait.
         self.run_search(
@@ -277,8 +274,7 @@ where
                 reason: SearchFailure::ServerDisconnected,
             }
             .into(),
-        )
-        .await;
+        );
     }
 
     /// Put `query` on the session: the search's server leg.

@@ -154,6 +154,14 @@ pub const NO_DATA_DIR: &str = "no data dir (set RMULE_DATA or HOME)";
 #[cfg(windows)]
 pub const NO_DATA_DIR: &str = "no data dir (set RMULE_DATA or LOCALAPPDATA)";
 
+/// The app fell behind the node and `count` peer events were skipped.
+#[must_use]
+pub fn events_shed(count: u64) -> Sentence {
+    Sentence::owned(format!(
+        "fell behind the node: {count} peer events skipped, the Run Log has them"
+    ))
+}
+
 /// The run has no Run Log, and why.
 #[must_use]
 pub fn no_run_log(failure: rmule_core::run_log::RunLogFailure) -> Sentence {

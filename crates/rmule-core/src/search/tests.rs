@@ -5,6 +5,7 @@
 //! merging attributed and Kad batches into one deduplicated result set. One
 //! module because every producer's rows are built by the same `result` helper.
 
+use crate::CoreEvent;
 use std::net::Ipv4Addr;
 use std::sync::Mutex;
 
@@ -26,7 +27,7 @@ mod lifecycle;
 mod sweep_tally;
 
 /// The next event that is not a leg picture (`SearchLegsChanged`).
-async fn next_past_legs(evt_rx: &mut mpsc::Receiver<CoreEvent>) -> Option<CoreEvent> {
+async fn next_past_legs(evt_rx: &mut crate::service::EventStream) -> Option<CoreEvent> {
     loop {
         match evt_rx.recv().await? {
             CoreEvent::Search(SearchEvent::SearchLegsChanged { .. }) => {}
@@ -407,7 +408,7 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
     let (tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
     let (kad_tx, kad_rx) = crate::search::kad_keyword_leg();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
 
     let task = tokio::spawn(
@@ -514,7 +515,7 @@ async fn merges_attributed_and_kad_batches_into_one_result_set() {
 async fn an_unattributable_related_answer_fails_the_search() {
     let (tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let task = tokio::spawn(
         SearchTask {
@@ -571,7 +572,7 @@ async fn a_dropped_cancel_sender_ends_the_search_task() {
     let (_tcp_tx, tcp_rx) = mpsc::channel(8);
     let live = LiveSearches::default();
     let (_kad_tx, kad_rx) = crate::search::kad_keyword_leg();
-    let (evt_tx, mut evt_rx) = mpsc::channel(16);
+    let (evt_tx, mut evt_rx) = crate::service::outbox(Default::default());
     let (cancel_tx, cancel_rx) = watch::channel(false);
 
     let task = tokio::spawn(

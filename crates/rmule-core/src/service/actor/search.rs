@@ -42,8 +42,7 @@ where
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::SearchIdInUse,
                     },
-                )
-                .await;
+                );
             }
             SearchCommand::StartSearch {
                 search_id,
@@ -64,8 +63,7 @@ where
                     send_event(
                         &self.evt_tx,
                         SearchEvent::SearchMoreRefused { search_id }.into(),
-                    )
-                    .await;
+                    );
                 }
             }
             SearchCommand::CancelSearch { search_id } => {
@@ -75,8 +73,7 @@ where
                         CoreEvent::CommandRejected {
                             reason: CoreCommandRejectReason::UnknownSearch,
                         },
-                    )
-                    .await;
+                    );
                 }
             }
         }

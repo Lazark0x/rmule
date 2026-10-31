@@ -49,7 +49,7 @@ where
                     Ok(false) => ShareRejectReason::NotShared,
                     Err(_) => ShareRejectReason::RegistryError,
                 };
-                send_event(&self.evt_tx, ServeEvent::ShareRejected { reason }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::ShareRejected { reason }.into());
             }
             ServeCommand::StartServing { listen_addr } => {
                 self.start_serving(listen_addr).await;
@@ -110,8 +110,7 @@ where
             send_event(
                 &self.evt_tx,
                 ServeEvent::ServingStarted { listen_addr }.into(),
-            )
-            .await;
+            );
             return;
         }
         let Some(mut serve_runtime) = self.wiring.serve_runtime.take() else {
@@ -125,8 +124,7 @@ where
                     reason: ServeStartFailure::Adapter,
                 }
                 .into(),
-            )
-            .await;
+            );
             return;
         };
         // The bind happens *here*, on the actor, not inside the task:
@@ -146,7 +144,7 @@ where
                     }
                 };
                 self.wiring.serve_runtime = Some(serve_runtime);
-                send_event(&self.evt_tx, ServeEvent::ServingFailed { reason }.into()).await;
+                send_event(&self.evt_tx, ServeEvent::ServingFailed { reason }.into());
                 return;
             }
         };
@@ -244,8 +242,7 @@ where
         send_event(
             &self.evt_tx,
             ServeEvent::ServingStarted { listen_addr: bound }.into(),
-        )
-        .await;
+        );
         let _ = started_tx.send(());
         // The eD2k listener's **Half-Bound Pair** fact,
         // read back from **Address Learning** right here: the serve
@@ -261,8 +258,7 @@ where
             send_event(
                 &self.evt_tx,
                 CoreEvent::SocketBoundWithoutFamily { half_bound },
-            )
-            .await;
+            );
         }
         // The eD2k listener is the mapping that earns a High-ID
         // (ADR-0086), and it only exists from here — but the **Desired
@@ -352,6 +348,6 @@ where
         // chance to emit — they end with the task, silently, from the
         // snapshot's point of view.
         self.diagnostics.close_all_uploads(reason);
-        send_event(&self.evt_tx, ServeEvent::ServingStopped { reason }.into()).await;
+        send_event(&self.evt_tx, ServeEvent::ServingStopped { reason }.into());
     }
 }

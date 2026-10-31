@@ -137,7 +137,7 @@ struct Rig {
     udp: mpsc::Receiver<ClientUdpSend>,
     natt: mpsc::Receiver<NattCommand>,
     kad: mpsc::Receiver<KadPumpCommand>,
-    events: mpsc::Receiver<CoreEvent>,
+    events: crate::service::EventStream,
     kad_lease: Option<KadPresenceLease>,
     session: Option<(
         crate::server_session::ServerSessionHandle,
@@ -185,7 +185,7 @@ impl Rig {
         let kad_pump = SharedKadPump::default();
         let (kad_tx, kad) = mpsc::channel(4);
         kad_pump.install_for_good(kad_tx);
-        let (events_tx, events) = mpsc::channel(8);
+        let (events_tx, events) = crate::service::outbox(Default::default());
         let diagnostics = DiagnosticsState::default();
         let policy = crate::obfuscation_policy::SharedObfuscationPolicy::default();
         let reacher = PeerReacher::new(PeerReachWiring {
@@ -782,7 +782,7 @@ async fn a_server_punch_reaches_the_session_as_a_0x60_through_a_running_front() 
         )
         .expect("the front starts"),
     );
-    let (events, mut reported) = mpsc::channel(4);
+    let (events, mut reported) = crate::service::outbox(Default::default());
     let reacher = PeerReacher::new(PeerReachWiring {
         reach: rig.reach.clone(),
         client_udp: None,

@@ -184,13 +184,13 @@ impl<D: Dialer> FirewalledFront<D> {
                     .wiring
                     .events
                     .as_ref()
-                    .and_then(mpsc::WeakSender::upgrade)
+                    .and_then(crate::service::WeakOutbox::upgrade)
                 {
                     let failed = CoreEvent::BuddyDialFailed {
                         buddy: buddy.tcp,
                         cause,
                     };
-                    let _ = events.send(failed).await;
+                    let _ = events.send(failed);
                 }
                 // The buddy we dialed is one we cannot reach: free it and arm
                 // an instant recruit, exactly as a lost link does — unless it

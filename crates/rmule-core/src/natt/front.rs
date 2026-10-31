@@ -70,7 +70,6 @@ use crate::address_learning::SharedAddressLearning;
 use crate::client_udp::{ClientUdpDatagram, ClientUdpSend};
 use crate::diagnostics::DiagnosticsState;
 use crate::interval_limiter::IntervalLimiter;
-use crate::service::CoreEvent;
 
 use super::acting::{ACTING_MIN_INTERVAL, ACTING_TRACKED_MAX};
 use super::paths::PunchedPaths;
@@ -392,7 +391,7 @@ pub(crate) struct NattWiring {
     pub(crate) prediction: Option<PredictionWiring>,
     /// The core event bus, weakly held: the front must not keep it open past
     /// the actor that owns it.
-    pub(crate) events: Option<mpsc::WeakSender<CoreEvent>>,
+    pub(crate) events: Option<crate::service::WeakOutbox>,
 }
 
 /// The **NAT-T Front** itself: the demux and the engines behind it, the two

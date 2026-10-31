@@ -18,7 +18,7 @@ use crate::client_udp::{
     ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, drain_client_udp_sends,
 };
 use crate::own_identity::SharedOwnIdentity;
-use crate::service::{CoreConfig, CoreEvent, SharedReaskReplySink};
+use crate::service::{CoreConfig, SharedReaskReplySink};
 
 /// Bring up the client-UDP front on the one bound socket: the demuxing engine,
 /// the send drain, the routing of downloader-consumed reask replies
@@ -167,7 +167,7 @@ pub(super) struct NattFrontWiring<'a> {
     pub(super) peer_pin: crate::adapters::SharedPeerPin,
     /// The **Peer Roster**: an IP it knows may open a Tunnel unannounced.
     pub(super) roster: crate::peer_roster::SharedPeerRoster,
-    pub(super) events: mpsc::WeakSender<CoreEvent>,
+    pub(super) events: crate::service::WeakOutbox,
     /// The **firewalled front**'s two cells (ADR-0061) — its slot
     /// rides the one Hello Adverts read its buddy dial states.
     /// It is spawned beside the NAT-T front because it is the same bind's

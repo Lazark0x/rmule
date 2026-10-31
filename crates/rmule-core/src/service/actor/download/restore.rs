@@ -7,15 +7,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::SystemTime;
 
-use tokio::sync::mpsc;
-
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::diagnostics::DiagnosticsState;
 use crate::download::source_seeds::SourceSeed;
 use crate::served_downloads::ServedDownloads;
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
+use crate::service::{DownloadEvent, DownloadId, send_download_event};
 use crate::storage::{DownloadRepository, recorded_part_hashes};
 use crate::store::download::DurableDownloadRepository;
 use crate::{DownloadFailure, DownloadLifecycle};
@@ -36,7 +34,7 @@ use super::super::CoreActor;
 pub(in crate::service::actor) async fn attach_downloads(
     store: &DurableDownloadRepository,
     diagnostics: &DiagnosticsState,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     can_restore: bool,
     served: &ServedDownloads,
 ) -> (VecDeque<DownloadId>, HashMap<DownloadId, Vec<SourceSeed>>) {
@@ -70,8 +68,7 @@ pub(in crate::service::actor) async fn attach_downloads(
                 metadata: record.metadata().clone(),
                 file_path: record.file_path().to_path_buf(),
             },
-        )
-        .await;
+        );
         send_download_event(
             evt_tx,
             DownloadEvent::DownloadProgressRestored {
@@ -79,8 +76,7 @@ pub(in crate::service::actor) async fn attach_downloads(
                 verified_parts: parts.len(),
                 verified_bytes,
             },
-        )
-        .await;
+        );
         // A completing row's run goes straight to its move (ADR-0115).
         let wants_run = matches!(
             record.lifecycle(),
@@ -99,7 +95,7 @@ pub(in crate::service::actor) async fn attach_downloads(
 /// any to load or to drop.
 async fn load_seeds(
     store: &DurableDownloadRepository,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     restoring: &VecDeque<DownloadId>,
 ) -> HashMap<DownloadId, Vec<SourceSeed>> {
     let now = SystemTime::now();
@@ -128,8 +124,7 @@ async fn load_seeds(
                 seeds: remembered.values().map(Vec::len).sum(),
                 expired,
             },
-        )
-        .await;
+        );
     }
     remembered
 }

@@ -7,10 +7,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use rmule_primitives::{FileHash, PartHash};
-use tokio::sync::mpsc;
 
 use crate::registry_check::{WithheldReason, WithheldRows};
-use crate::service::{CoreEvent, DownloadId, ServeEvent};
+use crate::service::{DownloadId, ServeEvent};
 use crate::storage::DownloadRepository;
 use crate::{CoreError, DownloadLifecycle, DurableDownloadRecord};
 
@@ -137,7 +136,7 @@ pub(crate) async fn auto_share_completed_download<R, G>(
     registry: &G,
     refuses: impl FnOnce(&Path) -> bool,
     withheld: &WithheldRows,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) -> Option<AutoShared>
 where
     R: DownloadRepository,
@@ -198,7 +197,7 @@ where
                     (event, AutoShared::Refused(file_hash))
                 }
             };
-            let _ = evt_tx.send(event.into()).await;
+            let _ = evt_tx.send(event.into());
             Some(shared)
         }
         // No command issuer to reject to on auto-share, but a durable registry
@@ -270,7 +269,6 @@ mod tests {
     };
     use std::path::Path;
     use std::sync::Arc;
-    use tokio::sync::mpsc;
 
     fn server() -> ServerEndpoint {
         ServerEndpoint::new("127.0.0.1", 4661).unwrap()
@@ -326,7 +324,7 @@ mod tests {
         let registry = DurableSharedFileRegistry::new(handle);
         let observed = registry.clone();
         let registry = Arc::new(registry);
-        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
 
         assert!(
             auto_share_completed_download(
@@ -387,7 +385,7 @@ mod tests {
         let registry = DurableSharedFileRegistry::new(handle);
         let observed = registry.clone();
         let registry = Arc::new(registry);
-        let (evt_tx, _evt_rx) = mpsc::channel(4);
+        let (evt_tx, _evt_rx) = crate::service::outbox(Default::default());
 
         assert!(
             auto_share_completed_download(

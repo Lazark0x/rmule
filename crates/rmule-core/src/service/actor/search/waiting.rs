@@ -158,7 +158,6 @@ where
         send_event(
             &self.evt_tx,
             SearchEvent::SearchWaitingForConnection { search_id }.into(),
-        )
-        .await;
+        );
     }
 }

@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use rmule_primitives::ServerEndpoint;
-use tokio::sync::mpsc;
 
 use crate::CoreError;
 use crate::adapters::{
@@ -79,8 +78,7 @@ where
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::UnknownServer,
                     },
-                )
-                .await;
+                );
                 return;
             }
             Ok(true) => {}
@@ -91,8 +89,7 @@ where
                 CoreEvent::CommandRejected {
                     reason: CoreCommandRejectReason::ServerConnectInFlight,
                 },
-            )
-            .await;
+            );
             return;
         }
         // The operator's word: stay connected to this server.
@@ -142,7 +139,7 @@ where
                     server: server.clone(),
                     step,
                 };
-                send_event(&evt_tx, event).await;
+                send_event(&evt_tx, event);
             }
             let outcome =
                 crate::server_session::connect_to_server(&session, server, identity, &ip_filter)
@@ -178,7 +175,7 @@ where
                 server,
                 step: LoginStep::KadRecheck,
             };
-            send_event(&self.evt_tx, event).await;
+            send_event(&self.evt_tx, event);
         }
         self.start_waiting_searches().await;
     }
@@ -214,7 +211,7 @@ struct ServerListContext<'a> {
     in_flight: &'a Arc<std::sync::atomic::AtomicBool>,
     max_server_met_bytes: usize,
     diagnostics: &'a crate::diagnostics::DiagnosticsState,
-    evt_tx: &'a mpsc::Sender<CoreEvent>,
+    evt_tx: &'a crate::service::Outbox,
 }
 
 /// Apply one server-list command (ADR-0080).
@@ -236,8 +233,7 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::ServerAddressReserved,
                     },
-                )
-                .await;
+                );
                 return;
             }
             let endpoint = server.endpoint.clone();
@@ -249,15 +245,13 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     send_event(
                         ctx.evt_tx,
                         ServerListEvent::ServerAdded { server: endpoint }.into(),
-                    )
-                    .await;
+                    );
                 }
                 Ok(ServerMerge::Updated) => {
                     send_event(
                         ctx.evt_tx,
                         ServerListEvent::ServerUpdated { server: endpoint }.into(),
-                    )
-                    .await;
+                    );
                 }
                 Err(error) => reject_server_list_store(ctx.evt_tx, &error).await,
             }
@@ -304,8 +298,7 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::ServerListFetchUnavailable,
                     },
-                )
-                .await;
+                );
                 return;
             };
             // aMule logs an empty `addresses.dat` and fetches nothing
@@ -316,15 +309,13 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::ServerListUpdateInFlight,
                     },
-                )
-                .await;
+                );
                 return;
             }
             send_event(
                 ctx.evt_tx,
                 ServerListEvent::ServerListAutoUpdateStarted { urls: urls.clone() }.into(),
-            )
-            .await;
+            );
             if urls.is_empty() {
                 return;
             }
@@ -345,8 +336,7 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::ServerListFetchUnavailable,
                     },
-                )
-                .await;
+                );
                 return;
             };
             if ctx.in_flight.swap(true, Ordering::SeqCst) {
@@ -355,15 +345,13 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
                     CoreEvent::CommandRejected {
                         reason: CoreCommandRejectReason::ServerListUpdateInFlight,
                     },
-                )
-                .await;
+                );
                 return;
             }
             send_event(
                 ctx.evt_tx,
                 ServerListEvent::ServerListUpdateStarted { url: url.clone() }.into(),
-            )
-            .await;
+            );
             // Off the actor: the fetch is a network round trip with a
             // multi-second deadline, and the list stays editable while it runs.
             tokio::spawn(run_server_list_update(
@@ -384,20 +372,19 @@ async fn handle_server_list_command(command: ServerListCommand, ctx: ServerListC
 /// itself failed. The three outcomes of every `Result<bool, _>` mutator on
 /// [`ServerListStore`](crate::ServerListStore).
 async fn report_row_mutation(
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     outcome: Result<bool, CoreError>,
     event: ServerListEvent,
 ) {
     match outcome {
-        Ok(true) => send_event(evt_tx, event.into()).await,
+        Ok(true) => send_event(evt_tx, event.into()),
         Ok(false) => {
             send_event(
                 evt_tx,
                 CoreEvent::CommandRejected {
                     reason: CoreCommandRejectReason::UnknownServer,
                 },
-            )
-            .await;
+            );
         }
         Err(error) => reject_server_list_store(evt_tx, &error).await,
     }
@@ -412,7 +399,7 @@ async fn report_row_mutation(
 /// listed.
 pub(super) async fn load_server_list(
     store: &SharedServerListStore,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) -> Result<Vec<crate::server_list::ManagedServer>, CoreError> {
     let mut rows = store.servers()?;
     let mut dropped = Vec::new();
@@ -435,23 +422,21 @@ pub(super) async fn load_server_list(
         send_event(
             evt_tx,
             ServerListEvent::ReservedServerDropped { server }.into(),
-        )
-        .await;
+        );
     }
     Ok(rows)
 }
 
 /// A storage fault, not a caller mistake: the store's own reason is traced,
 /// and the caller is told the write did not happen.
-async fn reject_server_list_store(evt_tx: &mpsc::Sender<CoreEvent>, error: &CoreError) {
+async fn reject_server_list_store(evt_tx: &crate::service::Outbox, error: &CoreError) {
     tracing::warn!(%error, "managed server list store refused a write");
     send_event(
         evt_tx,
         CoreEvent::CommandRejected {
             reason: CoreCommandRejectReason::ServerListStoreFailed,
         },
-    )
-    .await;
+    );
 }
 
 /// The off-actor half of an on-demand server-list update (ADR-0080): run it,
@@ -462,7 +447,7 @@ async fn run_server_list_update(
     url: String,
     max_server_met_bytes: usize,
     diagnostics: crate::diagnostics::DiagnosticsState,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     in_flight: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let outcome = acquire_and_install(&store, &fetcher, &url, max_server_met_bytes, &diagnostics)
@@ -481,7 +466,7 @@ async fn run_server_list_update(
             },
         );
     in_flight.store(false, Ordering::SeqCst);
-    send_event(&evt_tx, outcome.into()).await;
+    send_event(&evt_tx, outcome.into());
 }
 
 /// The auto-update walk off the actor (ADR-0065): the installed list read,
@@ -494,7 +479,7 @@ async fn run_server_list_walk(
     urls: Vec<String>,
     max_server_met_bytes: usize,
     diagnostics: crate::diagnostics::DiagnosticsState,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     in_flight: Arc<std::sync::atomic::AtomicBool>,
 ) {
     let installed = match store.servers() {
@@ -506,8 +491,7 @@ async fn run_server_list_walk(
             send_event(
                 &evt_tx,
                 ServerListEvent::ServerListUpdateFailed { reason }.into(),
-            )
-            .await;
+            );
             return;
         }
     };
@@ -522,8 +506,7 @@ async fn run_server_list_walk(
         send_event(
             &evt_tx,
             ServerListEvent::ServerListAutoUpdateFetched { url, outcome }.into(),
-        )
-        .await;
+        );
     }
     let installed = mutate_and_publish(&store, &diagnostics, |store| {
         install_server_met_plan(store, &walk.plan)
@@ -542,7 +525,7 @@ async fn run_server_list_walk(
             }
         }
     };
-    send_event(&evt_tx, outcome.into()).await;
+    send_event(&evt_tx, outcome.into());
 }
 
 /// Read the installed list, fetch and merge, install and republish — two

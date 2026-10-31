@@ -60,8 +60,8 @@ use super::{CoreCommand, CoreConfig, CoreEvent, FinishedActivity};
 
 pub(super) use self::prologue::run_core_with_adapters;
 
-async fn send_event(evt_tx: &mpsc::Sender<CoreEvent>, event: CoreEvent) {
-    let _ = evt_tx.send(event).await;
+fn send_event(evt_tx: &super::Outbox, event: CoreEvent) {
+    evt_tx.send(event);
 }
 
 /// Nudge the **Kad Publisher** to re-sweep the **Shared File
@@ -237,6 +237,9 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// Whether attach listens and starts again the downloads the last
     /// process left running (ADR-0094).
     pub(super) restore_at_attach: bool,
+    /// The Run Log level every event is written at, shared with the front
+    /// end that changes it (ADR-0069).
+    pub(super) run_log: crate::run_log::LevelHandle,
     /// The node's Kad ID, fixed at build (ADR-0043): the one every Kad node
     /// this core starts runs under.
     pub(super) kad_id: crate::KadId,
@@ -254,7 +257,7 @@ pub(super) struct CoreWiring<S, P, L, K> {
 struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// The builder's adapter set and shared handles, held whole.
     wiring: CoreWiring<S, P, L, K>,
-    evt_tx: mpsc::Sender<CoreEvent>,
+    evt_tx: crate::service::Outbox,
     diagnostics: crate::diagnostics::DiagnosticsState,
     /// One server-list update at a time (aMule's own posture). Set by the
     /// actor when it accepts an `UpdateServerList`, cleared by the update task
@@ -532,7 +535,7 @@ where
                         }
                         CoreCommand::DumpDiagnostics => {
                             let snapshot = self.diagnostics.snapshot();
-                            send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot }).await;
+                            send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot });
                         }
                         CoreCommand::DumpFileHistory => {
                             let history = crate::file_history::read(
@@ -541,7 +544,7 @@ where
                                 &self.wiring.registry.had_set(),
                                 &*self.wiring.store,
                             );
-                            send_event(&self.evt_tx, CoreEvent::FileHistory { history }).await;
+                            send_event(&self.evt_tx, CoreEvent::FileHistory { history });
                         }
                         CoreCommand::Search(command) => {
                             self.on_search_command(command).await;

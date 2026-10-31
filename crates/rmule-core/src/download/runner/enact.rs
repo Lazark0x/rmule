@@ -18,7 +18,7 @@ use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
 use crate::error::DownloadFailure;
 use crate::peer_roster::PeerRelation;
-use crate::service::{CoreEvent, DownloadEvent, DownloadId, send_download_event};
+use crate::service::{DownloadEvent, DownloadId, send_download_event};
 use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
@@ -37,7 +37,7 @@ pub(super) struct LoopCtx<'a, S, P> {
     pub(super) runner: &'a RunnerContext<S, P>,
     pub(super) download_id: DownloadId,
     pub(super) file: &'a Ed2kFileLink,
-    pub(super) evt_tx: &'a mpsc::Sender<CoreEvent>,
+    pub(super) evt_tx: &'a crate::service::Outbox,
     pub(super) worker_pool: WorkerPool<'a, S, P>,
     pub(super) command_channels: WorkerChannels,
     pub(super) file_hash_only_parts: Vec<u32>,
@@ -75,7 +75,7 @@ where
         match decision {
             Decision::Emit(event) => {
                 follow_event(ctx, &event);
-                send_download_event(ctx.evt_tx, event).await;
+                send_download_event(ctx.evt_tx, event);
             }
             Decision::Phase { slot, phase } => {
                 enter_phase(&ctx.runner.rt.diagnostics, ctx.download_id, slot, phase);

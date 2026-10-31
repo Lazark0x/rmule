@@ -15,7 +15,7 @@ use crate::global_sources::GlobalSourceRegistry;
 use crate::ip_filter::SharedIpFilter;
 use crate::kad_sources::KadSourceRegistry;
 use crate::server_session::SharedServerSession;
-use crate::service::{CoreEvent, SharedReaskReplySink};
+use crate::service::SharedReaskReplySink;
 use crate::store::download::DurableDownloadRepository;
 
 pub(crate) struct SharedRuntime<S, P> {
@@ -40,7 +40,7 @@ pub(crate) struct SharedRuntime<S, P> {
     pub(crate) held_places: crate::held_places::SharedHeldPlaces,
     pub(crate) peer_transfer: Arc<Mutex<P>>,
     pub(crate) credit: SharedCreditStore,
-    pub(crate) evt_tx: mpsc::Sender<CoreEvent>,
+    pub(crate) evt_tx: crate::service::Outbox,
     pub(crate) diagnostics: crate::diagnostics::DiagnosticsState,
     /// The shared server session, used to relay a Low-ID `OP_CALLBACKREQUEST`
     /// when enacting a `RequestCallback` decision (ADR-0039).

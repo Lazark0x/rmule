@@ -27,8 +27,8 @@ const PEER_HASH: UserHash = UserHash::from_bytes([0x0B; UserHash::BYTE_LEN]);
 struct SuiLink {
     serve: LinkServeHalf,
     _worker: PeerWorker,
-    events: mpsc::Receiver<CoreEvent>,
-    _events_tx: mpsc::Sender<CoreEvent>,
+    events: crate::service::EventStream,
+    _events_tx: crate::service::Outbox,
     _peer: JoinHandle<()>,
 }
 
@@ -63,7 +63,7 @@ async fn dialed_sui_link(peer_key: Arc<SecureIdentKey>, credit: SharedCreditStor
         }
     });
 
-    let (events_tx, events) = mpsc::channel(8);
+    let (events_tx, events) = crate::service::outbox(Default::default());
     let secured = SharedSecuredIdentities::default();
     secured.install(credit, events_tx.downgrade());
     let (dialed_tx, mut dialed_rx) = mpsc::channel(4);

@@ -306,7 +306,7 @@ where
             record = %event.record().render(Level::Full),
             "the operator's session was lost; reconnecting"
         );
-        send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
+        send_event(&self.evt_tx, CoreEvent::ServerConnection(event));
     }
 
     async fn end_reconnect(&mut self, server: ServerEndpoint, reason: ReconnectEnd) {
@@ -315,7 +315,7 @@ where
             record = %event.record().render(Level::Full),
             "no more reconnects"
         );
-        send_event(&self.evt_tx, CoreEvent::ServerConnection(event)).await;
+        send_event(&self.evt_tx, CoreEvent::ServerConnection(event));
     }
 }
 

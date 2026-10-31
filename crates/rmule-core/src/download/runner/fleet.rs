@@ -316,12 +316,11 @@ where
             total: found.distinct(),
             usable_high_id: found.distinct_dialable(),
         },
-    )
-    .await;
+    );
     if state.no_usable_candidate() {
         return Err(DownloadFailure::NoUsableSources);
     }
-    send_download_event(evt_tx, hash_set_received).await;
+    send_download_event(evt_tx, hash_set_received);
 
     // The `PeerHandshakeContext` binding `ctx` was consumed into `worker_pool`
     // above, so the name is free for the loop-carried state here.
@@ -374,8 +373,7 @@ where
                         download_id,
                         reason,
                     },
-                )
-                .await;
+                );
                 told_wait = Some(reason);
             }
             None if ctx.state.out_of_sources() => {
@@ -388,8 +386,7 @@ where
                         download_id,
                         reason: SourceWait::OnStanding,
                     },
-                )
-                .await;
+                );
                 told_wait = Some(SourceWait::OnStanding);
             }
         }
@@ -494,8 +491,7 @@ where
                         admitted: taken.tally.admitted,
                         new: taken.tally.fresh,
                     },
-                )
-                .await;
+                );
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -514,8 +510,7 @@ where
                         total: taken.tally.admitted,
                         usable_high_id: taken.tally.dialable,
                     },
-                )
-                .await;
+                );
                 let mut q: VecDeque<Decision> = taken.decisions.into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
@@ -708,8 +703,7 @@ async fn retell_wait<S, P>(
                 download_id: ctx.download_id,
                 reason,
             },
-        )
-        .await;
+        );
     }
     Some(reason)
 }

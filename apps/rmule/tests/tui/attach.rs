@@ -109,7 +109,7 @@ async fn attach_in(dir: &tempfile::TempDir, deployment: &Scratch) -> Attachment<
         path: dir.path().to_path_buf(),
         source: DataDirSource::Flag,
     };
-    match attach(Some(resolved), deployment).await {
+    match attach(Some(resolved), deployment, Default::default()).await {
         Ok(attachment) => attachment,
         Err(failure) => panic!("the core did not attach: {failure:?}"),
     }

@@ -82,8 +82,7 @@ async fn wait_for_connection<S, P>(
         DownloadEvent::WaitingForConnection {
             download_id: request.download_id,
         },
-    )
-    .await;
+    );
     // The part file is looked at while the run waits, not only at
     // the next part.
     let mut part_file_tick =

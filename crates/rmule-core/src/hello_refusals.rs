@@ -13,7 +13,6 @@
 use std::sync::{Arc, Mutex};
 
 use rmule_peer::HelloRefusal;
-use tokio::sync::mpsc;
 
 use crate::diagnostics::DiagnosticsState;
 use crate::service::CoreEvent;
@@ -27,7 +26,7 @@ pub(crate) struct SharedHelloRefusals {
 #[derive(Clone, Debug)]
 struct Installed {
     diagnostics: DiagnosticsState,
-    events: mpsc::WeakSender<CoreEvent>,
+    events: crate::service::WeakOutbox,
 }
 
 impl SharedHelloRefusals {
@@ -36,7 +35,7 @@ impl SharedHelloRefusals {
     pub(crate) fn install(
         &self,
         diagnostics: DiagnosticsState,
-        events: mpsc::WeakSender<CoreEvent>,
+        events: crate::service::WeakOutbox,
     ) {
         *self.installed.lock().expect("hello refusal cell poisoned") = Some(Installed {
             diagnostics,
@@ -56,7 +55,7 @@ impl SharedHelloRefusals {
         };
         installed.diagnostics.count_peer_hello_refused();
         if let Some(events) = installed.events.upgrade() {
-            let _ = events.send(CoreEvent::PeerHelloRefused { refusal }).await;
+            let _ = events.send(CoreEvent::PeerHelloRefused { refusal });
         }
     }
 }
@@ -100,7 +99,7 @@ mod tests {
         });
 
         let diagnostics = DiagnosticsState::default();
-        let (events_tx, mut events) = mpsc::channel(4);
+        let (events_tx, mut events) = crate::service::outbox(Default::default());
         let refusals = SharedHelloRefusals::default();
         refusals.install(diagnostics.clone(), events_tx.downgrade());
         let mut cells = AdapterCells::detached();

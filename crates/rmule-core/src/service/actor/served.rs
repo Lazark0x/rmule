@@ -85,7 +85,7 @@ where
                 }
                 OfferChange::Joined(_) | OfferChange::Left(_) => continue,
             };
-            send_event(&self.evt_tx, event.into()).await;
+            send_event(&self.evt_tx, event.into());
         }
         !changes.is_empty()
     }

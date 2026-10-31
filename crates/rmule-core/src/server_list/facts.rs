@@ -77,14 +77,14 @@ pub(crate) struct ServerFacts {
     /// the event channel open forever — [`Core::shutdown`](crate::Core::shutdown)
     /// drains until the last sender is gone. Once the actor is down there is
     /// nobody left to hear an edge, so failing to upgrade is exactly right.
-    events: Option<tokio::sync::mpsc::WeakSender<CoreEvent>>,
+    events: Option<crate::service::WeakOutbox>,
 }
 
 impl ServerFacts {
     pub(crate) fn new(
         store: SharedServerListStore,
         diagnostics: DiagnosticsState,
-        events: Option<tokio::sync::mpsc::WeakSender<CoreEvent>>,
+        events: Option<crate::service::WeakOutbox>,
     ) -> Self {
         Self {
             store: Some(store),
@@ -95,7 +95,7 @@ impl ServerFacts {
 
     /// A seam with no list behind it that reports its events to `events`.
     #[cfg(test)]
-    pub(crate) fn reporting_to(events: &tokio::sync::mpsc::Sender<CoreEvent>) -> Self {
+    pub(crate) fn reporting_to(events: &crate::service::Outbox) -> Self {
         Self {
             store: None,
             diagnostics: DiagnosticsState::new(),
@@ -569,11 +569,11 @@ impl ServerFacts {
         let Some(events) = self
             .events
             .as_ref()
-            .and_then(tokio::sync::mpsc::WeakSender::upgrade)
+            .and_then(crate::service::WeakOutbox::upgrade)
         else {
             return;
         };
-        let _ = events.send(event).await;
+        let _ = events.send(event);
     }
 }
 

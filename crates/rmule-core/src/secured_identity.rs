@@ -15,7 +15,6 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 use rmule_primitives::UserHash;
-use tokio::sync::mpsc;
 
 use crate::credit::{KeyBinding, SharedCreditStore};
 use crate::service::CoreEvent;
@@ -40,13 +39,13 @@ pub(crate) struct SharedSecuredIdentities {
 #[derive(Clone)]
 struct Installed {
     credit: SharedCreditStore,
-    events: mpsc::WeakSender<CoreEvent>,
+    events: crate::service::WeakOutbox,
 }
 
 impl SharedSecuredIdentities {
     /// Bind the cell to the credit ledger and the event bus. The sender is
     /// weak so this cell never keeps the bus open past the actor.
-    pub(crate) fn install(&self, credit: SharedCreditStore, events: mpsc::WeakSender<CoreEvent>) {
+    pub(crate) fn install(&self, credit: SharedCreditStore, events: crate::service::WeakOutbox) {
         *self
             .installed
             .lock()
@@ -80,9 +79,7 @@ impl SharedSecuredIdentities {
             }
             Ok(KeyBinding::Mismatch) => {
                 if let Some(events) = installed.events.upgrade() {
-                    let _ = events
-                        .send(CoreEvent::SecuredIdentityMismatch { user_hash })
-                        .await;
+                    let _ = events.send(CoreEvent::SecuredIdentityMismatch { user_hash });
                 }
                 KeyProof::Mismatch
             }
@@ -99,7 +96,6 @@ mod tests {
     use std::sync::Arc;
 
     use rmule_primitives::UserHash;
-    use tokio::sync::mpsc;
 
     use super::{KeyProof, SharedSecuredIdentities};
     use crate::credit::SharedCreditStore;
@@ -119,7 +115,7 @@ mod tests {
     #[tokio::test]
     async fn a_verified_key_is_bound_and_a_different_one_is_refused_and_raised_once() {
         let credit = ledger();
-        let (events_tx, mut events) = mpsc::channel(4);
+        let (events_tx, mut events) = crate::service::outbox(Default::default());
         let secured = SharedSecuredIdentities::default();
         secured.install(Arc::clone(&credit), events_tx.downgrade());
 

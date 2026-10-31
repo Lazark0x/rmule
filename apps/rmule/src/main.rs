@@ -129,7 +129,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
         }
         Err(failure) => Err(failure),
     };
-    let attachment = attach(data_dir.clone(), &Live).await;
+    let attachment = attach(data_dir.clone(), &Live, run_log_level.clone()).await;
 
     let mut tui = Tui::enter()?;
     let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown));
@@ -151,14 +151,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                 preferences.run_log_full = level == Level::Full;
             }
             run_log_level.set(Level::from_full(preferences.run_log_full));
-            let handle = bridge::spawn(
-                core,
-                actions_tx.clone(),
-                BridgeConfig {
-                    run_log: run_log_level.clone(),
-                    ..BridgeConfig::default()
-                },
-            );
+            let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
             if let Some(lowered) = ceiling_lowered {
                 let words = rmule::words::download::ceiling_lowered(lowered);
                 let _ = actions_tx.send(Action::Note(words)).await;
@@ -169,7 +162,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<()> {
                 rmule::connect::AtStart::Nothing => {}
                 rmule::connect::AtStart::Connect(server) => {
                     let command = CoreCommand::ConnectToServer { server };
-                    if let Err(error) = rmule::client::CoreClient::send(&handle, command).await {
+                    if let Err(error) = rmule::client::CoreClient::send(&handle, command) {
                         tracing::warn!(%error, "connect at start could not be sent");
                     }
                 }

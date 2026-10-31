@@ -206,7 +206,7 @@ async fn an_adopted_callbacks_verification_is_bound_and_its_serve_half_reads_it(
         Arc::new(crate::store::credit::DurableCreditStore::new(
             crate::store::open_durable_store_in_memory().unwrap(),
         ));
-    let (events_tx, _events) = mpsc::channel(4);
+    let (events_tx, _events) = crate::service::outbox(Default::default());
     let secured = SharedSecuredIdentities::default();
     secured.install(Arc::clone(&credit), events_tx.downgrade());
     let caller_key = Arc::new(SecureIdentKey::generate().unwrap());

@@ -24,7 +24,6 @@ use std::sync::atomic::Ordering;
 
 use ed2k::digest::Digest;
 use rmule_primitives::{Ed2kFileLink, PartHash, UserHash};
-use tokio::sync::mpsc;
 
 use crate::adapters::{PeerTransferService, SourceLookupService};
 use crate::content::{
@@ -35,9 +34,7 @@ use crate::download::runner::RunnerContext;
 use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
 use crate::error::{DownloadFailure, StorageIntegrityFault};
 use crate::hashing::{ResolvedHashSet, part_hash_on_arrival, verify_part_bytes};
-use crate::service::{
-    CoreEvent, DownloadEvent, DownloadId, PartsLost, VolumeStop, send_download_event,
-};
+use crate::service::{DownloadEvent, DownloadId, PartsLost, VolumeStop, send_download_event};
 use crate::storage::DownloadRepository;
 
 /// Why a part was not persisted.
@@ -109,8 +106,7 @@ pub(super) async fn hold_part_file<S, P>(
                         download_id,
                         directory: directory.to_path_buf(),
                     },
-                )
-                .await;
+                );
             }
             Ok(())
         }
@@ -229,7 +225,7 @@ pub(super) async fn persist_streamed_part<S, P>(
     offset: u64,
     bytes: &[u8],
     file_hash_only_parts: &mut Vec<u32>,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
 ) -> Result<(), PersistError>
 where
     S: SourceLookupService,
@@ -268,8 +264,7 @@ where
                 download_id,
                 part_index,
             },
-        )
-        .await;
+        );
     } else {
         file_hash_only_parts.push(part_index);
     }
@@ -382,8 +377,7 @@ pub(super) async fn part_file_changed<S, P>(
             found: change,
             lost,
         },
-    )
-    .await;
+    );
     if dropped.is_err() {
         return DownloadFailure::StoreFailed;
     }
@@ -430,8 +424,7 @@ pub(super) async fn repair_at_finalize<S, P>(
                     download_id,
                     damaged,
                 },
-            )
-            .await;
+            );
             runner.mark_for_repair();
             DownloadFailure::PartVerificationFailed
         }
@@ -452,8 +445,7 @@ pub(super) async fn repair_at_finalize<S, P>(
                     parts_dropped: u32::try_from(dropped.len()).unwrap_or(u32::MAX),
                     bytes_dropped: dropped.iter().map(|part| part.len).sum(),
                 },
-            )
-            .await;
+            );
             runner.mark_for_repair();
             DownloadFailure::PartVerificationFailed
         }
@@ -492,10 +484,9 @@ pub(super) async fn record_volume_stop<S, P>(
                 directory,
                 stop,
             },
-        )
-        .await;
+        );
     }
-    send_download_event(evt_tx, DownloadEvent::DownloadPaused { download_id }).await;
+    send_download_event(evt_tx, DownloadEvent::DownloadPaused { download_id });
 }
 
 /// Keep why a download failed on its row, and tell it. The failure is told
@@ -504,7 +495,7 @@ pub(super) async fn record_volume_stop<S, P>(
 /// lifecycle it had and the next start reads that one.
 pub(crate) async fn record_failure(
     store: &crate::store::download::DurableDownloadRepository,
-    evt_tx: &mpsc::Sender<CoreEvent>,
+    evt_tx: &crate::service::Outbox,
     download_id: DownloadId,
     reason: DownloadFailure,
 ) {
@@ -520,15 +511,14 @@ pub(crate) async fn record_failure(
             download_id,
             reason,
         },
-    )
-    .await;
+    );
     if let Err(error) = kept {
         tracing::warn!(
             download_id = download_id.as_u64(),
             %error,
             "the store could not record why the download failed",
         );
-        send_download_event(evt_tx, DownloadEvent::FailureNotRecorded { download_id }).await;
+        send_download_event(evt_tx, DownloadEvent::FailureNotRecorded { download_id });
     }
 }
 

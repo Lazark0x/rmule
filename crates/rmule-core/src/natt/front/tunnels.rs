@@ -388,7 +388,7 @@ pub(super) struct Adoption {
 pub(super) fn spawn_adopter(
     mut adoptions: mpsc::Receiver<Adoption>,
     admit: SharedTunnelAdmit,
-    events: Option<mpsc::WeakSender<CoreEvent>>,
+    events: Option<crate::service::WeakOutbox>,
 ) {
     tokio::spawn(async move {
         while let Some(adoption) = adoptions.recv().await {
@@ -401,14 +401,15 @@ pub(super) fn spawn_adopter(
             } = adoption;
             // Reported from here rather than from the loop for the same
             // reason: the event bus is the core actor's to drain.
-            if let Some(events) = events.as_ref().and_then(mpsc::WeakSender::upgrade) {
-                let _ = events
-                    .send(CoreEvent::NattTunnelRisen {
-                        peer: at,
-                        transport,
-                        role,
-                    })
-                    .await;
+            if let Some(events) = events
+                .as_ref()
+                .and_then(crate::service::WeakOutbox::upgrade)
+            {
+                let _ = events.send(CoreEvent::NattTunnelRisen {
+                    peer: at,
+                    transport,
+                    role,
+                });
             }
             let admitted = match dialed_toward {
                 Some(target) => admit.admit_dialed_toward(guard, at, role, target).await,

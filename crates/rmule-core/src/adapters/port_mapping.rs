@@ -215,7 +215,7 @@ pub(crate) fn spawn_port_mapping(
     diagnostics: DiagnosticsState,
     preferences: Arc<dyn PortMappingPreferences>,
     reach: SharedSelfReach,
-    events: mpsc::WeakSender<CoreEvent>,
+    events: crate::service::WeakOutbox,
 ) -> Option<PortMappingHandle> {
     if mode == PortMappingMode::Off || backends.is_empty() {
         return None;
@@ -291,7 +291,7 @@ struct Runtime {
     /// Where a release that sent no delete is told (ADR-0086, "A release
     /// takes down only rmule's own mapping"). Weak, like every runtime's
     /// event sender: the actor's own sender is the stream's lifeline.
-    events: mpsc::WeakSender<CoreEvent>,
+    events: crate::service::WeakOutbox,
     /// Where the rows are published beside the diagnostics level.
     rows: watch::Sender<Vec<MappingDiagnostics>>,
     /// The default-route next hops, refreshed at the start of every probe
@@ -641,14 +641,12 @@ impl Runtime {
                 return;
             };
             if let Some(events) = events.upgrade() {
-                let _ = events
-                    .send(CoreEvent::MappingReleaseKept {
-                        mapping,
-                        protocol,
-                        external_port,
-                        kept,
-                    })
-                    .await;
+                let _ = events.send(CoreEvent::MappingReleaseKept {
+                    mapping,
+                    protocol,
+                    external_port,
+                    kept,
+                });
             }
         })
     }

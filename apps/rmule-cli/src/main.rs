@@ -389,6 +389,7 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
     // are in it.
     let log_level = install_run_log(data_dir, &settings_handle, verbose)?;
     let mut core = add_core(data_dir, durable)
+        .run_log(log_level)
         // Port mapping (ADR-0086): a firewalled home node is the common rmule
         // deployment, and the backends are installed here rather than defaulted
         // inside core because talking to the operator's router is a deployment
@@ -401,11 +402,8 @@ async fn run_add(data_dir: &std::path::Path, link_str: &str, verbose: bool) -> R
     // The Quit runs on every way out — completion, a refusal, a bail — so the
     // credit checkpoint and `clients.met` are written before the process ends
     // (ADR-0093), and its steps reach the Run Log like any other record.
-    let outcome = drive_add(&mut core, file, server, name, &log_level).await;
-    let mut quit = core.quit();
-    while let Some(event) = quit.recv().await {
-        run_log::write(&event.record(), log_level.get());
-    }
+    let outcome = drive_add(&mut core, file, server, name).await;
+    core.shutdown().await;
     outcome
 }
 
@@ -416,7 +414,6 @@ async fn drive_add(
     file: rmule_primitives::Ed2kFileLink,
     server: Option<ServerEndpoint>,
     name: SafeFileName,
-    log_level: &LevelHandle,
 ) -> Result<()> {
     // The operator's word, given by running this command (ADR-0095,
     // "Connecting is the operator's act"): the one login — listener, mapping,
@@ -445,7 +442,6 @@ async fn drive_add(
         let Some(event) = core.next_event().await else {
             anyhow::bail!("core event stream ended before the download completed");
         };
-        run_log::write(&event.record(), log_level.get());
         match event {
             CoreEvent::Download(DownloadEvent::DownloadQueued {
                 download_id: id, ..

@@ -230,7 +230,7 @@ async fn a_helper_whose_hello_is_refused_is_reported_and_cancelled_unasked() {
         let _ = socket.read(&mut hello).await;
     });
     let diagnostics = crate::diagnostics::DiagnosticsState::default();
-    let (events_tx, mut events) = mpsc::channel(4);
+    let (events_tx, mut events) = crate::service::outbox(Default::default());
     let refusals = crate::hello_refusals::SharedHelloRefusals::default();
     refusals.install(diagnostics, events_tx.downgrade());
 

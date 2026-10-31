@@ -59,7 +59,7 @@ impl PeerTransferService for NeverTransfers {
 pub(in crate::download) struct Held {
     pub(in crate::download) download_reach_rx: mpsc::Receiver<DownloadReach>,
     /// Every event the run sends.
-    pub(in crate::download) evt_rx: mpsc::Receiver<crate::service::CoreEvent>,
+    pub(in crate::download) evt_rx: crate::service::EventStream,
     /// Held, never sent on: dropping it is what would stop the run.
     pub(in crate::download) _stop_tx: watch::Sender<StopReason>,
     /// Where the run's in-place reports arrive: the test answers as the
@@ -74,7 +74,7 @@ pub(in crate::download) fn runner_context<S, P>(
     diagnostics: crate::diagnostics::DiagnosticsState,
 ) -> (RunnerContext<S, P>, Held) {
     let store = rmule_testkit::memory_store();
-    let (evt_tx, evt_rx) = mpsc::channel(8);
+    let (evt_tx, evt_rx) = crate::service::outbox(Default::default());
     let (stop_tx, stop_rx) = watch::channel(StopReason::Active);
     let (download_reach_tx, download_reach_rx) = mpsc::channel(4);
     let (in_place_tx, in_place_rx) = mpsc::channel(4);

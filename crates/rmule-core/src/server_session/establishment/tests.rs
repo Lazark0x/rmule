@@ -310,8 +310,8 @@ fn facts_listing(
     server: &ServerEndpoint,
 ) -> (
     crate::server_list::ServerFacts,
-    mpsc::Sender<crate::CoreEvent>,
-    mpsc::Receiver<crate::CoreEvent>,
+    crate::service::Outbox,
+    crate::service::EventStream,
 ) {
     use crate::server_list::ServerListStore;
     let store = crate::DurableAppConfig::new(
@@ -320,7 +320,7 @@ fn facts_listing(
     store
         .merge_server(crate::server_list::ManagedServer::listed(server.clone()))
         .expect("seed the list");
-    let (events_tx, events_rx) = mpsc::channel(64);
+    let (events_tx, events_rx) = crate::service::outbox(Default::default());
     let facts = crate::server_list::ServerFacts::new(
         std::sync::Arc::new(store),
         crate::diagnostics::DiagnosticsState::new(),
@@ -337,8 +337,8 @@ async fn facts_saying_obfuscated(
     obfuscation_port: u16,
 ) -> (
     crate::server_list::ServerFacts,
-    mpsc::Sender<crate::CoreEvent>,
-    mpsc::Receiver<crate::CoreEvent>,
+    crate::service::Outbox,
+    crate::service::EventStream,
 ) {
     let (facts, events_tx, events_rx) = facts_listing(server);
     let mut datagram = vec![0xE3, rmule_ed2k::Opcode::GlobServStatRes.as_u8()];
@@ -358,7 +358,7 @@ async fn facts_saying_obfuscated(
 }
 
 /// Every login step reported so far, in order.
-fn login_steps(events: &mut mpsc::Receiver<crate::CoreEvent>) -> Vec<LoginStep> {
+fn login_steps(events: &mut crate::service::EventStream) -> Vec<LoginStep> {
     std::iter::from_fn(|| events.try_recv().ok())
         .filter_map(|event| match event {
             crate::CoreEvent::ServerLogin { step, .. } => Some(step),

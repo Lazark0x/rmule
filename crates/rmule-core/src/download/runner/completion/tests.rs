@@ -629,7 +629,10 @@ async fn a_pause_while_the_copy_waits_its_turn_leaves_the_part_file_and_no_copy(
         .acquire_owned()
         .await
         .unwrap();
-    let mut events = std::mem::replace(&mut leg.held.evt_rx, mpsc::channel(1).1);
+    let mut events = std::mem::replace(
+        &mut leg.held.evt_rx,
+        crate::service::outbox(Default::default()).1,
+    );
     let pause = async {
         while let Some(event) = events.recv().await {
             if let CoreEvent::Download(DownloadEvent::Completing {
@@ -695,7 +698,10 @@ async fn a_part_file_that_changes_after_a_pause_stopped_its_copy_is_never_read()
         .acquire_owned()
         .await
         .unwrap();
-    let mut events = std::mem::replace(&mut leg.held.evt_rx, mpsc::channel(1).1);
+    let mut events = std::mem::replace(
+        &mut leg.held.evt_rx,
+        crate::service::outbox(Default::default()).1,
+    );
     let pause = async {
         while let Some(event) = events.recv().await {
             if let CoreEvent::Download(DownloadEvent::Completing {
@@ -883,7 +889,10 @@ async fn a_part_file_held_open_without_delete_sharing_completes_once_its_handle_
         .open(leg.paths.part_path())
         .unwrap();
     let mut rx = std::mem::replace(&mut leg.held.in_place_rx, mpsc::channel(1).1);
-    let mut events = std::mem::replace(&mut leg.held.evt_rx, mpsc::channel(1).1);
+    let mut events = std::mem::replace(
+        &mut leg.held.evt_rx,
+        crate::service::outbox(Default::default()).1,
+    );
     let release = async move {
         loop {
             match events.recv().await {
