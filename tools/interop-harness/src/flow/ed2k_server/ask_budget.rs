@@ -57,6 +57,45 @@ fn sharer_ip() -> String {
 }
 const PCAP: &str = "lugdunum.pcap";
 const ED2KSRV_PCAP: &str = "ed2ksrv-udp.pcap";
+
+/// Which servers the run stood, so which taps hold rmule's server UDP. Named
+/// by the caller and never read off what files a run dir holds: a tap that is
+/// missing fails the score, and no other view stands in for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoundsView {
+    /// Only the login's server.
+    Login,
+    /// The login's server and the listed ed2k-server: a tap on each, merged,
+    /// because the pace runs across every server rmule asks.
+    Listed,
+}
+
+impl RoundsView {
+    const fn taps(self) -> &'static [&'static str] {
+        match self {
+            Self::Login => &[PCAP],
+            Self::Listed => &[PCAP, ED2KSRV_PCAP],
+        }
+    }
+
+    /// The server the round must reach for the score to mean anything.
+    fn must_reach(self) -> Result<Option<Ipv4Addr>> {
+        match self {
+            Self::Login => Ok(None),
+            Self::Listed => Ok(Some(ED2KSRV_IP.parse().context("ed2ksrv address")?)),
+        }
+    }
+}
+
+/// `ip` lies inside the `/24` at `prefix`, the network the flow created.
+fn ensure_inside(ip: &str, prefix: &str) -> Result<()> {
+    anyhow::ensure!(
+        ip.rsplit_once('.').is_some_and(|(net, _)| net == prefix),
+        "ed2k-server stands at {ip}, outside this flow's {prefix}.0/24: \
+         --also-ed2ksrv does not run on the second subnet"
+    );
+    Ok(())
+}
 /// The fake sharer, shared with the sx1-gate leg.
 const FAKE_SOURCE: &str = include_str!("../peer/sx1_gate/fake_source.py");
 /// How many downloads the TCP budget's verdict is written for.
@@ -119,6 +158,12 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
     fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
     fs::write(root.join("fake_source.py"), FAKE_SOURCE).context("write fake_source.py")?;
     let hashes = hashes(options.downloads);
+    let view = if options.also_ed2ksrv.is_some() {
+        ensure_inside(ED2KSRV_IP, prefix())?;
+        RoundsView::Listed
+    } else {
+        RoundsView::Login
+    };
 
     let result = (|| -> Result<()> {
         let subnet = format!("{}.0/24", prefix());
@@ -225,7 +270,7 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
         if let Some(tap) = &listed {
             bench.stop_extra(tap);
         }
-        write_verdicts(&root, &hashes)
+        write_verdicts(&root, &hashes, view)
     })();
 
     if result.is_err() {
@@ -240,24 +285,33 @@ pub fn run_ask_budget(options: AskBudgetOptions<'_>) -> Result<()> {
 ///
 /// # Errors
 /// If the pcap cannot be read or the verdict written.
-pub fn rescore_ask_budget(run_dir: &std::path::Path, downloads: u8) -> Result<()> {
+pub fn rescore_ask_budget(run_dir: &Path, downloads: u8, view: RoundsView) -> Result<()> {
     let root = run_dir.join("ask-budget");
-    write_verdicts(&root, &hashes(downloads))
+    write_verdicts(&root, &hashes(downloads), view)
 }
 
-/// Write `verdict.txt` and `udp-rounds.txt` from the tap under `root`.
-fn write_verdicts(root: &std::path::Path, hashes: &[String]) -> Result<()> {
+/// Write `verdict.txt` and `udp-rounds.txt` from the taps under `root`.
+fn write_verdicts(root: &Path, hashes: &[String], view: RoundsView) -> Result<()> {
     let verdict = score(&root.join(PCAP), hashes)?;
     fs::write(root.join("verdict.txt"), &verdict).context("write verdict")?;
     print!("{verdict}");
-    let listed = root.join(ED2KSRV_PCAP);
-    let tap = if listed.exists() {
-        listed
-    } else {
-        root.join(PCAP)
-    };
-    let datagrams = pcap::udp4_datagrams(&tap)?;
-    let rounds = udp_rounds::score(&datagrams, rmule_ip().parse()?);
+    let mut datagrams = Vec::new();
+    for tap in view.taps() {
+        let path = root.join(tap);
+        anyhow::ensure!(
+            path.exists(),
+            "the {tap} tap is missing from {}",
+            root.display()
+        );
+        datagrams.extend(pcap::udp4_datagrams(&path)?);
+    }
+    datagrams.sort_by(|a, b| a.at.total_cmp(&b.at));
+    let rounds = udp_rounds::score(
+        &datagrams,
+        rmule_ip().parse()?,
+        view.taps(),
+        view.must_reach()?,
+    );
     fs::write(root.join("udp-rounds.txt"), &rounds).context("write the UDP rounds")?;
     print!("{rounds}");
     Ok(())
@@ -265,7 +319,7 @@ fn write_verdicts(root: &std::path::Path, hashes: &[String]) -> Result<()> {
 
 /// Read the tap: rmule's asks per hash and time, Lugdunum's answers per hash,
 /// and who closed rmule's server link first.
-fn score(pcap_path: &std::path::Path, hashes: &[String]) -> Result<String> {
+fn score(pcap_path: &Path, hashes: &[String]) -> Result<String> {
     let rmule: Ipv4Addr = rmule_ip().parse()?;
     let capture = pcap::tcp_capture(&pcap::records(pcap_path)?)?;
     let hash_of = |payload: &[u8]| payload.get(..16).map(hex_upper);
@@ -363,4 +417,34 @@ fn score(pcap_path: &std::path::Path, hashes: &[String]) -> Result<String> {
 
 fn hex_upper(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Without its tap the listed view fails; the login's tap never stands in.
+    #[test]
+    fn a_missing_tap_fails_the_score() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty_pcap = {
+            let mut bytes = vec![0xD4, 0xC3, 0xB2, 0xA1, 2, 0, 4, 0];
+            bytes.resize(20, 0);
+            bytes.extend_from_slice(&[1, 0, 0, 0]);
+            bytes
+        };
+        fs::write(dir.path().join(PCAP), empty_pcap).unwrap();
+        let error = write_verdicts(dir.path(), &hashes(DOWNLOADS), RoundsView::Listed)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(ED2KSRV_PCAP), "{error}");
+        write_verdicts(dir.path(), &hashes(DOWNLOADS), RoundsView::Login).unwrap();
+    }
+
+    /// ed2k-server's fixed address has to lie in the network the flow made.
+    #[test]
+    fn the_listed_server_must_lie_inside_the_network() {
+        assert!(ensure_inside(ED2KSRV_IP, "203.0.113").is_ok());
+        assert!(ensure_inside(ED2KSRV_IP, "198.51.100").is_err());
+    }
 }

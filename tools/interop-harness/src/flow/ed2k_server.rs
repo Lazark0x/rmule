@@ -27,7 +27,8 @@ pub(crate) mod sweep_follows_list;
 
 pub use self::announce_switch::{AnnounceSwitchOptions, run_announce_switch};
 pub use self::ask_budget::{
-    AskBudgetOptions, DOWNLOADS as ASK_BUDGET_DOWNLOADS, rescore_ask_budget, run_ask_budget,
+    AskBudgetOptions, DOWNLOADS as ASK_BUDGET_DOWNLOADS, RoundsView, rescore_ask_budget,
+    run_ask_budget,
 };
 pub use self::bench_smoke::{BenchSmokeOptions, run_bench_smoke};
 pub use self::crypt_ping_port::{CryptPingPortOptions, run_crypt_ping_port};

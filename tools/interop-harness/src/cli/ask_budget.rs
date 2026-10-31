@@ -7,7 +7,7 @@ use clap::Args;
 use std::path::PathBuf;
 
 use rmule_interop_harness::flow::{
-    ASK_BUDGET_DOWNLOADS, AskBudgetOptions, rescore_ask_budget, run_ask_budget,
+    ASK_BUDGET_DOWNLOADS, AskBudgetOptions, RoundsView, rescore_ask_budget, run_ask_budget,
 };
 use serde::Serialize;
 
@@ -67,7 +67,12 @@ struct AskBudgetResolvedConfig {
 
 pub(crate) fn ask_budget(args: AskBudgetArgs) -> Result<()> {
     if let Some(run_dir) = &args.rescore {
-        return rescore_ask_budget(run_dir, args.downloads);
+        let view = if args.also_ed2ksrv {
+            RoundsView::Listed
+        } else {
+            RoundsView::Login
+        };
+        return rescore_ask_budget(run_dir, args.downloads, view);
     }
     args.bench
         .prepare(&[args.eserver.build_context(), args.capture.build_context()])?;

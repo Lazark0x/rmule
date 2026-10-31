@@ -64,8 +64,16 @@ fn kind(payload: &[u8]) -> Kind {
     }
 }
 
-/// The report: a verdict line, then one line per datagram.
-pub(super) fn score(datagrams: &[Udp4Datagram], rmule: Ipv4Addr) -> String {
+/// The report over `datagrams`, the merged `taps` in time order: a verdict
+/// line naming them, one line per server asked, one per datagram. The pace is
+/// read across every server in them. With `must_reach`, a round that never
+/// reached that server fails, whatever the others show.
+pub(super) fn score(
+    datagrams: &[Udp4Datagram],
+    rmule: Ipv4Addr,
+    taps: &[&str],
+    must_reach: Option<Ipv4Addr>,
+) -> String {
     let ours: Vec<(&Udp4Datagram, Kind)> = datagrams
         .iter()
         .filter(|datagram| *datagram.source.ip() == rmule)
@@ -78,14 +86,18 @@ pub(super) fn score(datagrams: &[Udp4Datagram], rmule: Ipv4Addr) -> String {
         .windows(2)
         .map(|pair| pair[1].0.at - pair[0].0.at)
         .min_by(f64::total_cmp);
-    let mut per_server: BTreeMap<Ipv4Addr, usize> = BTreeMap::new();
+    let mut per_server: BTreeMap<Ipv4Addr, (usize, usize)> = BTreeMap::new();
     for (datagram, kind) in &asks {
         if let Kind::Ask(files) | Kind::Sealed(Some(files)) = kind {
-            *per_server.entry(*datagram.destination.ip()).or_default() += files;
+            let row = per_server.entry(*datagram.destination.ip()).or_default();
+            row.0 += 1;
+            row.1 += files;
         }
     }
-    let most = per_server.values().copied().max().unwrap_or(0);
+    let most = per_server.values().map(|row| row.1).max().unwrap_or(0);
+    let reached = must_reach.is_none_or(|server| per_server.contains_key(&server));
     let pass = !asks.is_empty()
+        && reached
         && min_gap.is_none_or(|gap| gap >= MIN_GAP_SECS)
         && most <= MAX_FILES_PER_SERVER;
     let pings = ours.iter().filter(|left| left.1 == Kind::Ping).count();
@@ -94,13 +106,19 @@ pub(super) fn score(datagrams: &[Udp4Datagram], rmule: Ipv4Addr) -> String {
         .filter(|left| matches!(left.1, Kind::Sealed(_)))
         .count();
     let mut out = format!(
-        "udp_rounds={} datagrams={} ask_datagrams={} sealed_asks={sealed} plain_pings={pings} \
-         min_gap_secs={} files_to_busiest_server={most}\n",
+        "udp_rounds={} taps={} servers_asked={} datagrams={} ask_datagrams={} \
+         sealed_asks={sealed} plain_pings={pings} min_gap_secs={} \
+         files_to_busiest_server={most}\n",
         if pass { "PASS" } else { "FAIL" },
+        taps.join("+"),
+        per_server.len(),
         ours.len(),
         asks.len(),
         min_gap.map_or_else(|| "none".to_owned(), |gap| format!("{gap:.3}")),
     );
+    for (server, (sent, files)) in &per_server {
+        let _ = writeln!(out, "server {server} ask_datagrams={sent} files={files}");
+    }
     let start = ours.first().map_or(0.0, |(datagram, _)| datagram.at);
     for (datagram, kind) in &ours {
         let _ = writeln!(
@@ -139,19 +157,60 @@ mod tests {
         let report = score(
             &[datagram(0.0, ask(31)), datagram(1.0, ask(4))],
             "203.0.113.71".parse().unwrap(),
+            &["a.pcap", "b.pcap"],
+            None,
         );
         assert!(report.starts_with("udp_rounds=PASS"), "{report}");
         assert!(report.contains("files_to_busiest_server=35"), "{report}");
+        assert!(report.contains("taps=a.pcap+b.pcap"), "{report}");
     }
 
     /// Two datagrams inside a second, or a server past 35 files, fail.
     #[test]
     fn a_burst_or_a_server_past_the_cap_fails() {
         let rmule = "203.0.113.71".parse().unwrap();
-        let burst = score(&[datagram(0.0, ask(2)), datagram(0.2, ask(2))], rmule);
+        let burst = score(
+            &[datagram(0.0, ask(2)), datagram(0.2, ask(2))],
+            rmule,
+            &["a.pcap"],
+            None,
+        );
         assert!(burst.starts_with("udp_rounds=FAIL"), "{burst}");
-        let over = score(&[datagram(0.0, ask(31)), datagram(1.0, ask(5))], rmule);
+        let over = score(
+            &[datagram(0.0, ask(31)), datagram(1.0, ask(5))],
+            rmule,
+            &["a.pcap"],
+            None,
+        );
         assert!(over.starts_with("udp_rounds=FAIL"), "{over}");
+    }
+
+    /// Two servers asked inside a second break the pace: it is rmule's, not
+    /// each server's.
+    #[test]
+    fn the_pace_runs_across_servers() {
+        let mut other = datagram(0.2, ask(2));
+        other.destination = "203.0.113.9:4665".parse().unwrap();
+        let report = score(
+            &[datagram(0.0, ask(2)), other],
+            "203.0.113.71".parse().unwrap(),
+            &["a.pcap"],
+            None,
+        );
+        assert!(report.starts_with("udp_rounds=FAIL"), "{report}");
+        assert!(report.contains("servers_asked=2"), "{report}");
+    }
+
+    /// Asks that all went elsewhere do not pass for the server the view needs.
+    #[test]
+    fn a_round_that_missed_the_listed_server_fails() {
+        let report = score(
+            &[datagram(0.0, ask(2))],
+            "203.0.113.71".parse().unwrap(),
+            &["a.pcap"],
+            Some("203.0.113.9".parse().unwrap()),
+        );
+        assert!(report.starts_with("udp_rounds=FAIL"), "{report}");
     }
 
     /// A sealed datagram's files come out of its length.

@@ -43,7 +43,7 @@ pub use self::bootstrap::{
 pub use self::ed2k_server::{
     ASK_BUDGET_DOWNLOADS, AnnounceSwitchOptions, AskBudgetOptions, BenchSmokeOptions,
     CryptPingPortOptions, DEFAULT_HELLO_DELAY_MS, LatePortTestOptions, RmuleClientAction,
-    SearchSpacingOptions, SearchWireOptions, SearchWireServer, ServerCycleOptions,
+    RoundsView, SearchSpacingOptions, SearchWireOptions, SearchWireServer, ServerCycleOptions,
     ServerLoginCryptOptions, ServerSkeletonOptions, SweepFollowsListOptions, rescore_ask_budget,
     run_announce_switch, run_ask_budget, run_bench_smoke, run_crypt_ping_port, run_late_port_test,
     run_search_spacing, run_search_wire, run_server_cycle, run_server_login_crypt,
