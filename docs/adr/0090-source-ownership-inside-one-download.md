@@ -213,9 +213,10 @@ of a stopped or finished target (`IsValidSwapTarget`, `DownloadClient.cpp:1546-1
    RemoteQueued stage, no rank and no contact, its clock at the peer's last ask, and its TCP full
    ask falls due a period after that, as aMule's swap
    leaves `DS_NONE` and only `AskForDownload` serves it, at the last ask plus `FILEREASKTIME`
-   (`DownloadClient.cpp:1498`, `PartFile.cpp:1472-1483`). The full ask stamps the record's own
-   ask, as `AskForDownload` stamps the client's (`DownloadClient.cpp:156`), so the fill that
-   follows dials it rather than parking it again. A stamp a period old holds nothing back.
+   (`DownloadClient.cpp:1498`, `PartFile.cpp:1472-1483`). The full ask moves the record's own ask
+   past the giver's, so the fill that follows dials it rather than parking it again; the peer's
+   stamp moves when the slot ask leaves (ADR-0107 invariant 14). A stamp a period old holds
+   nothing back.
 
    **A Low-ID record** a callback road would reach has no address to stand at, so it leaves its
    lane for the **Held Road** stage, holding the same waiting standing: the sweep reads its role,
@@ -232,9 +233,10 @@ of a stopped or finished target (`IsValidSwapTarget`, `DownloadClient.cpp:1546-1
    `PartFile.cpp:2206`, `:1472-1483`), and a sooner ask is scored
    (`UploadClient.cpp:795-825`). But aMule's client holds the socket the transfer ended on, and
    the next file asks over it at once (`UploadQueue.cpp:486-493`), so parking the record outright
-   would strand a download beside a live link. So the fill may ride and may not dial: the worker
-   looks the Peer Link up (ADR-0107 invariant 7) and, finding none, is handed back as a waiter
-   whose link ended is, to stand on the peer's clock. It costs the Connection Budget one admission
+   would strand a download beside a live link. So past `MIN_REQUESTTIME` the fill may ride and may
+   not dial; inside it there is nothing to ride for and the fill parks (ADR-0107 invariant 14). A
+   worker looks the Peer Link up (ADR-0107 invariant 7) and, finding none, ends `on_peers_clock`, to
+   stand on the peer's clock. No link ended. It costs the Connection Budget one admission
    (ADR-0116) and opens no socket. A callback road does the same on the road the look-up serves,
    our own server's; any other road cannot ride, and holds at once.
 4. **The giver keeps its record.** At the purge tick, spaced from the file's one purge clock as

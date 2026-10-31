@@ -412,14 +412,46 @@ Invariants every transition keeps:
     takes the standing from a place holding no part we need (ADR-0090, "Sources shared between
     downloads"), whose ask falls due by invariant 14. A pooled record the standing has passed to
     since the last ask rides a link if one stands, and dials nothing (ADR-0090).
-14. **The standing's clock is the peer's.** Each ping and TCP full ask a sweep sends stamps the
-    peer, and so does each slot ask a record earns its standing by. A download the standing passes
-    to pings nothing — the peer holds the other file — and its TCP full ask falls due a period after
-    the last stamp, never sooner. A waiter's own clock follows the stamps, so it wakes when the
-    standing would next be asked.
+14. **The standing's clock is the peer's, and every ask reads it.** Each ping, slot ask and
+    recovery ask stamps the peer as it leaves, whichever download, run or road sends it. A TCP full
+    ask stamps at its slot ask, not at the sweep: a dial that fails asked nothing. Nothing is asked
+    inside `MIN_REQUESTTIME`, 590 s, past the last stamp (`Constants.h:67`, scored at
+    `ClientTCPSocket.cpp:601`, `ClientUDPSocket.cpp:194`, 3.1.0 `ClientTCPSocket.cpp:1768`): a fill
+    parks the record, and a worker holding the peer's answer sends no slot ask and leaves its
+    record standing on the clock, retired `on_peers_clock`. A stamp binds the download that made
+    it as it binds every other. A grant taken asks nothing and reads no clock. A download the
+    standing passes to pings nothing — the peer holds the other file — and its TCP full ask falls
+    due a period after the last stamp, never sooner. A waiter's own clock follows the stamps, so it
+    wakes when the standing would next be asked.
+15. **A run's end forgets nothing the peer is owed.** A file's stop leaves, per file and Ask Name, a
+    **left place**: each published place that asked, with its last ask and whether it needed parts.
+    A record of a later run of that file, Resume or a re-add of one hash under a new id alike,
+    reaching the peer with no ask of its own since, returns to the place: a fill parks it as queued
+    dated at that ask, as stock's Pause keeps `DS_ONQUEUE` and `DS_NONEEDEDPARTS` with their clocks
+    (`PartFile.cpp:2429-2443`), and its TCP full ask falls due a period after it, twice that for a
+    source holding no part we need (`PartFile.cpp:1439-1440`). A later ask naming another file
+    re-targeted the peer's entry, and the place is gone.
+16. **A source with no place at the peer is not queued.** A slot holder we told
+    `OP_CANCELTRANSFER` left the uploader's lists (`UploadQueue.cpp:527-542`), and a record that
+    never asked never joined them. Stock clears such a client's clock and asks it at once
+    (`PartFile.cpp:2436-2441`, `BaseClient.cpp:2002`), scored +3. rmule keeps the clock and asks at
+    the first instant nothing scores: the record stands **spaced**, counted as asking, naming no
+    place, and its TCP full ask falls due 590 s past the last stamp, or at the next sweep with no
+    stamp. So no source a stop left without a place waits a period for it.
+
+What each clock survives. The stamps, the left places and the spent names live in the core's one
+registry, in `Instant`s, bounded by a window past the newest stamp:
+
+| | Pause, Resume | Cancel, re-add of one hash | Run restart | Process restart |
+|---|---|---|---|---|
+| the peer's last ask | kept | kept (stock clears it, and pays +3) | kept | lost, as stock's client objects |
+| a left place | kept | kept, keyed by the file | kept | lost |
+| spent names | kept | kept | kept | lost |
 
 | Rule | aMule | rmule |
 |---|---|---|
+| a paused file's source keeps its state and clock | `PartFile.cpp:2429-2443`, `:1439-1440` | a left place outlives the run, per file and name |
+| a slot holder asks again at once on resume | `ResetLastAskedTime`, `PartFile.cpp:2441` | spaced: at once past the 590 s the uploader scores, never inside |
 | one queue entry per client | `AddClientToQueue` (`UploadQueue.cpp:395-430`) | one Queue Standing per peer, found under any Ask Name a place carries |
 | the entry names one file | `SetUploadFileID` at each file request (`ClientTCPSocket.cpp:462`, `:521`, `:613`) | the holder is the download whose slot ask the peer read last |
 | the client is reasked once a cycle, for its requested file | `UDPReaskForDownload` sends `m_reqfile` (`DownloadClient.cpp:1249-1323`) on the client's clock (`PartFile.cpp:1449-1483`) | the holder's record re-asks; every other download's record waits |
@@ -443,6 +475,9 @@ its record's worker on the holder's link at once, unadmitted by the Connection B
 (ADR-0116), and waits there as a Link Rider. When the holder's worker ends, the swap rule hands the
 link to the oldest waiter: after a silent release its ask is granted at once
 (`UploadQueue.cpp:486-493`), after a cancel it is admitted afresh, and a rank makes it the holder.
+That ask reads the peer's clock like any other (invariant 14): inside it the rider sends none, and
+its record waits for the reask, as stock's swap does (`DownloadClient.cpp:1498`,
+`PartFile.cpp:1472-1483`).
 The grant after a silent release keeps the slot, and with it what the uploader remembers of the
 client: `AddReqBlock` drops a requested block whose start and end equal one in its done list or
 its pending queue, comparing offsets alone, not the file (stock 2.3.3 `UploadClient.cpp:503-521`,
@@ -464,11 +499,10 @@ rmule has no A4AF-auto preference, so nothing else swaps a standing.
 
 Two downloads that reach a peer before either stands, departs where the uploader notices our close:
 the second waits on the first's link (invariant 8) and, when the first hangs up at its rank, takes
-its turn and asks — the swap table's third row. Where the uploader misses our close the first
+its turn and probes — the swap table's third row. Where the uploader misses our close the first
 holds the link at its rank (ADR-0116 item 3), and the second waits on it to the grant or the
-link's end, asking nothing. The peer reads two asks seconds apart once, 3 points; the standing then asks
-once per cycle and each polite ask takes one off, so no ban follows. A called waiter whose holder
-ends ranked rather than released (`OP_OUTOFPARTREQS` and then a rank) costs the same once. A
+link's end, asking nothing. The peer reads one ask: the second download's probe finds the clock
+running and it stands on the standing, which asks once per cycle (invariant 14). A
 Low-ID source a fill reaches by a callback road waits on the standing too, in the Held Road stage
 (ADR-0090), so no callback asks the peer ahead of the clock.
 
