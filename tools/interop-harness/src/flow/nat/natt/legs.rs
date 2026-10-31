@@ -652,7 +652,7 @@ fn sum_rows(wire: &[WireRow], prefix: &str) -> i64 {
 /// The server's tap: rmule's `0x60` in, the server's own `0x61` to both
 /// peers, and the keepalive cadence that makes an observed port fresh enough
 /// to introduce.
-/// One punch's datagrams: `natt::rendezvous`'s burst, the port and its
+/// One punch's datagrams: `punch_burst`'s, the named port and its
 /// neighbours.
 const PUNCH_BURST_DATAGRAMS: i64 = 32;
 
