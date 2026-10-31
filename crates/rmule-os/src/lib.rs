@@ -14,6 +14,8 @@
 //!   binary's start and read back for the Connection Ceiling.
 //! - [`tcp_send`]: how far a TCP stream's sent bytes have got, which the
 //!   driver's write clock reads on a socket that took no write.
+//! - [`volume`]: the free bytes under a part file and whether its volume is
+//!   FAT.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`
@@ -29,4 +31,5 @@ pub mod descriptors;
 pub mod fs;
 pub mod sparse;
 pub mod tcp_send;
+pub mod volume;
 pub mod winsock;

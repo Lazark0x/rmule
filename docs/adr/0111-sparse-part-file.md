@@ -165,14 +165,18 @@ before completion, and the finished file is never pre-sized either.
   ADR-0116's. Module `tcp_send` holds `send_progress`, one reading of how far a TCP stream's
   written bytes have got: the bytes the kernel still holds on Linux and macOS, the bytes
   acknowledged on Windows, none where the system refuses; what a reading means is ADR-0031's.
+  Module `volume` holds `free_bytes(dir)` and `is_fat(dir)`, the readings the Volume Stop
+  (ADR-0094) and the refusal of a large file on FAT (ADR-0115) take; what they mean is core's.
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
   std, and the exclusive rename on Linux and macOS through `rustix`'s `renameat_with` with
-  `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`), and the
-  descriptor limit through `rustix`'s `getrlimit` and `setrlimit`. The
+  `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`), the
+  descriptor limit through `rustix`'s `getrlimit` and `setrlimit`, and the volume readings through
+  its `statvfs` and `statfs`. The
   waived functions are the macOS punch (`libc`'s `F_PUNCHHOLE` and `fpunchhole_t`), the
   three Windows calls (`DeviceIoControl` with `FSCTL_SET_SPARSE` and with `FSCTL_SET_ZERO_DATA`,
   `GetFileInformationByHandleEx` with `FileStandardInfo`), the Windows exclusive rename
-  (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` or `MOVEFILE_COPY_ALLOWED`), `WSAIoctl`, the
+  (`MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` or `MOVEFILE_COPY_ALLOWED`), the two Windows
+  volume readings (`GetDiskFreeSpaceExW`, `GetVolumeInformationByHandleW`), `WSAIoctl`, the
   three send-side readings (`rustix`'s typed `ioctl` with `SIOCOUTQ`, `libc`'s `getsockopt` with
   `SO_NWRITE`, `WSAIoctl` with `SIO_TCP_INFO`), and the default-app lookups ADR-0114 lists. `libc`, `rustix` and
   `windows-sys` are already in the dependency graph: no crate is added.

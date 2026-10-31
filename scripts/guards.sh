@@ -349,6 +349,8 @@ src/sparse/windows.rs:set_sparse
 src/sparse/windows.rs:punch_hole
 src/sparse/windows.rs:allocated_bytes
 src/fs/windows.rs:rename_exclusive
+src/volume/windows.rs:free_bytes
+src/volume/windows.rs:is_fat
 src/tcp_send/linux.rs:held
 src/tcp_send/macos.rs:held
 src/tcp_send/windows.rs:acked
