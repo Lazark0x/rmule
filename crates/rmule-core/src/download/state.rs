@@ -56,7 +56,7 @@ pub(crate) use sightings::{Channel, Taken, Tally};
 
 use crate::DownloadFailure;
 use crate::adapters::{CallbackKey, PeerWorkerCommand, WorkerOpening};
-use crate::assembly::{Attempt, PartAssembly};
+use crate::assembly::{ArrivedPart, Attempt, PartAssembly};
 use crate::callback::CallbackSilence;
 use crate::delivery_rate::DeliveryRate;
 use crate::diagnostics::{PartState, WorkerPhase, WorkerSlot};
@@ -110,14 +110,30 @@ pub(crate) enum Decision {
         at: IpAddr,
         bytes: u64,
     },
-    /// Verify and persist the assembled bytes of `part_index` (contributed
-    /// by `peer`). A fallible effect: the runner reports the outcome back
-    /// through [`DownloadState::on_persist_result`].
+    /// Write `bytes`, new, at file offset `offset`: the run's lane takes them
+    /// through the Write Cache to the `.part` (ADR-0117 §4), and the brain
+    /// never sees them again.
+    WriteBytes { offset: u64, bytes: Vec<u8> },
+    /// Read `len` bytes of `part_index` back from the file behind every byte
+    /// written so far, verify them and record the part. `peer` completed it;
+    /// none did for a part a run starts with whole. `read_cells` asks for
+    /// each cell's hash whatever the outcome: a refetched part's verdict reads
+    /// them (ADR-0117 §1). A fallible effect: the runner reports the outcome
+    /// back through [`DownloadState::on_persist_result`].
     PersistPart {
         part_index: PartIndex,
-        peer: PeerEndpoint,
+        peer: Option<PeerEndpoint>,
         offset: u64,
-        bytes: Vec<u8>,
+        len: u64,
+        read_cells: bool,
+    },
+    /// Judge `part_index`'s bytes in the file by a peer's `recovery_data`
+    /// against `root` (ADR-0038). The runner answers through
+    /// [`DownloadState::on_recovery_checked`].
+    CheckRecovery {
+        part_index: PartIndex,
+        root: AichRootHash,
+        recovery_data: Vec<u8>,
     },
     /// Persist a newly-adopted provisional peer hash set (ADR-0027 authority).
     PersistProvisionalHashes(Vec<PartHash>),
@@ -283,6 +299,9 @@ pub(crate) struct ContentFacts {
     pub(crate) aich_root: AichRootAuthority,
     /// Parts an earlier run already verified; they are never re-fetched.
     pub(crate) verified_parts: Vec<u32>,
+    /// The **Arrived Checkpoint**, cut to the file the run holds: the parts it
+    /// resumes in flight (ADR-0117 §4).
+    pub(crate) arrived: Vec<ArrivedPart>,
     /// How its parts are ranked: with the Preview Band and the Streaming
     /// Window when it is Streaming Priority (`DownloadMetadata::
     /// is_streaming_priority`, ADR-0112 §5).
@@ -454,6 +473,8 @@ pub(crate) struct DownloadState {
     /// with no root (ADR-0117 §1): its latest failed attempt, until it
     /// verifies.
     failed_cells: HashMap<PartIndex, Attempt>,
+    /// The parts whose ranges or provenance moved since the last checkpoint.
+    moved: BTreeSet<PartIndex>,
     /// Peer → the diagnostics slot its worker occupies. The live command
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
@@ -567,12 +588,14 @@ impl DownloadState {
             resolved,
             aich_root,
             verified_parts,
+            arrived,
             order,
         } = content;
         let StartingFacts {
             distrusted,
             seeds_written,
         } = facts;
+        let verified: HashSet<u32> = verified_parts.iter().copied().collect();
         let mut sources = SourceBook::new(distrusted, rmule_primitives::part_count(file_size));
         sources.logged_into(posture.callback_capability.server());
         let seeds = SeedLedger::default();
@@ -591,13 +614,22 @@ impl DownloadState {
                 verified_parts.into_iter().map(PartIndex::new),
                 order,
             ),
-            assembly: HashMap::new(),
+            assembly: arrived
+                .iter()
+                .filter(|row| !verified.contains(&row.part_index.value()))
+                .map(|row| {
+                    let plan = crate::planning::part_plan(file_size, row.part_index);
+                    (row.part_index, PartAssembly::resumed(plan, row))
+                })
+                .filter(|(_, assembled)| !assembled.arrived().is_empty())
+                .collect(),
             wants: HashMap::new(),
             handouts: HashMap::new(),
             delivered: HashMap::new(),
             pending_persist: HashMap::new(),
             awaiting_recovery: HashMap::new(),
             failed_cells: HashMap::new(),
+            moved: BTreeSet::new(),
             worker_slots: HashMap::new(),
             delivery: HashMap::new(),
             slot_asks: slot_ask::SlotAsks::default(),
@@ -650,6 +682,7 @@ impl DownloadState {
             .sources
             .purge(now, &self.callback_capability, self.dial);
         let mut out = Vec::new();
+        self.check_whole_parts(&mut out);
         self.fill(now, &mut out);
         self.settle_seed_dials(&mut out);
         out

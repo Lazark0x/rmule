@@ -3,9 +3,12 @@
 //! failures point to and the verified part proves it, and a part whose
 //! recovery ask is never answered is fetched again rather than stranded.
 
+use std::cell::RefCell;
+
 use rmule_peer::PartIndex;
 
 use super::*;
+use crate::assembly::CellHash;
 use rmule_primitives::EMBLOCKSIZE as B;
 
 /// A one-part file of nine cells: each of three workers is handed three at
@@ -26,14 +29,29 @@ fn bytes_of(start: u64, end: u64, bad: bool) -> Vec<u8> {
     bytes
 }
 
-/// `from` delivers `start..end` of part 0, corrupt when `bad`.
+thread_local! {
+    /// The part file these brains write: what the lane would read back.
+    static FILE: RefCell<Vec<u8>> = RefCell::new(vec![0; NINE_CELLS as usize]);
+}
+
+/// Each cell's hash as the lane would read it from the file.
+fn file_cells() -> Vec<CellHash> {
+    FILE.with_borrow(|file| {
+        file.chunks(B as usize)
+            .map(rmule_primitives::aich_block_hash)
+            .collect()
+    })
+}
+
+/// `from` delivers `start..end` of part 0, corrupt when `bad`; what is new
+/// reaches the file.
 fn deliver(
     state: &mut DownloadState,
     from: PeerEndpoint,
     (start, end): (u64, u64),
     bad: bool,
 ) -> Vec<Decision> {
-    state.on_worker_event(
+    let decisions = state.on_worker_event(
         t0(),
         from,
         PeerWorkerEvent::BlockReceived {
@@ -41,7 +59,16 @@ fn deliver(
             offset: start,
             bytes: bytes_of(start, end, bad),
         },
-    )
+    );
+    FILE.with_borrow_mut(|file| {
+        for decision in &decisions {
+            if let Decision::WriteBytes { offset, bytes } = decision {
+                let at = *offset as usize;
+                file[at..at + bytes.len()].copy_from_slice(bytes);
+            }
+        }
+    });
+    decisions
 }
 
 /// A started download of `size` bytes from `peer(1..=writers)`, each
@@ -74,8 +101,9 @@ fn first_attempt_fails(state: &mut DownloadState, bad: &[PeerEndpoint]) -> Vec<D
     state.on_persist_result(
         t0(),
         PartIndex::new(0),
-        peer(3),
+        Some(peer(3)),
         Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
     )
 }
 
@@ -198,8 +226,9 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
     let failed = state.on_persist_result(
         t0(),
         PartIndex::new(0),
-        peer(3),
+        Some(peer(3)),
         Err(DownloadFailure::PartVerificationFailed),
+        Some(file_cells()),
     );
     assert!(retired_for_bad_data(&failed, bad), "{failed:?}");
     for at in honest {
@@ -217,7 +246,13 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
     );
 
     let (_, _) = refetch(&mut state, &honest, &[]);
-    let verified = state.on_persist_result(t0(), PartIndex::new(0), peer(3), Ok(()));
+    let verified = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        Some(peer(3)),
+        Ok(()),
+        Some(file_cells()),
+    );
     assert!(
         verified
             .iter()
@@ -260,8 +295,9 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
     let failed = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
         PartIndex::new(0),
-        peer(1),
+        Some(peer(1)),
         Err(DownloadFailure::PartVerificationFailed),
+        Some(vec![[0; 20]; 6]),
     );
     assert!(
         sent(&failed).iter().any(|(to, command)| *to == peer(1)

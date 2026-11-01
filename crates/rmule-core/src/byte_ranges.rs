@@ -10,6 +10,16 @@ use std::collections::BTreeMap;
 pub(crate) struct ByteRanges(BTreeMap<u64, u64>);
 
 impl ByteRanges {
+    /// The ranges, in order.
+    pub(crate) fn ranges(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.0.iter().map(|(&start, &end)| (start, end))
+    }
+
+    /// How many bytes the set holds.
+    pub(crate) fn total(&self) -> u64 {
+        self.0.iter().map(|(start, end)| end - start).sum()
+    }
+
     /// Whether the set holds no byte.
     pub(crate) fn is_empty(&self) -> bool {
         self.0.is_empty()

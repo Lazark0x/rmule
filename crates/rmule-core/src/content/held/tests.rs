@@ -12,7 +12,7 @@ async fn held_with_one_part(dir: &Path) -> (HeldPartFile, PathBuf) {
     let (mut held, _) = HeldPartFile::hold(&path, 0)
         .await
         .expect("hold a new part file");
-    held.write_part(0, PART)
+    held.write_blocks(vec![(0, PART.to_vec())])
         .await
         .expect("the first part lands");
     (held, path)
@@ -32,7 +32,8 @@ async fn a_part_file_removed_under_the_run_is_gone_and_is_not_recreated() {
     let (mut held, path) = held_with_one_part(dir.path()).await;
     std::fs::remove_file(&path).unwrap();
     assert!(matches!(
-        held.write_part(PART.len() as u64, PART).await,
+        held.write_blocks(vec![(PART.len() as u64, PART.to_vec())])
+            .await,
         Err(HeldWriteError::Changed(PartFileChange::Gone))
     ));
     assert!(!path.exists(), "nothing recreated the part file");
@@ -46,7 +47,8 @@ async fn a_part_file_replaced_under_the_run_is_not_written_into() {
     std::fs::write(&other, b"not the part file").unwrap();
     std::fs::rename(&other, &path).unwrap();
     assert!(matches!(
-        held.write_part(PART.len() as u64, PART).await,
+        held.write_blocks(vec![(PART.len() as u64, PART.to_vec())])
+            .await,
         Err(HeldWriteError::Changed(PartFileChange::Replaced))
     ));
     assert_eq!(std::fs::read(&path).unwrap(), b"not the part file");
@@ -63,7 +65,8 @@ async fn a_part_file_cut_short_says_how_long_it_is_now() {
         .set_len(4)
         .unwrap();
     assert!(matches!(
-        held.write_part(PART.len() as u64, PART).await,
+        held.write_blocks(vec![(PART.len() as u64, PART.to_vec())])
+            .await,
         Err(HeldWriteError::Changed(PartFileChange::Truncated {
             len: 4
         }))
@@ -95,9 +98,9 @@ async fn a_write_past_a_missing_part_punches_the_gap_it_opened() {
     let first = vec![0x11u8; SIZE];
     let third = vec![0x33u8; SIZE];
     let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
-    held.write_part(0, &first).await.unwrap();
+    held.write_blocks(vec![(0, first.clone())]).await.unwrap();
     let allocated = held
-        .write_part(2 * part, &third)
+        .write_blocks(vec![(2 * part, third.clone())])
         .await
         .unwrap()
         .expect("the reading after the write");
@@ -124,8 +127,10 @@ async fn a_first_write_that_renumbers_the_file_is_no_replacement() {
     let path = dir.path().join("renumbered.part");
     let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
 
-    held.write_part(0, &[1; 4096]).await.unwrap();
-    held.write_part(4096, &[2; 4096]).await.unwrap();
+    held.write_blocks(vec![(0, vec![1; 4096])]).await.unwrap();
+    held.write_blocks(vec![(4096, vec![2; 4096])])
+        .await
+        .unwrap();
 
     assert_eq!(held.check().await, Ok(()));
 }
@@ -159,7 +164,8 @@ async fn path_gone_with_the_file_whole(dir: &tempfile::TempDir) {
 
     assert_eq!(held.check().await, Err(HeldCheckFailed::PathAbsent));
     assert!(matches!(
-        held.write_part(PART.len() as u64, PART).await,
+        held.write_blocks(vec![(PART.len() as u64, PART.to_vec())])
+            .await,
         Err(HeldWriteError::PathAbsent)
     ));
     assert_eq!(
@@ -207,7 +213,9 @@ async fn a_volume_under_the_floor_refuses_the_part_and_takes_it_with_space_back(
     ballast.sync_all().unwrap();
 
     let part = vec![7_u8; 1024];
-    let refused = held.write_part(PART.len() as u64, &part).await;
+    let refused = held
+        .write_blocks(vec![(PART.len() as u64, part.clone())])
+        .await;
     assert!(
         matches!(refused, Err(HeldWriteError::OutOfSpace { .. })),
         "{refused:?}"
@@ -215,7 +223,9 @@ async fn a_volume_under_the_floor_refuses_the_part_and_takes_it_with_space_back(
 
     drop(ballast);
     std::fs::remove_file(&ballast_path).unwrap();
-    held.write_part(PART.len() as u64, &part).await.unwrap();
+    held.write_blocks(vec![(PART.len() as u64, part.clone())])
+        .await
+        .unwrap();
 }
 
 /// Every file made from a name at the cap fits: the part file, the probe's

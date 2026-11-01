@@ -12,6 +12,7 @@ use rmule_primitives::PeerEndpoint;
 use super::rank::{RankInputs, rank};
 use super::{DownloadScheduler, Progress};
 use crate::assembly::Attempt;
+use crate::byte_ranges::ByteRanges;
 use crate::planning::{BlockPlan, part_plan};
 
 /// One block asked of one worker and not yet wholly arrived.
@@ -67,7 +68,10 @@ impl DownloadScheduler {
             .copied()
             .filter(|&part| held(part) && !self.verifying.contains(&part))
             .collect();
-        candidates.sort_by_key(|&part| rank(part, inputs));
+        candidates.sort_by_cached_key(|&part| {
+            let arrived = progress.arrived(part).map_or(0, ByteRanges::total);
+            rank(part, inputs, arrived)
+        });
         let mut blocks = Vec::new();
         for part in candidates {
             if blocks.len() >= room {

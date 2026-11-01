@@ -1,7 +1,9 @@
 //! The rank a candidate part is chosen by (ADR-0112 §4), one pure function
 //! beside the scheduler: of the parts a peer advertised, the minimum of
-//! `(very rare, band, window, key)` wins, with `key = (0, i)` inside the
-//! **Streaming Window** and `(frequency[i], i)` outside it. The part index sits
+//! `(very rare, band, window, key)` wins, with `key = (0, 0, i)` inside the
+//! **Streaming Window** and `(frequency[i], −arrived[i], i)` outside it, so of
+//! two parts equally rare the one with more bytes goes first and a part a
+//! source stranded finishes before a new one opens. The part index sits
 //! in every key, so no two candidates tie and no randomness is needed where
 //! aMule draws `rand()` (stock 2.3.3 `PartFile.cpp:2025-2054`): the same
 //! inputs always give the same part.
@@ -37,12 +39,14 @@ pub(super) struct Rank {
     outside_window: bool,
     /// `0` inside the window, its frequency outside it.
     frequency: u32,
+    /// Its arrived bytes outside the window, most first.
+    arrived: Reverse<u64>,
     /// Its index, so no two candidates tie.
     part: PartIndex,
 }
 
-/// The rank of candidate `part`.
-pub(super) fn rank(part: PartIndex, inputs: &RankInputs<'_>) -> Rank {
+/// The rank of candidate `part`, `arrived` bytes of it in hand.
+pub(super) fn rank(part: PartIndex, inputs: &RankInputs<'_>, arrived: u64) -> Rank {
     let frequency = inputs
         .frequency
         .get(part.value() as usize)
@@ -54,6 +58,7 @@ pub(super) fn rank(part: PartIndex, inputs: &RankInputs<'_>) -> Rank {
         outside_band: !inputs.band.contains(&part),
         outside_window: !in_window,
         frequency: if in_window { 0 } else { frequency },
+        arrived: Reverse(if in_window { 0 } else { arrived }),
         part,
     }
 }
@@ -77,7 +82,7 @@ pub(super) fn duplicate_rank(
     inputs: &RankInputs<'_>,
     finish: u64,
 ) -> DuplicateRank {
-    let rank = rank(part, inputs);
+    let rank = rank(part, inputs, 0);
     DuplicateRank {
         common: rank.common,
         outside_band: rank.outside_band,

@@ -139,6 +139,7 @@ mod buddy_hash_spelling {
                 },
                 aich_root: crate::download::state::AichRootAuthority::Rootless,
                 verified_parts: Vec::new(),
+                arrived: Vec::new(),
                 order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {
@@ -533,6 +534,7 @@ mod queued_roster {
                 },
                 aich_root: crate::download::state::AichRootAuthority::Rootless,
                 verified_parts: Vec::new(),
+                arrived: Vec::new(),
                 order: crate::scheduler::PartOrder::Rarest,
             },
             StartingFacts {

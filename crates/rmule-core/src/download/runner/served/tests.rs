@@ -135,6 +135,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
             resolved,
             aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
+            arrived: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {
@@ -195,7 +196,11 @@ fn ctx_of<'a, S, P>(
     link: &'a Ed2kFileLink,
     record: &DurableDownloadRecord,
     state: DownloadState,
-) -> LoopCtx<'a, S, P> {
+) -> LoopCtx<'a, S, P>
+where
+    S: Send,
+    P: Send,
+{
     let mut ctx = loop_ctx(runner, link, state);
     ctx.download_id = record.id();
     ctx
@@ -213,12 +218,25 @@ where
     }
 }
 
+/// The part's bytes reach the lane, and the part behind them.
+fn landing(bytes: &[u8], part_index: u32) -> VecDeque<Decision> {
+    let offset = u64::from(part_index) * ED2K_PART_SIZE;
+    VecDeque::from([
+        Decision::WriteBytes {
+            offset,
+            bytes: part_bytes(bytes, part_index).to_vec(),
+        },
+        persist(bytes, part_index),
+    ])
+}
+
 fn persist(bytes: &[u8], part_index: u32) -> Decision {
     Decision::PersistPart {
         part_index: PartIndex::new(part_index),
-        peer: PeerEndpoint::V4(SOURCE),
+        peer: Some(PeerEndpoint::V4(SOURCE)),
         offset: u64::from(part_index) * ED2K_PART_SIZE,
-        bytes: part_bytes(bytes, part_index).to_vec(),
+        len: part_bytes(bytes, part_index).len() as u64,
+        read_cells: false,
     }
 }
 
@@ -239,7 +257,7 @@ async fn a_first_write_that_renumbers_the_file_leaves_the_served_key_true() {
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
-    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
+    landed(landing(&bytes, part), &mut ctx).await;
 
     let written = cell.served(link.file_hash).unwrap().identity.unwrap().key;
     let at_path = FileKey::at(record.paths().part_path()).unwrap();
@@ -264,7 +282,7 @@ async fn a_finished_part_leaves_the_drain_free_while_it_lands() {
     let mut ctx = ctx_of(&runner, &link, &record, state);
     let holding = runner.part_file.lock().await;
 
-    let mut queue = VecDeque::from([persist(&bytes, part)]);
+    let mut queue = landing(&bytes, part);
     tokio::time::timeout(Duration::from_secs(1), enact_drain(&mut queue, &mut ctx))
         .await
         .expect("the drain does not wait for the landing")
@@ -292,7 +310,7 @@ async fn a_full_lane_holds_the_drain() {
     let mut three = VecDeque::from(vec![persist(&bytes, part); 3]);
     enact_drain(&mut three, &mut ctx).await.unwrap();
 
-    let mut fourth = VecDeque::from([persist(&bytes, part)]);
+    let mut fourth = landing(&bytes, part);
     let waited = tokio::time::timeout(
         Duration::from_millis(200),
         enact_drain(&mut fourth, &mut ctx),
@@ -320,7 +338,7 @@ async fn a_landed_part_is_in_the_range_before_the_next_decision_is_enacted() {
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
     // The dial reads `our_part_status` for its brief as it is enacted.
-    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
+    landed(landing(&bytes, part), &mut ctx).await;
     let mut queue = VecDeque::from([Decision::Spawn {
         peer: PeerEndpoint::V4(OTHER),
         slot: WorkerSlot::from_usize(1),
@@ -353,7 +371,7 @@ async fn the_offer_waits_for_a_whole_set_that_arrives_after_the_part() {
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
-    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
+    landed(landing(&bytes, part), &mut ctx).await;
     assert!(
         cell.offered().is_empty(),
         "a part no set checked is not offered"
@@ -381,7 +399,7 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
     let (runner, mut held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
-    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
+    landed(landing(&bytes, part), &mut ctx).await;
     assert_eq!(ctx.file_hash_only_parts, [part]);
 
     set[part as usize] = PartHash::from_bytes([0xEE; 16]);
@@ -435,7 +453,7 @@ async fn a_pause_leaves_the_key_length_and_time_of_the_part_file_it_lets_go() {
         .await
         .as_mut()
         .unwrap()
-        .write_part(0, part_bytes(&bytes, 0))
+        .write_blocks(vec![(0, part_bytes(&bytes, 0).to_vec())])
         .await
         .unwrap();
     let_go(&runner).await;
@@ -466,7 +484,7 @@ async fn part_boundary_bench() {
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
-    let mut queue = VecDeque::from([persist(&bytes, part)]);
+    let mut queue = landing(&bytes, part);
     let started = Instant::now();
     enact_drain(&mut queue, &mut ctx).await.unwrap();
     let drained = started.elapsed();

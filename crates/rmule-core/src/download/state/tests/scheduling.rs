@@ -248,11 +248,11 @@ fn a_grant_with_nothing_unclaimed_gives_its_slot_back() {
     assert!(
         completing.iter().any(|d| matches!(
             d,
-            Decision::PersistPart { part_index, peer: p, .. } if part_index.value() == 0 && *p == peer(1)
+            Decision::PersistPart { part_index, peer: p, .. } if part_index.value() == 0 && *p == Some(peer(1))
         )),
         "a whole part round-trips through PersistPart: {completing:?}"
     );
-    let resumed = state.on_persist_result(t0(), PartIndex::new(0), peer(1), Ok(()));
+    let resumed = state.on_persist_result(t0(), PartIndex::new(0), Some(peer(1)), Ok(()), None);
     assert!(
         resumed.iter().any(|d| matches!(d, Decision::Finalize)),
         "the last verified part finalizes the download: {resumed:?}"
@@ -427,8 +427,9 @@ fn every_retirement_ends_its_worker() {
     let failed = state.on_persist_result(
         t0(),
         PartIndex::new(0),
-        peer(1),
+        Some(peer(1)),
         Err(DownloadFailure::PartVerificationFailed),
+        Some(vec![[0; 20]; part.cells()]),
     );
     let hung_up = state.on_worker_event(t0(), peer(2), PeerWorkerEvent::Disconnected);
 
@@ -533,7 +534,7 @@ fn two_workers_share_one_parts_blocks() {
     assert!(
         last.iter().any(|d| matches!(
             d,
-            Decision::PersistPart { part_index, offset: 0, bytes, .. } if part_index.value() == 0 && bytes.len() as u64 == size
+            Decision::PersistPart { part_index, offset: 0, len, .. } if part_index.value() == 0 && *len == size
         )),
         "the part is whole once both workers' blocks are in: {last:?}"
     );

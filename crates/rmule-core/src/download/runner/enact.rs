@@ -17,6 +17,7 @@ use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
 use crate::download::persist::{Landed, PersistError};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
+use crate::download::write_cache::CachedBytes;
 use crate::error::DownloadFailure;
 use crate::peer_roster::PeerRelation;
 use crate::service::{DownloadEvent, DownloadId, send_download_event};
@@ -24,9 +25,9 @@ use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
-use super::persist_lane::{Landing, PartToLand, PersistLane};
+use super::persist_lane::{Landing, LaneFact, PartToLand, PersistLane, RecoveryToCheck, plan_of};
 use super::republish::Republished;
-use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served};
+use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served, wait_until_stop};
 
 /// Everything one download run carries across loop turns, owned as one value so
 /// the `select!` loop and [`enact_drain`] share a single `&mut ctx`: the
@@ -126,27 +127,52 @@ where
             } => {
                 let _ = ctx.runner.rt.credit.credit_download(user_hash, at, bytes);
             }
+            Decision::WriteBytes { offset, bytes } => {
+                let cached = room_for(ctx, bytes.len(), queue).await;
+                ctx.persist.gather(offset, bytes, cached);
+                let at = std::time::Instant::now();
+                if ctx.persist.checkpoint_due(at) {
+                    let parts = ctx.state.take_checkpoint();
+                    ctx.persist.take_checkpoint(at, parts);
+                }
+            }
             Decision::PersistPart {
                 part_index,
                 peer,
                 offset,
-                bytes,
+                len,
+                read_cells,
             } => {
                 // A full lane holds the drain: the workers wait on the brain
                 // and the sockets on the workers.
                 while ctx.persist.full() {
-                    let landing = next_landing(ctx).await;
-                    queue.extend(after_landing(ctx, landing));
+                    let fact = next_fact(ctx).await;
+                    queue.extend(after_fact(ctx, fact));
                 }
-                let part = PartToLand {
+                let plan = crate::planning::PartPlan {
                     part_index,
-                    peer,
                     offset,
-                    bytes,
+                    len,
+                };
+                let part = PartToLand {
+                    plan,
+                    peer,
+                    read_cells,
                 };
                 let resolved = ctx.state.resolved().clone();
-                ctx.persist
-                    .take(ctx.runner, ctx.download_id, ctx.file, part, resolved);
+                ctx.persist.take_part(part, resolved);
+            }
+            Decision::CheckRecovery {
+                part_index,
+                root,
+                recovery_data,
+            } => {
+                let recovery = RecoveryToCheck {
+                    plan: plan_of(ctx.file, part_index),
+                    root,
+                    recovery_data,
+                };
+                ctx.persist.take_recovery(part_index, recovery);
             }
             Decision::PersistProvisionalHashes(hashes) => {
                 // The set judges every part recorded: none may land behind
@@ -490,8 +516,10 @@ where
                 }
                 // What is on the lane lands: a verified part stays verified
                 // for the next run, and the file is left to whoever deletes it.
+                // Every other end keeps what arrived (ADR-0117 §4).
                 let mut after = VecDeque::new();
-                settle_lane(ctx, &mut after).await;
+                let keep = !matches!(reason, DownloadFailure::Cancelled);
+                end_lane(ctx, keep, &mut after).await;
                 shut_down_every_worker(ctx, cancel).await;
                 let live = ctx.command_channels.iter().map(|c| c.id).collect();
                 await_worker_shutdown(&mut ctx.fact_rx, live).await;
@@ -518,13 +546,27 @@ where
     Ok(())
 }
 
-/// What the brain makes of `landing`, as the decisions it answers: the run
-/// ends on an end, and a rejected part goes back to its repair.
-pub(super) fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing) -> Vec<Decision> {
+/// What the brain makes of a lane's `fact`, as the decisions it answers: the
+/// run ends on an end.
+pub(super) fn after_fact<S, P>(ctx: &mut LoopCtx<'_, S, P>, fact: LaneFact) -> Vec<Decision> {
+    match fact {
+        LaneFact::Done => Vec::new(),
+        LaneFact::Ended(end) => vec![Decision::Fail(end)],
+        LaneFact::Recovery {
+            part_index,
+            bad_blocks,
+        } => ctx.state.on_recovery_checked(now(), part_index, bad_blocks),
+        LaneFact::Landing(landing) => after_landing(ctx, landing),
+    }
+}
+
+/// What the brain makes of `landing`: a rejected part goes back to its repair.
+fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing) -> Vec<Decision> {
     let Landing {
         part_index,
         peer,
         result,
+        cells,
     } = landing;
     match result {
         // The part file changed under the run (what it cost is said and
@@ -533,26 +575,89 @@ pub(super) fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing)
         Err(PersistError::Ended(end)) => vec![Decision::Fail(end)],
         Err(PersistError::Rejected(reason)) => {
             ctx.state
-                .on_persist_result(now(), part_index, peer, Err(reason))
+                .on_persist_result(now(), part_index, peer, Err(reason), cells)
         }
         Ok(landed) => {
             if landed == Landed::FileHashOnly {
                 ctx.file_hash_only_parts.push(part_index.value());
             }
-            ctx.state.on_persist_result(now(), part_index, peer, Ok(()))
+            ctx.state
+                .on_persist_result(now(), part_index, peer, Ok(()), cells)
         }
     }
 }
 
-/// The next part off the lane.
-async fn next_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>) -> Landing
+/// The next fact off the lane.
+async fn next_fact<S, P>(ctx: &mut LoopCtx<'_, S, P>) -> LaneFact
 where
     S: Send,
     P: Send,
 {
-    ctx.persist
-        .landed(ctx.runner, ctx.download_id, ctx.file)
-        .await
+    ctx.persist.next_fact().await
+}
+
+/// `len` bytes of the Write Cache for an arrival. A run past its share waits
+/// for its own lane; a node with no room left waits for any lane, its own work
+/// going on meanwhile. The drain waits here, and the workers and the sockets
+/// behind it. A stop waits for nothing: its arrival goes over the cap, and a
+/// stalled volume stands between no run and its end.
+async fn room_for<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    len: usize,
+    queue: &mut VecDeque<Decision>,
+) -> CachedBytes
+where
+    S: Send,
+    P: Send,
+{
+    let cache = ctx.runner.rt.write_cache.clone();
+    if !ctx.persist.over_share()
+        && let Some(cached) = cache.try_take(len)
+    {
+        return cached;
+    }
+    ctx.persist.write_gathered();
+    let mut stop_rx = ctx.runner.stop_rx.clone();
+    while ctx.persist.over_share() && ctx.persist.busy() {
+        tokio::select! {
+            fact = ctx.persist.next_fact() => queue.extend(after_fact(ctx, fact)),
+            _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
+        }
+    }
+    loop {
+        tokio::select! {
+            cached = cache.take(len) => return cached,
+            fact = ctx.persist.next_fact(), if ctx.persist.busy() => {
+                queue.extend(after_fact(ctx, fact));
+            }
+            _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
+        }
+    }
+}
+
+/// End the lane with its run: what is gathered goes to the file and what is on
+/// the lane lands, then a run that keeps what arrived commits the checkpoint
+/// that claims it. A cancel's bytes go nowhere, and a lane the disk ended
+/// claims nothing.
+pub(super) async fn end_lane<S, P>(
+    ctx: &mut LoopCtx<'_, S, P>,
+    keep: bool,
+    queue: &mut VecDeque<Decision>,
+) where
+    S: Send,
+    P: Send,
+{
+    if !keep {
+        ctx.persist.drop_gathered();
+    }
+    ctx.persist.write_gathered();
+    settle_lane(ctx, queue).await;
+    if keep && !ctx.persist.ended() {
+        let parts = ctx.state.take_checkpoint();
+        ctx.persist
+            .take_checkpoint(std::time::Instant::now(), parts);
+        settle_lane(ctx, queue).await;
+    }
 }
 
 /// Land everything on the lane, its decisions on `queue`.
@@ -562,8 +667,8 @@ where
     P: Send,
 {
     while ctx.persist.busy() {
-        let landing = next_landing(ctx).await;
-        queue.extend(after_landing(ctx, landing));
+        let fact = next_fact(ctx).await;
+        queue.extend(after_fact(ctx, fact));
     }
 }
 

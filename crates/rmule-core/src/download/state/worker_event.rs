@@ -10,12 +10,31 @@ use rmule_primitives::{PartHash, PeerEndpoint, UserHash};
 
 use crate::DownloadFailure;
 use crate::adapters::{PeerWorkerCommand, PeerWorkerEvent};
-use crate::assembly::PartAssembly;
+use crate::assembly::{ArrivedPart, CellHash, PartAssembly};
 use crate::diagnostics::WorkerPhase;
 use crate::hashing::{hash_set_proves_file, resolve_hash_set_authority};
 use crate::service::{DownloadEvent, PeerRetirementReason, VerificationAuthority};
 
 use super::{Decision, DownloadState};
+
+/// Send the ranges of `bytes`, delivered at `offset`, that `fresh` names to
+/// the file. A block wholly new, the common arrival, moves as it came.
+fn write_fresh(offset: u64, mut bytes: Vec<u8>, fresh: &[(u64, u64)], out: &mut Vec<Decision>) {
+    if let [(start, end)] = *fresh
+        && start == offset
+    {
+        bytes.truncate((end - start) as usize);
+        out.push(Decision::WriteBytes { offset, bytes });
+        return;
+    }
+    for &(start, end) in fresh {
+        let within = (start - offset) as usize..(end - offset) as usize;
+        out.push(Decision::WriteBytes {
+            offset: start,
+            bytes: bytes[within].to_vec(),
+        });
+    }
+}
 
 impl DownloadState {
     /// Resume after the runner could not put a spawned candidate on the wire
@@ -142,7 +161,7 @@ impl DownloadState {
                 part_index,
                 offset,
                 bytes,
-            } => self.on_block(now, peer, part_index, offset, &bytes, &mut out),
+            } => self.on_block(now, peer, part_index, offset, bytes, &mut out),
             // Why the dial ended before the hello; the terminal fact that
             // follows releases the worker.
             PeerWorkerEvent::DialEnded { cause } => {
@@ -241,7 +260,7 @@ impl DownloadState {
             } => self.on_aich_answer(
                 now,
                 PartIndex::new(u32::from(part)),
-                &recovery_data,
+                recovery_data,
                 &mut out,
             ),
             PeerWorkerEvent::AichFileHashReceived { root } => {
@@ -273,16 +292,22 @@ impl DownloadState {
         }
     }
     /// Resume after the runner has verified-and-persisted (or failed to) the
-    /// assembled bytes of `part_index` that `peer` completed.
+    /// bytes of `part_index` that `peer` completed; `cells` is what the file
+    /// held for each cell, read when the verdict needs it.
     pub(crate) fn on_persist_result(
         &mut self,
         now: Instant,
         part_index: PartIndex,
-        peer: PeerEndpoint,
+        peer: Option<PeerEndpoint>,
         result: Result<(), DownloadFailure>,
+        cells: Option<Vec<CellHash>>,
     ) -> Vec<Decision> {
         let mut out = Vec::new();
-        let assembled = self.pending_persist.remove(&part_index);
+        let mut assembled = self.pending_persist.remove(&part_index);
+        if let (Some(assembled), Some(cells)) = (assembled.as_mut(), cells) {
+            assembled.read_back(cells);
+        }
+        self.moved.insert(part_index);
         match result {
             Ok(()) => {
                 self.scheduler.complete_verified(part_index);
@@ -335,9 +360,9 @@ impl DownloadState {
         }
         out
     }
-    /// Merge a delivered block into its part's Arrived Ranges and settle the
-    /// claims they now cover; when they cover the part, hand the assembled
-    /// bytes to the runner to verify and persist (a `PersistPart` round-trip).
+    /// Merge a delivered block into its part's Arrived Ranges, send what is
+    /// new to the file and settle the claims they now cover; when they cover
+    /// the part, ask the runner to verify it (a `PersistPart` round-trip).
     /// The worker's row counts the bytes of the part it delivered (ADR-0117).
     fn on_block(
         &mut self,
@@ -345,7 +370,7 @@ impl DownloadState {
         peer: PeerEndpoint,
         part_index: PartIndex,
         offset: u64,
-        bytes: &[u8],
+        bytes: Vec<u8>,
         out: &mut Vec<Decision>,
     ) {
         // Bytes flowing end the standing: the source is live, not queued.
@@ -385,8 +410,12 @@ impl DownloadState {
             .assembly
             .entry(part_index)
             .or_insert_with(|| PartAssembly::new(part));
-        assembled.merge(peer, user_hash, offset, bytes);
+        let fresh = assembled.merge(peer, user_hash, offset, bytes.len() as u64);
         let complete = assembled.is_complete();
+        if !fresh.is_empty() {
+            self.moved.insert(part_index);
+        }
+        write_fresh(offset, bytes, &fresh, out);
         self.scheduler.settle(part_index, assembled.arrived());
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
@@ -400,13 +429,6 @@ impl DownloadState {
         if !complete {
             return;
         }
-        // The part is whole: hand the assembled bytes to the runner to verify
-        // and persist. Hold the buffer (with its writers) until the result
-        // comes back, so a failure can repair or attribute it (ADR-0117 §1).
-        let assembled = self
-            .assembly
-            .remove(&part_index)
-            .expect("a just-completed part has an assembly entry");
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
@@ -415,15 +437,66 @@ impl DownloadState {
                 },
             });
         }
-        let bytes = assembled.bytes();
+        self.check_part(part_index, Some(peer), out);
+    }
+
+    /// `part_index` is whole: the runner reads it back and verifies it. Its
+    /// assembly stands aside with its writers until the result comes back, so
+    /// a failure can repair or attribute it (ADR-0117 §1).
+    fn check_part(
+        &mut self,
+        part_index: PartIndex,
+        peer: Option<PeerEndpoint>,
+        out: &mut Vec<Decision>,
+    ) {
+        let Some(assembled) = self.assembly.remove(&part_index) else {
+            return;
+        };
+        let plan = crate::planning::part_plan(self.file_size, part_index);
         self.pending_persist.insert(part_index, assembled);
         self.scheduler.verifying(part_index);
         out.push(Decision::PersistPart {
             part_index,
             peer,
-            offset: part.offset,
-            bytes,
+            offset: plan.offset,
+            len: plan.len,
+            read_cells: self.failed_cells.contains_key(&part_index),
         });
+    }
+
+    /// The parts a run starts with whole go to their check first: they stood
+    /// on the lane or awaited a recovery answer as the last run ended
+    /// (ADR-0117 §4).
+    pub(super) fn check_whole_parts(&mut self, out: &mut Vec<Decision>) {
+        let mut whole: Vec<PartIndex> = self
+            .assembly
+            .iter()
+            .filter(|(_, assembled)| assembled.is_complete())
+            .map(|(&part_index, _)| part_index)
+            .collect();
+        whole.sort_unstable();
+        for part_index in whole {
+            self.check_part(part_index, None, out);
+        }
+    }
+
+    /// What of every in-flight part moved since the last call, for a
+    /// checkpoint: a part with no bytes left says so.
+    pub(crate) fn take_checkpoint(&mut self) -> Vec<ArrivedPart> {
+        std::mem::take(&mut self.moved)
+            .into_iter()
+            .map(|part_index| {
+                self.assembly
+                    .get(&part_index)
+                    .or_else(|| self.pending_persist.get(&part_index))
+                    .or_else(|| {
+                        self.awaiting_recovery
+                            .get(&part_index)
+                            .map(|(_, assembled)| assembled)
+                    })
+                    .map_or_else(|| ArrivedPart::none(part_index), PartAssembly::arrived_part)
+            })
+            .collect()
     }
     /// Adopt or reconcile a peer-supplied part hash set (ADR-0027). A set that
     /// is not the file's own — its MD4 is not the file hash, aMule's

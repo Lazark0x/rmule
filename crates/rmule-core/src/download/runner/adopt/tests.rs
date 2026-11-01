@@ -67,6 +67,7 @@ fn brain(sightings: Vec<SourceSighting>, peer_concurrency: usize, at: Instant) -
             },
             aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
+            arrived: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {

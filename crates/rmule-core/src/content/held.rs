@@ -42,18 +42,25 @@
 //! vanish.
 //!
 //! The handle is the **Sparse Part File**'s (ADR-0111): it carries the sparse
-//! flag on Windows, and each write is one blocking-pool call — the check, the
-//! positional write, the punch of its **Extension Gap**, and the **Allocated
-//! Bytes** reading — so no other operation is in flight on the handle while a
-//! raw-handle call runs on it.
+//! flag on Windows, and each batch of writes is one blocking-pool call — the
+//! check, the positional writes, the punch of each **Extension Gap**, and the
+//! **Allocated Bytes** reading. Every write of a run goes through its **Persist
+//! Lane**, one operation at a time, so no other is in flight on the handle
+//! while a raw-handle call runs on it.
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ed2k::Ed2kBlue;
+use ed2k::digest::Digest;
+use rmule_primitives::{EMBLOCKSIZE, PartHash, aich_block_hash};
+
+use crate::assembly::CellHash;
 use crate::content::{free_space, on_pool, sparse};
 use crate::file_key::{FileKey, links_of_open};
+use crate::planning::PartPlan;
 
 /// What a run found at its part file's path that is no longer the file it
 /// holds, or no longer all of it.
@@ -123,8 +130,8 @@ pub(crate) struct HeldPartFile {
     /// Shared with the blocking-pool call each write and check is.
     file: Arc<File>,
     path: PathBuf,
-    /// Where the highest part recorded in the file ends: a file shorter than
-    /// this has lost parts.
+    /// Where the highest part recorded or byte written ends: a file shorter
+    /// than this has lost them.
     recorded_end: u64,
     /// Whether a write punches its Extension Gap: off for the run when the
     /// volume refused the sparse flag, where a punch writes zeros.
@@ -195,45 +202,103 @@ impl HeldPartFile {
             .map(|_| ())
     }
 
-    /// Write one verified part at `offset` through the held handle, after
-    /// checking the file is still the one held and the volume over its
-    /// free-space floor, and punch the Extension Gap the write opened. A write
+    /// Write `blocks`, each an offset and its bytes, through the held handle
+    /// in order of offset, after checking the file is still the one held and
+    /// the volume over its free-space floor, and punch the Extension Gap each
+    /// write opened, the file's length carried from one to the next. A write
     /// the volume refuses with the floor crossed is
     /// [`HeldWriteError::OutOfSpace`], whatever error it gave: a nearly full
-    /// exFAT volume answers `EINVAL` as well as `ENOSPC`. Never truncates, and handed to the operating system
-    /// before returning, so a crash of the process cannot lose a part the
-    /// store says it has. Answers the Allocated Bytes reading after the
-    /// write, `None` when it failed.
-    pub(crate) async fn write_part(
+    /// exFAT volume answers `EINVAL` as well as `ENOSPC`. Never truncates, and
+    /// handed to the operating system before returning, so a crash of the
+    /// process cannot lose a byte a checkpoint claims. Answers the Allocated
+    /// Bytes reading after the writes, `None` when it failed.
+    pub(crate) async fn write_blocks(
         &mut self,
-        offset: u64,
-        bytes: &[u8],
+        mut blocks: Vec<(u64, Vec<u8>)>,
     ) -> Result<Option<u64>, HeldWriteError> {
+        blocks.sort_unstable_by_key(|&(offset, _)| offset);
         let file = Arc::clone(&self.file);
         let path = self.path.clone();
         let (recorded_end, punches) = (self.recorded_end, self.punches);
         let store_dir = self.store_dir.clone();
-        let part = bytes.to_vec();
+        let written_end = blocks
+            .iter()
+            .map(|(offset, bytes)| offset.saturating_add(bytes.len() as u64))
+            .fold(recorded_end, u64::max);
         let allocated = on_pool(move || {
-            let end = check_file(&file, &path, recorded_end)?;
-            let len = part.len() as u64;
+            let mut end = check_file(&file, &path, recorded_end)?;
+            let len: u64 = blocks.iter().map(|(_, bytes)| bytes.len() as u64).sum();
             if let Some(free_bytes) = free_space::under_the_floor(&path, store_dir.as_deref(), len)
             {
                 return Err(HeldWriteError::OutOfSpace { free_bytes });
             }
-            sparse::write_at(&file, offset, &part, end.filter(|_| punches)).map_err(|error| {
-                match free_space::under_the_floor(&path, store_dir.as_deref(), len) {
-                    Some(free_bytes) => HeldWriteError::OutOfSpace { free_bytes },
-                    None => HeldWriteError::Io(error),
-                }
-            })?;
+            for (offset, bytes) in &blocks {
+                sparse::write_at(&file, *offset, bytes, end.filter(|_| punches)).map_err(
+                    |error| match free_space::under_the_floor(&path, store_dir.as_deref(), len) {
+                        Some(free_bytes) => HeldWriteError::OutOfSpace { free_bytes },
+                        None => HeldWriteError::Io(error),
+                    },
+                )?;
+                let written = offset.saturating_add(bytes.len() as u64);
+                end = end.map(|end| end.max(written));
+            }
             Ok(rmule_os::sparse::allocated_bytes(&file).ok())
         })
         .await?;
-        self.recorded_end = self
-            .recorded_end
-            .max(offset.saturating_add(bytes.len() as u64));
+        self.recorded_end = written_end;
         Ok(allocated)
+    }
+
+    /// Read `plan`'s bytes back through the held handle, one cell at a time:
+    /// the part hash they make and, when `read_cells` asks, each cell's AICH
+    /// block hash. The file is short of nothing a run claims (ADR-0117 §4), so
+    /// an end of file is an error like any other.
+    pub(crate) async fn read_part(
+        &self,
+        plan: PartPlan,
+        read_cells: bool,
+    ) -> io::Result<(PartHash, Option<Vec<CellHash>>)> {
+        let file = Arc::clone(&self.file);
+        on_pool(move || {
+            let mut digest = Ed2kBlue::new();
+            let mut cells = read_cells.then(|| Vec::with_capacity(plan.cells()));
+            let mut buffer = vec![0; EMBLOCKSIZE as usize];
+            for cell in 0..plan.cells() {
+                let start = plan.cell_start(cell);
+                let len = (plan.end() - start).min(EMBLOCKSIZE) as usize;
+                sparse::read_all_at(&file, start, &mut buffer[..len])?;
+                digest.update(&buffer[..len]);
+                if let Some(cells) = cells.as_mut() {
+                    cells.push(aich_block_hash(&buffer[..len]));
+                }
+            }
+            Ok((PartHash::from_bytes(digest.finalize().into()), cells))
+        })
+        .await
+    }
+
+    /// `plan`'s bytes, whole: what a recovery answer is judged against.
+    pub(crate) async fn read_bytes(&self, plan: PartPlan) -> io::Result<Vec<u8>> {
+        let file = Arc::clone(&self.file);
+        on_pool(move || {
+            let mut bytes = vec![0; plan.len as usize];
+            sparse::read_all_at(&file, plan.offset, &mut bytes)?;
+            Ok(bytes)
+        })
+        .await
+    }
+
+    /// Sync the file's data to the disk: what a checkpoint's claim rests on
+    /// (ADR-0117 §4).
+    pub(crate) async fn sync(&self) -> io::Result<()> {
+        let file = Arc::clone(&self.file);
+        on_pool(move || file.sync_data()).await
+    }
+
+    /// The file's length as the handle reads it: what a checkpoint is cut to.
+    pub(crate) async fn len(&self) -> io::Result<u64> {
+        let file = Arc::clone(&self.file);
+        on_pool(move || Ok(file.metadata()?.len())).await
     }
 
     /// The held file's key and its metadata, read through the handle.

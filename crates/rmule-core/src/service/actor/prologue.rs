@@ -470,6 +470,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     let hash_turn = crate::directory_scan::HashTurn::default();
     let download_runtime = DownloadRuntime {
         shared: Arc::new(SharedRuntime {
+            write_cache: crate::download::write_cache::WriteCache::default(),
             hash_turn: hash_turn.clone(),
             download_reach_tx,
             source_lookup_timeout: wiring.config.source_lookup_timeout,

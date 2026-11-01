@@ -36,7 +36,7 @@ pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 /// takes a rung (ADR-0102), and so does a new table whose absence an older
 /// build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
-    18,
+    19,
     13,
     &[
         UPGRADE_FROM_V13,
@@ -44,6 +44,7 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         credit::UPGRADE_FROM_V15,
         download::UPGRADE_FROM_V16,
         app_config::UPGRADE_FROM_V17,
+        download::UPGRADE_FROM_V18,
     ],
 );
 

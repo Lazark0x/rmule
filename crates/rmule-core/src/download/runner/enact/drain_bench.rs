@@ -1,8 +1,9 @@
 //! The measuring rig for the download path's brain: what one arrival costs on
-//! a 300-record book, through the turn the fleet loop gives it. By hand, in
-//! release: `cargo test --release -p rmule-core drain_bench -- --ignored
-//! --nocapture`. Every speed change on this path lands with this rig's number
-//! before and after it.
+//! a 300-record book, through the turn the fleet loop gives it, its bytes
+//! reaching a real part file through the run's lane. By hand, in release:
+//! `cargo test --release -p rmule-core drain_bench -- --ignored --nocapture`.
+//! Every speed change on this path lands with this rig's number before and
+//! after it.
 
 use rmule_peer::PartIndex;
 
@@ -14,9 +15,10 @@ use rmule_primitives::{
     Ed2kText, FileHash, Informant, Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting, UserHash,
 };
 
-use super::enact_drain;
+use super::{after_fact, enact_drain, end_lane};
 use crate::VerificationAuthority;
 use crate::adapters::PeerWorkerEvent;
+use crate::content::HeldPartFile;
 use crate::dialable::DialPosition;
 use crate::download::runner::republish::WakeReading;
 use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
@@ -62,6 +64,7 @@ fn book_state() -> DownloadState {
             },
             aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
+            arrived: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {
@@ -151,6 +154,11 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
         file.file_hash,
         crate::DownloadMetadata::from_link(&file),
     );
+    let dir = tempfile::tempdir().expect("a directory");
+    let (held, _) = HeldPartFile::hold(&dir.path().join("rig.part"), 0)
+        .await
+        .expect("a part file");
+    *runner.part_file.lock().await = Some(held);
     let mut ctx = loop_ctx(&runner, &file, popular_book());
     let mut wake = WakeReading::default();
     enact_drain(&mut VecDeque::new(), &mut ctx)
@@ -184,6 +192,19 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
         enact_drain(&mut queue, &mut ctx)
             .await
             .expect("no arrival fails the run");
+        // The loop's lane arm, taken when a job is done: the brain never waits
+        // for one here.
+        while ctx.persist.busy() {
+            let fact = tokio::select! {
+                biased;
+                fact = ctx.persist.next_fact() => fact,
+                () = std::future::ready(()) => break,
+            };
+            let mut after: VecDeque<Decision> = after_fact(&mut ctx, fact).into();
+            enact_drain(&mut after, &mut ctx)
+                .await
+                .expect("the lane's fact");
+        }
         if gated {
             wake.block_turn();
             std::hint::black_box(wake.read(&ctx.state));
@@ -191,6 +212,9 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
             std::hint::black_box(ctx.state.next_wake());
         }
     }
+    // Every byte on the file: the brain's turns and the lane's writes.
+    let mut settled = VecDeque::new();
+    end_lane(&mut ctx, true, &mut settled).await;
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap();
     elapsed / (WALKED / (1024 * 1024))
 }

@@ -15,7 +15,7 @@ mod rungs;
 
 pub(super) use crate::store::home_path::HomePath;
 pub(super) use part_path::PartPathSlot;
-pub(crate) use rungs::{UPGRADE_FROM_V16, grow_from_v14};
+pub(crate) use rungs::{UPGRADE_FROM_V16, UPGRADE_FROM_V18, grow_from_v14};
 #[cfg(test)]
 pub(crate) use rungs::{schema_v5_rows, seed_running_v5};
 

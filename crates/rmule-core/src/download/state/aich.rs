@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::KadAichRoot;
 use crate::service::{DownloadEvent, PeerRetirementReason};
 use rmule_kad::KadAichRootReport;
-use rmule_primitives::{AichHashSet, AichRootHash, PeerEndpoint};
+use rmule_primitives::{AichRootHash, PeerEndpoint};
 
 use super::{Decision, DownloadState};
 
@@ -196,7 +196,7 @@ impl DownloadState {
         &self,
         now: Instant,
         root: AichRootHash,
-        completing: PeerEndpoint,
+        completing: Option<PeerEndpoint>,
     ) -> Option<PeerEndpoint> {
         self.connected_workers()
             .into_iter()
@@ -209,44 +209,74 @@ impl DownloadState {
             })
             .filter_map(|peer| {
                 let place = self.sources.dial_place(peer)?;
-                (!self.standings.clock_holds(&place, now))
-                    .then(|| (self.standings.last_ask(&place), peer != completing, peer))
+                (!self.standings.clock_holds(&place, now)).then(|| {
+                    (
+                        self.standings.last_ask(&place),
+                        Some(peer) != completing,
+                        peer,
+                    )
+                })
             })
             .min_by_key(|&(asked, other, _)| (asked, other))
             .map(|(.., peer)| peer)
     }
 
     /// Resume after a peer answered our `OP_AICHREQUEST` for `part_index`
-    /// (ADR-0038). Verify the recovery data against the trusted root; if it
-    /// localizes corrupt blocks, drop exactly those blocks from the part's
-    /// Arrived Ranges, retire the workers that wrote into them (distrusting a
-    /// block's sole writer), and hand the dropped blocks to workers with room
-    /// (ADR-0117). Malformed/untrusted
-    /// recovery data — or a clean part whose MD4 still failed (root/file
-    /// mismatch) — leaves the part to its refetch (ADR-0117 §1).
+    /// (ADR-0038): the lane judges the recovery data against the bytes in the
+    /// file. An answer with no root left to judge it by leaves the part to its
+    /// refetch.
     pub(super) fn on_aich_answer(
         &mut self,
         now: Instant,
         part_index: PartIndex,
-        recovery_data: &[u8],
+        recovery_data: Vec<u8>,
+        out: &mut Vec<Decision>,
+    ) {
+        if !self.awaiting_recovery.contains_key(&part_index) {
+            return; // stale or duplicate answer
+        }
+        match self.aich_root.trusted() {
+            Some(root) => out.push(Decision::CheckRecovery {
+                part_index,
+                root,
+                recovery_data,
+            }),
+            None => self.on_recovery_checked_into(now, part_index, None, out),
+        }
+    }
+
+    /// The lane judged a recovery answer for `part_index`: `bad_blocks` are
+    /// the corrupt blocks it localizes, none when the data was malformed or
+    /// named none. Drop exactly those blocks from the part's Arrived Ranges,
+    /// retire the workers that wrote into them (distrusting a block's sole
+    /// writer), and hand the dropped blocks to workers with room (ADR-0117).
+    /// Malformed or untrusted recovery data — or a clean part whose MD4 still
+    /// failed (root/file mismatch) — leaves the part to its refetch
+    /// (ADR-0117 §1).
+    pub(crate) fn on_recovery_checked(
+        &mut self,
+        now: Instant,
+        part_index: PartIndex,
+        bad_blocks: Option<Vec<u16>>,
+    ) -> Vec<Decision> {
+        let mut out = Vec::new();
+        self.on_recovery_checked_into(now, part_index, bad_blocks, &mut out);
+        out
+    }
+
+    fn on_recovery_checked_into(
+        &mut self,
+        now: Instant,
+        part_index: PartIndex,
+        bad_blocks: Option<Vec<u16>>,
         out: &mut Vec<Decision>,
     ) {
         let Some((_, mut assembled)) = self.awaiting_recovery.remove(&part_index) else {
-            return; // stale or duplicate answer
+            return; // its asker ended, and the part took its refetch
         };
-        let Some(root) = self.aich_root.trusted() else {
-            self.refetch_rootless(now, part_index, &assembled, out);
-            return;
-        };
-        let part = crate::planning::part_plan(self.file_size, part_index);
-        let bad_blocks = match AichHashSet::verify_part(
-            self.file_size,
-            part.offset,
-            &assembled.bytes(),
-            recovery_data,
-            root,
-        ) {
-            Ok(blocks) if !blocks.is_empty() => blocks,
+        self.moved.insert(part_index);
+        let bad_blocks = match bad_blocks {
+            Some(blocks) if !blocks.is_empty() => blocks,
             _ => {
                 self.refetch_rootless(now, part_index, &assembled, out);
                 return;

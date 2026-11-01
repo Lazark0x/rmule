@@ -35,7 +35,7 @@ use crate::storage::DownloadRepository;
 use super::adopt::adopt;
 use super::awaited_grants::AwaitedGrants;
 use super::callbacks::CallbackContext;
-use super::enact::{LoopCtx, after_landing, enact_drain};
+use super::enact::{LoopCtx, after_fact, enact_drain, end_lane, settle_lane};
 use super::intake;
 use super::reply_sink::ReaskSinkLease;
 use super::republish::WakeReading;
@@ -182,6 +182,7 @@ where
     } else {
         resolve_hash_set_authority(link_hash_set.as_ref(), None)?
     };
+    let arrived = crate::download::persist::arrived_at_start(runner, download_id).await?;
     let hash_set_received = DownloadEvent::HashSetReceived {
         download_id,
         part_count: resolved.hashes.len(),
@@ -279,6 +280,7 @@ where
             resolved,
             aich_root: AichRootAuthority::at_start(file.aich_root, kad_aich_root),
             verified_parts: verified_part_indexes,
+            arrived,
             order,
         },
         StartingFacts {
@@ -343,7 +345,7 @@ where
         queued_relations: std::collections::HashSet::new(),
         awaited_grants,
         held_places: runner.rt.held_places.seat(download_id),
-        persist: super::persist_lane::PersistLane::new(),
+        persist: super::persist_lane::PersistLane::new(runner, download_id, file),
         republished: None,
     };
 
@@ -441,9 +443,10 @@ where
                 enact_drain(&mut q, &mut ctx).await?;
                 return Err(failure);
             }
-            landing = ctx.persist.landed(ctx.runner, download_id, ctx.file), if ctx.persist.busy() => {
-                // A finished part landed, or could not: the brain hears it.
-                let mut q: VecDeque<Decision> = after_landing(&mut ctx, landing).into();
+            fact = ctx.persist.next_fact(), if ctx.persist.busy() => {
+                // A job on the lane ended: a finished part landed or could
+                // not, or the disk refused. The brain hears it.
+                let mut q: VecDeque<Decision> = after_fact(&mut ctx, fact).into();
                 enact_drain(&mut q, &mut ctx).await?;
                 continue;
             }
@@ -565,6 +568,14 @@ where
                 continue;
             }
             _ = sample.tick() => {
+                // Arrivals too few to fill a write go to the file on this
+                // tick, and a checkpoint falls due on it (ADR-0117 §4).
+                ctx.persist.write_gathered();
+                let at = std::time::Instant::now();
+                if ctx.persist.checkpoint_due(at) {
+                    let parts = ctx.state.take_checkpoint();
+                    ctx.persist.take_checkpoint(at, parts);
+                }
                 // A run waiting for sources — no worker, no callback out —
                 // writes nothing, so its part file is looked at on this tick
                 // instead: gone or cut short is said now, not when a
@@ -611,7 +622,10 @@ where
                 // `fact_tx` is held for the whole run so a backfilled worker
                 // can join the stream, so this is reached only if every worker
                 // stream has closed with the download still incomplete.
-                None => return Err(DownloadFailure::NoUsableSources),
+                None => {
+                    end_lane(&mut ctx, true, &mut VecDeque::new()).await;
+                    return Err(DownloadFailure::NoUsableSources);
+                }
             },
         };
         // Download byte accounting (ADR-0077) at the wire boundary: every
@@ -693,7 +707,9 @@ where
     }
     // The `Finalize` decision shuts the fleet down the moment the last part
     // verifies; the loop then observes `is_complete` and exits, handing the
-    // run the parts its completion move verifies by the file hash.
+    // run the parts its completion move verifies by the file hash. Nothing on
+    // the lane outlives the loop: the completion move takes the file next.
+    settle_lane(&mut ctx, &mut VecDeque::new()).await;
     Ok(std::mem::take(&mut ctx.file_hash_only_parts))
 }
 

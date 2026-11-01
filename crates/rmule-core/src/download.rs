@@ -18,6 +18,7 @@ mod source_book;
 pub(crate) mod source_seeds;
 mod state;
 mod worker_pool;
+pub(crate) mod write_cache;
 
 /// Which run of a download this is, minted by the actor for each run it
 /// spawns and never reused: a finish notice and a Served Download's lease

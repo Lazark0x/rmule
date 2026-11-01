@@ -50,12 +50,36 @@ fn recovery_asked(decisions: &[Decision]) -> Vec<PeerEndpoint> {
         .collect()
 }
 
+/// The lane's turn at a recovery answer: `decisions` ask it to judge the part
+/// by the data, and the brain hears what `file` makes of it.
+fn recovery_judged(
+    state: &mut DownloadState,
+    decisions: &[Decision],
+    file_size: u64,
+    file: &[u8],
+) -> Vec<Decision> {
+    let (part_index, root, data) = decisions
+        .iter()
+        .find_map(|decision| match decision {
+            Decision::CheckRecovery {
+                part_index,
+                root,
+                recovery_data,
+            } => Some((*part_index, *root, recovery_data)),
+            _ => None,
+        })
+        .expect("the answer goes to the lane");
+    let bad_blocks = AichHashSet::verify_part(file_size, 0, file, data, root).ok();
+    state.on_recovery_checked(t0(), part_index, bad_blocks)
+}
+
 fn part_fails(state: &mut DownloadState, now: Instant) -> Vec<Decision> {
     state.on_persist_result(
         now,
         PartIndex::new(0),
-        peer(2),
+        Some(peer(2)),
         Err(DownloadFailure::PartVerificationFailed),
+        None,
     )
 }
 
@@ -160,8 +184,9 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
     let failed = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
         PartIndex::new(0),
-        peer(2),
+        Some(peer(2)),
         Err(DownloadFailure::PartVerificationFailed),
+        None,
     );
     assert!(
         failed.iter().any(|d| matches!(
@@ -180,7 +205,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
 
     // The peer answers; AICH localizes block 1 → retire only its writer
     // (peer 1), keeping every good block.
-    let repaired = state.on_worker_event(
+    let answered = state.on_worker_event(
         t0(),
         peer(2),
         PeerWorkerEvent::AichAnswerReceived {
@@ -188,6 +213,9 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
             recovery_data: recovery,
         },
     );
+    let mut on_disk = true_bytes.clone();
+    on_disk[emb] ^= 0xFF;
+    let repaired = recovery_judged(&mut state, &answered, file_size, &on_disk);
     assert!(
         repaired.iter().any(|d| matches!(
             d,
@@ -395,11 +423,12 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
     let _ = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
         PartIndex::new(0),
-        peer(2),
+        Some(peer(2)),
         Err(DownloadFailure::PartVerificationFailed),
+        None,
     );
 
-    let repaired = state.on_worker_event(
+    let answered = state.on_worker_event(
         t0(),
         peer(2),
         PeerWorkerEvent::AichAnswerReceived {
@@ -407,6 +436,9 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
             recovery_data: recovery,
         },
     );
+    let mut on_disk = true_bytes.clone();
+    on_disk[0] ^= 0xFF;
+    let repaired = recovery_judged(&mut state, &answered, file_size, &on_disk);
 
     let distrusted: Vec<UserHash> = repaired
         .iter()

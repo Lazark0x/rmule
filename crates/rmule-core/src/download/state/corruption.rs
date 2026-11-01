@@ -28,7 +28,13 @@ impl DownloadState {
         out: &mut Vec<Decision>,
     ) {
         self.scheduler.failed(part_index);
-        let attempt = assembled.attempt();
+        self.moved.insert(part_index);
+        // The lane read every cell of a part that failed; a part it did not
+        // read names nobody.
+        let Some(attempt) = assembled.attempt() else {
+            self.reassign_workers(now, out);
+            return;
+        };
         let kept = self.failed_cells.remove(&part_index);
         let verdict = attempt.names(kept.as_ref());
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
@@ -57,8 +63,10 @@ impl DownloadState {
         let Some(failed) = self.failed_cells.remove(&part_index) else {
             return;
         };
-        let verdict = assembled.attempt().disproves(&failed);
-        self.convict(now, &verdict, &[&failed], out);
+        if let Some(attempt) = assembled.attempt() {
+            let verdict = attempt.disproves(&failed);
+            self.convict(now, &verdict, &[&failed], out);
+        }
     }
 
     /// `peer`'s worker ended: a recovery ask it held is never answered, so

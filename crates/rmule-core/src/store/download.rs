@@ -10,12 +10,13 @@
 //! authority in one; a lifecycle move reads the current state and writes the
 //! next in one. Every method takes `&self`, so a handle is shared, not locked.
 
+mod arrived;
 mod row;
 mod seeds;
 
 #[cfg(test)]
 pub(crate) use row::seed_running_v5;
-pub(crate) use row::{UPGRADE_FROM_V16, grow_from_v14};
+pub(crate) use row::{UPGRADE_FROM_V16, UPGRADE_FROM_V18, grow_from_v14};
 pub use seeds::LoadedSeeds;
 
 use std::path::{Path, PathBuf};
@@ -50,6 +51,7 @@ pub(crate) fn schema() -> Schema {
         .children(&PROVISIONAL_HASHES)
         .children(&DISTRUSTED_PEERS)
         .children(&seeds::SOURCE_SEEDS)
+        .children(&arrived::ARRIVED_PARTS)
 }
 
 /// The tables this seam owned at store versions 13 and 14: its rows of
@@ -125,6 +127,7 @@ impl DurableDownloadRepository {
     ) -> Result<(), CoreError> {
         self.store.write(|txn| {
             require_row(txn, id)?;
+            arrived::settle(txn, id.as_u64(), part.part_index)?;
             Ok(VERIFIED_PARTS.put(
                 txn,
                 id.as_u64(),
@@ -415,6 +418,7 @@ impl DurableDownloadRepository {
                 .collect();
             VERIFIED_PARTS.clear(txn, key)?;
             PROVISIONAL_HASHES.clear(txn, key)?;
+            arrived::forget(txn, key)?;
             if row.verification_authority == Some(VerificationAuthority::PeerHashSet) {
                 row.verification_authority = None;
                 DOWNLOADS.update(txn, &key, &row)?;
@@ -443,6 +447,7 @@ impl DurableDownloadRepository {
             let key = id.as_u64();
             VERIFIED_PARTS.clear(txn, key)?;
             PROVISIONAL_HASHES.clear(txn, key)?;
+            arrived::forget(txn, key)?;
             if row.verification_authority == Some(VerificationAuthority::PeerHashSet) {
                 row.verification_authority = None;
             }
@@ -618,6 +623,7 @@ fn clear_row(txn: &WriteTransaction, id: DownloadId) -> Result<(), CoreError> {
     PROVISIONAL_HASHES.clear(txn, key)?;
     DISTRUSTED_PEERS.clear(txn, key)?;
     seeds::forget(txn, key)?;
+    arrived::forget(txn, key)?;
     Ok(())
 }
 
@@ -704,6 +710,7 @@ impl DownloadRepository for DurableDownloadRepository {
             // "Source Seeds"): they leave in the move that ends it.
             if !row.is_live() {
                 seeds::forget(txn, id.as_u64())?;
+                arrived::forget(txn, id.as_u64())?;
             }
             // Nothing reads a cancelled row's parts again, and the table
             // would otherwise only grow.

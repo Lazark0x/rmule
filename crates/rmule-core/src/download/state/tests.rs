@@ -185,6 +185,7 @@ fn file_hash_only_content(file_size: u64) -> ContentFacts {
         },
         aich_root: crate::download::state::AichRootAuthority::Rootless,
         verified_parts: Vec::new(),
+        arrived: Vec::new(),
         order: PartOrder::Rarest,
     }
 }
@@ -518,7 +519,7 @@ fn deliver_verified(
             bytes: vec![0u8; part.len as usize],
         },
     );
-    state.on_persist_result(t0(), PartIndex::new(part_index), peer, Ok(()))
+    state.on_persist_result(t0(), PartIndex::new(part_index), Some(peer), Ok(()), None)
 }
 
 /// A two-part file's true ED2K identity, hashed from its bytes: its file hash

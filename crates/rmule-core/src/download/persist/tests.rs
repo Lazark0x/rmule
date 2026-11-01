@@ -3,19 +3,20 @@
 //! not give. Each leg names a download the store holds no row for, so every
 //! store call it makes is refused.
 
-use rmule_primitives::PartHash;
+use rmule_peer::PartIndex;
+use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash};
 
 use super::{
     PersistError, check_held_part_file, distrusted_at_start, hold_part_file, part_file_changed,
-    record_failure, write_through_held,
+    persist_streamed_part, record_failure, write_blocks,
 };
 use crate::DownloadPaths;
 use crate::content::{HeldPartFile, PartFileChange};
 use crate::diagnostics::DiagnosticsState;
 use crate::download::runner::RunnerContext;
 use crate::download::runner::test_context::{Held, runner_context};
-use crate::durable::VerifiedPartRecord;
 use crate::error::DownloadFailure;
+use crate::planning::PartPlan;
 use crate::service::{CoreEvent, DownloadEvent, DownloadId, PartsLost, VolumeStop};
 use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
@@ -57,17 +58,28 @@ async fn a_part_the_store_cannot_record_ends_the_run_as_a_store_failure() {
     let (runner, _held) = context();
     let dir = tempfile::tempdir().unwrap();
     *runner.part_file.lock().await = Some(held_part_file(&dir).await);
-    let record = VerifiedPartRecord {
-        part_index: 0,
+    let bytes = b"abcd";
+    let digest = crate::hashing::part_hash_of(bytes);
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("file"),
+        bytes.len() as u64,
+        FileHash::from_bytes(*digest.as_bytes()),
+    )
+    .unwrap();
+    write_blocks(&runner, UNKNOWN, vec![(0, bytes.to_vec())])
+        .await
+        .unwrap();
+    let plan = PartPlan {
+        part_index: PartIndex::new(0),
         offset: 0,
-        len: 4,
-        part_hash: PartHash::from_bytes([0x11; 16]),
+        len: bytes.len() as u64,
     };
+    let resolved = crate::hashing::resolve_hash_set_authority(None, None).unwrap();
 
-    let result = write_through_held(&runner, UNKNOWN, record, b"abcd").await;
+    let checked = persist_streamed_part(&runner, UNKNOWN, &file, &resolved, plan, false).await;
     assert!(
         matches!(
-            result,
+            checked.result,
             Err(PersistError::Ended(DownloadFailure::StoreFailed))
         ),
         "not a part that failed its check"
@@ -81,16 +93,11 @@ async fn a_write_the_volume_refuses_is_a_volume_stop_and_no_failed_part() {
     let path = dir.path().join("file.part");
     std::fs::write(&path, b"").unwrap();
     *runner.part_file.lock().await = Some(HeldPartFile::refusing_writes(&path));
-    let record = VerifiedPartRecord {
-        part_index: 0,
-        offset: 0,
-        len: 4,
-        part_hash: PartHash::from_bytes([0x11; 16]),
-    };
 
-    let result = write_through_held(&runner, UNKNOWN, record, b"abcd").await;
-    assert!(
-        matches!(result, Err(PersistError::Ended(DownloadFailure::Paused))),
+    let result = write_blocks(&runner, UNKNOWN, vec![(0, b"abcd".to_vec())]).await;
+    assert_eq!(
+        result,
+        Err(DownloadFailure::Paused),
         "a refused write must not reach the brain as a part that failed its check"
     );
     assert!(matches!(

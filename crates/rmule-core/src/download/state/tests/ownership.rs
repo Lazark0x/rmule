@@ -116,8 +116,9 @@ fn serve_bad_part(state: &mut DownloadState, at: PeerEndpoint) {
     let failed = state.on_persist_result(
         t0(),
         PartIndex::new(0),
-        at,
+        Some(at),
         Err(DownloadFailure::PartVerificationFailed),
+        Some(vec![[0; 20]; part.cells()]),
     );
     assert!(
         failed

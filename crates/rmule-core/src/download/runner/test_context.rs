@@ -79,6 +79,7 @@ pub(in crate::download) fn runner_context<S, P>(
     let (download_reach_tx, download_reach_rx) = mpsc::channel(4);
     let (in_place_tx, in_place_rx) = mpsc::channel(4);
     let rt = Arc::new(SharedRuntime {
+        write_cache: crate::download::write_cache::WriteCache::default(),
         store: Arc::new(crate::store::download::DurableDownloadRepository::new(
             store.clone(),
         )),
@@ -151,7 +152,11 @@ pub(super) fn loop_ctx<'a, S, P>(
     runner: &'a RunnerContext<S, P>,
     file: &'a Ed2kFileLink,
     state: DownloadState,
-) -> LoopCtx<'a, S, P> {
+) -> LoopCtx<'a, S, P>
+where
+    S: Send,
+    P: Send,
+{
     let (fact_tx, fact_rx) = mpsc::channel(8);
     let (adopt_tx, _adopt_rx) = mpsc::channel(4);
     let (retire_tx, _retire_rx) = mpsc::channel(4);
@@ -198,7 +203,7 @@ pub(super) fn loop_ctx<'a, S, P>(
         queued_relations: std::collections::HashSet::new(),
         awaited_grants: super::awaited_grants::AwaitedGrants::new(runner.rt.peer_links.clone()),
         held_places: runner.rt.held_places.seat(DownloadId::from_u64(1)),
-        persist: super::persist_lane::PersistLane::new(),
+        persist: super::persist_lane::PersistLane::new(runner, DownloadId::from_u64(1), file),
         republished: None,
     }
 }

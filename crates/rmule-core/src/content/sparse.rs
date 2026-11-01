@@ -86,6 +86,38 @@ pub(crate) fn write_punching(
     write_at(file, offset, bytes, punches.then_some(end))
 }
 
+/// Fill `bytes` from `file` at `offset`. Short of them is
+/// [`io::ErrorKind::UnexpectedEof`].
+///
+/// # Errors
+/// What the read reported.
+#[cfg(unix)]
+pub(crate) fn read_all_at(file: &File, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, bytes, offset)
+}
+
+/// Fill `bytes` from `file` at `offset`. Short of them is
+/// [`io::ErrorKind::UnexpectedEof`].
+///
+/// # Errors
+/// What the read reported.
+#[cfg(windows)]
+pub(crate) fn read_all_at(file: &File, mut offset: u64, mut bytes: &mut [u8]) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !bytes.is_empty() {
+        match file.seek_read(bytes, offset) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Ok(read) => {
+                bytes = &mut bytes[read..];
+                offset = offset.saturating_add(read as u64);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
     std::os::unix::fs::FileExt::write_all_at(file, bytes, offset)

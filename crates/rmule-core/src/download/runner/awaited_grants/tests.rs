@@ -42,6 +42,7 @@ fn queued_under_a_hello() -> DownloadState {
             },
             aich_root: crate::download::state::AichRootAuthority::Rootless,
             verified_parts: Vec::new(),
+            arrived: Vec::new(),
             order: crate::scheduler::PartOrder::Rarest,
         },
         StartingFacts {

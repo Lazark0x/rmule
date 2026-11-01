@@ -91,14 +91,6 @@ pub(crate) fn part_hash_of(bytes: &[u8]) -> PartHash {
     PartHash::from_bytes(ed2k::Ed2kBlue::digest(bytes).into())
 }
 
-pub(crate) fn verify_part_bytes(expected: PartHash, bytes: &[u8]) -> Result<(), DownloadFailure> {
-    if part_hash_of(bytes) == expected {
-        Ok(())
-    } else {
-        Err(DownloadFailure::PartVerificationFailed)
-    }
-}
-
 /// The eD2k file hash of the first `file_size` bytes `reader` yields, read one
 /// part at a time: no read asks for more than [`ED2K_PART_SIZE`] bytes, so a
 /// file of any size is hashed in one part's worth of memory. Fewer than
@@ -180,8 +172,8 @@ mod tests {
 
         let expected = part_hash_on_arrival(&resolved, &file, 0).unwrap();
 
-        verify_part_bytes(expected, bytes).unwrap();
-        assert!(verify_part_bytes(expected, b"abd").is_err());
+        assert_eq!(part_hash_of(bytes), expected);
+        assert_ne!(part_hash_of(b"abd"), expected);
     }
 
     /// A reader that refuses any single read larger than one part, so a hash

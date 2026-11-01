@@ -42,6 +42,15 @@ pub(crate) const UPGRADE_FROM_V16: UpgradeStep = UpgradeStep {
         Ok(())
     },
 };
+/// Store version 18 → 19 (ADR-0117 §4): the Arrived Checkpoint's table. An
+/// older build would write past it, and a part it finished would keep a row
+/// that claims bytes of a part already verified, so a version-18 build refuses
+/// the store.
+pub(crate) const UPGRADE_FROM_V18: UpgradeStep = UpgradeStep {
+    from: 18,
+    run: |_| Ok(()),
+};
+
 #[cfg(test)]
 mod declared_v5;
 #[cfg(test)]

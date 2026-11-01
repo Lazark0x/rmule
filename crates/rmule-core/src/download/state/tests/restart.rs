@@ -56,7 +56,7 @@ fn a_restart_resumes_every_block_of_each_unverified_part_and_none_of_a_verified_
             bytes: vec![0x5A; part_1.len as usize],
         },
     );
-    let _ = first.on_persist_result(t0(), PartIndex::new(1), peer(1), Ok(()));
+    let _ = first.on_persist_result(t0(), PartIndex::new(1), Some(peer(1)), Ok(()), None);
     let _ = first.on_worker_event(
         t0(),
         peer(1),

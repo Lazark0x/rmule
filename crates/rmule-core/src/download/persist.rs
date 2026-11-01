@@ -19,15 +19,16 @@
 //! floor and a path that names nothing over a whole file end the run as a
 //! pause, keep every verified part and reach no verdict.
 
-use rmule_peer::PartIndex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use ed2k::digest::Digest;
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, PartHashSet, UserHash};
+use rmule_primitives::{
+    AichHashSet, AichRootHash, Ed2kFileLink, Ed2kLink, PartHash, PartHashSet, UserHash,
+};
 
+use crate::assembly::{ArrivedPart, CellHash};
 use crate::content::{
     HeldCheckFailed, HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation,
     on_pool, part_link, probe_holes,
@@ -35,7 +36,8 @@ use crate::content::{
 use crate::download::runner::RunnerContext;
 use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
 use crate::error::{CoreError, DownloadFailure, StorageIntegrityFault};
-use crate::hashing::{ResolvedHashSet, part_hash_on_arrival, verify_part_bytes};
+use crate::hashing::{ResolvedHashSet, part_hash_on_arrival};
+use crate::planning::PartPlan;
 use crate::service::{DownloadEvent, DownloadId, PartsLost, VolumeStop, send_download_event};
 use crate::storage::DownloadRepository;
 
@@ -304,52 +306,92 @@ pub(super) enum Landed {
     FileHashOnly,
 }
 
-/// The bytes of a finished part hashed on the pool (ADR-0031): the part hash a
-/// record names, and what the hash proved, handing the bytes back.
-fn hash_part(
-    expected: Option<PartHash>,
-    bytes: Vec<u8>,
-) -> (Result<(PartHash, Landed), DownloadFailure>, Vec<u8>) {
-    let hashed = match expected {
-        Some(expected) => {
-            verify_part_bytes(expected, &bytes).map(|()| (expected, Landed::Verified))
-        }
-        None => Ok((
-            PartHash::from_bytes(ed2k::Ed2kBlue::digest(&bytes).into()),
-            Landed::FileHashOnly,
-        )),
-    };
-    (hashed, bytes)
+/// What a part's check came to, with what the file held for each cell when
+/// the brain will judge by it (ADR-0117 §1).
+pub(super) struct PartChecked {
+    /// What the part proved, or why it did not land.
+    pub(super) result: Result<Landed, PersistError>,
+    /// Each cell's hash: read on a failure, and when the part's check asked.
+    pub(super) cells: Option<Vec<CellHash>>,
 }
 
+/// Why a part stopped short of a verdict, for the lane to carry to the end of
+/// the run.
+fn ended(failure: DownloadFailure) -> PartChecked {
+    PartChecked {
+        result: Err(PersistError::Ended(failure)),
+        cells: None,
+    }
+}
+
+/// Check the part `plan` covers from the file, behind every byte written
+/// before it, on the blocking pool (ADR-0031), and record it: the file is
+/// looked at first, and a read the volume refuses is the volume's fault, no
+/// peer's. A part whose bytes fail keeps each cell's hash for the brain.
 pub(super) async fn persist_streamed_part<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
     file: &Ed2kFileLink,
     resolved: &ResolvedHashSet,
-    part_index: PartIndex,
-    offset: u64,
-    bytes: Vec<u8>,
-) -> Result<Landed, PersistError>
+    plan: PartPlan,
+    read_cells: bool,
+) -> PartChecked
 where
     S: Send,
     P: Send,
 {
+    let part_index = plan.part_index;
     let expected = part_hash_on_arrival(resolved, file, part_index.value());
-    if expected.is_none() && !resolved.hashes.is_empty() {
-        return Err(PersistError::Rejected(
-            DownloadFailure::PartVerificationFailed,
+    let mut held = runner.part_file.lock().await;
+    let Some(held) = held.as_mut() else {
+        return ended(DownloadFailure::StorageIntegrityFailed(
+            StorageIntegrityFault::PartFileMissing,
         ));
+    };
+    if let Err(failed) = held.check().await {
+        return ended(check_failed(runner, download_id, held, failed).await);
     }
-    let (hashed, bytes) = on_pool(move || hash_part(expected, bytes)).await;
-    let (part_hash, landed) = hashed.map_err(PersistError::Rejected)?;
+    let unnamed = expected.is_none() && !resolved.hashes.is_empty();
+    let read = match held.read_part(plan, read_cells || unnamed).await {
+        Ok(read) => read,
+        Err(error) => return ended(read_refused(runner, &error)),
+    };
+    let (part_hash, cells) = read;
+    let matched = expected.is_none_or(|expected| expected == part_hash);
+    if unnamed || !matched {
+        let cells = match cells {
+            Some(cells) => cells,
+            None => match held.read_part(plan, true).await {
+                Ok((_, Some(cells))) => cells,
+                Ok((_, None)) => Vec::new(),
+                Err(error) => return ended(read_refused(runner, &error)),
+            },
+        };
+        return PartChecked {
+            result: Err(PersistError::Rejected(
+                DownloadFailure::PartVerificationFailed,
+            )),
+            cells: Some(cells),
+        };
+    }
+    let landed = if expected.is_some() {
+        Landed::Verified
+    } else {
+        Landed::FileHashOnly
+    };
     let record = VerifiedPartRecord {
         part_index: part_index.value(),
-        offset,
-        len: bytes.len() as u64,
+        offset: plan.offset,
+        len: plan.len,
         part_hash,
     };
-    write_through_held(runner, download_id, record, &bytes).await?;
+    // A commit syncs: it holds a pool thread, not a runtime worker.
+    let store = Arc::clone(&runner.rt.store);
+    let recorded = on_pool(move || store.record_verified_part(download_id, record)).await;
+    if let Err(error) = recorded {
+        tracing::warn!(%error, "a verified part could not be recorded");
+        return ended(DownloadFailure::StoreFailed);
+    }
     if landed == Landed::Verified {
         tracing::info!(
             download_id = download_id.as_u64(),
@@ -364,58 +406,153 @@ where
             },
         );
     }
-    Ok(landed)
+    PartChecked {
+        result: Ok(landed),
+        cells,
+    }
 }
 
-/// Write `bytes` through the held part file and record the part — or, when
-/// the file at the path is not the one held, say what that cost.
-async fn write_through_held<S, P>(
+/// A read of the run's own file failed: the volume's refusal, no verdict.
+fn read_refused<S, P>(runner: &RunnerContext<S, P>, error: &std::io::Error) -> DownloadFailure {
+    tracing::warn!(%error, "the part file could not be read back");
+    runner.stop_for_volume(VolumeStop::WriteRefused {
+        os_code: error.raw_os_error(),
+    })
+}
+
+/// Write `blocks` through the held part file. What the volume refuses ends the
+/// run as a Volume Stop, and a file that changed says what that cost: either
+/// way nothing behind these bytes on the lane may run.
+pub(super) async fn write_blocks<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
-    record: VerifiedPartRecord,
-    bytes: &[u8],
-) -> Result<(), PersistError>
+    blocks: Vec<(u64, Vec<u8>)>,
+) -> Result<(), DownloadFailure>
 where
     S: Send,
     P: Send,
 {
     let mut held = runner.part_file.lock().await;
-    let file = held.as_mut().ok_or(PersistError::Ended(
-        DownloadFailure::StorageIntegrityFailed(StorageIntegrityFault::PartFileMissing),
-    ))?;
-    match file.write_part(record.offset, bytes).await {
+    let file = held
+        .as_mut()
+        .ok_or(DownloadFailure::StorageIntegrityFailed(
+            StorageIntegrityFault::PartFileMissing,
+        ))?;
+    match file.write_blocks(blocks).await {
         Ok(allocated) => {
             runner.rt.diagnostics.part_file_read(download_id, allocated);
-            // A commit syncs: it holds a pool thread, not a runtime worker.
-            let store = Arc::clone(&runner.rt.store);
-            on_pool(move || store.record_verified_part(download_id, record))
-                .await
-                .map_err(|error| {
-                    tracing::warn!(%error, "a verified part could not be recorded");
-                    PersistError::Ended(DownloadFailure::StoreFailed)
-                })
+            Ok(())
         }
         Err(HeldWriteError::Io(error)) => {
-            tracing::warn!(%error, "a verified part could not be written to the part file");
-            Err(PersistError::Ended(runner.stop_for_volume(
-                VolumeStop::WriteRefused {
-                    os_code: error.raw_os_error(),
-                },
-            )))
+            tracing::warn!(%error, "bytes could not be written to the part file");
+            Err(runner.stop_for_volume(VolumeStop::WriteRefused {
+                os_code: error.raw_os_error(),
+            }))
         }
         Err(HeldWriteError::OutOfSpace { free_bytes }) => {
             tracing::warn!(free_bytes, "the volume is under its free-space floor");
-            Err(PersistError::Ended(
-                runner.stop_for_volume(VolumeStop::OutOfSpace { free_bytes }),
-            ))
+            Err(runner.stop_for_volume(VolumeStop::OutOfSpace { free_bytes }))
         }
-        Err(HeldWriteError::PathAbsent) => Err(PersistError::Ended(
-            runner.stop_for_volume(VolumeStop::PartFileOutOfReach),
-        )),
-        Err(HeldWriteError::Changed(change)) => Err(PersistError::Ended(
-            part_file_changed(runner, download_id, file, change).await,
-        )),
+        Err(HeldWriteError::PathAbsent) => {
+            Err(runner.stop_for_volume(VolumeStop::PartFileOutOfReach))
+        }
+        Err(HeldWriteError::Changed(change)) => {
+            Err(part_file_changed(runner, download_id, file, change).await)
+        }
     }
+}
+
+/// Commit the checkpoint `parts`, behind every byte they claim: the file's
+/// data is synced first, so no row claims a byte the disk does not hold
+/// (ADR-0117 §4). A filesystem with no sync to give has nothing more to say.
+pub(super) async fn checkpoint<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+    parts: Vec<ArrivedPart>,
+) -> Result<(), DownloadFailure>
+where
+    S: Send,
+    P: Send,
+{
+    {
+        let held = runner.part_file.lock().await;
+        let Some(file) = held.as_ref() else {
+            return Ok(());
+        };
+        match file.sync().await {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Unsupported | std::io::ErrorKind::InvalidInput
+                ) =>
+            {
+                tracing::info!(%error, "the part file was not synced before its checkpoint");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the part file could not be synced");
+                return Err(runner.stop_for_volume(VolumeStop::WriteRefused {
+                    os_code: error.raw_os_error(),
+                }));
+            }
+        }
+    }
+    let store = Arc::clone(&runner.rt.store);
+    on_pool(move || store.record_arrived(download_id, parts))
+        .await
+        .map_err(store_failed("a checkpoint could not be recorded"))
+}
+
+/// Judge `plan`'s bytes in the file by `recovery_data` against `root`
+/// (ADR-0038): the corrupt blocks it localizes, none when the data is malformed
+/// or names none.
+pub(super) async fn check_recovery<S, P>(
+    runner: &RunnerContext<S, P>,
+    file_size: u64,
+    plan: PartPlan,
+    root: AichRootHash,
+    recovery_data: Vec<u8>,
+) -> Result<Option<Vec<u16>>, DownloadFailure>
+where
+    S: Send,
+    P: Send,
+{
+    let held = runner.part_file.lock().await;
+    let file = held
+        .as_ref()
+        .ok_or(DownloadFailure::StorageIntegrityFailed(
+            StorageIntegrityFault::PartFileMissing,
+        ))?;
+    let bytes = file
+        .read_bytes(plan)
+        .await
+        .map_err(|error| read_refused(runner, &error))?;
+    let judged = on_pool(move || {
+        AichHashSet::verify_part(file_size, plan.offset, &bytes, &recovery_data, root)
+    })
+    .await;
+    Ok(judged.ok())
+}
+
+/// The Arrived Checkpoint a run starts from, cut to the file it holds: the
+/// one resume path, whatever ended the last run (ADR-0117 §4). A row the store
+/// cannot read ends the start as a store failure, as a distrust it cannot read
+/// does: a run would only fetch again what it holds, and write over it.
+pub(super) async fn arrived_at_start<S, P>(
+    runner: &RunnerContext<S, P>,
+    download_id: DownloadId,
+) -> Result<Vec<ArrivedPart>, DownloadFailure> {
+    let rows = runner
+        .rt
+        .store
+        .arrived_parts(download_id)
+        .map_err(store_failed("the arrived parts could not be read"))?;
+    let held = runner.part_file.lock().await;
+    let Some(file) = held.as_ref() else {
+        return Ok(Vec::new());
+    };
+    let end = file.len().await.unwrap_or(0);
+    Ok(rows.into_iter().map(|row| row.cut_to(end)).collect())
 }
 
 /// The part file changed under the run: drop the verified parts it lost, say
@@ -499,6 +636,10 @@ pub(super) async fn part_file_changed<S, P>(
             DownloadFailure::PartVerificationFailed
         }
         PartFileChange::Gone | PartFileChange::Replaced => {
+            // The file it speaks for is gone, so the checkpoint claims nothing.
+            if let Err(error) = runner.rt.store.forget_arrived(download_id) {
+                tracing::warn!(%error, "the arrived parts could not be dropped");
+            }
             DownloadFailure::StorageIntegrityFailed(StorageIntegrityFault::PartFileMissing)
         }
     }

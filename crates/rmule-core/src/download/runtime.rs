@@ -20,6 +20,8 @@ use crate::store::download::DurableDownloadRepository;
 
 pub(crate) struct SharedRuntime<S, P> {
     pub(crate) store: Arc<DurableDownloadRepository>,
+    /// The node's **Write Cache** (ADR-0117 §4), shared by every run.
+    pub(crate) write_cache: crate::download::write_cache::WriteCache,
     /// The core's one lookup handle: each ask clones it and runs on its own
     /// copy, so the lock is held only for the clone (ADR-0107).
     pub(crate) source_lookup: Arc<Mutex<S>>,
