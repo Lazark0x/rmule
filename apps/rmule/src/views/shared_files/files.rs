@@ -51,7 +51,7 @@ fn paired(run: u64, total: u64, text: fn(u64) -> String, style: Style) -> Cell {
     Cell::new(format!("{} ({})", text(run), text(total)), style).or_short(text(run))
 }
 
-/// One shared file's cells, in [`SharedTable::COLUMNS`]' order.
+/// One shared file's cells, in `SharedTable::COLUMNS`' order.
 fn file_cells(line: &SharedLine, theme: &Theme) -> Vec<Cell> {
     let dim = theme.dim_text();
     let plain = Style::new().fg(theme.fg);

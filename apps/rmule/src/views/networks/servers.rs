@@ -286,7 +286,7 @@ fn server_marker(
     )
 }
 
-/// One listed server's eleven cells, in [`ServersTable::COLUMNS`]' order.
+/// One listed server's eleven cells, in `ServersTable::COLUMNS`' order.
 ///
 /// A **Dead Server** (ADR-0052) is dimmed whole and its Fail cell says
 /// `dead` instead of the tally, in the colour of bad news — the word, not the

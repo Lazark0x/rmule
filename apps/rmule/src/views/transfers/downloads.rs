@@ -348,7 +348,7 @@ impl TransfersView {
     }
 }
 
-/// One download's cells, in [`DownloadsTable::COLUMNS`]' order. The Progress
+/// One download's cells, in `DownloadsTable::COLUMNS`' order. The Progress
 /// bar has no text of its own; the Off-screen line reads it as the Done figure.
 fn download_cells(
     line: &DownloadLine,

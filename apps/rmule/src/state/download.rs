@@ -218,7 +218,7 @@ impl UiState {
             .unwrap_or(0.0)
     }
 
-    /// Whether a running download has moved no bytes for [`STALL_AFTER`],
+    /// Whether a running download has moved no bytes for `STALL_AFTER`,
     /// by the bytes its diagnostics row counts: a granted slot or an assigned
     /// part says Downloading, this says nothing is arriving.
     #[must_use]

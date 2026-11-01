@@ -67,7 +67,7 @@ fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
         .map_or_else(|| (short_hash(file), false), |name| (name, true))
 }
 
-/// One upload peer's cells, in [`PeersTable::COLUMNS`]' order.
+/// One upload peer's cells, in `PeersTable::COLUMNS`' order.
 fn peer_cells(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Cell> {
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {

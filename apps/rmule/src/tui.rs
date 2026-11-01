@@ -7,9 +7,9 @@
 //! first does anything. Ratatui's own init is not used, since its hook
 //! restores the terminal on a panic of any thread, with the UI still drawing.
 //!
-//! Every byte goes through the [`Line`], so nothing here waits on the
+//! Every byte goes through the line thread, so nothing here waits on the
 //! terminal: a frame the line is not ready for is held, a stalled terminal
-//! holds nobody, the loop asks the terminal nothing ([`Screen`]), and losing
+//! holds nobody, the loop asks the terminal nothing (`Screen`), and losing
 //! the terminal is told to the [`Stop`] rather than
 //! returned as an error. Crossterm's reader spins on a dead descriptor and
 //! never returns, so the loss also blanks the standard streams, which parks

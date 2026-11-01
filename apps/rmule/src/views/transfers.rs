@@ -1,7 +1,7 @@
 //! Transfers view (spec §3.2): the third tab, as in aMule.
 //!
 //! A downloads table and a sources pane for the selected download, shared out
-//! by [`crate::views::panes`], plus the row-action menu, the cancel confirm,
+//! by `crate::views::panes`, plus the row-action menu, the cancel confirm,
 //! and the file-details modal. Rendering is pure (`UiState` + view state + injected
 //! `now` → widgets) so every screen goldens under `TestBackend`; key handling
 //! is a pure state machine over the same view state.
