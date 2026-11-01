@@ -173,7 +173,7 @@ impl NetworksView {
         let title = if self.tags.is_empty() {
             title
         } else {
-            let tagged = crate::words::app::tagged(self.tags.len());
+            let tagged = crate::words::rows::tagged(self.tags.len());
             format!(
                 "{}· {tagged} ",
                 title.trim_end_matches(' ').to_string() + " "
@@ -237,7 +237,7 @@ impl NetworksView {
         .flex_pair(SERVER_DESC_COL)
         .gutter(SERVER_GUTTER_W)
         .empty(if self.filter.shown() {
-            crate::words::app::NO_MATCH
+            crate::words::rows::NO_MATCH
         } else {
             "no servers — press a to add one, or U to update the list from a URL"
         });

@@ -24,6 +24,26 @@ All notable changes to rmule are recorded here. The format follows
 - Statistics keeps ten minutes of seconds, a day of minutes and a month of hours
   in fixed memory. `w` walks them, and Session says how long the run has been up.
 
+### Keys and finding
+
+- `/` filters the focused list as you type, every table, the log and Settings
+  alike; `Enter` keeps it, `Esc` clears it. On Searches it filters held results,
+  and `i` reaches the query.
+- `PgUp`, `PgDn`, `Home`, `End`, `Ctrl-D` and `Ctrl-U` move every list, and `←`
+  and `→` change tabs where no field claims them.
+- `Space` and `T` tag rows; `p`, `x` and the row menu act on the tagged rows, and
+  `P` pauses or resumes every download on show.
+- `?` opens on the current tab's keys and narrows as you type, with a table of
+  the words, marks and bracketed figures the screens use.
+- Every row menu wraps, closes the same way, shows its keys and takes clicks;
+  every confirm names the file or the count, never a hash, and answers `y` or
+  `n`. `x` cancels, unshares or removes a row, and asks first. Shared Files'
+  upload filter moved from `a` to `f`.
+- A search result you know says so in a word, not only in colour.
+- `q` asks while a download waits, an upload runs or a peer is queued.
+- The wheel scrolls the pane under the pointer. A Mouse setting and `--no-mouse`
+  leave the mouse to the terminal; help says what that costs.
+
 ### Status bar and start
 
 - The status bar always shows the rates, in fixed cells and a unit that adapts

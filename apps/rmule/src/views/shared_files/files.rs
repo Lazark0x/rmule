@@ -116,7 +116,7 @@ impl SharedView {
         let tagged = if self.tags.is_empty() {
             String::new()
         } else {
-            format!("· {} ", crate::words::app::tagged(self.tags.len()))
+            format!("· {} ", crate::words::rows::tagged(self.tags.len()))
         };
         let title = format!(
             " Shared Files · {} · {total} {tagged}",
@@ -152,7 +152,7 @@ impl SharedView {
         let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
         let table = Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style)
             .wants(&FILE_WANTS)
-            .empty(crate::words::app::NO_MATCH);
+            .empty(crate::words::rows::NO_MATCH);
         let tagged = |index: usize| self.tags.contains(&lines_in_order[index].file_hash);
         let rows = Rows {
             count: lines_in_order.len(),

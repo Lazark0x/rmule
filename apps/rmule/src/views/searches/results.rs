@@ -384,7 +384,7 @@ impl SearchesView {
             header_style,
         )
         .wants(&wants)
-        .empty(crate::words::app::NO_MATCH);
+        .empty(crate::words::rows::NO_MATCH);
         let entry = self.held.current();
         let tagged = |index: usize| {
             entry.is_some_and(|entry| entry.tags.contains(&ResultsTable::identity(results[index])))

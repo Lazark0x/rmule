@@ -4,7 +4,7 @@
 //! the modules declared here word the TUI's own types — its command line,
 //! a run with no core, a Settings edit, a server-health edge, a search
 //! entry's paging, the share set's tally, the player Preview starts, a
-//! list's count — beside the shared words of their domain.
+//! list's count, a row's actions — beside the shared words of their domain.
 //!
 //! The log pane, the status bar's note and the flash take a [`Sentence`],
 //! and only a words module — `rmule_words` or this one and its children —
@@ -23,6 +23,7 @@ pub mod labels;
 pub mod log;
 pub mod player;
 pub mod readd;
+pub mod rows;
 pub mod scan;
 pub mod search;
 pub mod server;

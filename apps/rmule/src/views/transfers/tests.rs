@@ -245,7 +245,7 @@ fn a_filter_that_keeps_nothing_says_so_and_stays_on_show() {
         view.draw(frame, area, &state, &Theme::default_dark(), now());
     });
     assert!(shown.contains("/ zzzz"), "{shown}");
-    assert!(shown.contains(crate::words::app::NO_MATCH), "{shown}");
+    assert!(shown.contains(crate::words::rows::NO_MATCH), "{shown}");
 }
 
 /// Tagged rows are the targets: `p` acts on them all, and the cancel confirm

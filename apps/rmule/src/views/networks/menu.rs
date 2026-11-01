@@ -26,7 +26,7 @@ use crate::theme::Theme;
 use crate::views::menu::{self, Asked, Item, Place};
 use crate::views::modal::{Modal, Question, confirm_key, draw_question, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
-use crate::words::{app as words, labels};
+use crate::words::{labels, rows};
 use crate::wrap::wrapped_lines;
 
 /// The details modal's width, room for a sentence on a line or two.
@@ -112,13 +112,13 @@ pub(super) fn draw_details(
 
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let asks = match (&confirm.name, confirm.servers.as_slice()) {
-        (Some(name), [server]) => words::remove_one(name, &server_label(server)),
-        (_, many) => words::remove_many(many.len()),
+        (Some(name), [server]) => rows::remove_one(name, &server_label(server)),
+        (_, many) => rows::remove_many(many.len()),
     };
     let question = Question {
         title: labels::REMOVE_TITLE,
         asks: &asks,
-        does: words::REMOVE_DOES,
+        does: rows::REMOVE_DOES,
     };
     draw_question(frame, area, &question, theme, &confirm.viewport);
 }
@@ -197,7 +197,7 @@ impl NetworksView {
         );
 
         // Tagged rows take the one action that acts on all of them.
-        let one = (!self.tags.is_empty()).then_some(words::ONE_ROW_ONLY);
+        let one = (!self.tags.is_empty()).then_some(rows::ONE_ROW_ONLY);
         let mut items = vec![
             connect.keyed('c').greyed(one),
             Item::new(labels::COPY_SERVER_LINK, MenuAction::CopyLink).greyed(one),
@@ -212,7 +212,7 @@ impl NetworksView {
         let name = if self.tags.is_empty() {
             row_name(row)
         } else {
-            words::tagged(self.tags.len())
+            rows::tagged(self.tags.len())
         };
         self.show_menu(items, name);
         ViewOutcome::Redraw

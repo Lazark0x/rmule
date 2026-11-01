@@ -288,13 +288,17 @@ impl SharedView {
         filter.paste(text).unwrap_or(ViewOutcome::Ignored)
     }
 
-    /// Whether a Row Filter holds the keyboard.
-    pub(crate) fn text_open(&self) -> bool {
+    /// Whether a Row Filter holds the keyboard: a question over it reads key
+    /// codes alone, so no chord may reach it as its letter.
+    pub(crate) fn text_open(&self, state: &UiState) -> bool {
         let filter = match self.focus {
             Pane::Files => &self.filter,
             Pane::Peers => &self.peer_filter,
         };
-        self.menu.is_none() && self.confirm.is_none() && filter.typing()
+        self.menu.is_none()
+            && self.confirm.is_none()
+            && self.pending_consent(state).is_none()
+            && filter.typing()
     }
 
     /// Move the focused pane's cursor.

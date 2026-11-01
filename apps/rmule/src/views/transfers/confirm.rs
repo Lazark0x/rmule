@@ -14,7 +14,7 @@ use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
-use crate::words::{app as words, labels};
+use crate::words::{labels, rows};
 
 /// A download as a sentence names it: its file's name, never its hash; a word
 /// for a row whose name has not landed yet.
@@ -23,7 +23,7 @@ pub(super) fn download_name(state: &UiState, id: DownloadId) -> String {
     let metadata = row.and_then(|row| row.metadata.as_ref());
     match display_name(metadata, None) {
         (name, true) => name,
-        _ => words::UNNAMED_FILE.to_string(),
+        _ => rows::UNNAMED_FILE.to_string(),
     }
 }
 
@@ -74,14 +74,14 @@ impl TransfersView {
                 let line = DownloadLine::new(*id, state);
                 let done = line.done_cell();
                 let done = done.ends_with('%').then_some(done.as_str());
-                words::cancel_one(&download_name(state, *id), &line.size_cell(), done)
+                rows::cancel_one(&download_name(state, *id), &line.size_cell(), done)
             }
-            many => words::cancel_many(many.len()),
+            many => rows::cancel_many(many.len()),
         };
         let question = Question {
             title: labels::CANCEL_TITLE,
             asks: &asks,
-            does: words::cancel_does(targets.len()),
+            does: rows::cancel_does(targets.len()),
         };
         draw_question(frame, area, &question, theme, &self.confirm_viewport);
     }

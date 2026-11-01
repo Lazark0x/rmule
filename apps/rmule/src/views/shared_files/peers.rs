@@ -196,7 +196,7 @@ impl SharedView {
         )
         .wants(&wants)
         .empty(if self.peer_filter.shown() {
-            crate::words::app::NO_MATCH
+            crate::words::rows::NO_MATCH
         } else {
             "no active uploads"
         });

@@ -169,7 +169,7 @@ impl RowFilter {
         if line.height == 0 || line.width == 0 {
             return None;
         }
-        let count = crate::words::app::filter_count(kept, total);
+        let count = crate::words::rows::filter_count(kept, total);
         let count_w = display_width(&count) + 1;
         let room = usize::from(line.width).saturating_sub(MARK_W + count_w);
         let style = Style::new().fg(if self.typing { theme.fg } else { theme.dim });

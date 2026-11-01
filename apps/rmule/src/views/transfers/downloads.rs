@@ -286,7 +286,7 @@ impl TransfersView {
         let title = if self.tags.is_empty() {
             format!(" Downloads ({}) ", lines.len())
         } else {
-            let tagged = crate::words::app::tagged(self.tags.len());
+            let tagged = crate::words::rows::tagged(self.tags.len());
             format!(" Downloads ({}) · {tagged} ", lines.len())
         };
         if lines.is_empty() && !self.filter.shown() {
@@ -336,7 +336,7 @@ impl TransfersView {
         )
         .wants(&wants)
         .left(PROGRESS_COL)
-        .empty(crate::words::app::NO_MATCH);
+        .empty(crate::words::rows::NO_MATCH);
         let tagged = |index: usize| self.tags.contains(&lines[index].id);
         let rows = Rows {
             count: lines.len(),

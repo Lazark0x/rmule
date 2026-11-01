@@ -91,7 +91,7 @@ impl Views {
             ViewId::Transfers => self.transfers.text_open(),
             ViewId::Searches => self.searches.text_open(),
             ViewId::Networks => self.networks.text_open(),
-            ViewId::SharedFiles => self.shared.text_open(),
+            ViewId::SharedFiles => self.shared.text_open(state),
             ViewId::Settings => self.settings.text_open(state),
             ViewId::Statistics => false,
         }

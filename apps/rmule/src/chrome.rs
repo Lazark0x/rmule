@@ -42,8 +42,9 @@ struct Flash {
 pub struct ChromeState {
     /// The view whose content fills the frame.
     pub active: ViewId,
-    /// Whether the help overlay is up. It is modal while it is: only
-    /// `Esc`/`q`/`?` and its scroll keys act, and mouse input is dropped.
+    /// Whether the help overlay is up. It is modal while it is: `Esc`, `?` and
+    /// its scroll keys act, every other key types into its filter, and only
+    /// the wheel of the mouse acts.
     pub help_open: bool,
     /// Whether the quit confirm is up, the same kind of modal as help.
     pub quit_open: bool,

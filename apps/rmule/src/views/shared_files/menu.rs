@@ -22,7 +22,7 @@ use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::menu::{self, Asked, Item, Place};
 use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
-use crate::words::{app as words, labels};
+use crate::words::{labels, rows};
 
 /// The files-table row menu.
 pub(super) struct FileMenu {
@@ -68,7 +68,7 @@ fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
 fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAction>; 4] {
     let one = |reason: Option<&'static str>| {
         if tagged {
-            Some(words::ONE_ROW_ONLY)
+            Some(rows::ONE_ROW_ONLY)
         } else {
             reason
         }
@@ -92,7 +92,7 @@ fn file_name(state: &UiState, file_hash: FileHash) -> String {
         .shared
         .get(&file_hash)
         .and_then(crate::state::SharedRow::name)
-        .unwrap_or_else(|| words::UNNAMED_FILE.to_string())
+        .unwrap_or_else(|| rows::UNNAMED_FILE.to_string())
 }
 
 pub(super) fn draw_confirm(
@@ -103,13 +103,13 @@ pub(super) fn draw_confirm(
     theme: &Theme,
 ) {
     let asks = match confirm.targets.as_slice() {
-        [file_hash] => words::unshare_one(&file_name(state, *file_hash)),
-        many => words::unshare_many(many.len()),
+        [file_hash] => rows::unshare_one(&file_name(state, *file_hash)),
+        many => rows::unshare_many(many.len()),
     };
     let question = Question {
         title: labels::UNSHARE_TITLE,
         asks: &asks,
-        does: words::UNSHARE_DOES,
+        does: rows::UNSHARE_DOES,
     };
     draw_question(frame, area, &question, theme, &confirm.viewport);
 }
@@ -261,7 +261,7 @@ impl SharedView {
         let name = if self.tags.is_empty() {
             file_name(state, open.file_hash)
         } else {
-            words::tagged(self.tags.len())
+            rows::tagged(self.tags.len())
         };
         let items = file_menu(state, open.file_hash, !self.tags.is_empty());
         menu::draw(

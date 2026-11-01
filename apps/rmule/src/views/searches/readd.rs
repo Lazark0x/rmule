@@ -63,7 +63,7 @@ impl SearchesView {
             .collect();
         let mut actions = vec![Action::Commands(commands)];
         if !marked.is_empty() {
-            actions.push(Action::Flash(crate::words::app::tagged_marked_left(
+            actions.push(Action::Flash(crate::words::rows::tagged_marked_left(
                 marked.len(),
             )));
         }

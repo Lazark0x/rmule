@@ -413,7 +413,7 @@ impl TransfersView {
         let name = if self.tags.is_empty() {
             download_name(state, id)
         } else {
-            crate::words::app::tagged(self.tags.len())
+            crate::words::rows::tagged(self.tags.len())
         };
         menu::draw(frame, area, (&name, &items, at), theme, &self.menu_place);
     }

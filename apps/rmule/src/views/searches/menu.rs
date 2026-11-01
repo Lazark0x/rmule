@@ -33,7 +33,7 @@ pub(super) enum MenuAction {
 pub(super) fn menu_items(state: &UiState, tagged: bool) -> [Item<MenuAction>; 3] {
     let one = |reason: Option<&'static str>| {
         if tagged {
-            Some(crate::words::app::ONE_ROW_ONLY)
+            Some(crate::words::rows::ONE_ROW_ONLY)
         } else {
             reason
         }
@@ -142,7 +142,7 @@ impl SearchesView {
         let items = self.items_now(state);
         let tagged = self.held.current().map_or(0, |entry| entry.tags.len());
         let name = if tagged > 0 {
-            crate::words::app::tagged(tagged)
+            crate::words::rows::tagged(tagged)
         } else {
             self.selected_result(state)
                 .map_or_else(String::new, |result| {

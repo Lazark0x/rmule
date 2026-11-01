@@ -85,7 +85,11 @@ impl App {
                             _ => None,
                         };
                         if let Some(code) = synthesized {
-                            if !self.chrome.help_open && !self.chrome.quit_open {
+                            if self.chrome.help_open {
+                                let lines = if code == KeyCode::Up { -1 } else { 1 };
+                                return self.reduce(Action::ScrollHelp(lines), now);
+                            }
+                            if !self.chrome.quit_open {
                                 let at = (mouse.column, mouse.row);
                                 let key = key_of(code);
                                 match self.views.handle_wheel(
