@@ -41,6 +41,14 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 - Every resume re-hashes the verified parts against the `.part` file (below). A missing file
   with parts recorded fails the download with `StorageIntegrityFailed(PartFileMissing)`, as
   aMule refuses to load such a part file (`PartFile.cpp:867-869`).
+- **Attach and Resume return at once.** The actor stores `Active`, says `DownloadResumed` and
+  starts the run; the re-hash is the run's first stage, on the blocking pool, under the hashing
+  turn the scans and the Offer Check share (ADR-0102) and under the run's stop. Its findings
+  follow as `DownloadProgressRestored` and any `DamagedPartsDropped` or `DownloadRestarted`. Since
+  the stage is the run's, a Pause, a Cancel or Quit stops a check the way it stops a transfer: the
+  walk ends before its next part, and what it had not finished changes nothing. The re-hash is the
+  only protection against a power cut (a part file gets no sync before completion), so no start
+  skips it.
 
 **The part picture is the download's, not its run's.** At attach core opens a resting
 diagnostics row for every restored download, `parts` built from the verified-part records over
@@ -77,7 +85,8 @@ never its message). A row failed before the store carried a reason says "reason 
   Restart is refused and says where that file stands. `DownloadRestarted` says `Continued` or
   `StartedOver` and what it cost. Only the operator's Restart starts over; attach and a paused download's
   Resume still fail, so a download the operator meant to drop by deleting its part file does not
-  come back on its own. A Restart that fails again leaves the row as it was and says why. A
+  come back on its own. A Restart that fails again ends with the row failed as it was, and says
+  why. A
   download that failed while completing (`CompletedFileNotMoved`, `CompletionCopyFailed`)
   continues: its run finds every part verified and moves the file again (ADR-0115).
 

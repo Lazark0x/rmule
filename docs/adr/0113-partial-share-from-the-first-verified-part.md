@@ -89,8 +89,7 @@ the file's one registry row, from the record, without reading the file.**
 - **After a restart: the Offer Check.** A queued or paused download is not offered at attach. It is a
   Served Download with an empty Verified Range — probes answered, nothing held — until the actor's
   **Offer Check** has re-read every recorded part and hashed it against its record: Resume's own check
-  (`DownloadRepository::revalidate`, `store/download.rs:618`; `revalidate_verified_parts`,
-  `content.rs:238`), with Resume's effect. A part that no longer holds loses its record and is said
+  (`DownloadRepository::revalidate`; `revalidate_verified_parts`), with Resume's effect. A part that no longer holds loses its record and is said
   (`DamagedPartsDropped`); a part file gone or unreadable leaves the download paused and unoffered,
   and its Resume says why. The check records the identity from the handle it read through; the parts
   that held become the Verified Range, and the download is offered if rule 3 holds. It runs on the
@@ -99,8 +98,8 @@ the file's one registry row, from the record, without reading the file.**
   the check waits or runs stops it, and the run's own revalidation takes over. Each check the actor
   applies is said once, whatever it found, as `ServeEvent::OfferChecked` with the bytes its walk read
   and how long the read took once it held the turn (the Run Log's `serve.offer_checked`). An active
-  download restarted at attach is checked by that same revalidation before its run starts
-  (ADR-0094).
+  download restarted at attach is checked by that same revalidation as its run's first stage, before
+  the run takes its lease's range (ADR-0094).
 - **A Pause during the completion move** stops a move whose final file is not yet in place
   (ADR-0115): any partial copy is deleted, the part file is untouched, and the download is paused
   as any other, its lease with the actor and its offer kept from the part file. A Resume moves
