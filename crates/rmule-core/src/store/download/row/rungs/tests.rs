@@ -57,7 +57,7 @@ fn a_version_five_download_row_climbs_to_no_failure_reason() {
     assert_eq!(
         repo.part_files().unwrap(),
         // Windows reads a rooted path without its drive as under the store's.
-        vec![(dir.path().join("/dl/old.bin.part"), true)]
+        vec![(dir.path().join(Path::new("/dl/old.bin.part")), true)]
     );
 }
 

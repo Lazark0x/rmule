@@ -368,7 +368,8 @@ fn a_store_the_published_build_wrote_climbs_and_keeps_everything() {
     assert_eq!(
         download.paths().part_path(),
         // Windows reads a rooted path without its drive as under the store's.
-        dir.path().join("/srv/rmule/downloads/v020-fixture.bin.part")
+        dir.path()
+            .join(Path::new("/srv/rmule/downloads/v020-fixture.bin.part"))
     );
     assert_eq!(repo.unreadable_rows().unwrap(), 0);
 }
