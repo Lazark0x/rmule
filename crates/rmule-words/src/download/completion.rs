@@ -11,8 +11,6 @@ use rmule_core::diagnostics::CompletionProgress;
 use super::super::Sentence;
 use super::super::units::human_size;
 
-/// A figure not known.
-
 /// What a completing download is doing, as a clause.
 #[must_use]
 pub const fn completion_step_words(step: CompletionStep) -> &'static str {

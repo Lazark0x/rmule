@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use redb::backends::InMemoryBackend;
 use rmule_store::{
-    Indexed, Ladder, OpenRefusal, Opening, OpeningWatch, Record, Schema, StorageBackend, Store,
-    StoreError, UpgradeStep,
+    Indexed, Ladder, OpenRefusal, OpeningWatch, Record, Schema, StorageBackend, Store, StoreError,
+    UpgradeStep,
 };
 use serde::{Deserialize, Serialize};
 

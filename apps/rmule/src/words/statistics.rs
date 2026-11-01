@@ -64,31 +64,6 @@ pub fn uptime(up: Duration) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_axis_walks_seconds_minutes_hours_and_days() {
-        let reads = |secs| axis_age(Duration::from_secs(secs));
-        assert_eq!(reads(59), " 59s ago ");
-        assert_eq!(reads(60), " 1m ago ");
-        assert_eq!(reads(3_599), " 59m ago ");
-        assert_eq!(reads(3_600), " 1h ago ");
-        assert_eq!(reads(47 * 3_600), " 47h ago ");
-        assert_eq!(reads(48 * 3_600), " 2d ago ");
-    }
-
-    #[test]
-    fn uptime_says_its_two_largest_units() {
-        let reads = |secs| uptime(Duration::from_secs(secs));
-        assert_eq!(reads(9), "· up 9s ");
-        assert_eq!(reads(125), "· up 2m 5s ");
-        assert_eq!(reads(3_660), "· up 1h 1m ");
-        assert_eq!(reads(2 * 86_400 + 3 * 3_600 + 59), "· up 2d 3h ");
-    }
-}
-
 /// The session pane's title.
 pub const SESSION_TITLE: &str = " Session ";
 /// The activity pane's title.
@@ -167,4 +142,29 @@ pub fn graph_title(label: &str, now: &str) -> String {
 #[must_use]
 pub fn graph_title_tallest(label: &str, now: &str, tallest: &str, peak: &str) -> String {
     format!(" {label} · now {now} · {tallest} {peak} ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_axis_walks_seconds_minutes_hours_and_days() {
+        let reads = |secs| axis_age(Duration::from_secs(secs));
+        assert_eq!(reads(59), " 59s ago ");
+        assert_eq!(reads(60), " 1m ago ");
+        assert_eq!(reads(3_599), " 59m ago ");
+        assert_eq!(reads(3_600), " 1h ago ");
+        assert_eq!(reads(47 * 3_600), " 47h ago ");
+        assert_eq!(reads(48 * 3_600), " 2d ago ");
+    }
+
+    #[test]
+    fn uptime_says_its_two_largest_units() {
+        let reads = |secs| uptime(Duration::from_secs(secs));
+        assert_eq!(reads(9), "· up 9s ");
+        assert_eq!(reads(125), "· up 2m 5s ");
+        assert_eq!(reads(3_660), "· up 1h 1m ");
+        assert_eq!(reads(2 * 86_400 + 3 * 3_600 + 59), "· up 2d 3h ");
+    }
 }

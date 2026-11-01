@@ -133,7 +133,7 @@ impl Filters {
                 .map(|class| crate::words::search::file_class_words(class).to_string()),
             set(Self::MIN_SIZE).map(|text| format!("≥{}", size_words(text))),
             set(Self::MAX_SIZE).map(|text| format!("≤{}", size_words(text))),
-            set(Self::MIN_SOURCES).map(|text| forms::min_sources_summary(&text)),
+            set(Self::MIN_SOURCES).map(forms::min_sources_summary),
             set(Self::EXTENSION).map(|text| format!(".{}", text.trim_start_matches('.'))),
         ]
         .into_iter()

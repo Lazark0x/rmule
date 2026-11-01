@@ -78,13 +78,13 @@ impl SearchesView {
         let entry = self.held.current()?;
         entry.kind.related_file()?;
         if let Some(reason) = entry.kind.refused() {
-            return Some(search_words::refused_for(&refusal_text(reason)));
+            return Some(search_words::refused_for(refusal_text(reason)));
         }
         match pane?.status {
             SearchStatus::Completed { .. } => Some(search_words::NO_RELATED_FILES.to_string()),
             SearchStatus::Failed {
                 reason: SearchFailure::RelatedSearchNotOffered,
-            } => Some(search_words::refused_for(&refusal_text(
+            } => Some(search_words::refused_for(refusal_text(
                 rmule_core::RelatedSearchRefusal::NotOffered,
             ))),
             _ => None,
