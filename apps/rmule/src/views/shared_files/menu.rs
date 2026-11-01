@@ -46,7 +46,6 @@ pub(super) enum MenuAction {
     CopyLink,
     SearchRelated,
     Unshare,
-    Comments,
 }
 
 /// The eD2k link of a shared file, once its name and size are known.
@@ -63,9 +62,8 @@ fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
 /// The files-table menu (spec §3.5). Copy is greyed until the file's name and
 /// size are read; *Search related* sits directly under
 /// it, as in every row menu, dimmed while the connected server cannot answer
-/// it (read from `state` on every call, so a server switch shows at once);
-/// Comments is a standing non-goal.
-fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAction>; 4] {
+/// it (read from `state` on every call, so a server switch shows at once).
+fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAction>; 3] {
     let one = |reason: Option<&'static str>| {
         if tagged {
             Some(rows::ONE_ROW_ONLY)
@@ -82,7 +80,6 @@ fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAc
         Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
             .greyed(one(crate::views::related::unavailable(state))),
         Item::new(labels::UNSHARE, MenuAction::Unshare).keyed('x'),
-        Item::new(labels::COMMENTS, MenuAction::Comments).greyed(Some(labels::COMMENTS_REASON)),
     ]
 }
 
@@ -219,9 +216,6 @@ impl SharedView {
                 }
                 None => ViewOutcome::Redraw,
             },
-            // Greyed items are never landable, so activation cannot reach it;
-            // handled for match exhaustiveness only.
-            MenuAction::Comments => ViewOutcome::Redraw,
         }
     }
 
