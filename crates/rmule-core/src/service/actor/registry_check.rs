@@ -19,9 +19,7 @@ use crate::adapters::{
     SourceLookupService,
 };
 use crate::directory_scan::FsDirectorySource;
-use crate::registry::{
-    AutoShared, SharedFileRegistry, SharedRow, auto_share_completed_download,
-};
+use crate::registry::{AutoShared, SharedFileRegistry, SharedRow, auto_share_completed_download};
 use crate::registry_check::{
     CheckInput, CheckReport, CheckSeams, WithheldReason, WithheldRows, run_check,
 };
@@ -176,19 +174,43 @@ where
     L: ServeRuntimeService,
     K: KadRuntimeFactory,
 {
+    /// Answer with the **File History**, read off the actor: a front end asks
+    /// as often as a scan's files land, and three whole tables are no price
+    /// for every other message to wait on.
+    pub(super) fn read_file_history(&self) {
+        let registry = Arc::clone(&self.wiring.registry);
+        let withheld = self.registry_check.withheld.clone();
+        let store = Arc::clone(&self.wiring.store);
+        let evt_tx = self.evt_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let had = registry.had_set();
+            let history = crate::file_history::read(&*registry, &withheld, &had, &*store);
+            send_event(&evt_tx, crate::service::CoreEvent::FileHistory { history });
+        });
+    }
+
     /// Apply one message from either worker.
     pub(super) async fn on_registry_message(&mut self, message: RegistryMessage) {
         match message {
             RegistryMessage::Scan(message) => self.on_scan_message(message).await,
-            RegistryMessage::RowsWanted(reply) => match self.wiring.registry.rows() {
-                Ok(rows) => {
-                    let _ = reply.send(rows);
+            RegistryMessage::RowsWanted(reply) => {
+                self.commit_scan_writes().await;
+                match self.wiring.registry.rows() {
+                    Ok(rows) => {
+                        let _ = reply.send(rows);
+                    }
+                    // A dropped reply ends the asking worker.
+                    Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
                 }
-                // A dropped reply ends the asking worker.
-                Err(error) => tracing::warn!(%error, "registry unreadable for a worker"),
-            },
-            RegistryMessage::Check(report) => self.on_check_report(report).await,
-            RegistryMessage::OfferChecked(report) => self.on_offer_checked(report).await,
+            }
+            RegistryMessage::Check(report) => {
+                self.commit_scan_writes().await;
+                self.on_check_report(report).await;
+            }
+            RegistryMessage::OfferChecked(report) => {
+                self.commit_scan_writes().await;
+                self.on_offer_checked(report).await;
+            }
         }
     }
 
@@ -327,6 +349,16 @@ where
     /// offered, whatever held it before.
     pub(super) fn row_shared(&self, file_hash: FileHash) {
         self.row_written(file_hash);
+        self.share_set_changed();
+    }
+
+    /// [`Self::row_shared`] for rows one commit wrote: one telling for all.
+    pub(super) fn rows_shared(&self, file_hashes: &[FileHash]) {
+        for file_hash in file_hashes {
+            self.registry_check.withheld.lift(*file_hash);
+            self.wiring.file_known.share(*file_hash);
+        }
+        self.registry_check.tell(CheckInput::RowsChanged);
         self.share_set_changed();
     }
 

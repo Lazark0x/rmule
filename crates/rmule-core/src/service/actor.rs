@@ -273,6 +273,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// The scan's and the Registry Check's report lane (ADR-0100), held for
     /// the actor's life.
     scan_tx: registry_check::RegistrySender,
+    /// The scans' registry writes waiting for their one commit.
+    scan_writes: scan::ScanWrites,
     /// The **Registry Check** (ADR-0106), running for the actor's life.
     registry_check: registry_check::RegistryCheckHandle,
     /// The **Shared Directory List** besides its scans (ADR-0101).
@@ -550,13 +552,7 @@ where
                             send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot });
                         }
                         CoreCommand::DumpFileHistory => {
-                            let history = crate::file_history::read(
-                                &*self.wiring.registry,
-                                &self.registry_check.withheld,
-                                &self.wiring.registry.had_set(),
-                                &*self.wiring.store,
-                            );
-                            send_event(&self.evt_tx, CoreEvent::FileHistory { history });
+                            self.read_file_history();
                         }
                         CoreCommand::Search(command) => {
                             self.on_search_command(command).await;
@@ -568,6 +564,11 @@ where
                     }
                 }
                 Some(message) = scan_rx.recv() => self.on_registry_message(message).await,
+                () = tokio::time::sleep_until(self.scan_writes.due()),
+                    if self.scan_writes.waiting() =>
+                {
+                    self.commit_scan_writes().await;
+                }
                 Some(news) = intent_news.recv() => self.on_intent_news(news).await,
                 Some(lost) = lost_legs.recv() => self.on_server_leg_lost(lost).await,
                 () = server_intent::until_retry(self.intent.retry_at()) => {

@@ -36,6 +36,14 @@ aMule citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR
   (`ThreadTasks.cpp:98` at 3.1.0). A row stored before the rule is withheld by the Registry Check
   (ADR-0106). A `PartHashSet` exists only up to the limit, so an answer's `u16` count cannot
   overflow whatever a store holds.
+- **A scan's writes land in commits of many.** A hashed file is two registry writes, its row and
+  its identity, and a commit is an fsync, so the actor gathers them and commits up to 256 at once,
+  a quarter second after the first at most, on the blocking pool. Any other message from a worker
+  lands the batch first, so the Known view still answers in channel order, and a stop lands it too.
+  Every commit stays durable, and a file is offered and told of only behind its commit, so a kill
+  or a power cut costs the open batch a second hash and claims nothing. The per-file commit was
+  rejected because it held the actor for 52 s of a first scan of 10,000 files; a commit that is
+  not durable was rejected because the next open rolls it back after a kill.
 - **Which rows the scan owns:** every registry row under its directory, whatever its source. A file
   it hashes enters as `ShareSource::DownloadDirectory`. When content it hashes is already shared
   from another path still on disk, the first path in wins and the new path is recorded as a spare

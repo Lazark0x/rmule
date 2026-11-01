@@ -26,8 +26,15 @@ use crate::registry_check::{CheckInput, WithheldReason};
 use crate::service::activity::{ScanActivity, ScanRole, ScanStop};
 use crate::service::{ScanCommand, ScanEvent, ServeEvent};
 
+use crate::content::on_pool;
+use crate::store::registry::ScanWrite;
+
 use super::registry_check::RegistryMessage;
 use super::{CoreActor, send_event};
+
+mod writes;
+
+pub(super) use writes::ScanWrites;
 
 /// What a scan worker sends the actor, tagged with the start it ran under.
 #[derive(Debug)]
@@ -47,6 +54,17 @@ enum ScanMessageKind {
     RowsWanted(std::sync::mpsc::Sender<Known>),
     /// The worker returned.
     Ended(ScanEnd),
+}
+
+impl ScanMessageKind {
+    /// Whether this joins the scan's open batch of writes. Anything else
+    /// sees the registry, so the batch lands first.
+    const fn joins_the_batch(&self) -> bool {
+        matches!(
+            self,
+            Self::Report(ScanReport::Share(_) | ScanReport::Identified { .. })
+        )
+    }
 }
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
@@ -198,6 +216,7 @@ where
     /// Stop the scan of `dir`, if any, and retire it (ADR-0093): raise its
     /// flag, free a worker waiting on the guard, join it within the grace.
     pub(super) async fn stop_scan(&mut self, dir: &Path) {
+        self.commit_scan_writes().await;
         let Some(scan) = self.activities.take_scan(dir) else {
             return;
         };
@@ -208,6 +227,7 @@ where
     /// Stop every scan: quit's step. Every flag is raised before the first
     /// join, so each lets go within one read of the same moment.
     pub(super) async fn stop_scans(&mut self) {
+        self.commit_scan_writes().await;
         let scans = self.activities.take_scans();
         self.scans_changed();
         for scan in &scans {
@@ -221,6 +241,9 @@ where
     /// Apply one worker message. One from a scan the ledger no longer holds
     /// moves nothing.
     pub(super) async fn on_scan_message(&mut self, message: ScanMessage) {
+        if !message.kind.joins_the_batch() {
+            self.commit_scan_writes().await;
+        }
         let Some(scan) = self.activities.scan_of(message.generation) else {
             return;
         };
@@ -268,16 +291,7 @@ where
     /// Apply one registry change or fact a worker reported for `dir`.
     async fn on_scan_report(&mut self, dir: PathBuf, report: ScanReport) {
         match report {
-            ScanReport::Share(entry) => {
-                let file_hash = entry.file_hash;
-                match self.wiring.registry.share(entry) {
-                    Ok(()) => {
-                        send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
-                        self.row_shared(file_hash);
-                    }
-                    Err(error) => tracing::warn!(%error, "scanned file not shared"),
-                }
-            }
+            ScanReport::Share(entry) => self.gather_scan_write(ScanWrite::Share(entry)).await,
             ScanReport::Moved {
                 file_hash,
                 from,
@@ -310,9 +324,12 @@ where
                 path,
                 identity,
             } => {
-                if let Err(error) = self.wiring.registry.identify(file_hash, &path, identity) {
-                    tracing::warn!(%error, "file identity not recorded");
-                }
+                let write = ScanWrite::Identified {
+                    file_hash,
+                    path,
+                    identity,
+                };
+                self.gather_scan_write(write).await;
             }
             ScanReport::Held { file_hash, path } => {
                 self.withhold(file_hash, Some(&path), WithheldReason::Missing)
@@ -410,6 +427,44 @@ where
                 );
                 send_event(&self.evt_tx, ScanEvent::LeftoverParts { dir, paths }.into());
             }
+        }
+    }
+
+    async fn gather_scan_write(&mut self, write: ScanWrite) {
+        if self.scan_writes.push(write) {
+            self.commit_scan_writes().await;
+        }
+    }
+
+    /// Land the writes gathered so far in one durable commit, off the async
+    /// threads, and only then offer and tell of the files they share.
+    pub(super) async fn commit_scan_writes(&mut self) {
+        let writes = self.scan_writes.take();
+        if writes.is_empty() {
+            return;
+        }
+        let registry = Arc::clone(&self.wiring.registry);
+        let landed = on_pool(move || registry.write_scanned(&writes).map(|()| writes)).await;
+        let writes = match landed {
+            Ok(writes) => writes,
+            Err(error) => {
+                tracing::warn!(%error, "scanned files not shared; the next pass reads them again");
+                return;
+            }
+        };
+        let shared: Vec<_> = writes
+            .iter()
+            .filter_map(|write| match write {
+                ScanWrite::Share(entry) => Some(entry.file_hash),
+                ScanWrite::Identified { .. } => None,
+            })
+            .collect();
+        for file_hash in &shared {
+            let file_hash = *file_hash;
+            send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
+        }
+        if !shared.is_empty() {
+            self.rows_shared(&shared);
         }
     }
 
@@ -527,3 +582,6 @@ fn rows_now(send: &dyn Fn(ScanMessageKind), stop: &AtomicBool) -> Option<Known> 
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

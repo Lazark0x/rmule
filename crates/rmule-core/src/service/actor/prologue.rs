@@ -550,6 +550,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
             ..Default::default()
         },
         scan_tx,
+        scan_writes: super::scan::ScanWrites::default(),
         serve_ended_tx,
         kad_ended_tx,
         activities: Activities::restoring(restoring, remembered),

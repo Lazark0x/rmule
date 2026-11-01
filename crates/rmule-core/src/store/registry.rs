@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmule_primitives::{FileHash, PartHash};
-use rmule_store::{Children, Indexed, Readable, Record, Store};
+use rmule_store::{Children, Indexed, Readable, Record, Store, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -115,6 +115,23 @@ pub(crate) fn schema() -> Schema {
 #[derive(Clone, Debug)]
 pub struct DurableSharedFileRegistry {
     store: Arc<Store>,
+}
+
+/// One write a scan reports, gathered with others into one commit.
+#[derive(Debug)]
+pub(crate) enum ScanWrite {
+    /// [`SharedFileRegistry::share`].
+    Share(SharedFileEntry),
+    /// The identity of the file behind the row of `file_hash`, if the row
+    /// still names `path`.
+    Identified {
+        /// The row's key.
+        file_hash: FileHash,
+        /// The path the identity was read at.
+        path: PathBuf,
+        /// What was read there.
+        identity: FileIdentity,
+    },
 }
 
 impl DurableSharedFileRegistry {
@@ -232,24 +249,22 @@ impl DurableSharedFileRegistry {
         })
     }
 
-    /// Record the identity of the file behind the row of `file_hash`, if the
-    /// row still names `path`.
+    /// Land `writes` in order in one durable commit: all of them or, on an
+    /// error, none.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store write fails.
-    pub(crate) fn identify(
-        &self,
-        file_hash: FileHash,
-        path: &Path,
-        identity: FileIdentity,
-    ) -> Result<(), CoreError> {
+    pub(crate) fn write_scanned(&self, writes: &[ScanWrite]) -> Result<(), CoreError> {
         self.store.write(|txn| {
-            let key = *file_hash.as_bytes();
-            if let Some(mut row) = SHARED_FILES.get(txn, &key)?
-                && row.path == path
-            {
-                row.identity = Some(identity);
-                SHARED_FILES.set(txn, &key, &row)?;
+            for write in writes {
+                match write {
+                    ScanWrite::Share(entry) => share_on(txn, entry)?,
+                    ScanWrite::Identified {
+                        file_hash,
+                        path,
+                        identity,
+                    } => identify_on(txn, *file_hash, path, *identity)?,
+                }
             }
             Ok(())
         })
@@ -271,23 +286,7 @@ impl DurableSharedFileRegistry {
 
 impl SharedFileRegistry for DurableSharedFileRegistry {
     fn share(&self, entry: SharedFileEntry) -> Result<(), CoreError> {
-        self.store.write(|txn| {
-            let key = *entry.file_hash.as_bytes();
-            // The row and the whole replacement set go in one transaction, so
-            // a re-share with a shorter set leaves no hash of the old one
-            // behind. An error here aborts the transaction, which leaves the
-            // share set as it was.
-            SHARED_FILES.put(txn, &key, &SharedFile::of(&entry))?;
-            had_set::forget(txn, &key)?;
-            // A path that holds the row is no spare, and nothing set aside.
-            spare_copy::forget_at(txn, &entry.path)?;
-            shared_directory::forget_set_aside_at(txn, &entry.path)?;
-            Ok(PART_HASHES.replace(
-                txn,
-                key,
-                entry.part_hashes.iter().map(SharedFilePartHash::of),
-            )?)
-        })
+        self.store.write(|txn| share_on(txn, &entry))
     }
 
     fn gone(&self, file_hash: FileHash, path: &Path) -> Result<bool, CoreError> {
@@ -360,6 +359,41 @@ impl SharedFileRegistry for DurableSharedFileRegistry {
             Ok(Some(part_hashes_of(txn, key)?))
         })
     }
+}
+
+/// Share `entry` on `txn`. The row and the whole replacement set go in one
+/// transaction, so a re-share with a shorter set leaves no hash of the old one
+/// behind. An error here aborts the transaction, which leaves the share set
+/// as it was.
+fn share_on(txn: &WriteTransaction, entry: &SharedFileEntry) -> Result<(), CoreError> {
+    let key = *entry.file_hash.as_bytes();
+    SHARED_FILES.put(txn, &key, &SharedFile::of(entry))?;
+    had_set::forget(txn, &key)?;
+    // A path that holds the row is no spare, and nothing set aside.
+    spare_copy::forget_at(txn, &entry.path)?;
+    shared_directory::forget_set_aside_at(txn, &entry.path)?;
+    Ok(PART_HASHES.replace(
+        txn,
+        key,
+        entry.part_hashes.iter().map(SharedFilePartHash::of),
+    )?)
+}
+
+/// Note `identity` on the row of `file_hash`, if the row still names `path`.
+fn identify_on(
+    txn: &WriteTransaction,
+    file_hash: FileHash,
+    path: &Path,
+    identity: FileIdentity,
+) -> Result<(), CoreError> {
+    let key = *file_hash.as_bytes();
+    if let Some(mut row) = SHARED_FILES.get(txn, &key)?
+        && row.path == path
+    {
+        row.identity = Some(identity);
+        SHARED_FILES.set(txn, &key, &row)?;
+    }
+    Ok(())
 }
 
 impl SharedFile {
