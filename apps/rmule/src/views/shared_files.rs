@@ -34,7 +34,7 @@ use rmule_primitives::FileHash;
 use super::{DrawnRows, ViewOutcome, rate_cell};
 use crate::row_selection::viewport::{BAR_W, Viewport};
 use crate::state::UiState;
-use crate::table_sort::{RowCursor, RowMove, TableSort};
+use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::wrap::{TableColumns, clamp_u16, greedy_widths, wrap_text};
 use menu::{Confirm, FileMenu, draw_confirm};
@@ -56,6 +56,10 @@ pub struct SharedView {
     focus: Pane,
     /// The files table's order.
     sort: TableSort<SharedTable>,
+    /// The table's lines, in that order.
+    lines_memo: Memo<sort::LinesKey, sort::SharedLine>,
+    /// Each line's height at the widths last drawn.
+    heights_memo: Memo<(sort::LinesKey, Vec<usize>), u16>,
     /// The selected file, by hash.
     cursor: RowCursor<FileHash>,
     /// The selected file's position in the current order — `cursor`
@@ -106,6 +110,8 @@ pub struct SharedView {
 impl Default for SharedView {
     fn default() -> Self {
         Self {
+            lines_memo: Memo::default(),
+            heights_memo: Memo::default(),
             focus: Pane::Files,
             sort: TableSort::default(),
             cursor: RowCursor::default(),

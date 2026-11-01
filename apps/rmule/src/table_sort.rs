@@ -22,10 +22,12 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 pub use cursor::{RowCursor, RowMove};
+pub(crate) use memo::Memo;
 pub use stored::TableSorts;
 
 mod cursor;
 mod keys;
+mod memo;
 mod name;
 mod stored;
 #[cfg(test)]
@@ -222,6 +224,7 @@ impl<T: SortedTable> Clone for TableSort<T> {
 }
 
 impl<T: SortedTable> Copy for TableSort<T> {}
+
 
 impl<T: SortedTable> std::fmt::Debug for TableSort<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

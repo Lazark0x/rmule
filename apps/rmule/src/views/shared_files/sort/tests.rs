@@ -313,11 +313,13 @@ fn the_cursor_follows_its_file_as_rows_arrive_leave_and_reorder() {
             withheld: None,
         },
     );
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W);
     assert_eq!(view.files_selected, 2);
     assert_eq!(selected(&mut view, &state), 2);
 
     state.shared.remove(&file_hash(1));
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W);
     assert_eq!(selected(&mut view, &state), 2);
 
@@ -330,6 +332,7 @@ fn the_cursor_follows_its_file_as_rows_arrive_leave_and_reorder() {
         .get_mut(&file_hash(2))
         .expect("counted")
         .requests = 50;
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W);
     assert_eq!(view.files_selected, 0);
     assert_eq!(selected(&mut view, &state), 2);

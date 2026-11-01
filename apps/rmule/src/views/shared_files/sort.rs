@@ -10,6 +10,8 @@
 //! dash has no value and sorts last either way.
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rmule_core::diagnostics::ShareTotals;
 use rmule_primitives::FileHash;
@@ -187,12 +189,34 @@ impl SortedTable for SharedTable {
     }
 }
 
+/// What the table's lines stand on: the rows, the sort and the filter.
+#[derive(Clone, PartialEq)]
+pub(super) struct LinesKey {
+    revision: u64,
+    sort: TableSort<SharedTable>,
+    filter: Option<PathBuf>,
+}
+
 impl SharedView {
     /// The shared files' cells, one line per file, in the sort's order: the
     /// registry's rows, then every Partial Share the registry does not offer
     /// whole. A directory filter shows each under the directory its bytes lie
     /// in: a row's file, a Partial Share's part file as its download names it.
-    pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<SharedLine> {
+    pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[SharedLine]> {
+        self.lines_memo
+            .get(self.lines_key(state), || self.build_lines(state))
+    }
+
+    /// What the table's lines stand on.
+    pub(super) fn lines_key(&self, state: &UiState) -> LinesKey {
+        LinesKey {
+            revision: state.revision,
+            sort: self.sort,
+            filter: self.directory_filter(state).map(Path::to_path_buf),
+        }
+    }
+
+    fn build_lines(&self, state: &UiState) -> Vec<SharedLine> {
         let filter = self.directory_filter(state);
         let rows = state
             .shared
@@ -239,7 +263,7 @@ impl SharedView {
     /// placed against.
     pub(super) fn file_ids(&self, state: &UiState) -> Vec<FileHash> {
         self.sorted_lines(state)
-            .into_iter()
+            .iter()
             .map(|line| line.file_hash)
             .collect()
     }

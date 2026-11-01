@@ -205,6 +205,7 @@ impl App {
     ) -> std::io::Result<()> {
         let mut render = tokio::time::interval(RENDER_INTERVAL);
         render.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut last_frame = None;
 
         loop {
             tokio::select! {
@@ -221,9 +222,13 @@ impl App {
                     }
                     self.flush_commands();
                     // ADR-0069: input redraws immediately; core bursts wait
-                    // for the render tick and collapse into one frame.
-                    if immediate && self.dirty {
+                    // for the render tick and collapse into one frame. So
+                    // does a burst of input, a wheel or a held key, past the
+                    // tick's own rate.
+                    let due = last_frame.is_none_or(|at: Instant| at.elapsed() >= RENDER_INTERVAL);
+                    if immediate && self.dirty && due {
                         self.draw(tui, now)?;
+                        last_frame = Some(now);
                     }
                 }
                 _ = render.tick() => {
@@ -234,6 +239,7 @@ impl App {
                     }
                     if self.dirty {
                         self.draw(tui, now)?;
+                        last_frame = Some(now);
                     }
                 }
             }

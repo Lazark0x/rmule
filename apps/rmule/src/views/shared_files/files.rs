@@ -310,14 +310,17 @@ impl SharedView {
                 parts
             })
         };
-        let rows_at = |widths: &[usize]| -> Vec<Vec<Line<'static>>> {
-            lines_in_order
-                .iter()
-                .enumerate()
-                .map(|(idx, line)| {
-                    files_row(line, widths, idx == self.files_selected, focused, theme)
-                })
-                .collect()
+        // A row's height at some widths is all the viewport needs of the rows
+        // off screen, so they are laid out once and only the rows in view are
+        // drawn.
+        let key = self.lines_key(state);
+        let heights_at = |widths: &[usize]| {
+            self.heights_memo.get((key.clone(), widths.to_vec()), || {
+                lines_in_order
+                    .iter()
+                    .map(|line| clamp_u16(files_row(line, widths, false, focused, theme).len()))
+                    .collect()
+            })
         };
         let bar = viewport::needs_bar(lines_in_order.len(), inner.height.saturating_sub(1), || {
             let widths = widths_at(false);
@@ -328,10 +331,10 @@ impl SharedView {
                     &off_screen_at(&widths),
                 ))
                 .saturating_sub(clamp_u16(files_header(&widths, &self.sort, theme).len()));
-            rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
+            heights_at(&widths).iter().map(|h| usize::from(*h)).sum::<usize>() > usize::from(room)
         });
         let widths = widths_at(bar);
-        let rows = rows_at(&widths);
+        let heights = heights_at(&widths);
         let inner = crate::views::off_screen::draw(frame, inner, &off_screen_at(&widths), theme);
         let (list, bar) = viewport::split(inner, bar);
 
@@ -345,18 +348,23 @@ impl SharedView {
         );
         self.header_cols.clone_from(&widths);
 
-        let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
         let room = list.height.saturating_sub(header_h);
+        let selected_row = self.files_selected;
         let first = self
             .files_viewport
-            .follow(self.files_selected, heights.len(), room, |index| {
-                heights[index]
-            });
-        lines.extend(rows.into_iter().skip(first).flatten());
+            .follow(selected_row, heights.len(), room, |index| heights[index]);
+        let mut last = first;
+        let mut filled = 0u16;
+        while last < heights.len() && filled < room {
+            let line = &lines_in_order[last];
+            lines.extend(files_row(line, &widths, last == selected_row, focused, theme));
+            filled = filled.saturating_add(heights[last]);
+            last += 1;
+        }
         self.file_rows = DrawnRows::new(
             Rect::new(list.x, list.y + header_h, list.width, room),
             first,
-            heights[first..].to_vec(),
+            heights[first..last].to_vec(),
         );
         frame.render_widget(Paragraph::new(lines), list);
         let foot = self.files_viewport.draw(frame, area, bar, theme);

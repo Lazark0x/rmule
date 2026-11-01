@@ -91,6 +91,9 @@ pub struct UiState {
     /// Shared-file registry as the UI knows it (spec §3.5), folded from the
     /// serve share-set and upload events.
     pub shared: BTreeMap<FileHash, SharedRow>,
+    /// Moves whenever a fold changed anything, so what a table derived from
+    /// these rows can stand until it does.
+    pub revision: u64,
     /// The **Partial Shares** core says are offered now (ADR-0113): a
     /// download's own offer, never a registry row, named by its download.
     pub partial_shares: BTreeSet<FileHash>,
@@ -168,6 +171,7 @@ impl Default for UiState {
             reconnect: None,
             downloads: BTreeMap::new(),
             shared: BTreeMap::new(),
+            revision: 0,
             partial_shares: BTreeSet::new(),
             upload_peers: BTreeMap::new(),
             searches: BTreeMap::new(),
@@ -194,6 +198,14 @@ impl UiState {
     /// The one write path: route a bus action into the pure fold/apply pair.
     /// Returns whether anything visible changed (the render dirty hint).
     pub fn apply(&mut self, action: Action, now: Instant) -> bool {
+        let changed = self.fold_action(action, now);
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    fn fold_action(&mut self, action: Action, now: Instant) -> bool {
         match action {
             Action::Core(event) => {
                 // Spec §3.4: log every core event (compact) before folding it.
