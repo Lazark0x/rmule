@@ -48,8 +48,8 @@ pub use self::command::{
 };
 pub use self::error::{PeerCloseReason, PeerError, SecureIdentFailure};
 pub use self::event::{
-    ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent, RequesterEvent,
-    ServerEvent, SideEvent, SlotReleaseReason,
+    ConnectionEvent, EventRow, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent,
+    RequesterEvent, RowValue, ServerEvent, SideEvent, SlotReleaseReason,
 };
 pub use self::source_exchange::SourceExchangeSupport;
 

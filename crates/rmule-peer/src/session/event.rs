@@ -1,19 +1,19 @@
 //! What a peer session reports to its driver: the [`PeerEvent`] vocabulary,
 //! grouped by the side of the conversation each fact belongs to, and the
 //! opcode-to-event mapping capture tooling reads. Each group lives in its own
-//! submodule; the human-readable rendering the TUI and harness log lines
-//! share lives in `display`.
+//! submodule; the one reading tools take of an event lives in `row`.
 
 mod connection;
-mod display;
 mod notice;
 mod requester;
+mod row;
 mod server;
 mod side;
 
 pub use self::connection::{ConnectionEvent, IdentityChange};
 pub use self::notice::NoticeEvent;
 pub use self::requester::RequesterEvent;
+pub use self::row::{EventRow, RowValue};
 pub use self::server::ServerEvent;
 pub use self::side::SideEvent;
 

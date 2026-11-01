@@ -87,10 +87,10 @@ pub use secure_ident::{
     SecIdentState, SecIdentStatePacket, SignaturePacket,
 };
 pub use session::{
-    AskedRanges, ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,
-    PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession, RequesterCommand,
-    RequesterEvent, SecureIdentFailure, ServerCommand, ServerEvent, SideCommand, SideEvent,
-    SlotReleaseReason, SourceExchangeSupport,
+    AskedRanges, ConnectionCommand, ConnectionEvent, EventRow, FileProbeStatus, IdentityChange,
+    NoticeEvent, PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession,
+    RequesterCommand, RequesterEvent, RowValue, SecureIdentFailure, ServerCommand, ServerEvent,
+    SideCommand, SideEvent, SlotReleaseReason, SourceExchangeSupport,
 };
 pub use slot::{AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRanking, StartUploadReq};
 pub use software::{ClientFamily, ClientMod, ClientSoftware, ClientVersion, SoftwareEvidence};

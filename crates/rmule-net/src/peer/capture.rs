@@ -8,11 +8,7 @@ use std::sync::Arc;
 use crate::driver::{
     CaptureFormat, FinalizeVerdict, FrameWrite, RowsFile, StreamTap, toml_basic_string,
 };
-use rmule_peer::{
-    ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent, RequesterEvent,
-    ServerEvent, SideEvent, SlotReleaseReason,
-};
-use rmule_primitives::PacketProtocol;
+use rmule_peer::{PeerEvent, RowValue};
 
 use crate::peer::options::CaptureMode;
 
@@ -184,395 +180,19 @@ fn elide_sending_part_payloads(buf: &mut [u8]) -> u64 {
     total
 }
 
-/// A peer's source-exchange facts as TOML lines.
-fn support_toml(support: rmule_peer::SourceExchangeSupport) -> String {
-    format!(
-        "ext_protocol = {}\nsx1_version = {}\nsx2 = {}\n",
-        support.ext_protocol(),
-        support.sx1_version(),
-        support.supports_sx2()
-    )
-}
-
-/// One event as the TOML table a capture's `events.toml` carries. Each group
-/// renders on its own; the `type` labels are the capture format's and stay put
-/// when a variant is renamed.
+/// One event as the TOML table a capture's `events.toml` carries.
 pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
-    match event {
-        PeerEvent::Connection(event) => connection_toml(event),
-        PeerEvent::Requester(event) => requester_toml(event),
-        PeerEvent::Server(event) => server_toml(event),
-        PeerEvent::Side(event) => side_toml(event),
-        PeerEvent::Notice(event) => notice_toml(event),
+    let row = event.row();
+    let mut table = format!("type = \"{}\"\n", row.capture_type());
+    for (key, value) in row.capture_fields() {
+        let value = match value {
+            RowValue::Plain(plain) => plain.clone(),
+            RowValue::Text(text) => toml_basic_string(text),
+            RowValue::Opcode(opcode) => opcode.to_string(),
+        };
+        table.push_str(&format!("{key} = {value}\n"));
     }
-}
-
-fn connection_toml(event: &ConnectionEvent) -> String {
-    match event {
-        ConnectionEvent::HelloSent => "type = \"PeerHelloSent\"\n".to_owned(),
-        ConnectionEvent::Identified { identity } => {
-            format!(
-                "type = \"PeerIdentified\"\nuser_hash = \"{}\"\nclient_id = {}\ntcp_port = {}\nnickname = {}\n",
-                identity.user_hash().to_hex_upper(),
-                identity.client_id().as_u32(),
-                identity.tcp_port(),
-                toml_basic_string(
-                    &identity
-                        .nickname()
-                        .map(|n| n.to_display_string())
-                        .unwrap_or_default()
-                )
-            )
-        }
-        // One label per change, the capture format's from before the
-        // revisions were one event, each with the facts that change moved.
-        ConnectionEvent::IdentityRevised { identity, what } => match what {
-            IdentityChange::ReaskContact => {
-                let (udp_port, udp_version) = identity.client_udp_reask().unwrap_or_default();
-                format!(
-                    "type = \"PeerReaskContactRevised\"\nudp_port = {udp_port}\nudp_version = {udp_version}\n"
-                )
-            }
-            IdentityChange::SourceExchange => format!(
-                "type = \"PeerSourceExchangeRevised\"\n{}",
-                support_toml(identity.source_exchange())
-            ),
-            IdentityChange::Software => format!(
-                "type = \"PeerSoftwareRevised\"\nsoftware = {}\n",
-                toml_basic_string(&format!("{:?}", identity.software()))
-            ),
-            IdentityChange::Ipv6 => format!(
-                "type = \"PeerIpv6Changed\"\naddress = \"{}\"\n",
-                identity
-                    .peer_ipv6()
-                    .map(|address| address.to_string())
-                    .unwrap_or_default()
-            ),
-            IdentityChange::ClientId => format!(
-                "type = \"PeerClientIdChanged\"\nclient_id = {}\n",
-                identity.client_id().as_u32()
-            ),
-        },
-        ConnectionEvent::HelloRefused { refusal } => {
-            let rmule_peer::HelloRefusalCode::TagCountShort { declared, written } = refusal.code;
-            format!(
-                "type = \"HelloRefused\"\ncode = \"tag_count_short\"\ndeclared = {declared}\nwritten = {written}\nname = {}\nclient_mod = {}\n",
-                toml_basic_string(
-                    &refusal
-                        .name
-                        .as_ref()
-                        .map(|n| n.to_display_string())
-                        .unwrap_or_default()
-                ),
-                toml_basic_string(
-                    &refusal
-                        .client_mod
-                        .as_ref()
-                        .map(|n| n.to_display_string())
-                        .unwrap_or_default()
-                ),
-            )
-        }
-        ConnectionEvent::Disconnected { reason } => {
-            format!("type = \"Disconnected\"\nreason = \"{}\"\n", reason.label())
-        }
-        ConnectionEvent::IdentityVerified {
-            user_hash,
-            public_key,
-        } => format!(
-            "type = \"PeerIdentityVerified\"\nuser_hash = \"{}\"\npublic_key_len = {}\n",
-            user_hash.to_hex_upper(),
-            public_key.len(),
-        ),
-        ConnectionEvent::SecureIdentFailed { reason } => {
-            format!("type = \"PeerSecureIdentFailed\"\nreason = \"{reason:?}\"\n")
-        }
-        ConnectionEvent::ClientIdOffered { client_id, server } => format!(
-            "type = \"PeerClientIdOffered\"\nclient_id = {}\nserver = \"{server}\"\n",
-            client_id.as_u32()
-        ),
-    }
-}
-
-fn requester_toml(event: &RequesterEvent) -> String {
-    match event {
-        RequesterEvent::FileRequestSent {
-            file_hash,
-            sources_asked,
-        } => format!(
-            "type = \"FileRequestSent\"\nfile_hash = \"{}\"\nsources_asked = {sources_asked}\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::FileProbed { file_hash, status } => {
-            let status_label = match status {
-                FileProbeStatus::Available {
-                    file_name, bitmap, ..
-                } => format!(
-                    "Available\"\nfile_name = {}\npart_count = {}",
-                    toml_basic_string(&file_name.to_display_string()),
-                    bitmap.part_count(),
-                ),
-                FileProbeStatus::NotAvailable => "NotAvailable\"".to_owned(),
-            };
-            format!(
-                "type = \"FileProbed\"\nfile_hash = \"{}\"\nstatus = \"{status_label}\n",
-                file_hash.to_hex_upper(),
-            )
-        }
-        RequesterEvent::HashSetReceived {
-            file_hash,
-            part_hashes,
-        } => format!(
-            "type = \"HashSetReceived\"\nfile_hash = \"{}\"\npart_hash_count = {}\n",
-            file_hash.to_hex_upper(),
-            part_hashes.len(),
-        ),
-        RequesterEvent::QueueRanked { file_hash, rank } => format!(
-            "type = \"QueueRanked\"\nfile_hash = \"{}\"\nrank = {rank}\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::QueueProgress {
-            file_hash,
-            previous_rank,
-            new_rank,
-        } => format!(
-            "type = \"QueueProgress\"\nfile_hash = \"{}\"\nprevious_rank = {previous_rank}\nnew_rank = {new_rank}\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::SlotAsked { file_hash } => format!(
-            "type = \"SlotAsked\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::Requeued { file_hash } => format!(
-            "type = \"Requeued\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::SlotOffered => "type = \"SlotOffered\"\n".to_owned(),
-        RequesterEvent::SlotGranted { file_hash, .. } => format!(
-            "type = \"SlotGranted\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::PartReceived {
-            file_hash,
-            offset,
-            bytes,
-        } => format!(
-            "type = \"PartReceived\"\nfile_hash = \"{}\"\noffset = {offset}\ndata_len = {}\n",
-            file_hash.to_hex_upper(),
-            bytes.len(),
-        ),
-        RequesterEvent::SourcesReceived { file_hash, sources } => format!(
-            "type = \"SourcesReceived\"\nfile_hash = \"{}\"\nsource_count = {}\n",
-            file_hash.to_hex_upper(),
-            sources.len(),
-        ),
-        RequesterEvent::SourceExchangeAnswerSkipped { reason } => {
-            format!("type = \"SourceExchangeAnswerSkipped\"\nreason = \"{reason}\"\n")
-        }
-        RequesterEvent::AichAnswerReceived {
-            file_hash,
-            part,
-            recovery_data,
-            ..
-        } => format!(
-            "type = \"AichAnswerReceived\"\nfile_hash = \"{}\"\npart = {part}\nrecovery_len = {}\n",
-            file_hash.to_hex_upper(),
-            recovery_data.len(),
-        ),
-        RequesterEvent::AichRefused {
-            file_hash: Some(file_hash),
-        } => format!(
-            "type = \"AichRefused\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::AichRefused { file_hash: None } => "type = \"AichRefused\"\n".to_owned(),
-        RequesterEvent::AichFileHashReceived { file_hash, root } => {
-            format!(
-                "type = \"AichFileHashReceived\"\nfile_hash = \"{}\"\nroot = \"{}\"\n",
-                file_hash.to_hex_upper(),
-                root.to_base32_upper()
-            )
-        }
-        RequesterEvent::CompressedPartSkipped {
-            file_hash,
-            offset,
-            reason,
-        } => format!(
-            "type = \"CompressedPartSkipped\"\nfile_hash = \"{}\"\noffset = {offset}\nreason = \"{reason}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        RequesterEvent::SlotReleased { file_hash, reason } => format!(
-            "type = \"SlotReleased\"\nfile_hash = \"{}\"\nreason = \"{}\"\n",
-            file_hash.to_hex_upper(),
-            slot_release_reason_label(*reason),
-        ),
-        RequesterEvent::FileCommentReceived { rating, comment } => format!(
-            "type = \"FileCommentReceived\"\nrating = {rating}\ncomment = {}\n",
-            toml_basic_string(&comment.to_display_string()),
-        ),
-    }
-}
-
-fn server_toml(event: &ServerEvent) -> String {
-    match event {
-        ServerEvent::FileRequested { file_hash, status } => format!(
-            "type = \"FileRequested\"\nfile_hash = \"{}\"\nstatus_bytes = {}\n",
-            file_hash.to_hex_upper(),
-            status.as_bytes().len(),
-        ),
-        ServerEvent::FileBundleRequested {
-            file_hash,
-            file_size,
-            asks,
-            cut,
-        } => format!(
-            "type = \"FileBundleRequested\"\nfile_hash = \"{}\"\n{}asks = {}\ncut = {}\n",
-            file_hash.to_hex_upper(),
-            file_size.map_or_else(String::new, |s| format!("file_size = {s}\n")),
-            asks.len(),
-            cut.is_some(),
-        ),
-        ServerEvent::FileIdSet { file_hash } => format!(
-            "type = \"FileIdSet\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::HashSetRequested { file_hash } => format!(
-            "type = \"HashSetRequested\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::SlotRequested { file_hash } => format!(
-            "type = \"SlotRequested\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::PartsRequested { file_hash, ranges } => {
-            let (start, end) = ranges.as_array()[0];
-            format!(
-                "type = \"PartsRequested\"\nfile_hash = \"{}\"\nstart = {start}\nend = {end}\n",
-                file_hash.to_hex_upper(),
-            )
-        }
-        ServerEvent::PartsWithoutSlot { file_hash } => format!(
-            "type = \"ServePartsWithoutSlot\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::TransferCancelled { file_hash } => format!(
-            "type = \"TransferCancelled\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::SourcesRequested { file_hash, .. } => format!(
-            "type = \"SourcesRequested\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::BlockLeft {
-            file_hash,
-            start,
-            end,
-        } => format!(
-            "type = \"BlockLeft\"\nfile_hash = \"{}\"\nstart = {start}\nend = {end}\n",
-            file_hash.to_hex_upper()
-        ),
-        ServerEvent::SourcesAnswered { file_hash, count } => format!(
-            "type = \"SourcesAnswered\"\nfile_hash = \"{}\"\ncount = {count}\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::AichRequested {
-            file_hash, part, ..
-        } => format!(
-            "type = \"AichRequested\"\nfile_hash = \"{}\"\npart = {part}\n",
-            file_hash.to_hex_upper(),
-        ),
-        ServerEvent::AichFileHashRequested { file_hash } => format!(
-            "type = \"AichFileHashRequested\"\nfile_hash = \"{}\"\n",
-            file_hash.to_hex_upper(),
-        ),
-    }
-}
-
-fn side_toml(event: &SideEvent) -> String {
-    match event {
-        SideEvent::KadFirewallCheckAck => "type = \"KadFirewallCheckAck\"\n".to_owned(),
-        SideEvent::KadUdpFirewallCheckRequested { request } => format!(
-            "type = \"KadUdpFirewallCheckRequested\"\nrequest_len = {}\n",
-            request.len()
-        ),
-        SideEvent::BuddyPingReceived => "type = \"BuddyPingReceived\"\n".to_owned(),
-        SideEvent::BuddyCallbackReceived { callback } => format!(
-            "type = \"BuddyCallbackReceived\"\nfile_hash = \"{}\"\nrequester = \"{}\"\n",
-            callback.file_hash.to_hex_upper(),
-            callback.requester
-        ),
-        SideEvent::BuddyReaskCallbackReceived { relay } => format!(
-            "type = \"BuddyReaskCallbackReceived\"\nrequester = \"{}\"\nforwarded_len = {}\n",
-            relay.requester,
-            relay.forwarded.len()
-        ),
-        SideEvent::PublicIpAnswered => "type = \"PublicIpAnswered\"\n".to_owned(),
-        SideEvent::PublicIpRequestUnanswerable => {
-            "type = \"PublicIpRequestUnanswerable\"\n".to_owned()
-        }
-    }
-}
-
-fn notice_toml(event: &NoticeEvent) -> String {
-    match event {
-        NoticeEvent::UnknownPacket {
-            protocol,
-            opcode,
-            payload_len,
-        } => format!(
-            "type = \"UnknownPeerPacket\"\nprotocol = \"{}\"\nopcode = {opcode}\npayload_len = {payload_len}\n",
-            packet_protocol_label(*protocol),
-        ),
-        NoticeEvent::MultiPacketUnknownSub {
-            file_hash,
-            opcode,
-            remaining,
-        } => format!(
-            "type = \"MultiPacketUnknownSub\"\nfile_hash = \"{}\"\nopcode = {opcode}\nremaining = {remaining}\n",
-            file_hash.to_hex_upper(),
-        ),
-        NoticeEvent::CompressedFrameSkipped {
-            opcode,
-            compressed_len,
-            reason,
-        } => format!(
-            "type = \"CompressedFrameSkipped\"\nopcode = {opcode}\ncompressed_len = {compressed_len}\nreason = \"{reason:?}\"\n",
-        ),
-        NoticeEvent::CommandRejected { reason } => format!(
-            "type = \"CommandRejected\"\nreason = {}\n",
-            toml_basic_string(&reason.to_string()),
-        ),
-        NoticeEvent::BrowseDenied => "type = \"BrowseDenied\"\n".to_owned(),
-        NoticeEvent::UnsolicitedBrowseAnswerDropped => {
-            "type = \"UnsolicitedBrowseAnswerDropped\"\n".to_owned()
-        }
-        NoticeEvent::UnsolicitedPublicIpAnswerDropped => {
-            "type = \"UnsolicitedPublicIpAnswerDropped\"\n".to_owned()
-        }
-        NoticeEvent::ChatMessageReceived { text } => format!(
-            "type = \"ChatMessageReceived\"\ntext = {}\n",
-            toml_basic_string(&text.to_display_string()),
-        ),
-        NoticeEvent::ChatCaptchaDropped => "type = \"ChatCaptchaDropped\"\n".to_owned(),
-    }
-}
-
-pub(crate) const fn slot_release_reason_label(reason: SlotReleaseReason) -> &'static str {
-    match reason {
-        SlotReleaseReason::DownloadComplete => "DownloadComplete",
-        SlotReleaseReason::PeerClosed => "PeerClosed",
-        SlotReleaseReason::ProtocolViolation => "ProtocolViolation",
-        SlotReleaseReason::FileNotFound => "FileNotFound",
-        SlotReleaseReason::Cancelled => "Cancelled",
-    }
-}
-
-pub(crate) const fn packet_protocol_label(protocol: PacketProtocol) -> &'static str {
-    match protocol {
-        PacketProtocol::Edonkey => "Edonkey",
-        PacketProtocol::Emule => "Emule",
-        PacketProtocol::PackedEd2k => "PackedEd2k",
-    }
+    table
 }
 
 // Elision offsets, meta counts, and clean-path byte content are exercised
@@ -584,9 +204,68 @@ pub(crate) const fn packet_protocol_label(protocol: PacketProtocol) -> &'static 
 mod tests {
     use super::*;
 
+    use rmule_peer::{ConnectionEvent, NoticeEvent, ServerEvent};
+    use rmule_primitives::{Ed2kText, FileHash, PacketProtocol, UserHash};
+
     use crate::driver::{OverflowPolicy, spawn_capture};
 
     const FINAL_FILES: [&str; 4] = ["inbound.bin", "outbound.bin", "events.toml", "meta.toml"];
+
+    /// One event, two formats from one row: the `peer …` line harness parsers
+    /// read, and the table archived captures hold. Where the two words or
+    /// notations differ, each keeps its own.
+    #[test]
+    fn an_event_keeps_the_line_and_the_table_tools_read() {
+        let file_hash = FileHash::from_bytes([0xAB; 16]);
+        let hex = file_hash.to_hex_upper();
+        let cases = [
+            (
+                PeerEvent::Connection(ConnectionEvent::IdentityVerified {
+                    user_hash: UserHash::from_bytes([0xCD; 16]),
+                    public_key: vec![0; 3],
+                }),
+                "peer identity_verified user_hash=CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD public_key_len=3"
+                    .to_owned(),
+                "type = \"PeerIdentityVerified\"\n\
+                 user_hash = \"CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD\"\n\
+                 public_key_len = 3\n"
+                    .to_owned(),
+            ),
+            (
+                PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                    protocol: PacketProtocol::Edonkey,
+                    opcode: 0x7A,
+                    payload_len: 3,
+                }),
+                "peer unknown protocol=edonkey opcode=0x7A payload_len=3".to_owned(),
+                "type = \"UnknownPeerPacket\"\nprotocol = \"Edonkey\"\nopcode = 122\npayload_len = 3\n"
+                    .to_owned(),
+            ),
+            (
+                PeerEvent::Server(ServerEvent::FileBundleRequested {
+                    file_hash,
+                    file_size: None,
+                    asks: Vec::new(),
+                    cut: None,
+                }),
+                format!("peer file_bundle_requested file_hash={hex} file_size=none asks=0 cut=false"),
+                format!(
+                    "type = \"FileBundleRequested\"\nfile_hash = \"{hex}\"\nasks = 0\ncut = false\n"
+                ),
+            ),
+            (
+                PeerEvent::Notice(NoticeEvent::ChatMessageReceived {
+                    text: Ed2kText::from_utf8("a \"b\""),
+                }),
+                "peer chat_message_received len=5".to_owned(),
+                "type = \"ChatMessageReceived\"\ntext = \"a \\\"b\\\"\"\n".to_owned(),
+            ),
+        ];
+        for (event, line, table) in cases {
+            assert_eq!(event.to_string(), line);
+            assert_eq!(event_to_toml(&event), table);
+        }
+    }
 
     #[tokio::test]
     async fn dropped_finalize_leaves_only_partial_files() {
