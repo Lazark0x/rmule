@@ -124,3 +124,4 @@ where a rejected alternative would otherwise come back.
 | [0115](0115-temp-directory-and-completion-move.md) | Part files live in a Temp Directory apart from finished files; completion moves the file into the download directory, waits while a program holds it, and copies only across volumes |
 | [0116](0116-asking-and-transferring.md) | A download asks for queue places under one Connection Budget and transfers from every slot it is granted; a Low-ID rmule reasks at 15 minutes; an uploader we queue at is preferred within aMule's score |
 | [0117](0117-block-level-parts-and-a-bounded-end-game.md) | A part's blocks are shared by every worker that holds it, and its last blocks are asked twice, at most three at a time |
+| [0118](0118-what-a-panic-costs.md) | What a panic costs: the process in a dist build, the task elsewhere, and always a record |

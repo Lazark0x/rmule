@@ -165,7 +165,8 @@ terminal, so nothing that serves them waits for one.
 - **Closing the UI stops the transfers**, as in stock aMule. Quit is `Core::quit`, the
   one retire sequence of ADR-0093; the status bar redraws on each
   `CoreEvent::Quitting { step }`, and if the bridge's `CORE_SHUTDOWN_GRACE` elapses
-  before the flush confirms, it says so rather than reporting a clean drain.
+  before the flush confirms, it says so rather than reporting a clean drain. Every way
+  out of a run is this Quit (ADR-0118).
 
 ## Consequences
 

@@ -49,7 +49,7 @@ Invariants:
 | **Server-UDP front** | core start; quit (abort, then join each task) | the server-UDP Family Pair and its five tasks (engine, status-ping sweep, global-callback relay, `0x99` answer forwarder, global source discovery) and, through the status chain, the server list's store view |
 | **Registry Check** | core start; quit (raise the flag, join the thread off the executor within `JOIN_GRACE`) | its worker thread, input channel, the folder watch it owns, the Withheld Rows it rules into; no death transition |
 | **Directory Scan**, one per scanned Shared Directory (ADR-0102) | start, an entry removed, replaced or covered, its worker's end, quit (raise every flag, join each within the grace) | a blocking-pool task per directory, its stop flag, its progress cell, the consent reply half |
-| **Client-UDP socket and NAT-T front** | core start; dropped with the actor | the one UDP Family Pair, its front, the NAT-T demux and accept pump, the `0x90` inbox; no stop and no death transition; traversal attempts belong to ADR-0091 |
+| **Client-UDP socket and NAT-T front** | core start; dropped with the actor | the one UDP Family Pair, its front, the NAT-T demux and accept pump, the `0x90` inbox; no stop; a death is told as `CoreEvent::TaskDied` (ADR-0118); traversal attempts belong to ADR-0091 |
 
 Consequences of the ledger, stated as rules:
 
@@ -67,7 +67,7 @@ Consequences of the ledger, stated as rules:
 
 Every directory scan, then the Registry Check, then search, then download, then serve, then
 Kad, then the server-UDP front, then the server session, then port mapping, then the credit
-checkpoint. Searches and downloads consume the server session and the Kad source channel, so
+checkpoint, which also opens the quit ahead of every step that can be slow (ADR-0118). Searches and downloads consume the server session and the Kad source channel, so
 they stop first. Serve closes the listener and Kad's retire clears the advert half every later
 hello would read. The server session is hung up by Quit itself, its socket closed before the
 step ends, and is not left to the process's exit: the server hears the end before the ports go,

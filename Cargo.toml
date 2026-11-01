@@ -228,3 +228,5 @@ debug = false
 [profile.dist]
 inherits = "release"
 lto = "thin"
+# A panic costs a dist build the process (ADR-0118).
+panic = "abort"
