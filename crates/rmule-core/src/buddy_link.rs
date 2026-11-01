@@ -21,9 +21,9 @@
 //! - the **client-UDP front** (`client_udp`): `0x94` → [`relay_reask`] frames
 //!   `OP_REASKCALLBACKTCP` (`0x9A`) over the held link;
 //! - the **inbound accept path** (`adapters` triage/serve bridge): an identified
-//!   inbound peer whose user hash matches the recruited buddy's [`try_attach`]es
-//!   as the held link (aMule attaches the incoming socket to the already-known
-//!   client by hash); its `OP_BUDDYPING` routes through [`on_buddy_ping`] (pong
+//!   inbound peer whose user hash and address match a live recruit's
+//!   [`try_attach`]es as the held link (aMule attaches the incoming socket to
+//!   the already-known client); its `OP_BUDDYPING` routes through [`on_buddy_ping`] (pong
 //!   back on the same held link, gated to it); its close [`on_link_closed`]s,
 //!   freeing the slot at once as aMule does when the buddy socket dies. An
 //!   inbound `OP_CALLBACK` on *any* accepted connection routes through
@@ -183,8 +183,8 @@ impl BuddySlot {
         inner.rendezvous_admission = RelayAdmission::default();
     }
 
-    /// The `0x51` recruitment decision (the service's refusal matrix), filling
-    /// the slot on accept. The Kad pump answers `0x5A` on `Accept`.
+    /// The `0x51` recruitment decision (the service's refusal matrix), keeping
+    /// the **Buddy Recruit** on accept. The Kad pump answers `0x5A` on `Accept`.
     pub(crate) fn consider_findbuddy(
         &self,
         req: &FindBuddyReq,
@@ -703,12 +703,7 @@ mod tests {
         ));
 
         assert!(
-            !slot.try_attach(
-                peer(6, 61000),
-                buddy_hash(kad_id(0x66)),
-                tx,
-                Instant::now()
-            ),
+            !slot.try_attach(peer(6, 61000), buddy_hash(kad_id(0x66)), tx, Instant::now()),
             "the slot is the first dial's"
         );
     }
@@ -720,12 +715,7 @@ mod tests {
         recruit(&slot, kad_id(0x11), endpoint(1, 4662));
         let (tx, _rx) = mpsc::channel(4);
 
-        assert!(!slot.try_attach(
-            peer(2, 61000),
-            buddy_hash(kad_id(0x11)),
-            tx,
-            Instant::now()
-        ));
+        assert!(!slot.try_attach(peer(2, 61000), buddy_hash(kad_id(0x11)), tx, Instant::now()));
     }
 
     #[test]
@@ -772,11 +762,21 @@ mod tests {
         let (tx, _rx) = mpsc::channel(4);
 
         // No recruit: nothing to attach to.
-        assert!(!slot.try_attach(peer(1, 61000), buddy_hash(kad_id(0x11)), tx.clone(), Instant::now()));
+        assert!(!slot.try_attach(
+            peer(1, 61000),
+            buddy_hash(kad_id(0x11)),
+            tx.clone(),
+            Instant::now()
+        ));
 
         // A stranger's hash never attaches; the recruited hash does.
         recruit(&slot, kad_id(0x11), endpoint(1, 4662));
-        assert!(!slot.try_attach(peer(1, 61000), UserHash::from_bytes([0xEE; 16]), tx.clone(), Instant::now()));
+        assert!(!slot.try_attach(
+            peer(1, 61000),
+            UserHash::from_bytes([0xEE; 16]),
+            tx.clone(),
+            Instant::now()
+        ));
         assert_eq!(
             slot.relay_kad_callback(
                 kad_id(0x11),

@@ -190,12 +190,7 @@ mod tests {
         assert!(store.banned.until.len() <= BAN_ROWS);
         let latest = t0 + Duration::from_millis(BAN_ROWS as u64 * 2);
         assert!(store.is_banned(row(BAN_ROWS * 2 - 1), latest));
-        assert!(
-            !store
-                .banned
-                .until
-                .contains_key(&AccountingKey::of(row(0)))
-        );
+        assert!(!store.banned.until.contains_key(&AccountingKey::of(row(0))));
     }
 
     #[test]
@@ -274,10 +269,7 @@ mod tests {
         store.hush(ip(1), t0);
 
         assert!(!store.is_banned(ip(1), t0), "accept and dial stay open");
-        assert_eq!(
-            store.datagram_standing(ip(1), t0),
-            DatagramStanding::Hushed
-        );
+        assert_eq!(store.datagram_standing(ip(1), t0), DatagramStanding::Hushed);
         assert_eq!(store.datagram_standing(ip(2), t0), DatagramStanding::Open);
         assert_eq!(
             store.datagram_standing(ip(1), t0 + BanStore::CLIENTBANTIME),
@@ -293,10 +285,7 @@ mod tests {
         store.hush(ip(1), t0);
 
         assert!(store.is_banned(ip(1), t0));
-        assert_eq!(
-            store.datagram_standing(ip(1), t0),
-            DatagramStanding::Banned
-        );
+        assert_eq!(store.datagram_standing(ip(1), t0), DatagramStanding::Banned);
     }
 
     /// Hush rows are free to mint from any address; they must not shed a ban.

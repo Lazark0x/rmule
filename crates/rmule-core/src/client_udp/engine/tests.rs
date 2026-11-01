@@ -195,7 +195,10 @@ async fn a_hushed_address_loses_its_reask_and_its_kad_datagram_goes_on_marked() 
     assert!(kad.hushed);
     let session = diagnostics.snapshot().session;
     assert_eq!(
-        (session.hushed_datagrams_total, session.banned_datagrams_total),
+        (
+            session.hushed_datagrams_total,
+            session.banned_datagrams_total
+        ),
         (1, 0)
     );
 }

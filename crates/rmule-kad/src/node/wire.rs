@@ -86,12 +86,7 @@ impl KadNode {
     /// Process one inbound datagram from an address under the Hush (ADR-0064):
     /// it goes on only if it proves a round trip by a valid receiver key, and
     /// this node is the one place that can read that key.
-    pub fn handle_hushed_datagram(
-        &mut self,
-        now: KadInstant,
-        from: KadNodeEndpoint,
-        bytes: &[u8],
-    ) {
+    pub fn handle_hushed_datagram(&mut self, now: KadInstant, from: KadNodeEndpoint, bytes: &[u8]) {
         self.receive(now, from, bytes, true);
     }
 

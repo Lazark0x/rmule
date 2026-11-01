@@ -32,7 +32,7 @@ mesh sim can flood them:
 1. **Port-53 drop:** a datagram from source port 53 with no sender key is dropped first, a
    DNS-confusion guard
    ([KademliaUDPListener.cpp#L216](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/KademliaUDPListener.cpp#L216)).
-2. **Flood limiter** (`FloodTable`), per `(ip, request opcode)`
+2. **Flood limiter** (`FloodTable`), per `(ip, request opcode, proven)`
    ([PacketTracking.cpp#L108](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/PacketTracking.cpp#L108)),
    allowed per minute: `BOOTSTRAP_REQ` 2, `HELLO_REQ` 3, `REQ` 10,
    `SEARCH_NOTES/KEY/SOURCE_REQ` 3, `PUBLISH_KEY_REQ` 3, `PUBLISH_SOURCE/NOTES_REQ` 2,

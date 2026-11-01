@@ -317,8 +317,8 @@ pub(crate) fn assert_kad_core_buddy(
 
 /// Whether rmule's own trail shows a Kad message the crypt gate opened and
 /// decoded: the firewall dial-back, an accepted recruit, or the buddy link it
-/// attached. A peer-TCP flood-ban line is not one — it fires on the peer TCP
-/// surface, where no Kad-UDP crypt applies.
+/// attached. A flood report is not one — it fires at the gate, before any
+/// handler has read the message.
 fn kad_crypt_decode_activity(rmule_trail: &str) -> bool {
     rmule_trail.contains("kad firewall dial-back")
         || rmule_trail.contains("accepted recruit, answering 0x5A")
@@ -329,14 +329,11 @@ fn kad_crypt_decode_activity(rmule_trail: &str) -> bool {
 mod tests {
     use super::kad_crypt_decode_activity;
 
-    /// The peer-TCP flood-ban line used to count as Kad-crypt decode proof,
-    /// so a crypt leg whose Kad exchange never reached the node could read
-    /// `OBSERVED` on a TCP event.
+    /// The flood line used to count as Kad-crypt decode proof, so a crypt leg
+    /// whose Kad exchange never reached a handler could read `OBSERVED`.
     #[test]
-    fn a_peer_tcp_ban_is_not_kad_crypt_decode_activity() {
-        assert!(!kad_crypt_decode_activity(
-            "flood offender banned at the peer-TCP surface"
-        ));
+    fn a_flood_report_is_not_kad_crypt_decode_activity() {
+        assert!(!kad_crypt_decode_activity("flood offender reported"));
         assert!(kad_crypt_decode_activity(
             "accepted recruit, answering 0x5A"
         ));
