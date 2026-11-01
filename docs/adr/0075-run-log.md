@@ -116,6 +116,7 @@ so a late test is reported rather than lost.
 | Serve: serving started | own listen address | none |
 | Serve: upload slot granted, peer queued, sources served | rank, count | peer address, file hash, peer software |
 | Serve: queue full, low-ID abuse refused, reask or name ask malformed, address cap reached, slot released, waiter left | cause code | peer address |
+| Peer link broken | violation code | none |
 | Search: every event | search number, counts, leg states, codes | none (results are counted, never listed) |
 | Scan: every event | counts, reason codes, OS error kind and number | directory and file paths |
 | Server list: added, updated, removed, priority, static | priority, static flag | none |

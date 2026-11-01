@@ -114,6 +114,8 @@ in no server's namespace, so the server road is refused for it.
   empties both the link and the slot, so the next `0x51` may recruit.
 - **Relays, both verified.** `0x52` becomes `OP_CALLBACK` on the held link and `0x94`
   becomes `OP_REASKCALLBACKTCP`, each only when its buddy ID matches the registered one.
+  A relay read on the held link that stops short of what aMule reads ahead of every gate
+  (the `0x99`'s check, the `0x9A`'s requester and hash) ends that link, as aMule's throw does.
   aMule verifies the `0x94` but not the `0x52` (its `// JOHNTODO` names the gap); rmule
   checks both, which compliant requesters never notice and which keeps a spoofed callback
   off the link. The `0x52` relay is byte-faithful: the codec normalises `fileHash` to a

@@ -55,6 +55,9 @@ impl CoreEvent {
                     .os_error(half_bound.kind, None)
             }
             CoreEvent::PeerHelloRefused { refusal } => hello_refused(refusal),
+            CoreEvent::PeerLinkBroken { violation } => {
+                Record::new("peer.link_broken").code("violation", violation.code())
+            }
             CoreEvent::DiagnosticsSnapshot { .. } => Record::new("diagnostics.snapshot"),
             CoreEvent::FileHistory { history } => Record::new("file_history.read")
                 .count("shared", history.shared.len())

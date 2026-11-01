@@ -290,6 +290,7 @@ impl PeerPacket {
         // Both resolve here, ahead of the registry — see `human_layer`'s
         // module doc for why they cannot join it as ordinary variants.
         match (packet.protocol(), packet.opcode()) {
+            (PacketProtocol::Ed2kV2, _) => return Ok(crate::ed2kv2::read(packet)?),
             (PacketProtocol::Edonkey, human_layer::OP_ASKSHAREDFILESDIRANS) => {
                 human_layer::read_directory_name(packet)?;
                 return Ok(Self::AskSharedFilesDirAns);
@@ -515,7 +516,7 @@ impl PeerPacket {
     /// the reason why, which the session reports as
     /// [`crate::NoticeEvent::CompressedFrameSkipped`] rather than closing.
     pub(crate) fn inflated(packet: &Packet) -> Result<Cow<'_, Packet>, CompressedFrameSkipReason> {
-        if packet.protocol() == PacketProtocol::PackedEd2k {
+        if packet.protocol().is_packed() {
             crate::compressed_frame::inflate_peer_packet(packet).map(Cow::Owned)
         } else {
             Ok(Cow::Borrowed(packet))
@@ -525,7 +526,7 @@ impl PeerPacket {
     /// Preserve `packet` verbatim as [`Self::Unknown`] — ADR-0018's liberal
     /// receive for a frame whose own decoder refused it but whose opcode must
     /// not close the session.
-    fn unknown_from(packet: &Packet) -> Self {
+    pub(crate) fn unknown_from(packet: &Packet) -> Self {
         Self::Unknown {
             protocol: packet.protocol(),
             opcode: packet.opcode(),

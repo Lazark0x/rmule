@@ -13,7 +13,7 @@
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{ConnectionEvent, PeerIdentity, SideEvent};
+use rmule_peer::{ConnectionCommand, ConnectionEvent, PeerIdentity, SideEvent};
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
 
@@ -125,6 +125,7 @@ pub(crate) async fn triage_inbound_connection(
     let identity = match opening {
         Opening::Identified(identity) => *identity,
         Opening::Closed(reason) => {
+            deps.hello_refusals.report_close(reason);
             let closed_by = PortTestClosedBy::from(&reason);
             let _ = event_tx
                 .send(ServeInput::Connection(ConnectionEvent::Disconnected {
@@ -327,9 +328,22 @@ fn adopt_inbound_worker(
 }
 
 /// Carry one side-channel frame a served link read to the node-wide service
-/// that answers it.
-pub(super) fn serve_side(deps: &InboundPeerDeps, remote: PeerEndpoint, side: SideEvent) {
+/// that answers it. The answer, when a frame costs the link, is the link's
+/// owner's to send.
+pub(super) fn serve_side(
+    deps: &InboundPeerDeps,
+    remote: PeerEndpoint,
+    side: SideEvent,
+) -> Option<ConnectionCommand> {
     match side {
+        // The session is Kad-ignorant, and stock reads these three fields only
+        // once Kad runs, then throws on a body short of them
+        // (`BaseClient.cpp:2947-2962`).
+        SideEvent::KadUdpFirewallCheckRequested { request }
+            if request.len() < 2 + 2 + 4 && deps.kad_presence.running_as().is_some() =>
+        {
+            return Some(ConnectionCommand::Disconnect);
+        }
         SideEvent::KadFirewallCheckAck => {
             // ADR-0058 requester, the v7+ ack path: this peer dialed us back
             // because we asked it to prove our TCP port open, and this packet
@@ -372,6 +386,7 @@ pub(super) fn serve_side(deps: &InboundPeerDeps, remote: PeerEndpoint, side: Sid
         | SideEvent::PublicIpAnswered
         | SideEvent::PublicIpRequestUnanswerable => {}
     }
+    None
 }
 
 mod served_callback;

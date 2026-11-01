@@ -415,6 +415,53 @@ fn a_block_costs_the_link_only_inside_a_slot_and_never_for_being_cut() {
     );
 }
 
+/// `OP_ED2KV2HEADER` frames (`EMSocket.cpp:264-273`, `:1827-1860`): the socket
+/// takes them from anyone once there is a client; an unknown opcode is ignored,
+/// and the two known ones read tags, which throw when cut.
+#[test]
+fn a_v2_frame_keeps_the_link_unless_its_tags_throw() {
+    use PacketProtocol::{Ed2kV2, PackedEd2kV2};
+    let tag = [0x03, 0, 0, 7, 0, 0, 0];
+    assert_eq!(
+        cost_of(&mut identified_session(), &frame(Ed2kV2, 0x77, &[1, 2])),
+        Keeps
+    );
+    assert_eq!(
+        cost_of(&mut identified_session(), &frame(PackedEd2kV2, 0x77, &[1])),
+        Keeps,
+        "it does not inflate"
+    );
+    let mut rank = vec![1];
+    rank.extend_from_slice(&tag);
+    assert_eq!(
+        cost_of(&mut identified_session(), &frame(Ed2kV2, 0x5C, &rank)),
+        Keeps
+    );
+    let mut parts = with_file(&[1]);
+    parts.extend_from_slice(&tag);
+    parts.extend_from_slice(&tag);
+    assert_eq!(
+        cost_of(&mut identified_session(), &frame(Ed2kV2, 0x47, &parts)),
+        Keeps
+    );
+    for (opcode, body) in [
+        (0x5C, vec![1, 0x03, 0, 0, 7]),
+        (0x5C, vec![1, 0x02, 0, 0]),
+        (0x47, with_file(&[1, 0x03])),
+        (0x47, vec![0; 15]),
+    ] {
+        assert_eq!(
+            cost_of(&mut identified_session(), &frame(Ed2kV2, opcode, &body)),
+            MALFORMED,
+            "0x{opcode:02X} {body:?}"
+        );
+    }
+    assert_eq!(
+        cost_of(&mut dialing_session(), &frame(Ed2kV2, 0x77, &[])),
+        Closes(PeerViolation::BeforeHello)
+    );
+}
+
 /// `ProcessExtPacket` `:1447-1458`: under a peer that claims no source
 /// exchange a plain ask reads nothing, and an SX2 ask its trailer. A claimant's
 /// is size-checked: sixteen passes, and nineteen stays the named exception

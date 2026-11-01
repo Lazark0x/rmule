@@ -8,6 +8,8 @@ use crate::{PrimitiveError, Result};
 const EDONKEY_PROTOCOL_BYTE: u8 = 0xE3;
 const EMULE_PROTOCOL_BYTE: u8 = 0xC5;
 const PACKED_ED2K_PROTOCOL_BYTE: u8 = 0xD4;
+const ED2KV2_PROTOCOL_BYTE: u8 = 0xF4;
+const PACKED_ED2KV2_PROTOCOL_BYTE: u8 = 0xF5;
 const PACKET_HEADER_LEN: usize = 5;
 
 /// The largest declared length (opcode plus payload) a reader takes, per
@@ -49,6 +51,11 @@ pub enum PacketProtocol {
     Emule,
     /// Zlib-compressed eD2k frame (`OP_PACKEDPROT = 0xD4`).
     PackedEd2k,
+    /// aMule's experimental tag-based framing (`OP_ED2KV2HEADER = 0xF4`).
+    /// A peer link's reader takes it; a server link has no use for it.
+    Ed2kV2,
+    /// That framing compressed (`OP_ED2KV2PACKEDPROT = 0xF5`).
+    PackedEd2kV2,
 }
 
 impl PacketProtocol {
@@ -59,7 +66,15 @@ impl PacketProtocol {
             Self::Edonkey => EDONKEY_PROTOCOL_BYTE,
             Self::Emule => EMULE_PROTOCOL_BYTE,
             Self::PackedEd2k => PACKED_ED2K_PROTOCOL_BYTE,
+            Self::Ed2kV2 => ED2KV2_PROTOCOL_BYTE,
+            Self::PackedEd2kV2 => PACKED_ED2KV2_PROTOCOL_BYTE,
         }
+    }
+
+    /// Whether the payload is zlib-compressed.
+    #[must_use]
+    pub const fn is_packed(self) -> bool {
+        matches!(self, Self::PackedEd2k | Self::PackedEd2kV2)
     }
 
     /// Stable, human-readable protocol tag for diagnostics and packet
@@ -72,6 +87,8 @@ impl PacketProtocol {
             Self::Edonkey => "edonkey",
             Self::Emule => "emule",
             Self::PackedEd2k => "packed-ed2k",
+            Self::Ed2kV2 => "ed2k-v2",
+            Self::PackedEd2kV2 => "packed-ed2k-v2",
         }
     }
 }
@@ -155,6 +172,8 @@ impl Packet {
             EDONKEY_PROTOCOL_BYTE => PacketProtocol::Edonkey,
             EMULE_PROTOCOL_BYTE => PacketProtocol::Emule,
             PACKED_ED2K_PROTOCOL_BYTE => PacketProtocol::PackedEd2k,
+            ED2KV2_PROTOCOL_BYTE => PacketProtocol::Ed2kV2,
+            PACKED_ED2KV2_PROTOCOL_BYTE => PacketProtocol::PackedEd2kV2,
             protocol => return Err(PrimitiveError::UnsupportedProtocolByte { protocol }),
         };
         let length = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);

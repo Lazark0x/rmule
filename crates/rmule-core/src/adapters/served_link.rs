@@ -277,7 +277,8 @@ enum Routed {
     Pulled,
     /// The session revised the peer's identity; the link's names follow it.
     Revised,
-    /// The peer offered a changed Client ID; the answer, when it takes it.
+    /// What the peer sent wants a word back on the link, when it does: a
+    /// changed Client ID taken, or a link it cost.
     Offered(Option<ConnectionCommand>),
     /// The serve task is gone; the link lives on only for a download.
     ServeGone,
@@ -345,6 +346,7 @@ async fn route(
                 }
             }
             if let ConnectionEvent::Disconnected { reason } = &fact {
+                deps.hello_refusals.report_close(*reason);
                 let closed_by = PortTestClosedBy::from(reason);
                 if let Some(download) = download {
                     let _ = download
@@ -359,10 +361,7 @@ async fn route(
             }
             ServeInput::Connection(fact)
         }
-        PeerEvent::Side(side) => {
-            serve_side(deps, remote, side);
-            return Routed::Open;
-        }
+        PeerEvent::Side(side) => return Routed::Offered(serve_side(deps, remote, side)),
         PeerEvent::Requester(RequesterEvent::SlotOffered) => return Routed::SlotOffered,
         // Whether the joined download's file request carried a source ask
         // (ADR-0108), as a dialed link's router reports it.

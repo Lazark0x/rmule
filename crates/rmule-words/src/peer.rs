@@ -1,7 +1,7 @@
 //! A peer's own words about a hello rmule refused (ADR-0050). The sentence names the peer by what it said of itself — its
 //! mod and its name, as it wrote them — and never by its address.
 
-use rmule_core::{HelloRefusal, HelloRefusalCode};
+use rmule_core::{HelloRefusal, HelloRefusalCode, PeerViolation};
 use rmule_primitives::Ed2kText;
 
 use super::{Sentence, plain};
@@ -23,6 +23,15 @@ fn who(refusal: &HelloRefusal) -> String {
         (None, Some(name)) => format!("a client named “{name}”"),
         (None, None) => "a client that gave no name".to_string(),
     }
+}
+
+/// The Networks log line for a peer link that ended for what the peer did.
+#[must_use]
+pub fn link_broken(violation: PeerViolation) -> Sentence {
+    Sentence::owned(format!(
+        "Closed a peer link: {}",
+        super::download::violation_words(violation)
+    ))
 }
 
 /// The Networks log line for a refused peer hello.

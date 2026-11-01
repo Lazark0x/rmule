@@ -49,8 +49,8 @@ pub fn inflate(
     cap: usize,
     target_protocol: PacketProtocol,
 ) -> Result<Packet, SkipReason> {
-    debug_assert_eq!(packet.protocol(), PacketProtocol::PackedEd2k);
-    debug_assert_ne!(target_protocol, PacketProtocol::PackedEd2k);
+    debug_assert!(packet.protocol().is_packed());
+    debug_assert!(!target_protocol.is_packed());
 
     // `.take(cap + 1)` lets the decoder produce one byte past the ceiling so
     // we can distinguish "exactly at the limit" (accepted) from "would

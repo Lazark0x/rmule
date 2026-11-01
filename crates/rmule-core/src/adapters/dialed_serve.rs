@@ -433,7 +433,8 @@ enum Routed {
     Pulled,
     Identified(PeerIdentity),
     Revised(PeerIdentity),
-    /// The peer offered a changed Client ID; the answer, when it takes it.
+    /// What the peer sent wants a word back on the link, when it does: a
+    /// changed Client ID taken, or a link it cost.
     Offered(Option<ConnectionCommand>),
     /// The peer granted a slot nobody on the link asked for.
     SlotOffered,
@@ -483,7 +484,7 @@ impl Halves<'_> {
             // `0x99`) go where an accepted link's go: aMule's
             // `ClientTCPSocket.cpp` handlers run on whichever socket they
             // arrive on, whoever dialed it.
-            PeerEvent::Side(side) => serve_side(self.deps, peer, side),
+            PeerEvent::Side(side) => return Routed::Offered(serve_side(self.deps, peer, side)),
             // With no download riding, the link's own pull concerns nobody;
             // the socket stays up for the serve half and the waiters.
             event @ (PeerEvent::Requester(_) | PeerEvent::Notice(_)) => {
@@ -540,6 +541,7 @@ impl Halves<'_> {
                 return Routed::Identified(identity);
             }
             ConnectionEvent::Disconnected { reason } => {
+                self.deps.hello_refusals.report_close(reason);
                 if let Some(rider) = rider {
                     let _ = rider
                         .requester_tx

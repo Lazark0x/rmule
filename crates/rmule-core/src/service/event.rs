@@ -720,6 +720,13 @@ pub enum CoreEvent {
         /// went wrong.
         refusal: rmule_peer::HelloRefusal,
     },
+    /// A peer link ended because the peer broke the protocol, under the code
+    /// that says how. Cross-activity, and like [`Self::PeerHelloRefused`] it
+    /// carries no peer address.
+    PeerLinkBroken {
+        /// What the peer did.
+        violation: rmule_peer::PeerViolation,
+    },
     /// Diagnostic echo of the current [`DiagnosticsSnapshot`](crate::diagnostics::DiagnosticsSnapshot) in response to
     /// [`CoreCommand::DumpDiagnostics`](crate::CoreCommand::DumpDiagnostics) (ADR-0028). Domain consumers may
     /// ignore this variant; it is intended for hang investigation by tools

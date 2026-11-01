@@ -2,6 +2,8 @@
 //! every peer connection's first reader — a dialed source's worker and the
 //! accept path's triage — reports a refused hello to, so each refusal is
 //! counted in the diagnostics and raised on the core's event bus exactly once.
+//! The link's owners report here too when a **Peer Violation** ends the link,
+//! so the operator reads why.
 //!
 //! Created once by the builder and cloned into the adapters that hold peer
 //! connections (the Adapter Cells), then installed by the actor's prologue
@@ -13,7 +15,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use rmule_peer::HelloRefusal;
+use rmule_peer::{HelloRefusal, PeerCloseReason};
 
 use crate::diagnostics::DiagnosticsState;
 use crate::service::CoreEvent;
@@ -55,6 +57,18 @@ impl SharedHelloRefusals {
             events.send(CoreEvent::PeerHelloRefused { refusal });
         }
     }
+
+    /// Raise [`CoreEvent::PeerLinkBroken`] when `reason` is a violation; any
+    /// other close says nothing. Called once per link, by its owner.
+    pub(crate) fn report_close(&self, reason: PeerCloseReason) {
+        let PeerCloseReason::ProtocolViolation(violation) = reason else {
+            return;
+        };
+        let events = self.installed.lock().as_ref().map(|i| i.events.clone());
+        if let Some(events) = events.and_then(|events| events.upgrade()) {
+            events.send(CoreEvent::PeerLinkBroken { violation });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -82,6 +96,26 @@ mod tests {
     const KNO_SHORT_COUNT_ANSWER: &[u8] = include_bytes!(
         "../../rmule-peer/tests/fixtures/hello_refusal/captured/amule-kno-ab483654-short-count-20260924/amule_kno_op_helloanswer_short_count.bin"
     );
+
+    /// A close for a violation is raised under its code, and no other close is.
+    #[tokio::test]
+    async fn only_a_violation_close_reaches_the_bus() {
+        let (events_tx, mut events) = crate::service::outbox(Default::default());
+        let refusals = SharedHelloRefusals::default();
+        refusals.install(DiagnosticsState::default(), events_tx.downgrade());
+        refusals.report_close(PeerCloseReason::PeerClosed);
+        let violation = rmule_peer::PeerViolation::WrongFile;
+        refusals.report_close(PeerCloseReason::ProtocolViolation(violation));
+        drop(events_tx);
+        assert_eq!(
+            events.recv().await.map(|event| matches!(
+                event,
+                CoreEvent::PeerLinkBroken { violation: read } if read == violation
+            )),
+            Some(true)
+        );
+        assert!(events.recv().await.is_none());
+    }
 
     #[tokio::test]
     async fn a_source_whose_answer_counts_a_tag_it_never_wrote_is_counted_and_raised() {

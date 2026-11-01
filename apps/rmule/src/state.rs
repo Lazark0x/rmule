@@ -369,7 +369,7 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // A refused peer hello (ADR-0050): one peer's frame, not a state of
         // this node — its log line is its whole footprint, and the count
         // rides the diagnostics tick.
-        CoreEvent::PeerHelloRefused { .. } => false,
+        CoreEvent::PeerHelloRefused { .. } | CoreEvent::PeerLinkBroken { .. } => false,
         // The one client-UDP socket never bound at core start (ADR-0057):
         // Kad, the reask surface and NAT-T are all off for the
         // rest of this session. Named plainly rather than left to the log

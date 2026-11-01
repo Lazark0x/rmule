@@ -519,3 +519,37 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
 
 mod adopted_serve;
 mod verdicts;
+
+/// `ProcessFirewallCheckUDPRequest` returns while Kad is off and reads its
+/// three fields once it runs (`BaseClient.cpp:2947-2962`), so a body short of
+/// them costs the link only then.
+#[test]
+fn a_firewall_request_short_of_its_fields_costs_the_link_only_while_kad_runs() {
+    let presence = crate::adapters::KadPresenceView::default();
+    let deps = InboundPeerDeps {
+        slot_wait_timeout: Duration::from_secs(5),
+        dialed_serve_sink: SharedDialedServeSink::default(),
+        kad_bootstrap: SharedKadBootstrap::default(),
+        kad_pump: crate::adapters::SharedKadPump::default(),
+        buddy_slot: Default::default(),
+        addresses: crate::address_learning::SharedAddressLearning::new(),
+        peer_roster: crate::peer_roster::SharedPeerRoster::default(),
+        kad_presence: presence.clone(),
+        file_known: crate::known_files::SharedFileKnown::default(),
+        tunnel_admit: crate::adapters::SharedTunnelAdmit::default(),
+        hello_refusals: crate::hello_refusals::SharedHelloRefusals::default(),
+        peer_links: crate::adapters::SharedPeerLinks::default(),
+        secured_identities: crate::secured_identity::SharedSecuredIdentities::default(),
+    };
+    let remote = PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::new(1, 2, 3, 4), 4662));
+    let request = |len| SideEvent::KadUdpFirewallCheckRequested {
+        request: vec![1; len],
+    };
+    assert!(super::serve_side(&deps, remote, request(7)).is_none());
+    let _running = presence.lease(rmule_kad::KadId::from_bytes([1; 16]));
+    assert!(matches!(
+        super::serve_side(&deps, remote, request(7)),
+        Some(rmule_peer::ConnectionCommand::Disconnect)
+    ));
+    assert!(super::serve_side(&deps, remote, request(8)).is_none());
+}

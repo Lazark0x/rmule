@@ -71,6 +71,7 @@ pub fn of(event: &CoreEvent) -> Severity {
         | CoreEvent::PeerReachRouted { .. }
         | CoreEvent::NattTunnelRisen { .. }
         | CoreEvent::PeerHelloRefused { .. }
+        | CoreEvent::PeerLinkBroken { .. }
         | CoreEvent::DiagnosticsSnapshot { .. }
         | CoreEvent::FileHistory { .. }
         | CoreEvent::Quitting { .. }

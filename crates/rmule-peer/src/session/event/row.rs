@@ -387,6 +387,8 @@ const fn protocol_label(protocol: PacketProtocol) -> &'static str {
     match protocol {
         PacketProtocol::Edonkey => "Edonkey",
         PacketProtocol::Emule => "Emule",
+        PacketProtocol::Ed2kV2 => "Ed2kV2",
+        PacketProtocol::PackedEd2kV2 => "PackedEd2kV2",
         PacketProtocol::PackedEd2k => "PackedEd2k",
     }
 }

@@ -16,6 +16,7 @@ mod buddy;
 mod capability;
 mod compress;
 mod compressed_frame;
+mod ed2kv2;
 mod emule_info;
 mod error;
 pub mod file;

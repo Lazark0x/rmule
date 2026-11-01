@@ -29,6 +29,7 @@ pub fn log_line(event: &CoreEvent) -> Sentence {
         }
         CoreEvent::SocketBoundWithoutFamily { half_bound } => reach::half_bound(half_bound),
         CoreEvent::PeerHelloRefused { refusal } => peer::hello_refused(refusal),
+        CoreEvent::PeerLinkBroken { violation } => peer::link_broken(*violation),
         CoreEvent::DiagnosticsSnapshot { .. } => DIAGNOSTICS,
         CoreEvent::FileHistory { .. } => FILE_HISTORY,
         CoreEvent::KadStopped { reason } => kad::stopped(*reason),

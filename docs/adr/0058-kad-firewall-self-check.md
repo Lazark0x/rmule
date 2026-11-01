@@ -137,7 +137,8 @@ a full inbox turned it away, so a dropped level is restated rather than lost.
 
 ### UDP check, helper
 
-- `OP_FWCHECKUDPREQ` arrives on a peer-TCP session; an intern port of 0 is rejected.
+- `OP_FWCHECKUDPREQ` arrives on a peer-TCP session; an intern port of 0 is rejected, and a
+  body short of its three fields ends the link while Kad runs, as aMule's read throws.
 - The answer is biased (error code 1) when the requester is a routing-zone contact or the
   Peer Roster knows it (aMule's active upload, download or chat check,
   `BaseClient.cpp:4002-4007`).

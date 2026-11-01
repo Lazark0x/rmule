@@ -63,6 +63,7 @@ pub(super) fn of(event: &CoreEvent) -> Weight {
         | CoreEvent::PeerReachRouted { .. }
         | CoreEvent::NattTunnelRisen { .. }
         | CoreEvent::PeerHelloRefused { .. }
+        | CoreEvent::PeerLinkBroken { .. }
         | CoreEvent::ServerLogin { .. }
         | CoreEvent::BuddyDialFailed { .. }
         | CoreEvent::KadHelperTestLate { .. }

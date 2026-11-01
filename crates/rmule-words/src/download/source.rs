@@ -118,8 +118,8 @@ pub const fn dial_end_words(cause: DialEnd) -> &'static str {
     }
 }
 
-/// What a peer did to lose the link before its hello, as the operator reads it.
-const fn violation_words(violation: PeerViolation) -> &'static str {
+/// What a peer did to lose the link, as the operator reads it.
+pub const fn violation_words(violation: PeerViolation) -> &'static str {
     match violation {
         PeerViolation::BadFrame => "it sent a frame no peer link carries",
         PeerViolation::BeforeHello => "it spoke before its hello",
