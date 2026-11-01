@@ -187,6 +187,19 @@ where
         }
     }
 
+    /// The machine slept (ADR-0095, "A dead link"): a mapping may have
+    /// expired at the gateway and the link is on no one's word, so the mapper
+    /// races again and the session is re-made. Its end is the intent's, which
+    /// dials as after any lost session; with no session nothing is dialed.
+    pub(super) async fn on_clock_jump(&mut self) {
+        tracing::info!("the clock jumped; probing the mapping and the session");
+        self.notify_port_mapping(crate::adapters::PortMappingControl::Reprobe);
+        let session = self.wiring.shared_server_session.session_now().await;
+        if let Some(session) = session {
+            tokio::spawn(async move { session.disconnect().await });
+        }
+    }
+
     /// What a dial or a session under an intent reported.
     pub(super) async fn on_intent_news(&mut self, news: IntentNews) {
         match news {

@@ -537,6 +537,10 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         diagnostics,
         server_list_update_in_flight: Arc::new(AtomicBool::new(false)),
         server_connect_in_flight: Arc::new(AtomicBool::new(false)),
+        clock_watch: super::clock_watch::ClockWatch::new(
+            std::time::Instant::now(),
+            std::time::SystemTime::now(),
+        ),
         finished_tx,
         registry_check: registry_check::spawn_registry_check(scan_tx.clone(), registry_at_start),
         directories: super::shared_directory::DirectoryList {

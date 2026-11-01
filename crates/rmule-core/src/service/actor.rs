@@ -6,6 +6,7 @@
 //! owns their lifecycle and the runtime they share.
 
 mod client_udp;
+mod clock_watch;
 mod credit_flush;
 mod download;
 mod kad;
@@ -30,7 +31,7 @@ pub use server_intent::RECONNECT_ATTEMPTS;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use tokio::sync::{Mutex, mpsc, watch};
 
@@ -266,6 +267,8 @@ struct CoreActor<S, P, L, K: KadRuntimeFactory> {
     /// The same posture for the connect, and for the same reason:
     /// the dial runs off the actor, so the guard must outlive the arm.
     server_connect_in_flight: Arc<AtomicBool>,
+    /// The monotonic clock against the wall, for a suspend.
+    clock_watch: clock_watch::ClockWatch,
     finished_tx: mpsc::Sender<FinishedActivity>,
     /// The scan's and the Registry Check's report lane (ADR-0100), held for
     /// the actor's life.
@@ -456,6 +459,8 @@ where
         seed_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut space_tick = tokio::time::interval(crate::content::free_space::SPACE_RECHECK);
         space_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut clock_tick = tokio::time::interval(clock_watch::CLOCK_LOOK);
+        clock_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut served_offers = self.wiring.served_downloads.offer_changes();
         loop {
             tokio::select! {
@@ -472,6 +477,11 @@ where
                 }
                 _ = restore_tick.tick(), if self.activities.restore_pending() => {
                     self.restore_next().await;
+                }
+                _ = clock_tick.tick() => {
+                    if self.clock_watch.jumped(Instant::now(), SystemTime::now()) {
+                        self.on_clock_jump().await;
+                    }
                 }
                 _ = space_tick.tick(), if self.activities.space_awaited() => {
                     self.resume_for_space().await;

@@ -62,6 +62,8 @@ pub(crate) async fn server_candidates(host: &str, port: u16) -> io::Result<Vec<S
 /// consumer that cannot tell the families apart would have to either trust it
 /// always or never.
 ///
+/// The link is kept alive by the kernel (see [`keep_alive`]).
+///
 /// `timeout` bounds the **whole** attempt, not each candidate: a caller asked
 /// for a connection within that budget, and spending it twice because a name
 /// had two records would double the wait it configured.
@@ -75,7 +77,10 @@ pub(crate) async fn connect_server(
         let mut last = None;
         for addr in candidates {
             match TcpStream::connect(addr).await {
-                Ok(stream) => return Ok((stream, addr)),
+                Ok(stream) => {
+                    keep_alive(&stream);
+                    return Ok((stream, addr));
+                }
                 Err(error) => last = Some(error),
             }
         }
@@ -90,9 +95,40 @@ pub(crate) async fn connect_server(
     .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "server connect timed out"))?
 }
 
+/// Ask the kernel to probe a quiet server link: an idle one can die with
+/// nothing owed on it, a Wi-Fi change or a suspend away, and no write of ours
+/// would ever find out. Quiet for a minute, then a probe every 15 s; four
+/// unanswered read the link dead, about two minutes after it went. Windows
+/// fixes the count at ten. A socket that refuses still carries the session,
+/// as every session did before this.
+fn keep_alive(stream: &TcpStream) {
+    let probes = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(15));
+    #[cfg(not(windows))]
+    let probes = probes.with_retries(4);
+    if let Err(error) = socket2::SockRef::from(stream).set_tcp_keepalive(&probes) {
+        tracing::warn!(%error, "the server link takes no keepalive");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A server link can go quiet for good with nothing owed on it, so the
+    /// kernel is the one that must ask whether the far end is still there.
+    #[tokio::test]
+    async fn a_server_link_is_kept_alive_by_the_kernel() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let (stream, _) = connect_server("127.0.0.1", port, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert!(socket2::SockRef::from(&stream).keepalive().unwrap());
+    }
 
     /// A literal is not resolved at all — and a bare IPv6 literal survives,
     /// which the old `format!("{host}:{port}")` path turned into a different
