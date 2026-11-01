@@ -132,7 +132,7 @@ impl BuddyService {
                     "kad buddy relay: OP_CALLBACK queued on the held buddy link"
                 );
             }
-            RelayDisposition::NoHeldLink | RelayDisposition::LinkSendFailed => {
+            RelayDisposition::LinkSendFailed => {
                 tracing::debug!(
                     ?injected,
                     ?disposition,

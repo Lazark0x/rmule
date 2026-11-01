@@ -372,6 +372,7 @@ async fn an_inbound_0x94_relays_as_0x9a_over_the_held_buddy_link() {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(198, 51, 100, 1), 61234)),
         buddy_hash,
         link_tx,
+        Instant::now()
     ));
 
     // A spoofed 0x94 (wrong buddy-ID) then the genuine relay, both arriving
@@ -467,6 +468,7 @@ async fn an_embedded_rendezvous_is_relayed_admitted_and_answered_with_a_hint() {
         PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 1), 61234)),
         target_hash,
         link_tx,
+        Instant::now()
     ));
 
     let requester = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, 200, 9), 5099);

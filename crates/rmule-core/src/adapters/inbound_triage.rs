@@ -187,6 +187,7 @@ pub(crate) async fn triage_inbound_connection(
         conn.peer_endpoint(),
         identity.user_hash(),
         conn.command_sender(),
+        std::time::Instant::now(),
     ) {
         tracing::debug!(
             peer = %conn.peer_endpoint(),

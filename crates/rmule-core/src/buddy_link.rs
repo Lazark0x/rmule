@@ -60,7 +60,7 @@ use crate::natt::relay::{RelayAdmission, RelayRefusal};
 
 use crate::buddy::{
     BuddyIdentity, BuddyPingOutcome, BuddyRelayRequest, BuddyServePosture, BuddyService,
-    FindBuddyOutcome, FindBuddyReq, RelayKind, RelayReject, RelayVerdict,
+    FindBuddyOutcome, FindBuddyReq, LINK_SILENCE, RelayKind, RelayReject, RelayVerdict,
 };
 
 /// The one core-owned enacted buddy slot, created by `Core::builder` and cloned
@@ -72,10 +72,6 @@ pub(crate) type SharedBuddySlot = Arc<BuddySlot>;
 pub(crate) enum RelayDisposition {
     /// Verified and queued on the held persistent buddy link.
     Sent,
-    /// Verified, but no held link is attached (the buddy has not completed its
-    /// TCP dial to us, or its link closed) — dropped, exactly aMule's
-    /// `buddy->GetSocket()` absent drop.
-    NoHeldLink,
     /// Verified, but the held link refused the send (its driver ended or its
     /// inbox is full) — dropped; the close path recycles the slot.
     LinkSendFailed,
@@ -294,8 +290,11 @@ impl BuddySlot {
                     return RendezvousRelay::Undelivered(RelayDisposition::Rejected(reason));
                 }
             };
+            // The link fills and empties with the slot the relay just passed.
             let Some(commands) = inner.link.as_ref().map(|link| link.commands.clone()) else {
-                return RendezvousRelay::Undelivered(RelayDisposition::NoHeldLink);
+                return RendezvousRelay::Undelivered(RelayDisposition::Rejected(
+                    RelayReject::NoBuddy,
+                ));
             };
             // A verified relay implies a filled slot, so the subject exists;
             // reading it before admission keeps a refusal from being the only
@@ -337,8 +336,9 @@ impl BuddySlot {
                 } => (callback, swapped_spelling),
                 RelayVerdict::Reject { reason } => return RelayDisposition::Rejected(reason),
             };
+            // The link fills and empties with the slot the relay just passed.
             let Some(link) = &inner.link else {
-                return RelayDisposition::NoHeldLink;
+                return RelayDisposition::Rejected(RelayReject::NoBuddy);
             };
             (
                 callback,
@@ -359,9 +359,10 @@ impl BuddySlot {
     }
 
     /// Offer an accepted, identified inbound connection as the buddy link: held
-    /// iff `peer_hash` is the recruited buddy's user hash (aMule attaches the
-    /// incoming socket to the already-known client by hash). A re-dialing buddy
-    /// replaces its previous link. Returns whether the link is now held.
+    /// iff a live recruit named `peer_hash` at `remote`'s address (aMule attaches
+    /// the incoming socket to the already-known client). The first to dial
+    /// fills the slot, and a re-dialing buddy replaces its previous link.
+    /// Returns whether the link is now held.
     ///
     /// The attach trusts the identify: eD2k user hashes are public and SUI is
     /// best-effort, so a peer that declines SecureIdent yet presents the
@@ -374,10 +375,11 @@ impl BuddySlot {
         remote: PeerEndpoint,
         peer_hash: UserHash,
         commands: mpsc::Sender<PeerCommand>,
+        now: Instant,
     ) -> bool {
         let (diagnostics, displaced) = {
             let mut inner = self.lock();
-            if inner.service.buddy_hash() != Some(peer_hash) {
+            if !inner.service.attach(peer_hash, remote.ip(), now) {
                 return false;
             }
             let displaced = inner.link.replace(HeldLink { remote, commands }).is_some();
@@ -475,6 +477,24 @@ impl BuddySlot {
         verdict
     }
 
+    /// What the Kad pump's tick owes the slot: recruits past their window go,
+    /// and a held link silent past [`LINK_SILENCE`] frees the slot as stock's
+    /// timed-out socket does. The connection itself lives or dies as any other.
+    pub(crate) fn sweep(&self, now: Instant) {
+        let diagnostics = {
+            let mut inner = self.lock();
+            inner.service.expire_recruits(now);
+            if !inner.service.drop_stale(now, LINK_SILENCE) {
+                return;
+            }
+            inner.link = None;
+            inner.diagnostics.clone()
+        };
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.record_served_buddy_link(false);
+        }
+    }
+
     /// Whether the connection at `remote` is the held buddy link, which keeps
     /// it up when no download holds it any more (ADR-0107 invariant 9).
     pub(crate) fn holds_link(&self, remote: PeerEndpoint) -> bool {
@@ -510,9 +530,10 @@ impl BuddySlot {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
+    use std::time::Duration;
 
     use super::*;
-    use crate::buddy::BuddyUdpPosture;
+    use crate::buddy::{BuddyUdpPosture, RECRUIT_WINDOW};
     use crate::firewalled::relayed_callback::CallbackDrop;
 
     fn kad_id(byte: u8) -> KadId {
@@ -580,19 +601,19 @@ mod tests {
             RelayDisposition::Rejected(RelayReject::NoBuddy)
         );
 
-        // Recruited but not yet dialed-in: verified, but there is no held
-        // socket — aMule's `buddy->GetSocket()` absent drop, never a fresh dial.
+        // Recruited but not yet dialed-in: a candidate holds nothing to relay
+        // to, and rmule never dials for it.
         recruit(&slot, buddy, recruited);
         assert_eq!(
             slot.relay_kad_callback(buddy, requester, file_hash),
-            RelayDisposition::NoHeldLink
+            RelayDisposition::Rejected(RelayReject::NoBuddy)
         );
 
         // The buddy's inbound connection identifies and attaches; both relays
         // now ride the held link as framed session commands.
         let (tx, mut rx) = mpsc::channel(4);
         let dialed_from = peer(1, 61234);
-        assert!(slot.try_attach(dialed_from, buddy_hash(buddy), tx));
+        assert!(slot.try_attach(dialed_from, buddy_hash(buddy), tx, Instant::now()));
 
         assert_eq!(
             slot.relay_kad_callback(buddy, requester, file_hash),
@@ -649,7 +670,7 @@ mod tests {
         let buddy = KadId::from_bytes(core::array::from_fn(|byte| byte as u8));
         recruit(&slot, buddy, endpoint(1, 4662));
         let (tx, mut rx) = mpsc::channel(4);
-        assert!(slot.try_attach(peer(1, 61234), buddy_hash(buddy), tx));
+        assert!(slot.try_attach(peer(1, 61234), buddy_hash(buddy), tx, Instant::now()));
 
         assert_eq!(
             slot.relay_kad_callback(
@@ -665,27 +686,107 @@ mod tests {
         assert_eq!(callback.buddy_id, *buddy.as_bytes());
     }
 
+    /// A `0x51` is spoofable and fills nothing: however many a forger sends, a
+    /// real recruit is still answered and the first to dial takes the slot.
+    #[test]
+    fn a_forged_recruit_holds_no_slot() {
+        let slot = BuddySlot::new();
+        recruit(&slot, kad_id(0x66), endpoint(6, 4662));
+        recruit(&slot, kad_id(0x11), endpoint(1, 4662));
+        let (tx, _rx) = mpsc::channel(4);
+
+        assert!(slot.try_attach(
+            peer(1, 61000),
+            buddy_hash(kad_id(0x11)),
+            tx.clone(),
+            Instant::now()
+        ));
+
+        assert!(
+            !slot.try_attach(
+                peer(6, 61000),
+                buddy_hash(kad_id(0x66)),
+                tx,
+                Instant::now()
+            ),
+            "the slot is the first dial's"
+        );
+    }
+
+    /// The dial proves the address the datagram only claimed.
+    #[test]
+    fn a_dial_from_another_address_attaches_nothing() {
+        let slot = BuddySlot::new();
+        recruit(&slot, kad_id(0x11), endpoint(1, 4662));
+        let (tx, _rx) = mpsc::channel(4);
+
+        assert!(!slot.try_attach(
+            peer(2, 61000),
+            buddy_hash(kad_id(0x11)),
+            tx,
+            Instant::now()
+        ));
+    }
+
+    #[test]
+    fn a_recruit_that_never_dials_leaves_at_the_end_of_its_window() {
+        let slot = BuddySlot::new();
+        recruit(&slot, kad_id(0x11), endpoint(1, 4662));
+        let (tx, _rx) = mpsc::channel(4);
+
+        assert!(!slot.try_attach(
+            peer(1, 61000),
+            buddy_hash(kad_id(0x11)),
+            tx,
+            Instant::now() + RECRUIT_WINDOW
+        ));
+    }
+
+    /// What a run with a dead link lost: the slot, until a restart.
+    #[test]
+    fn a_silent_held_link_frees_the_slot_on_the_sweep() {
+        let slot = BuddySlot::new();
+        let buddy = kad_id(0x11);
+        recruit(&slot, buddy, endpoint(1, 4662));
+        let (tx, _rx) = mpsc::channel(4);
+        let dialed_from = peer(1, 61000);
+        let attached = Instant::now();
+        assert!(slot.try_attach(dialed_from, buddy_hash(buddy), tx, attached));
+        let pinged = attached + Duration::from_secs(60);
+        assert_eq!(
+            slot.on_buddy_ping(dialed_from, pinged),
+            PingDisposition::Ponged
+        );
+
+        slot.sweep(pinged + LINK_SILENCE - Duration::from_secs(1));
+        assert!(slot.holds_link(dialed_from), "a ping restarts the silence");
+
+        slot.sweep(pinged + LINK_SILENCE);
+        assert!(!slot.holds_link(dialed_from));
+        recruit(&slot, kad_id(0x22), endpoint(2, 4662));
+    }
+
     #[test]
     fn attach_requires_the_recruited_buddys_hash() {
         let slot = BuddySlot::new();
         let (tx, _rx) = mpsc::channel(4);
 
         // No recruit: nothing to attach to.
-        assert!(!slot.try_attach(peer(1, 61000), buddy_hash(kad_id(0x11)), tx.clone()));
+        assert!(!slot.try_attach(peer(1, 61000), buddy_hash(kad_id(0x11)), tx.clone(), Instant::now()));
 
         // A stranger's hash never attaches; the recruited hash does.
         recruit(&slot, kad_id(0x11), endpoint(1, 4662));
-        assert!(!slot.try_attach(peer(1, 61000), UserHash::from_bytes([0xEE; 16]), tx.clone()));
+        assert!(!slot.try_attach(peer(1, 61000), UserHash::from_bytes([0xEE; 16]), tx.clone(), Instant::now()));
         assert_eq!(
             slot.relay_kad_callback(
                 kad_id(0x11),
                 endpoint(9, 5099),
                 FileHash::from_bytes([0x01; 16])
             ),
-            RelayDisposition::NoHeldLink,
+            RelayDisposition::Rejected(RelayReject::NoBuddy),
             "a refused attach held nothing"
         );
-        assert!(slot.try_attach(peer(1, 61000), buddy_hash(kad_id(0x11)), tx));
+        assert!(slot.try_attach(peer(1, 61000), buddy_hash(kad_id(0x11)), tx, Instant::now()));
     }
 
     #[test]
@@ -695,7 +796,7 @@ mod tests {
         recruit(&slot, buddy, endpoint(1, 4662));
         let (tx, mut rx) = mpsc::channel(4);
         let dialed_from = peer(1, 61234);
-        assert!(slot.try_attach(dialed_from, buddy_hash(buddy), tx));
+        assert!(slot.try_attach(dialed_from, buddy_hash(buddy), tx, Instant::now()));
 
         // A ping from the held link's exact connection endpoint pongs back on
         // that same link; a stranger connection — even one from the buddy's IP
@@ -780,7 +881,7 @@ mod tests {
         // served link and any other connection disposition the same.
         recruit(&slot, kad_id(0x11), endpoint(1, 4662));
         let (tx, _rx) = mpsc::channel(4);
-        assert!(slot.try_attach(peer(1, 61234), buddy_hash(kad_id(0x11)), tx));
+        assert!(slot.try_attach(peer(1, 61234), buddy_hash(kad_id(0x11)), tx, Instant::now()));
         assert_eq!(
             slot.consume_callback(Some(our_kad_id), &ours),
             CallbackVerdict::Dial {

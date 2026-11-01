@@ -168,7 +168,10 @@ impl Pump {
                 // fires below, after the tap (if any) has finalized.
                 Step::Command(None) | Step::Shutdown | Step::Event(None) => break,
                 Step::Event(Some(event)) => KadPumpInput::Event(event),
-                Step::RecruitTick => KadPumpInput::Tick(enactor.sample()),
+                Step::RecruitTick => {
+                    enactor.buddy_service.slot.sweep(std::time::Instant::now());
+                    KadPumpInput::Tick(enactor.sample())
+                }
                 Step::Verdict(verdict) => KadPumpInput::BuddyVerdict(verdict),
                 Step::Room => KadPumpInput::Room,
                 // The discovery task dropped its sources: the pump ends.

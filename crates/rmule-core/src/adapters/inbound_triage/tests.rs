@@ -309,7 +309,7 @@ async fn a_dialer_whose_hello_is_not_the_recruits_is_served_not_attached() {
             Ipv4Endpoint::new(Ipv4Addr::new(203, 0, 113, 5), 4662),
             FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
         ),
-        RelayDisposition::NoHeldLink,
+        RelayDisposition::Rejected(crate::buddy::RelayReject::NoBuddy),
         "a mismatched hello attaches nothing"
     );
 

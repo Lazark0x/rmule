@@ -25,8 +25,7 @@ mod hello_refusals;
 // next to `Reachability` that serves firewalled peers — the FINDBUDDY refusal
 // matrix, the verified `0x52`→`0x99` / `0x94`→`0x9A` relays, and the ping/pong
 // keepalive. `buddy_link` holds the live socket, so the allow covers only what
-// no production path reaches yet: `drop_stale`, which needs a keepalive timer
-// nothing arms, and the test-tier accessors.
+// no production path reaches: the test-tier accessors.
 #[cfg_attr(not(test), allow(dead_code))]
 mod buddy;
 mod buddy_link;
