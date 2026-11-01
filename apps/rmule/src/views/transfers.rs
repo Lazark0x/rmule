@@ -57,6 +57,7 @@ use ratatui::widgets::{Block, Paragraph};
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
+use self::menu::{MenuAction, pause_toggle_action};
 use crate::action::Action;
 use crate::row_filter::RowFilter;
 use crate::row_selection::tags::Tags;
@@ -68,7 +69,6 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::panes::{self, Zoomed};
 use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
-use self::menu::{MenuAction, pause_toggle_action};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
 

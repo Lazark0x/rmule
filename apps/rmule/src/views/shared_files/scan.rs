@@ -220,10 +220,6 @@ mod tests {
             );
         });
         view.handle_key(press(KeyCode::Char('G')), &state);
-        assert!(
-            shown(&mut view).contains("n no"),
-            "{}",
-            shown(&mut view)
-        );
+        assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
     }
 }

@@ -149,7 +149,13 @@ impl SearchesView {
                     result.primary_name().to_display_string()
                 })
         };
-        menu::draw(frame, area, (&name, &items, cursor), theme, &self.menu_place);
+        menu::draw(
+            frame,
+            area,
+            (&name, &items, cursor),
+            theme,
+            &self.menu_place,
+        );
     }
 }
 

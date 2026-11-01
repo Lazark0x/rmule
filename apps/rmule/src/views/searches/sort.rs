@@ -93,7 +93,12 @@ impl SortedTable for ResultsTable {
 }
 
 /// What a search's derived rows stand on: the rows, which search, the sort.
-pub(super) type OrderKey = (u64, Option<rmule_core::SearchId>, TableSort<ResultsTable>, u64);
+pub(super) type OrderKey = (
+    u64,
+    Option<rmule_core::SearchId>,
+    TableSort<ResultsTable>,
+    u64,
+);
 
 impl SearchesView {
     /// What the current search's order stands on.
@@ -102,7 +107,9 @@ impl SearchesView {
             state.revision,
             self.held.current().map(|entry| entry.id),
             self.sort,
-            self.held.current().map_or(0, |entry| entry.filter.generation()),
+            self.held
+                .current()
+                .map_or(0, |entry| entry.filter.generation()),
         )
     }
 

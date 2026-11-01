@@ -474,9 +474,5 @@ fn golden_searches_readd_scrolls_in_a_short_frame() {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });
     view.handle_key(press(KeyCode::Char('G')), &state);
-    assert!(
-        shown(&mut view).contains("n no"),
-        "{}",
-        shown(&mut view)
-    );
+    assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
 }

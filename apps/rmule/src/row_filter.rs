@@ -75,12 +75,7 @@ impl RowFilter {
     }
 
     fn typed(&mut self) {
-        self.words = self
-            .edit
-            .text()
-            .split_whitespace()
-            .map(fold)
-            .collect();
+        self.words = self.edit.text().split_whitespace().map(fold).collect();
         self.generation += 1;
     }
 
@@ -238,7 +233,10 @@ mod tests {
         let mut filter = typed("deb");
         assert!(filter.typing());
         assert!(filter.key(&press(KeyCode::Down), true).is_none());
-        assert!(filter.typing(), "the field keeps the keys while the list moves");
+        assert!(
+            filter.typing(),
+            "the field keeps the keys while the list moves"
+        );
         filter.key(&press(KeyCode::Enter), true);
         assert!(!filter.typing());
         assert!(filter.shown(), "the filter stands");

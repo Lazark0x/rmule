@@ -295,6 +295,12 @@ impl Form {
         self.hidden.get(index).copied().unwrap_or(false)
     }
 
+    /// Whether the focused field is one a Row Filter left out: nothing is
+    /// left to focus.
+    pub fn focus_left_out(&self) -> bool {
+        self.left_out(self.focus)
+    }
+
     /// Whether the focus can rest on field `index`.
     fn reachable(&self, index: usize) -> bool {
         self.fields[index].focusable() && !self.left_out(index)
@@ -342,9 +348,9 @@ impl Form {
                     .iter()
                     .position(|index| *index == self.focus)
                     .unwrap_or(0);
-                let target = at.saturating_add_signed(pages.saturating_mul(
-                    isize::try_from(page.max(1)).unwrap_or(isize::MAX),
-                ));
+                let target = at.saturating_add_signed(
+                    pages.saturating_mul(isize::try_from(page.max(1)).unwrap_or(isize::MAX)),
+                );
                 if let Some(index) = reachable.get(target.min(reachable.len().saturating_sub(1))) {
                     self.focus = *index;
                 }

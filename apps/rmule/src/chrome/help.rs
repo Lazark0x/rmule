@@ -107,7 +107,10 @@ pub(super) fn draw_help(
         .filter(|(_, rows)| !rows.is_empty())
         .collect();
     let kept_rows = tables.iter().map(|(_, rows)| rows.len()).sum();
-    let total_rows = sections(active).iter().map(|section| section.rows.len()).sum();
+    let total_rows = sections(active)
+        .iter()
+        .map(|section| section.rows.len())
+        .sum();
     // Greedy width: the overlay takes whatever it needs to show every
     // binding whole, and only wraps the description column when the frame is
     // narrower than that. Its width does not follow the filter: the panel

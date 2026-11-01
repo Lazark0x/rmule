@@ -76,9 +76,18 @@ impl QuitCost {
 pub fn quit_confirm(cost: QuitCost) -> String {
     let count = |n: usize, one: &str, many: &str| super::units::count(n as u64, one, many);
     let parts: Vec<String> = [
-        (cost.running, count(cost.running, "download", "downloads") + " running"),
-        (cost.waiting, count(cost.waiting, "download", "downloads") + " waiting"),
-        (cost.uploads, count(cost.uploads, "upload", "uploads") + " running"),
+        (
+            cost.running,
+            count(cost.running, "download", "downloads") + " running",
+        ),
+        (
+            cost.waiting,
+            count(cost.waiting, "download", "downloads") + " waiting",
+        ),
+        (
+            cost.uploads,
+            count(cost.uploads, "upload", "uploads") + " running",
+        ),
         (cost.queued, count(cost.queued, "peer", "peers") + " queued"),
     ]
     .into_iter()

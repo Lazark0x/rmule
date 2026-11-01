@@ -49,9 +49,10 @@ impl SearchesView {
         let tagged = entry.tags.targets(None);
         entry.tags.clear();
         let marks = KnownFileMarks::of(state);
-        let results = self.held.current_pane(state).map_or(&[][..], |pane| {
-            pane.results.as_slice()
-        });
+        let results = self
+            .held
+            .current_pane(state)
+            .map_or(&[][..], |pane| pane.results.as_slice());
         let (fresh, marked): (Vec<&SearchResult>, Vec<&SearchResult>) = results
             .iter()
             .filter(|result| tagged.contains(&ResultsTable::identity(result)))

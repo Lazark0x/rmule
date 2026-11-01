@@ -30,10 +30,16 @@ pub const EVERYWHERE: Section = Section {
         ("Space / T", "tag a row / every row on show"),
         ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
         ("z", "zoom the focused pane to the whole tab, or back"),
-        ("m / Enter", "row action menu; acts on the tagged rows if any"),
+        (
+            "m / Enter",
+            "row action menu; acts on the tagged rows if any",
+        ),
         ("x", "take the row away, or the tagged rows; asks first"),
         ("s / S", "sort the focused table by next column / reverse"),
-        ("?", "this help; type to filter it, ↑/↓ and PgUp/PgDn scroll"),
+        (
+            "?",
+            "this help; type to filter it, ↑/↓ and PgUp/PgDn scroll",
+        ),
         ("q", "quit; asks first while anything is under way"),
         ("Ctrl-C", "quit, from anywhere"),
         ("Ctrl-Z", "stop as a job; transfers stand still until fg"),
@@ -97,8 +103,14 @@ pub const SEARCHES: Section = Section {
 pub const TRANSFERS: Section = Section {
     title: "Transfers",
     rows: &[
-        ("p", "pause or resume the selected download, or the tagged ones"),
-        ("P", "pause every download on show; with none running, resume them"),
+        (
+            "p",
+            "pause or resume the selected download, or the tagged ones",
+        ),
+        (
+            "P",
+            "pause every download on show; with none running, resume them",
+        ),
         ("x", "cancel the selected download, or the tagged ones"),
         ("d", "the selected download's file details"),
         ("C", "clear all completed"),
@@ -144,18 +156,39 @@ pub const WORDS: Section = Section {
     rows: &[
         ("HighID", "peers can reach you directly"),
         ("LowID", "peers cannot reach you; the server relays for you"),
-        ("Grants", "what a server lets a client do: its limits and flags"),
+        (
+            "Grants",
+            "what a server lets a client do: its limits and flags",
+        ),
         ("carried", "a file a scan kept its hash for, unread"),
-        ("Stalled", "holds a slot and has moved no bytes for 30 seconds"),
-        ("Sources 42 (7)", "peers that have the file (of them, with all of it)"),
-        ("Requests 3 (12)", "this run (all time); Accepted, Transferred too"),
+        (
+            "Stalled",
+            "holds a slot and has moved no bytes for 30 seconds",
+        ),
+        (
+            "Sources 42 (7)",
+            "peers that have the file (of them, with all of it)",
+        ),
+        (
+            "Requests 3 (12)",
+            "this run (all time); Accepted, Transferred too",
+        ),
         ("Done 42%", "bytes verified against the file's hashes"),
         ("▸  •", "the row the cursor is on; a tagged row"),
         ("downloading", "a result in Transfers now: bold"),
-        ("failed", "a result whose download failed and holds its place: bold, underlined"),
+        (
+            "failed",
+            "a result whose download failed and holds its place: bold, underlined",
+        ),
         ("have", "a result on your disk, shared: dim"),
-        ("withheld", "a result rmule cannot read now, offered to nobody: underlined"),
-        ("had", "a result you downloaded once and no longer hold: italic"),
+        (
+            "withheld",
+            "a result rmule cannot read now, offered to nobody: underlined",
+        ),
+        (
+            "had",
+            "a result you downloaded once and no longer hold: italic",
+        ),
         ("cancelled", "a result you cancelled: struck through"),
     ],
 };

@@ -483,7 +483,10 @@ mod tests {
         view.handle_key(press(KeyCode::Home), &state);
         assert_eq!(view.server_sel, 0);
         view.handle_key(press(KeyCode::PageDown), &state);
-        assert_eq!(view.server_sel, 1, "a page of the one row a fresh view knows");
+        assert_eq!(
+            view.server_sel, 1,
+            "a page of the one row a fresh view knows"
+        );
         view.handle_key(press(KeyCode::PageUp), &state);
         assert_eq!(view.server_sel, 0);
     }

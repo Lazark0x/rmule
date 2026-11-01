@@ -27,8 +27,7 @@ pub fn version_line(build: Build) -> String {
 }
 
 /// The two shapes of an invocation.
-pub const USAGE: &str =
-    "Usage: rmule [--data-dir <path>] [--log-level lean|detailed] [--no-mouse]\n       rmule --help | --version";
+pub const USAGE: &str = "Usage: rmule [--data-dir <path>] [--log-level lean|detailed] [--no-mouse]\n       rmule --help | --version";
 
 /// The pointer a refusal ends with.
 const MORE: &str = "Run rmule --help for the options, where the data lives, and the environment.";

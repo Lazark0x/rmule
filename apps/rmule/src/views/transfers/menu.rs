@@ -11,8 +11,8 @@ use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId};
 
-use super::link::{copy_link_for, copy_link_reason};
 use super::confirm::download_name;
+use super::link::{copy_link_for, copy_link_reason};
 use super::{Overlay, TransfersView};
 use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
@@ -84,11 +84,17 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             .keyed('x')
             .greyed(cancel_reason),
         Item::new(labels::SHOW_DETAILS, MenuAction::Details).keyed('d'),
-        Item::new(labels::PREVIEW, or_inert(MenuAction::Preview, preview_reason))
-            .keyed('v')
-            .greyed(preview_reason),
-        Item::new(labels::COPY_LINK, or_inert(MenuAction::CopyLink, copy_reason))
-            .greyed(copy_reason),
+        Item::new(
+            labels::PREVIEW,
+            or_inert(MenuAction::Preview, preview_reason),
+        )
+        .keyed('v')
+        .greyed(preview_reason),
+        Item::new(
+            labels::COPY_LINK,
+            or_inert(MenuAction::CopyLink, copy_reason),
+        )
+        .greyed(copy_reason),
         Item::new(
             labels::SEARCH_RELATED,
             or_inert(MenuAction::SearchRelated, related_reason),
@@ -174,9 +180,7 @@ pub(super) fn pause_or_resume(targets: &[DownloadId], state: &UiState) -> Action
 fn pause_all(ids: &[DownloadId]) -> Action {
     Action::Commands(
         ids.iter()
-            .map(|id| {
-                CoreCommand::Download(DownloadCommand::PauseDownload { download_id: *id })
-            })
+            .map(|id| CoreCommand::Download(DownloadCommand::PauseDownload { download_id: *id }))
             .collect(),
     )
 }
@@ -184,9 +188,7 @@ fn pause_all(ids: &[DownloadId]) -> Action {
 fn resume_all(ids: &[DownloadId]) -> Action {
     Action::Commands(
         ids.iter()
-            .map(|id| {
-                CoreCommand::Download(DownloadCommand::ResumeDownload { download_id: *id })
-            })
+            .map(|id| CoreCommand::Download(DownloadCommand::ResumeDownload { download_id: *id }))
             .collect(),
     )
 }

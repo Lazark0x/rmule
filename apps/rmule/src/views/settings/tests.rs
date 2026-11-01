@@ -681,3 +681,41 @@ fn h_and_l_step_a_selector_and_leave_the_tab_alone() {
     let back = view.handle_key(press(KeyCode::Char('h')), &state);
     assert!(matches!(back, ViewOutcome::Emit(_)), "{back:?}");
 }
+
+/// `/` narrows the rows, by label or value, and the cursor rests on one that
+/// stands; a filter that keeps nothing leaves no field to act on.
+#[test]
+fn slash_filters_the_rows_and_esc_brings_them_back() {
+    let state = state();
+    let mut view = SettingsView::new();
+    let shown = |view: &mut SettingsView| {
+        crate::golden::render_to_lines(90, 30, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        })
+    };
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    for letter in "mouse".chars() {
+        view.handle_key(press(KeyCode::Char(letter)), &state);
+    }
+    assert!(view.text_open(&state));
+    let narrowed = shown(&mut view);
+    assert!(narrowed.contains("Mouse"), "{narrowed}");
+    assert!(!narrowed.contains("Nickname"), "{narrowed}");
+    assert!(matches!(
+        view.slots.get(view.form.focus),
+        Some(Slot::Row(Row::Mouse))
+    ));
+    view.handle_key(press(KeyCode::Esc), &state);
+    assert!(shown(&mut view).contains("Nickname"));
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    for letter in "zzzz".chars() {
+        view.handle_key(press(KeyCode::Char(letter)), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Ignored
+    ));
+    assert!(!view.editing);
+}

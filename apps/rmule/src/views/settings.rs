@@ -591,6 +591,9 @@ impl SettingsView {
         {
             return outcome;
         }
+        if !self.editing && self.form.focus_left_out() {
+            return ViewOutcome::Ignored;
+        }
 
         // A selector commits where it is stepped: there is nothing to type, so
         // an editing mode for one would be ceremony with no purpose.
@@ -598,10 +601,7 @@ impl SettingsView {
             && self.form.focus_is_choice()
             && matches!(
                 key.code,
-                KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Enter
-                    | KeyCode::Char('h' | 'l')
+                KeyCode::Left | KeyCode::Right | KeyCode::Enter | KeyCode::Char('h' | 'l')
             )
         {
             let back = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
@@ -765,14 +765,11 @@ impl SettingsView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let (inner, filter_line) = self.filter.carve(inner);
-        let kept = self.form.fields.len()
-            - self.form.hidden.iter().filter(|hidden| **hidden).count();
-        let filter_caret = self.filter.draw(
-            frame,
-            filter_line,
-            (kept, self.form.fields.len()),
-            theme,
-        );
+        let kept =
+            self.form.fields.len() - self.form.hidden.iter().filter(|hidden| **hidden).count();
+        let filter_caret =
+            self.filter
+                .draw(frame, filter_line, (kept, self.form.fields.len()), theme);
         self.body = inner;
         // Below the form's own floor the *labels* are what would have to be
         // cut, so the pane shows its frame and nothing else rather than a

@@ -271,7 +271,13 @@ mod tests {
         let place = Place::default();
         let theme = Theme::default_dark();
         crate::golden::render_to_lines(80, 24, |frame| {
-            draw(frame, frame.area(), ("bunny.mp4", &items, 0), &theme, &place);
+            draw(
+                frame,
+                frame.area(),
+                ("bunny.mp4", &items, 0),
+                &theme,
+                &place,
+            );
         });
         let line_of = |index: u16| {
             let top = (24 - 6) / 2;

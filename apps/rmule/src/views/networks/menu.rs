@@ -16,9 +16,9 @@ use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
-use super::{NetworksView, servers};
 use super::form::ServerForm;
 use super::servers::{next_priority, priority_word, row_name};
+use super::{NetworksView, servers};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{UiState, server_label};
@@ -312,8 +312,11 @@ impl NetworksView {
 
     /// Ask before removing the selected server; with no row, nothing to ask.
     pub(super) fn ask_remove(&mut self, state: &UiState) -> ViewOutcome {
-        self.tags
-            .keep(|tagged| servers(state).iter().any(|row| row.server.endpoint == *tagged));
+        self.tags.keep(|tagged| {
+            servers(state)
+                .iter()
+                .any(|row| row.server.endpoint == *tagged)
+        });
         let row = self.selected(state);
         let servers = self
             .tags

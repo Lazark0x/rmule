@@ -32,11 +32,11 @@ use ratatui::widgets::Paragraph;
 use rmule_primitives::FileHash;
 
 use super::{ViewOutcome, rate_cell};
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table::Drawn;
-use crate::row_filter::RowFilter;
-use crate::row_selection::tags::Tags;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::views::panes::{self, Zoomed};
@@ -50,9 +50,6 @@ mod peers;
 pub(crate) mod scan;
 mod sort;
 mod strip;
-
-/// The two-cell selection gutter every table row carries.
-const GUTTER_W: usize = 2;
 
 /// The Shared Files view. Holds view state only — every datum lives in
 /// [`UiState`] (ADR-0069).
@@ -276,7 +273,8 @@ impl SharedView {
     /// What an action takes: the tagged files still shared, else the file
     /// under the cursor. A Partial Share is its download's, so none is here.
     pub(super) fn targets(&mut self, state: &UiState) -> Vec<FileHash> {
-        self.tags.keep(|file_hash| state.shared.contains_key(file_hash));
+        self.tags
+            .keep(|file_hash| state.shared.contains_key(file_hash));
         self.tags
             .targets(self.selected_row(state).map(|row| row.file_hash))
     }

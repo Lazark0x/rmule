@@ -326,9 +326,9 @@ pub(crate) fn draw(
     let (body, filter_line) = rows
         .filter
         .map_or((body, Rect::default()), |(filter, _)| filter.carve(body));
-    let caret = rows.filter.and_then(|(filter, total)| {
-        filter.draw(frame, filter_line, (rows.count, total), theme)
-    });
+    let caret = rows
+        .filter
+        .and_then(|(filter, total)| filter.draw(frame, filter_line, (rows.count, total), theme));
     let said_of = |row: usize, widths: &[usize]| {
         off_screen::hidden(
             table.labels.iter().copied(),

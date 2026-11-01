@@ -143,7 +143,13 @@ fn the_frame_does_not_move_as_the_cursor_enters_a_cut_row() {
     let (fits, on_fits) = drawn(&names, 0, 24, 6);
     let (cut, on_cut) = drawn(&names, 1, 24, 6);
     assert_eq!(on_fits.line_of(1), on_cut.line_of(1), "{fits:?}\n{cut:?}");
-    assert!(cut.iter().any(|line| line.contains("Off-screen")), "{cut:?}");
-    assert!(!fits.iter().any(|line| line.contains("Off-screen")), "{fits:?}");
+    assert!(
+        cut.iter().any(|line| line.contains("Off-screen")),
+        "{cut:?}"
+    );
+    assert!(
+        !fits.iter().any(|line| line.contains("Off-screen")),
+        "{fits:?}"
+    );
     assert_eq!(on_fits.rows_height(), on_cut.rows_height());
 }

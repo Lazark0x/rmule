@@ -337,6 +337,29 @@ mod tests {
 
     /// A log longer than its pane, scrolled back: no cursor, so the border
     /// counts the last line on screen of all of them, and the bar shows where.
+    /// The log filters as the tables do: only the lines that hold the word.
+    #[test]
+    fn slash_over_the_log_keeps_the_lines_that_hold_it() {
+        use crate::golden::render_to_lines;
+        let mut state = UiState::default();
+        for text in ["alpha one", "beta two"] {
+            state.log_flash(crate::words::Sentence::for_test(text), now());
+        }
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::Tab), &state);
+        view.handle_key(press(KeyCode::Char('/')), &state);
+        for letter in "beta".chars() {
+            view.handle_key(press(KeyCode::Char(letter)), &state);
+        }
+        let shown = render_to_lines(100, 30, |frame| {
+            let area = frame.area();
+            view.draw(frame, area, &state, &Theme::default_dark(), now());
+        });
+        assert!(shown.contains("beta two"), "{shown}");
+        assert!(!shown.contains("alpha one"), "{shown}");
+        assert!(shown.contains("1 of 2"), "{shown}");
+    }
+
     #[test]
     fn golden_networks_log_overflow() {
         let base = Instant::now();

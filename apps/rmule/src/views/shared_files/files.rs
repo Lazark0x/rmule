@@ -150,10 +150,9 @@ impl SharedView {
         }
         let cells = |index: usize, _: &[usize]| file_cells(&lines_in_order[index], theme);
         let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
-        let table =
-            Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style)
-                .wants(&FILE_WANTS)
-                .empty(crate::words::app::NO_MATCH);
+        let table = Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style)
+            .wants(&FILE_WANTS)
+            .empty(crate::words::app::NO_MATCH);
         let tagged = |index: usize| self.tags.contains(&lines_in_order[index].file_hash);
         let rows = Rows {
             count: lines_in_order.len(),

@@ -148,7 +148,10 @@ impl SharedView {
 
         let visible = self.ordered_peers(state);
         // Filtered-out peers are counted, never silently truncated (spec §3.5).
-        let hidden = self.visible_peers(state).len().abs_diff(state.upload_peers.len());
+        let hidden = self
+            .visible_peers(state)
+            .len()
+            .abs_diff(state.upload_peers.len());
         let footer =
             (hidden > 0).then(|| format!("  {}", crate::words::serve::hidden_queued(hidden)));
 

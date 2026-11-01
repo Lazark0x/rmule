@@ -88,10 +88,12 @@ impl App {
                             if !self.chrome.help_open && !self.chrome.quit_open {
                                 let at = (mouse.column, mouse.row);
                                 let key = key_of(code);
-                                match self
-                                    .views
-                                    .handle_wheel(self.chrome.active, at, key, &self.state)
-                                {
+                                match self.views.handle_wheel(
+                                    self.chrome.active,
+                                    at,
+                                    key,
+                                    &self.state,
+                                ) {
                                     ViewOutcome::Redraw => self.dirty = true,
                                     ViewOutcome::Emit(action) => return self.reduce(action, now),
                                     ViewOutcome::Ignored => {}

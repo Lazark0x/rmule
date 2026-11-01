@@ -102,7 +102,11 @@ mod tests {
         let ids = [1u8, 2, 3];
         let mut cursor = RowCursor::default();
         let mut tags = Tags::default();
-        assert_eq!(tags.targets(Some(2)), [2], "no tag: the row under the cursor");
+        assert_eq!(
+            tags.targets(Some(2)),
+            [2],
+            "no tag: the row under the cursor"
+        );
         tags.key(KeyCode::Char(' '), &ids, &mut cursor);
         tags.key(KeyCode::Char(' '), &ids, &mut cursor);
         assert_eq!(cursor.place(&ids), Some(2));

@@ -174,7 +174,10 @@ impl NetworksView {
             title
         } else {
             let tagged = crate::words::app::tagged(self.tags.len());
-            format!("{}· {tagged} ", title.trim_end_matches(' ').to_string() + " ")
+            format!(
+                "{}· {tagged} ",
+                title.trim_end_matches(' ').to_string() + " "
+            )
         };
         // `c` is hinted only where it can act (No dead UI): a selected row.
         let toggle = match self.selected(state) {
