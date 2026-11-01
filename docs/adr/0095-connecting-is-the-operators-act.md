@@ -55,6 +55,20 @@ flight and then answers the live handle or nothing. It never dials.
   the end of the five minutes, never dropped — and a High ID while Kad TCP reads firewalled, since
   the server has just reached our listener on the port Kad advertises.
 
+**A dial is the operator's to end, and it holds nothing.** The slot's lock guards the take of the
+old session and the install of the new one, no more: a dial may sit out a silent server for a
+minute, and every reader of the slot answers meanwhile, none on the actor waiting. A Disconnect
+ends a dial in flight, said as `Disconnected`, with nothing counted against the server. A named
+server is resolved through the bounded Name Resolver before its filter gate.
+
+**A dead link.** A server link can die with nothing owed on it, so no write of ours finds out. The
+kernel probes every quiet server link (a minute idle, every 15 s, four unanswered; `resolve.rs`).
+The actor compares the monotonic clock with the wall every 30 s, and a gap past two minutes on
+either is a suspend: the mapper races again, and the session is hung up, for the intent to re-make
+as after any lost session (ADR-0096). A re-login rather than a ping: aMule's own ping is an empty
+`OP_OFFERFILES` with no answer (`ServerConnect.cpp:595-609`), which proves nothing, and a write on
+a dead link waits on the kernel's retransmission, far longer than keepalive would.
+
 ## Consequences
 
 - No server session exists that the operator did not ask for, directly or through their
