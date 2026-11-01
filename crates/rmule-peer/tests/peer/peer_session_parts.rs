@@ -4,11 +4,25 @@
 //! cap.
 
 use rmule_peer::{
-    InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput, RequesterCommand, RequesterEvent,
+    FileProbeStatus, HelloAnswer, InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput,
+    PeerSession, RequesterCommand, RequesterEvent,
 };
-use rmule_primitives::PartHash;
 use rmule_primitives::session::drain;
+use rmule_primitives::{PartHash, UserHash};
 use rmule_testkit::peer_session::*;
+
+/// A session whose peer's hello carries no `MiscOptions2` at all, as a
+/// client from before large files would.
+fn no_large_files_session() -> PeerSession {
+    let mut session = PeerSession::new_outbound(peer(), ctx());
+    session.start();
+    let _ = drain(|| session.poll_output());
+    let mut body = answer_body(UserHash::from_bytes([0x98; 16]));
+    body.tags.retain(|tag| tag.name().id() != Some(0xFE));
+    session.handle_bytes(&HelloAnswer::new(body).encode_packet().encode());
+    let _ = drain(|| session.poll_output());
+    session
+}
 
 #[test]
 fn sendingpart_i64_decodes_offset_above_4gb() {
@@ -35,6 +49,82 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
         e,
         PeerEvent::Requester(RequesterEvent::PartReceived { offset, bytes, .. }) if *offset == big && bytes == &data
     )));
+}
+
+/// A block's own offsets pick the form, never the file's size
+/// (`DownloadClient.cpp:745`): the blocks of an 8 GiB file below 4 GiB ride
+/// `OP_REQUESTPARTS`, and one over the line takes the whole request to `_I64`.
+#[test]
+fn a_request_is_as_wide_as_its_highest_offset_not_as_its_file() {
+    let h = file_hash(0x9A);
+    let mut session = identified_session();
+    let file_size = 8_000_000_000;
+    let request = |session: &mut PeerSession, ranges: [(u64, u64); 3]| {
+        session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+            file_hash: h,
+            file_size,
+            ranges: PartRanges::new(ranges),
+        }));
+    };
+    let block = rmule_primitives::EMBLOCKSIZE;
+    request(&mut session, [(0, block), (0, 0), (0, 0)]);
+    session.handle_bytes(&reqfilename_answer(h, "big"));
+    session.handle_bytes(&file_status(h, 823, &[0xFF; 103]));
+    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
+    let _ = drain(|| session.poll_output());
+    session.handle_bytes(&acceptuploadreq());
+    let opcodes =
+        |out: &[PeerOutput]| -> Vec<u8> { writes(out).iter().map(|p| p.opcode()).collect() };
+    assert_eq!(opcodes(&drain(|| session.poll_output())), vec![0x47]);
+
+    let past: u64 = 1 << 32;
+    request(&mut session, [(past - block, past - 1), (0, 0), (0, 0)]);
+    assert_eq!(opcodes(&drain(|| session.poll_output())), vec![0x47]);
+    request(&mut session, [(past - 1, past + block), (0, 0), (0, 0)]);
+    assert_eq!(opcodes(&drain(|| session.poll_output())), vec![0xA3]);
+}
+
+/// A peer whose hello claims no large files is asked nothing of one, and the
+/// run reads it as a peer without the file, as a stock peer's answer would
+/// have it (`ClientTCPSocket.cpp:1070`).
+#[test]
+fn a_peer_without_the_large_files_bit_is_asked_nothing() {
+    let h = file_hash(0x9B);
+    let big: u64 = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
+    let mut session = no_large_files_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
+        file_hash: h,
+        file_size: big,
+        want_sources: true,
+        want_aich_root: false,
+        own_status: rmule_peer::PartBitmap::downloader_empty(big),
+    }));
+    let out = drain(|| session.poll_output());
+    assert!(writes(&out).is_empty());
+    assert!(events(&out).iter().any(|e| matches!(
+        e,
+        PeerEvent::Requester(RequesterEvent::FileProbed {
+            status: FileProbeStatus::NotAvailable,
+            ..
+        })
+    )));
+}
+
+/// A grant on a large file such a peer never should have: the request goes
+/// out as `OP_CANCELTRANSFER`, as stock's does past 4 GiB
+/// (`DownloadClient.cpp:748-757`), and no block is asked.
+#[test]
+fn a_block_of_a_large_file_is_never_asked_of_a_peer_without_the_bit() {
+    let h = file_hash(0x9C);
+    let mut session = no_large_files_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestParts {
+        file_hash: h,
+        file_size: 8_000_000_000,
+        ranges: PartRanges::new([(5_000_000_000, 5_000_000_016), (0, 0), (0, 0)]),
+    }));
+    let out = drain(|| session.poll_output());
+    let sent: Vec<u8> = writes(&out).iter().map(|p| p.opcode()).collect();
+    assert_eq!(sent, vec![0x56]);
 }
 
 #[test]

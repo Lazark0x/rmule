@@ -37,7 +37,7 @@ impl ServeState {
         // A file we do not share is not answered and the connection stays up
         // (`:442-447` `break`s before any reply); the asker learns it from
         // its status ask or its bundle.
-        let Some(found) = self.lookup(file_hash) else {
+        let Some(found) = self.lookup_for(peer, file_hash) else {
             return Vec::new();
         };
         let command = ServerCommand::AnswerFileName {
@@ -122,7 +122,7 @@ impl ServeState {
         cut: Option<BundleCut>,
     ) -> Vec<ServeDecision> {
         let found = self
-            .lookup(file_hash)
+            .lookup_for(peer, file_hash)
             .filter(|found| file_size.is_none_or(|size| size == found.file_size()));
         let Some(found) = found else {
             let command = ServerCommand::AnswerFileNotFound { file_hash };
@@ -192,7 +192,7 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
     ) -> Vec<ServeDecision> {
-        let (command, moved) = match self.lookup(file_hash) {
+        let (command, moved) = match self.lookup_for(peer, file_hash) {
             Some(found) => {
                 let bitmap = found.status();
                 let moved = self.follow_asked_file(peer, file_hash);
@@ -283,7 +283,9 @@ impl ServeState {
                 // set is not yet whole: answer "no such file" rather than
                 // silently dropping the request (design §5;
                 // `UploadClient.cpp:676-698`).
-                let part_hashes = self.lookup(file_hash).and_then(|found| found.hash_set());
+                let part_hashes = self
+                    .lookup_for(peer, file_hash)
+                    .and_then(|found| found.hash_set());
                 let command = match part_hashes {
                     Some(part_hashes) => ServerCommand::AnswerHashSet {
                         file_hash,
@@ -297,7 +299,10 @@ impl ServeState {
                 if self.ask_bans(now, peer) {
                     return self.ban_asker(now, peer, modifiers);
                 }
-                if !self.lookup(file_hash).is_some_and(|found| found.offered()) {
+                if !self
+                    .lookup_for(peer, file_hash)
+                    .is_some_and(|found| found.offered())
+                {
                     // We do not offer it — unshared, or a download with no
                     // verified part yet: nothing is sent, as aMule queues and
                     // answers only a file it finds (stock 2.3.3 `4e8f2b3c`

@@ -63,7 +63,10 @@ impl ServeState {
         file_hash: FileHash,
         form: ServedSourcesVersion,
     ) -> Vec<ServeDecision> {
-        let Some((kind, pool)) = self.lookup(file_hash).and_then(|found| found.exchange()) else {
+        let Some((kind, pool)) = self
+            .lookup_for(peer, file_hash)
+            .and_then(|found| found.exchange())
+        else {
             return Vec::new();
         };
         let (candidates, known): (Vec<SxCandidate>, usize) = match pool {

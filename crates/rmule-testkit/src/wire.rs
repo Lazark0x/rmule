@@ -107,6 +107,7 @@ pub fn multipacket_hello_answer_bytes(user_hash: UserHash, nickname: &str) -> Ve
         MiscOptions1::rmule_advertised(),
         Some(
             MiscOptions2::rmule_advertised(false, false, false)
+                .with_large_files()
                 .with_multipacket_ext()
                 .with_source_exchange2(),
         ),

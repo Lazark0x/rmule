@@ -45,7 +45,7 @@ impl ServeState {
             return Vec::new();
         }
         self.last_ask.insert(peer, (file_hash, *ranges));
-        let Some(found) = self.lookup(file_hash).filter(Found::offered) else {
+        let Some(found) = self.lookup_for(peer, file_hash).filter(Found::offered) else {
             return Vec::new();
         };
         // Only the live ranges are judged: padding and a backward pair are

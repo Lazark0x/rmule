@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use rmule_primitives::{Ed2kText, FileHash, part_count};
+use rmule_primitives::{Ed2kText, FileHash, is_large_file, part_count};
 
 use super::{FileProbeStatus, PeerError, PeerEvent, PeerSession, SlotReleaseReason, State};
 use crate::RequesterEvent;
@@ -18,8 +18,8 @@ use crate::file_request::{FileStatus, ReqFileNameAnswer, RequestFileName, SetReq
 use crate::hash_set::HashSetRequest;
 use crate::multipacket::{MultiPacketRequest, RequestItem};
 use crate::parts::RequestParts as RequestPartsPacket;
-use crate::parts::{CompressedPart, PartOffsetWidth, PartRanges};
-use crate::slot::StartUploadReq;
+use crate::parts::{CompressedPart, PartRanges};
+use crate::slot::{CancelTransfer, StartUploadReq};
 
 /// The per-file flow each hash accumulates while probe, hash-set and slot
 /// legs interleave (ADR-0025).
@@ -59,7 +59,6 @@ pub(super) struct CompressedBlocksInFlight(usize);
 #[derive(Debug, Clone)]
 pub(super) struct PendingRequest {
     pub(super) ranges: PartRanges,
-    pub(super) width: PartOffsetWidth,
     pub(super) requestparts_sent: bool,
 }
 
@@ -317,6 +316,17 @@ impl PeerSession {
         if !self.require_identified() {
             return;
         }
+        if self.large_file_refused(file_size) {
+            let flow = self.per_file.entry(file_hash).or_default();
+            flow.file_size = Some(file_size);
+            flow.probe = ProbeState::NotAvailable;
+            self.core
+                .push_event(PeerEvent::Requester(RequesterEvent::FileProbed {
+                    file_hash,
+                    status: FileProbeStatus::NotAvailable,
+                }));
+            return;
+        }
         // Item composition, in aMule's request order: 0x58 always, 0x4F only
         // when multi-part, then the SX ask and the AICH-root ask per the
         // caller's policy. "Multi-part" here is aMule's own boundary —
@@ -440,6 +450,36 @@ impl PeerSession {
         }
     }
 
+    /// Whether `file_size` is a large file and this peer's hello does not
+    /// claim them: it is asked nothing of the file (ADR-0047). Stock asks
+    /// before it reads the claim and stops at the first block past 4 GiB
+    /// (`DownloadClient.cpp:747`); a stock peer answers such an ask
+    /// `OP_FILEREQANSNOFIL` (`ClientTCPSocket.cpp:1070`), which is what
+    /// not asking stands in for.
+    fn large_file_refused(&self, file_size: u64) -> bool {
+        is_large_file(file_size)
+            && !self
+                .peer_misc_options2
+                .is_some_and(MiscOptions2::supports_large_files)
+    }
+
+    /// A grant came for a large file this peer does not claim to take: stock
+    /// cancels the transfer and leaves the source (`DownloadClient.cpp:748-757`).
+    fn end_large_file_transfer(&mut self, file_hash: FileHash, file_size: u64) {
+        self.write_packet(CancelTransfer.encode_packet());
+        let flow = self.per_file.entry(file_hash).or_default();
+        flow.file_size = Some(file_size);
+        flow.probe = ProbeState::NotAvailable;
+        self.core
+            .push_event(PeerEvent::Requester(RequesterEvent::FileProbed {
+                file_hash,
+                status: FileProbeStatus::NotAvailable,
+            }));
+        if self.active_slot == Some(file_hash) {
+            self.release_slot(file_hash, SlotReleaseReason::FileNotFound);
+        }
+    }
+
     pub(super) fn handle_request_parts(
         &mut self,
         file_hash: FileHash,
@@ -452,6 +492,10 @@ impl PeerSession {
             });
             return;
         }
+        if self.large_file_refused(file_size) {
+            self.end_large_file_transfer(file_hash, file_size);
+            return;
+        }
         match self.active_slot {
             Some(active) if active == file_hash => {
                 // Slot already held for this file: send another block
@@ -460,7 +504,6 @@ impl PeerSession {
                 // first request is still pending and carries the ranges. A
                 // flow queued again by `OP_OUTOFPARTREQS` holds none: this
                 // request waits for the next grant, as a first one does.
-                let width = PartOffsetWidth::for_file_size(file_size);
                 let Some(flow) = self.per_file.get_mut(&file_hash) else {
                     return;
                 };
@@ -469,7 +512,6 @@ impl PeerSession {
                     SlotState::Queued if flow.pending_request.is_none() => {
                         flow.pending_request = Some(PendingRequest {
                             ranges,
-                            width,
                             requestparts_sent: false,
                         });
                         return;
@@ -477,7 +519,7 @@ impl PeerSession {
                     _ => return,
                 }
                 let req = RequestPartsPacket { file_hash, ranges };
-                match req.encode_packet(width) {
+                match req.encode_packet(ranges.width()) {
                     Ok(p) => self.write_block_request(p, ranges.as_array()),
                     Err(_) => self.release_slot(file_hash, SlotReleaseReason::ProtocolViolation),
                 }
@@ -503,10 +545,8 @@ impl PeerSession {
             return;
         }
 
-        let width = PartOffsetWidth::for_file_size(file_size);
         let pending = PendingRequest {
             ranges,
-            width,
             requestparts_sent: false,
         };
 
@@ -846,13 +886,12 @@ impl PeerSession {
             && !pending.requestparts_sent
         {
             let ranges = pending.ranges;
-            let width = pending.width;
             pending.requestparts_sent = true;
             let req = RequestPartsPacket {
                 file_hash: active,
                 ranges,
             };
-            match req.encode_packet(width) {
+            match req.encode_packet(ranges.width()) {
                 Ok(p) => self.write_block_request(p, ranges.as_array()),
                 Err(_) => {
                     // Width mismatch — treat as protocol violation

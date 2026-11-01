@@ -95,6 +95,15 @@ impl PartRanges {
         Self { ranges }
     }
 
+    /// The width a request for these ranges rides (`DownloadClient.cpp:745`):
+    /// the `_I64` form once one offset passes `0xFFFFFFFF`, whatever the
+    /// file's size.
+    #[must_use]
+    pub fn width(&self) -> PartOffsetWidth {
+        let highest = self.ranges.iter().flat_map(|(start, end)| [*start, *end]);
+        PartOffsetWidth::for_file_size(highest.max().unwrap_or(0))
+    }
+
     /// The three pairs as stored, padding included — the wire's view; what a
     /// server acts on is [`live`](Self::live).
     #[must_use]

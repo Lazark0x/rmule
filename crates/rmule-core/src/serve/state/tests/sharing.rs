@@ -44,6 +44,67 @@ fn file_status_reports_amule_ed2k_part_count_at_an_exact_part_multiple() {
     assert!((0..3).all(|i| bitmap.has(PartIndex::new(i))));
 }
 
+/// A large file does not exist for a peer whose hello does not claim them:
+/// every ask reads `OP_FILEREQANSNOFIL` or silence, as stock's bundle does
+/// (`ClientTCPSocket.cpp:1070`), and a peer that claims them is answered.
+#[test]
+fn a_large_file_is_never_served_to_a_peer_without_the_bit() {
+    let large = rmule_primitives::OLD_MAX_FILE_SIZE + 1;
+    let file_hash = hash(0x22);
+    let mut state = serving_state(1, vec![entry(file_hash, large, "large.bin")]);
+    let now = Instant::now();
+    let identified = |large_files| {
+        crate::hello_facts::HelloFacts {
+            large_files,
+            ..crate::hello_facts::HelloFacts::of(UserHash::from_bytes([0x33; 16]))
+        }
+        .identified()
+    };
+    state.on_conn_event(now, peer(1), identified(false), &no_modifiers());
+    state.on_conn_event(now, peer(2), identified(true), &no_modifiers());
+    let mut ask = |who, input: ServerEvent| {
+        state.on_conn_event(now, who, ServeInput::Server(input), &no_modifiers())
+    };
+
+    let status = ask(peer(1), ServerEvent::FileIdSet { file_hash });
+    assert!(matches!(
+        status.as_slice(),
+        [ServeDecision::Send {
+            command: ServerCommand::AnswerFileNotFound { .. },
+            ..
+        }]
+    ));
+    let bundle = ask(
+        peer(1),
+        ServerEvent::FileBundleRequested {
+            file_hash,
+            file_size: Some(large),
+            asks: Vec::new(),
+            cut: None,
+        },
+    );
+    assert!(matches!(
+        bundle.as_slice(),
+        [ServeDecision::Send {
+            command: ServerCommand::AnswerFileNotFound { .. },
+            ..
+        }]
+    ));
+    assert_eq!(
+        ask(peer(1), ServerEvent::SlotRequested { file_hash }),
+        Vec::new()
+    );
+
+    let status = ask(peer(2), ServerEvent::FileIdSet { file_hash });
+    assert!(status.iter().any(|decision| matches!(
+        decision,
+        ServeDecision::Send {
+            command: ServerCommand::AnswerFileStatus { .. },
+            ..
+        }
+    )));
+}
+
 #[test]
 fn the_share_snapshot_answers_probes_and_derives_the_announce_list() {
     let two_parts = ED2K_PART_SIZE + 1;

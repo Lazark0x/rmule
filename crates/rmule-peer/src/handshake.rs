@@ -207,16 +207,18 @@ impl PeerHelloBody {
         }
         tags.push(misc1.to_tag());
         // Honest Capability Advertisement (ADR-0054/0055): rmule implements
-        // ExtMultiPacket (bit 5) and SourceExchange2 (bit 10), so those ride the
-        // MiscOptions2 word independently of the crypt stance. Fold them onto
+        // large files (bit 4), ExtMultiPacket (bit 5) and SourceExchange2
+        // (bit 10), so those ride the MiscOptions2 word independently of the
+        // crypt stance. Fold them onto
         // the protocol-obfuscation crypt advert (ADR-0042) when the connection
         // carries an obfuscation policy — `supports` is truthful, rmule accepts
         // obfuscated inbound — or onto an otherwise-empty word when
-        // it does not: a hello with no crypt policy must still advertise the two
+        // it does not: a hello with no crypt policy must still advertise the
         // capabilities it implements. The tag rides whenever any bit is set; an
         // all-zero word is still omitted.
         let mut misc2 = crypt_advert
             .unwrap_or(MiscOptions2::from_bits(0))
+            .with_large_files()
             .with_multipacket_ext()
             .with_source_exchange2()
             .with_direct_udp_callback(direct_udp_callback);

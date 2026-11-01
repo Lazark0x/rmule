@@ -98,6 +98,8 @@ pub struct PeerIdentity {
     /// What the peer said about source exchange, as the session that read
     /// its hello judged it (ADR-0108). Unknown — never askable — until set.
     source_exchange: SourceExchangeSupport,
+    /// Whether its hello claims large files (`MiscOptions2` bit 4).
+    large_files: bool,
     unknown_tags: Vec<Tag>,
 }
 
@@ -155,6 +157,8 @@ impl PeerIdentity {
             // of MiscOptions1 (aMule `m_nUDPPort` / `m_byUDPVer`).
             client_udp_port: client_udp_port_from_tags(&body.tags),
             kad_version: MiscOptions2::from_tags(&body.tags).map_or(0, MiscOptions2::kad_version),
+            large_files: MiscOptions2::from_tags(&body.tags)
+                .is_some_and(MiscOptions2::supports_large_files),
             udp_version: MiscOptions1::from_tags(&body.tags).map_or(0, MiscOptions1::udp_version),
             extended_requests_version: MiscOptions1::from_tags(&body.tags)
                 .map_or(0, MiscOptions1::extended_requests_version),
@@ -179,6 +183,13 @@ impl PeerIdentity {
     #[must_use]
     pub const fn inflates_parts(&self) -> bool {
         self.data_compression_version > 0
+    }
+
+    /// Whether it takes files past `OLD_MAX_FILE_SIZE` (aMule
+    /// `SupportsLargeFiles`, `updownclient.h:559`).
+    #[must_use]
+    pub const fn supports_large_files(&self) -> bool {
+        self.large_files
     }
 
     /// Whether it claims AICH (aMule `IsSupportingAICH`, `updownclient.h:389`).

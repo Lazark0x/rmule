@@ -315,8 +315,8 @@ pub(crate) const CT_EMULE_MISCOPTIONS2: u8 = 0xFE;
 /// `377ec8d9` (`SupportsCryptLayer` at bit 7, `Requests` at bit 8, `Requires` at
 /// bit 9) and are **pending** — their only validator is a real aMule choosing
 /// to obfuscate-dial rmule. rmule writes the crypt bits, the Kad
-/// version, ExtMultiPacket, SourceExchange2 and the direct-UDP-callback bit;
-/// every other `MiscOptions2` capability stays 0.
+/// version, large files, ExtMultiPacket, SourceExchange2 and the
+/// direct-UDP-callback bit; every other `MiscOptions2` capability stays 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiscOptions2(u32);
 
@@ -346,6 +346,16 @@ impl MiscOptions2 {
     #[must_use]
     pub const fn requires_crypt_layer(self) -> bool {
         (self.0 >> 9) & 1 != 0
+    }
+
+    /// Bit 4: `SupportsLargeFiles` — the peer takes files past
+    /// `OLD_MAX_FILE_SIZE` (aMule `BaseClient.cpp:596`). Stock answers such a
+    /// file `OP_FILEREQANSNOFIL` to a peer without it
+    /// (`ClientTCPSocket.cpp:1070`), and never asks it a block past 4 GiB
+    /// (`DownloadClient.cpp:747`).
+    #[must_use]
+    pub const fn supports_large_files(self) -> bool {
+        (self.0 >> 4) & 1 != 0
     }
 
     /// Bit 5: `SupportExtMultiPacket` — the extended `OP_MULTIPACKET_EXT`
@@ -430,6 +440,17 @@ impl MiscOptions2 {
         Self(self.0 | ((accepts as u32) << 12))
     }
 
+    /// Fold the ADR-0047 registry's large-files bit (bit 4) into this
+    /// crypt-stance word — the peer-hello projection of
+    /// [`Capabilities::supports_large_files`]. Applied at the hello-building
+    /// call site alongside [`Self::with_multipacket_ext`], for the same
+    /// reason.
+    #[must_use]
+    pub const fn with_large_files(self) -> Self {
+        let caps = Capabilities::shipped(CryptStance::disabled());
+        Self(self.0 | ((caps.supports_large_files() as u32) << 4))
+    }
+
     /// Fold the ADR-0047 registry's always-shipped ExtMultiPacket bit (bit
     /// 5, ADR-0054) into this crypt-stance word. Applied at
     /// the hello-building call site rather than inside
@@ -506,6 +527,18 @@ impl MiscOptions2 {
 mod tests {
     use super::{CT_EMULE_UDPPORTS, MiscOptions1, MiscOptions2, UdpPortsAdvert};
     use rmule_primitives::{Tag, TagName, TagValue};
+
+    /// `0x438` is the `MiscOptions2` of a live stock hello (capture
+    /// `amule-233-directcallback-20260728`, `direct_callback/captured`).
+    #[test]
+    fn large_files_is_the_bit_stock_lights_and_rmule_writes_it() {
+        assert!(MiscOptions2::from_bits(0x0000_0438).supports_large_files());
+        assert!(!MiscOptions2::from_bits(0x0000_0428).supports_large_files());
+        assert_eq!(
+            MiscOptions2::from_bits(0).with_large_files(),
+            MiscOptions2::from_bits(1 << 4)
+        );
+    }
 
     #[test]
     fn udp_ports_advert_packs_kad_high_client_low() {

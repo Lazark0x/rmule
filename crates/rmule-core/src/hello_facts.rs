@@ -39,6 +39,8 @@ pub(crate) struct HelloFacts {
     pub(crate) aich_version: u8,
     /// Its crypt stance (`MiscOptions2`).
     pub(crate) crypt: CryptStance,
+    /// Whether it claims large files (`MiscOptions2` bit 4).
+    pub(crate) large_files: bool,
     /// The IPv6 it names (`CT_MOD_IP_V6`).
     pub(crate) ipv6: Option<Ipv6Addr>,
     /// The software it reads as.
@@ -69,6 +71,7 @@ impl HelloFacts {
             data_compression_version: 0,
             aich_version: 1,
             crypt: CryptStance::new(true, true, false),
+            large_files: true,
             ipv6: None,
             software: nameless_software(),
             serving_buddy: None,
@@ -86,7 +89,12 @@ impl HelloFacts {
             )
             .with_udp_version(self.udp_version)
             .to_tag(),
-            MiscOptions2::from_stance(self.crypt).to_tag(),
+            if self.large_files {
+                MiscOptions2::from_stance(self.crypt).with_large_files()
+            } else {
+                MiscOptions2::from_stance(self.crypt)
+            }
+            .to_tag(),
         ];
         if let Some(nickname) = self.nickname {
             tags.push(Tag::new(

@@ -66,7 +66,7 @@ fn misc1_plain() -> Tag {
 
 /// `CT_EMULE_MISCOPTIONS2` with only bit 5 (`SupportExtMultiPacket`) lit.
 fn misc2_ext() -> Tag {
-    MiscOptions2::from_bits(1 << 5).to_tag()
+    MiscOptions2::from_bits((1 << 4) | (1 << 5)).to_tag()
 }
 
 fn hash() -> FileHash {

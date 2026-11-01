@@ -33,21 +33,10 @@ use crate::source_exchange::{
     SourceExchangeEntry, SourceExchangeVersion,
 };
 
-fn narrowest_width_for_ranges(req: &RequestParts) -> PartOffsetWidth {
-    let max_offset = req
-        .ranges
-        .as_array()
-        .iter()
-        .flat_map(|(s, e)| [*s, *e])
-        .max()
-        .unwrap_or(0);
-    PartOffsetWidth::for_file_size(max_offset)
-}
-
 /// The narrowest [`SourceExchangeVersion`] that round-trips every field a
 /// decoded [`AnswerSources`] actually carries: v4 iff any source has crypt
 /// options, else v2 iff any source has a user hash, else v1. Mirrors
-/// `narrowest_width_for_ranges`'s spirit — the umbrella-wide `encode()` picks
+/// [`PartRanges::width`](crate::parts::PartRanges::width)'s spirit — the umbrella-wide `encode()` picks
 /// a sufficient variant from the data rather than assuming a fixed one; a
 /// caller wanting a specific wire version (v3's hybrid id order in
 /// particular, which this can never pick since nothing in `SourceClaim`
@@ -600,8 +589,7 @@ impl PeerPacket {
                 // opcode than the original wire frame if all offsets fit
                 // u32. For wire-faithful round-trip, call
                 // `RequestParts::encode_packet(width)` directly.
-                let width = narrowest_width_for_ranges(r);
-                r.encode_packet(width)
+                r.encode_packet(r.ranges.width())
                     .expect("narrowest width always satisfies its own range check")
             }
             Self::SendingPart(sp) => {

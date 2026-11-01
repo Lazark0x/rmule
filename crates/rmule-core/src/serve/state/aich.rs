@@ -134,7 +134,12 @@ impl ServeState {
             .identities
             .get(&peer)
             .is_some_and(|i| i.supports_aich());
-        if !supports || self.lookup(file_hash).and_then(Found::row).is_none() {
+        if !supports
+            || self
+                .lookup_for(peer, file_hash)
+                .and_then(Found::row)
+                .is_none()
+        {
             return Vec::new();
         }
         if let Some(tree) = self.aich.built.get(&file_hash) {
@@ -162,7 +167,7 @@ impl ServeState {
             command: ServerCommand::RefuseAich { file_hash },
         };
         let Some(file_size) = self
-            .lookup(file_hash)
+            .lookup_for(peer, file_hash)
             .and_then(Found::row)
             .map(|entry| entry.file_size)
         else {

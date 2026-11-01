@@ -13,8 +13,8 @@
 
 use std::collections::HashMap;
 
-use rmule_peer::PartBitmap;
-use rmule_primitives::{Ed2kFileClass, Ed2kText, FileHash, PartHash, PeerEndpoint};
+use rmule_peer::{PartBitmap, PeerIdentity};
+use rmule_primitives::{Ed2kFileClass, Ed2kText, FileHash, PartHash, PeerEndpoint, is_large_file};
 
 use super::reask::full_bitmap;
 use super::{ReadFrom, ServeDecision, ServeState};
@@ -172,6 +172,20 @@ impl ServeState {
         self.served.get(&file_hash).map(|look| Found::Download {
             look,
             offered: self.partials.contains(&file_hash),
+        })
+    }
+
+    /// The file `file_hash` names as `peer` may hear of it: a large file does
+    /// not exist for a peer whose hello does not claim large files. Stock
+    /// gates only the bundle (`ClientTCPSocket.cpp:1070`); every ask is
+    /// gated here, so no road serves one what it cannot address.
+    pub(super) fn lookup_for(&self, peer: PeerEndpoint, file_hash: FileHash) -> Option<Found<'_>> {
+        self.lookup(file_hash).filter(|found| {
+            !is_large_file(found.file_size())
+                || self
+                    .identities
+                    .get(&peer)
+                    .is_some_and(PeerIdentity::supports_large_files)
         })
     }
 
