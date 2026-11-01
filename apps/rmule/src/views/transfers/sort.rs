@@ -223,7 +223,10 @@ impl TransfersView {
 
     /// Every download's id, in display order.
     pub(super) fn download_ids(&self, state: &UiState) -> Vec<DownloadId> {
-        self.sorted_lines(state).iter().map(|line| line.id).collect()
+        self.sorted_lines(state)
+            .iter()
+            .map(|line| line.id)
+            .collect()
     }
 
     /// Take up the downloads' sort as the durable preferences kept it.

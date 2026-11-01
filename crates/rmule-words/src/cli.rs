@@ -84,7 +84,10 @@ pub fn sources_found(total: usize, usable: usize) -> String {
 #[must_use]
 pub fn part_verified(parts_done: u64, parts: Option<usize>, size: u64) -> String {
     match parts {
-        Some(parts) => format!("{parts_done} of {parts} parts verified, of {}", human_size(size)),
+        Some(parts) => format!(
+            "{parts_done} of {parts} parts verified, of {}",
+            human_size(size)
+        ),
         None => format!(
             "{} verified, of {}",
             count(parts_done, "part", "parts"),

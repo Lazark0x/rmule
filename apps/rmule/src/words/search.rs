@@ -25,6 +25,12 @@ pub fn more_ended(ended: Option<MoreEnded>) -> Sentence {
     Sentence::fixed(ended.map_or(MORE_REFUSED, more_ended_words))
 }
 
+/// What a held entry shows when the engine stopped under it while it ran.
+pub const STOPPED_WITH_THE_ENGINE: &str = "stopped with the engine";
+
+/// [`STOPPED_WITH_THE_ENGINE`] opening a pane's title.
+pub const STOPPED_WITH_THE_ENGINE_TITLE: &str = "Stopped with the engine";
+
 /// Why nothing can be sent now.
 pub const ENGINE_STOPPED: &str = "the engine has stopped";
 

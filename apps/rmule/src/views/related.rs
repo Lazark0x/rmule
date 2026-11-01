@@ -12,9 +12,6 @@ use rmule_primitives::{Ed2kText, FileHash, RelatedFilesQuery};
 use crate::action::Action;
 use crate::state::{UiState, refusal_text};
 
-/// The item's label, the same in every menu.
-pub(crate) const LABEL: &str = "Search related";
-
 /// Why the item is dimmed now, or `None` when the connected server grants the
 /// search. With no core there is nothing to send it through, whatever the level
 /// last said.

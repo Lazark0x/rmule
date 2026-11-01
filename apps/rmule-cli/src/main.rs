@@ -292,8 +292,7 @@ fn open_store(data_dir: &std::path::Path) -> Result<Arc<DurableStore>> {
         CoreError::StoreRefused { refusal, .. } => {
             anyhow::anyhow!(rmule_words::store::open_refusal(refusal))
         }
-        other => anyhow::Error::new(other)
-            .context(format!("open store in {}", data_dir.display())),
+        other => anyhow::Error::new(other).context(format!("open store in {}", data_dir.display())),
     })
 }
 
@@ -490,12 +489,8 @@ async fn run_add(
     timeout: Option<u64>,
     verbose: bool,
 ) -> Result<()> {
-    let read = Ed2kLink::read(link_str).map_err(|error| {
-        ended(
-            Ending::Unreadable,
-            link_refused(&LinkRefusal::of(&error)),
-        )
-    })?;
+    let read = Ed2kLink::read(link_str)
+        .map_err(|error| ended(Ending::Unreadable, link_refused(&LinkRefusal::of(&error))))?;
     if let Some(sentence) = rmule_words::cli::skipped_fields(&read.skipped_fields) {
         say!("{sentence}");
     }

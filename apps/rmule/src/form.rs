@@ -190,7 +190,13 @@ pub(crate) fn one_line(text: &str) -> String {
     let spaced: String = text
         .trim()
         .chars()
-        .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     crate::words::plain(&spaced)
 }

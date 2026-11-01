@@ -13,9 +13,6 @@ pub(super) fn absent(state: &UiState) -> Option<String> {
     (!state.core_alive).then(|| crate::words::search::ENGINE_STOPPED.to_string())
 }
 
-/// What a held entry shows when the core stopped under it while it ran.
-pub(super) const STOPPED_WITH_THE_CORE: &str = "stopped with the engine";
-
 impl SearchesView {
     /// Why the current entry was never sent, if it was not.
     pub(super) fn current_not_sent(&self) -> Option<&str> {

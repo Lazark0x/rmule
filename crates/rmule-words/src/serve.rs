@@ -225,7 +225,8 @@ pub fn serving_failed(reason: ServeStartFailure) -> Sentence {
             )
         }
         ServeStartFailure::Adapter => {
-            "not serving: an internal fault ended it earlier; restart rmule to serve again".to_string()
+            "not serving: an internal fault ended it earlier; restart rmule to serve again"
+                .to_string()
         }
     })
 }

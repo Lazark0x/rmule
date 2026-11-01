@@ -663,10 +663,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
             "not saved: everything under the download dir is shared, and it is your home directory"
         )
     );
-    assert_eq!(
-        app.state.session.download_dir,
-        Some(before)
-    );
+    assert_eq!(app.state.session.download_dir, Some(before));
 }
 
 /// A download directory the share guards refuse is refused as the form

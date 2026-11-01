@@ -331,7 +331,11 @@ impl SharedView {
                     &off_screen_at(&widths),
                 ))
                 .saturating_sub(clamp_u16(files_header(&widths, &self.sort, theme).len()));
-            heights_at(&widths).iter().map(|h| usize::from(*h)).sum::<usize>() > usize::from(room)
+            heights_at(&widths)
+                .iter()
+                .map(|h| usize::from(*h))
+                .sum::<usize>()
+                > usize::from(room)
         });
         let widths = widths_at(bar);
         let heights = heights_at(&widths);
@@ -357,7 +361,13 @@ impl SharedView {
         let mut filled = 0u16;
         while last < heights.len() && filled < room {
             let line = &lines_in_order[last];
-            lines.extend(files_row(line, &widths, last == selected_row, focused, theme));
+            lines.extend(files_row(
+                line,
+                &widths,
+                last == selected_row,
+                focused,
+                theme,
+            ));
             filled = filled.saturating_add(heights[last]);
             last += 1;
         }

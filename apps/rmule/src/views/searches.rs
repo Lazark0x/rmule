@@ -43,11 +43,11 @@ use menu::{draw_menu, menu_step};
 use readd::ReAdd;
 use sort::ResultsTable;
 
+mod asks;
 mod filters;
 mod held;
 mod input;
 mod menu;
-mod asks;
 mod more;
 mod no_core;
 mod readd;

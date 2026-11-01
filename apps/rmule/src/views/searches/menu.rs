@@ -21,6 +21,7 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::modal::Modal;
+use crate::words::labels;
 use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// One row-menu action (spec §3.3): Download · Copy eD2k link · Search
@@ -41,9 +42,9 @@ impl MenuItem {
 
     fn label(self) -> &'static str {
         match self {
-            MenuItem::Download => "Download",
-            MenuItem::CopyLink => "Copy eD2k link",
-            MenuItem::SearchRelated => crate::views::related::LABEL,
+            MenuItem::Download => labels::DOWNLOAD,
+            MenuItem::CopyLink => labels::COPY_LINK,
+            MenuItem::SearchRelated => labels::SEARCH_RELATED,
         }
     }
 

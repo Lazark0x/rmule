@@ -105,7 +105,7 @@ fn every_column_orders_by_its_value_and_a_dash_sorts_last_both_ways() {
 /// any language this build ships: the labels, sorted as text, disagree.
 #[test]
 fn status_sorts_by_rank_not_by_its_label() {
-    use super::super::downloads::status_label;
+    use crate::words::labels::status as status_label;
     let statuses = [
         DownloadStatus::Failed,
         DownloadStatus::Paused,

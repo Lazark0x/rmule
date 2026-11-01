@@ -98,7 +98,10 @@ impl App {
                         if self.chrome.help_open || self.chrome.quit_open {
                             return Flow::Continue;
                         }
-                        match self.views.handle_paste(self.chrome.active, &text, &self.state) {
+                        match self
+                            .views
+                            .handle_paste(self.chrome.active, &text, &self.state)
+                        {
                             ViewOutcome::Redraw => self.dirty = true,
                             ViewOutcome::Emit(action) => return self.reduce(action, now),
                             ViewOutcome::Ignored => {}

@@ -314,8 +314,7 @@ fn a_related_files_search_is_labelled_by_its_file_with_a_tilde() {
         rmule_primitives::FileHash::from_bytes([7; 16]),
         rmule_primitives::Ed2kText::from_utf8("abcdefghijklmnopqrstuvwxyz.avi"),
     );
-    view.held
-        .open(&related.into(), search_id(1));
+    view.held.open(&related.into(), search_id(1));
     started(&mut state, search_id(1));
     let strip = render_to_lines(78, 21, |frame| {
         view.draw(

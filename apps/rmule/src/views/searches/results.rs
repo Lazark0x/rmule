@@ -131,11 +131,7 @@ fn results_title(
     let status = match &pane.status {
         // Nothing will answer it: the core that ran it is gone.
         SearchStatus::Running | SearchStatus::WaitingForConnection if !core_alive => {
-            let mut stopped = super::no_core::STOPPED_WITH_THE_CORE.to_string();
-            if let Some(first) = stopped.get_mut(..1) {
-                first.make_ascii_uppercase();
-            }
-            stopped
+            crate::words::search::STOPPED_WITH_THE_ENGINE_TITLE.to_string()
         }
         SearchStatus::WaitingForConnection if reconnecting => {
             "Waiting for the reconnect · sent when it lands".to_string()
@@ -288,7 +284,7 @@ impl SearchesView {
                                 SearchStatus::Running | SearchStatus::WaitingForConnection
                                     if !state.core_alive =>
                                 {
-                                    super::no_core::STOPPED_WITH_THE_CORE
+                                    crate::words::search::STOPPED_WITH_THE_ENGINE
                                 }
                                 SearchStatus::WaitingForConnection => {
                                     "waiting for a connection — press c on a server in Networks (1) to connect"

@@ -19,6 +19,7 @@ pub use rmule_words::{
 pub mod app;
 pub mod front_door;
 pub mod help;
+pub mod labels;
 pub mod player;
 pub mod readd;
 pub mod scan;

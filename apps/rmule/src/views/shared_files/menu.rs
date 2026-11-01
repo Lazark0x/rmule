@@ -24,6 +24,7 @@ use crate::state::UiState;
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::modal::{Modal, confirm_key, scroll_key};
+use crate::words::labels;
 use crate::words::units::short_hash;
 use crate::wrap::{clamp_u16, display_width, labeled_lines, wrapped_lines};
 
@@ -65,7 +66,11 @@ pub(super) struct MenuItem {
 fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
     let row = state.shared.get(&file_hash)?;
     let name = rmule_primitives::Ed2kText::from_utf8(row.name()?);
-    Some(crate::views::ed2k_file_link(&name, row.file_size?, file_hash))
+    Some(crate::views::ed2k_file_link(
+        &name,
+        row.file_size?,
+        file_hash,
+    ))
 }
 
 /// The files-table menu (spec §3.5). Copy is greyed until the file's name and
@@ -76,24 +81,24 @@ fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
 fn file_menu(state: &UiState, file_hash: FileHash) -> [MenuItem; 4] {
     [
         MenuItem {
-            label: "Copy eD2k link",
+            label: labels::COPY_LINK,
             greyed: shared_link(state, file_hash)
                 .is_none()
                 .then_some("its name and size are not read yet"),
             action: MenuAction::CopyLink,
         },
         MenuItem {
-            label: crate::views::related::LABEL,
+            label: labels::SEARCH_RELATED,
             greyed: crate::views::related::unavailable(state),
             action: MenuAction::SearchRelated,
         },
         MenuItem {
-            label: "Unshare…",
+            label: labels::UNSHARE,
             greyed: None,
             action: MenuAction::Unshare,
         },
         MenuItem {
-            label: "Comments",
+            label: labels::COMMENTS,
             greyed: Some("non-goal, ADR-0068"),
             action: MenuAction::Comments,
         },

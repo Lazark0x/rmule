@@ -46,8 +46,9 @@ pub const LAST_SERVER_NOT_SAVED: Sentence = Sentence::fixed(
 );
 
 /// A Settings edit the store would not keep.
-pub const NOT_SAVED: Sentence =
-    Sentence::fixed("could not save the setting: writing to the data directory failed (see the run log)");
+pub const NOT_SAVED: Sentence = Sentence::fixed(
+    "could not save the setting: writing to the data directory failed (see the run log)",
+);
 
 /// A Settings edit Core Settings refused for its value: nothing was written,
 /// and the sentence says what the key takes, for a download dir the share

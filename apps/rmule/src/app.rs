@@ -690,9 +690,6 @@ mod tests {
         app.graceful_quit(&mut surface, &mut actions_rx)
             .await
             .expect("draw succeeds");
-        assert!(
-            surface.frames.is_empty(),
-            "nothing to announce"
-        );
+        assert!(surface.frames.is_empty(), "nothing to announce");
     }
 }

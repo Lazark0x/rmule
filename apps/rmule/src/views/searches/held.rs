@@ -102,12 +102,7 @@ impl HeldSearches {
     /// Hold a search that was never sent, saying `why`: at the right end,
     /// and current. It is under an id no core ever saw, so nothing can
     /// answer it.
-    pub(super) fn open_unsent(
-        &mut self,
-        query: &str,
-        related: Option<FileHash>,
-        why: String,
-    ) {
+    pub(super) fn open_unsent(&mut self, query: &str, related: Option<FileHash>, why: String) {
         self.entries.push(HeldSearch {
             id: SearchId::mint(),
             query: query.to_string(),

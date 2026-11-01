@@ -20,6 +20,7 @@ use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
+use crate::words::labels;
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
@@ -56,14 +57,14 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
     let row = state.downloads.get(&id);
     // A failed download holds its place with no run (ADR-0094, "Failed"):
     // what it offers is one Restart, and core picks whether that continues
-    // from what is on disk or starts over (ADR-0094, "Restart").
+    // from what is on disk or starts over (ADR-0094, labels::RESTART).
     // A completed download has no run to pause and nothing to cancel: what
     // it offers is to leave the list (ADR-0094, "Clearing a completed download").
     let (first, first_action) = match status {
-        DownloadStatus::Paused => ("Resume", MenuAction::Resume),
-        DownloadStatus::Failed => ("Restart", MenuAction::Restart),
-        DownloadStatus::Completed => ("Clear from list", MenuAction::Clear),
-        _ => ("Pause", MenuAction::Pause),
+        DownloadStatus::Paused => (labels::RESUME, MenuAction::Resume),
+        DownloadStatus::Failed => (labels::RESTART, MenuAction::Restart),
+        DownloadStatus::Completed => (labels::CLEAR_FROM_LIST, MenuAction::Clear),
+        _ => (labels::PAUSE, MenuAction::Pause),
     };
     let cancel_reason =
         (status == DownloadStatus::Completed).then_some("completed: the file is kept and shared");
@@ -84,7 +85,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
     }];
     items.extend([
         MenuItem {
-            label: "Cancel…".to_string(),
+            label: labels::CANCEL.to_string(),
             action: if cancel_reason.is_none() {
                 MenuAction::Cancel
             } else {
@@ -93,12 +94,12 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             reason: cancel_reason,
         },
         MenuItem {
-            label: "Show file details".to_string(),
+            label: labels::SHOW_DETAILS.to_string(),
             action: MenuAction::Details,
             reason: None,
         },
         MenuItem {
-            label: "Preview".to_string(),
+            label: labels::PREVIEW.to_string(),
             action: if preview_reason.is_none() {
                 MenuAction::Preview
             } else {
@@ -107,7 +108,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             reason: preview_reason,
         },
         MenuItem {
-            label: "Copy eD2k link".to_string(),
+            label: labels::COPY_LINK.to_string(),
             action: if copy_reason.is_none() {
                 MenuAction::CopyLink
             } else {
@@ -116,7 +117,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             reason: copy_reason,
         },
         MenuItem {
-            label: crate::views::related::LABEL.to_string(),
+            label: labels::SEARCH_RELATED.to_string(),
             action: if related_reason.is_none() {
                 MenuAction::SearchRelated
             } else {
@@ -167,10 +168,7 @@ pub(super) fn first_action(status: DownloadStatus) -> MenuAction {
 }
 
 /// Pause, or the resume of a paused download, or the restart of a failed one.
-pub(super) fn pause_toggle_action(
-    status: DownloadStatus,
-    id: DownloadId,
-) -> Action {
+pub(super) fn pause_toggle_action(status: DownloadStatus, id: DownloadId) -> Action {
     if status == DownloadStatus::Completed {
         return Action::Flash(crate::words::download::NOTHING_TO_PAUSE);
     }

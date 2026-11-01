@@ -25,6 +25,7 @@ use crate::state::{UiState, server_label};
 use crate::theme::Theme;
 use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
+use crate::words::labels;
 use crate::wrap::{clamp_u16, display_width, labeled_lines, wrap_text, wrapped_lines};
 
 /// A row-menu entry. `disabled` carries the greyed reason tag (
@@ -209,15 +210,15 @@ impl NetworksView {
     pub(super) fn open_menu(&mut self, state: &UiState) -> ViewOutcome {
         let update = if state.server_list_updating {
             MenuItem::greyed(
-                "Update list from URL… (U)",
+                labels::UPDATE_LIST,
                 MenuAction::UpdateFromUrl,
                 "(update in flight)",
             )
         } else {
-            MenuItem::enabled("Update list from URL… (U)", MenuAction::UpdateFromUrl)
+            MenuItem::enabled(labels::UPDATE_LIST, MenuAction::UpdateFromUrl)
         };
         let list_items = [
-            MenuItem::enabled("Add server… (a)", MenuAction::AddServer),
+            MenuItem::enabled(labels::ADD_SERVER, MenuAction::AddServer),
             update,
         ];
 
@@ -225,9 +226,9 @@ impl NetworksView {
             // No row: only the list-level actions are meaningful, and the row
             // actions say so instead of vanishing.
             let mut items = vec![
-                MenuItem::greyed("Connect (c)", MenuAction::Connect, "(no server selected)"),
+                MenuItem::greyed(labels::CONNECT, MenuAction::Connect, "(no server selected)"),
                 MenuItem::greyed(
-                    "Copy server link",
+                    labels::COPY_SERVER_LINK,
                     MenuAction::CopyLink,
                     "(no server selected)",
                 ),
@@ -248,16 +249,16 @@ impl NetworksView {
         // The row the operator's intent stands on offers Disconnect where the
         // others offer Connect: one place, the action that can act.
         let connect = if crate::views::is_remaking(state, &row.server.endpoint) {
-            MenuItem::enabled("Stop reconnecting (c)", MenuAction::Disconnect)
+            MenuItem::enabled(labels::STOP_RECONNECTING, MenuAction::Disconnect)
         } else if crate::views::is_ours(state, &row.server.endpoint) {
-            MenuItem::enabled("Disconnect (c)", MenuAction::Disconnect)
+            MenuItem::enabled(labels::DISCONNECT, MenuAction::Disconnect)
         } else {
-            MenuItem::enabled("Connect (c)", MenuAction::Connect)
+            MenuItem::enabled(labels::CONNECT, MenuAction::Connect)
         };
         let static_label = if row.server.is_static {
-            "Unpin (currently static)"
+            labels::UNPIN
         } else {
-            "Pin as static"
+            labels::PIN
         };
         let next = next_priority(row.server.priority);
         let priority_label = format!(
@@ -268,8 +269,8 @@ impl NetworksView {
 
         let mut items = vec![
             connect,
-            MenuItem::enabled("Copy server link", MenuAction::CopyLink),
-            MenuItem::enabled("Remove…", MenuAction::Remove),
+            MenuItem::enabled(labels::COPY_SERVER_LINK, MenuAction::CopyLink),
+            MenuItem::enabled(labels::REMOVE, MenuAction::Remove),
             MenuItem::enabled(static_label, MenuAction::ToggleStatic),
             MenuItem::enabled(priority_label, MenuAction::CyclePriority),
         ];

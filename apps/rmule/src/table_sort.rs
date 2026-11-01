@@ -225,7 +225,6 @@ impl<T: SortedTable> Clone for TableSort<T> {
 
 impl<T: SortedTable> Copy for TableSort<T> {}
 
-
 impl<T: SortedTable> std::fmt::Debug for TableSort<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("TableSort")

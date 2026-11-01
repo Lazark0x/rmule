@@ -24,8 +24,8 @@ impl SearchesView {
         let text = if self.showing_related() {
             words::ASKS_CONNECTED_SERVER
         } else {
-            let server = state.connected_server.is_some()
-                || state.diagnostics.connected_server.is_some();
+            let server =
+                state.connected_server.is_some() || state.diagnostics.connected_server.is_some();
             words::asks(server, state.diagnostics.kad.is_some())
         };
         wrap_text(text, width)

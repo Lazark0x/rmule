@@ -36,6 +36,7 @@ use crate::words::download::{
     ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time, part_check_status,
     volume_stop_status,
 };
+use crate::words::labels;
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
 
@@ -247,20 +248,6 @@ fn eta_cell(eta: Eta) -> String {
         Eta::Unknown => "—".to_string(),
         Eta::TooSlow => ETA_TOO_SLOW.to_string(),
         Eta::Left(secs) => eta_time(secs),
-    }
-}
-
-pub(super) fn status_label(status: DownloadStatus) -> &'static str {
-    match status {
-        DownloadStatus::Waiting => "Waiting",
-        // Waiting for a server session or Kad: the status column's eleven
-        // cells hold "Downloading" and no more.
-        DownloadStatus::NoConnection => "No network",
-        DownloadStatus::Downloading => "Downloading",
-        DownloadStatus::Paused => "Paused",
-        DownloadStatus::Completing => "Completing",
-        DownloadStatus::Completed => "Completed",
-        DownloadStatus::Failed => "Failed",
     }
 }
 
@@ -539,22 +526,21 @@ pub(super) fn status_text(
             _,
         ) if !state.core_alive => crate::words::app::ROW_STOPPED.to_string(),
         (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
-            "Reconnecting".to_string()
+            labels::RECONNECTING.to_string()
         }
-        (DownloadStatus::Paused, _) if volume_stop.is_some() => {
-            volume_stop.map_or_else(String::new, |stopped| {
+        (DownloadStatus::Paused, _) if volume_stop.is_some() => volume_stop
+            .map_or_else(String::new, |stopped| {
                 volume_stop_status(stopped.stop).to_string()
-            })
-        }
+            }),
         (DownloadStatus::Waiting | DownloadStatus::NoConnection, _) if check.is_some() => check
             .map_or_else(String::new, |level| {
                 part_check_status(level.checked, level.of)
             }),
         _ if swarm_exhausted(status, diag) => NO_NEEDED_PARTS_STATUS.to_string(),
-        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
-        (DownloadStatus::Waiting, Some(SourceWait::OnStanding)) => "Queued".to_string(),
+        (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => labels::ASKING_KAD.to_string(),
+        (DownloadStatus::Waiting, Some(SourceWait::OnStanding)) => labels::QUEUED.to_string(),
         (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),
-        _ => status_label(status).to_string(),
+        _ => labels::status(status).to_string(),
     }
 }
 
