@@ -586,7 +586,7 @@ impl RunContainer {
         let runs =
             |test: &dyn Fn(&str) -> bool| self.args.iter().any(|arg| test(&arg.to_string_lossy()));
         let rmule = image.contains("interop-rmule-tools")
-            || runs(&|arg| arg.ends_with("debug/rmule-tools"));
+            || runs(&|arg| arg.ends_with(crate::rmule::tools_binary()));
         if !rmule || runs(&|arg| arg == "cargo") {
             return self;
         }
