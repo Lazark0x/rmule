@@ -34,6 +34,11 @@ use crate::server_list::ServerFacts;
 pub(crate) struct SharedServerSession {
     slot: Arc<Mutex<Option<ServerSessionHandle>>>,
     own: SharedOwnIdentity,
+    /// Raised to end the dial in flight; lowered by the next claim.
+    dial_cancel: Arc<watch::Sender<bool>>,
+    /// The bounded **Name Resolver** an establishment resolves a named
+    /// server through, before its filter gate.
+    resolver: Arc<std::sync::OnceLock<crate::name_resolver::SharedNameResolver>>,
     /// What the connected server said about reaching us over IPv6
     /// (`ST_IPV6_STATUS`, ADR-0084). It rides the session cell for the same
     /// reason the self-facts do: the session is its only writer and its
@@ -134,6 +139,8 @@ impl Default for SharedServerSession {
             facts: Arc::default(),
             sessions: Arc::new(watch::channel(0).0),
             pending_connect: Arc::default(),
+            dial_cancel: Arc::new(watch::channel(false).0),
+            resolver: Arc::default(),
             login_timeout: Arc::default(),
             withhold_shares: Arc::new(watch::channel(false).0),
             dial_backs: super::ServerCallbackDialBacks::new(obfuscation.clone()),
@@ -327,6 +334,7 @@ impl SharedServerSession {
     /// connect task is spawned; the claim moves into that task and its drop —
     /// success, failure, or panic — is the release.
     pub(crate) fn claim_connect(&self) -> OperatorConnectClaim {
+        self.dial_cancel.send_replace(false);
         let (tx, rx) = watch::channel(());
         *self
             .pending_connect
@@ -335,6 +343,34 @@ impl SharedServerSession {
         OperatorConnectClaim {
             _resolved_on_drop: tx,
         }
+    }
+
+    /// End the dial in flight: the operator's Disconnect is meant for a stuck
+    /// dial above all. Nothing happens to a dial past its login, which ends
+    /// as a session and is hung up as one. One dial flies at a time, so one
+    /// flag does; the next claim lowers it.
+    pub(crate) fn cancel_dial(&self) {
+        self.dial_cancel.send_replace(true);
+    }
+
+    /// Resolves once the dial in flight is cancelled.
+    pub(crate) async fn dial_cancelled(&self) {
+        let mut cancel = self.dial_cancel.subscribe();
+        // The sender lives in this cell, so the wait never ends in an error.
+        let _ = cancel.wait_for(|cancelled| *cancelled).await;
+    }
+
+    /// Bind the **Name Resolver** an establishment resolves a named server
+    /// through. Binding twice keeps the first.
+    #[cfg(test)]
+    pub(crate) fn install_resolver(&self, resolver: crate::name_resolver::SharedNameResolver) {
+        let _ = self.resolver.set(resolver);
+    }
+
+    /// The Name Resolver as bound, or the system's.
+    pub(crate) fn resolver(&self) -> &crate::name_resolver::SharedNameResolver {
+        self.resolver
+            .get_or_init(crate::name_resolver::system_resolver)
     }
 
     /// Whether an operator connect holds establishment authority right now

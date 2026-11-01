@@ -133,13 +133,19 @@ where
         let evt_tx = self.evt_tx.clone();
         tokio::spawn(async move {
             if let Some((port, rows)) = mapping {
-                let settled = crate::adapters::await_listener_mapping(rows, port).await;
-                let step = LoginStep::MappingWait { port, settled };
-                let event = CoreEvent::ServerLogin {
-                    server: server.clone(),
-                    step,
+                let waited = tokio::select! {
+                    biased;
+                    () = session.dial_cancelled() => None,
+                    settled = crate::adapters::await_listener_mapping(rows, port) => Some(settled),
                 };
-                send_event(&evt_tx, event);
+                if let Some(settled) = waited {
+                    let step = LoginStep::MappingWait { port, settled };
+                    let event = CoreEvent::ServerLogin {
+                        server: server.clone(),
+                        step,
+                    };
+                    send_event(&evt_tx, event);
+                }
             }
             let outcome =
                 crate::server_session::connect_to_server(&session, server, identity, &ip_filter)

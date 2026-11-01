@@ -179,6 +179,7 @@ where
                 .await;
         }
         self.end_waiting_server_legs();
+        self.wiring.shared_server_session.cancel_dial();
         let live = self.wiring.shared_server_session.slot().lock().await.take();
         if let Some(live) = live {
             // Its own task says `Disconnected` once it is down.

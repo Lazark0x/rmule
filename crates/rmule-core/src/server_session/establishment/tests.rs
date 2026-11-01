@@ -152,6 +152,74 @@ async fn connect_refuses_a_dns_named_server_whose_resolved_ip_is_filtered() {
     );
 }
 
+/// The name goes through the seam and its bound: a resolver that answers a
+/// blocked address is the one a named server's dial is refused by.
+#[tokio::test]
+async fn a_named_server_is_resolved_through_the_name_resolver() {
+    let (filter, _) = crate::ip_filter::IpFilter::from_texts(
+        &[b"203.0.113.0-203.0.113.255,0,blocked\n".as_slice()],
+        127,
+        true,
+        true,
+    );
+    let shared_filter = SharedIpFilter::default();
+    *shared_filter.write().expect("ip filter lock") = filter;
+    let shared = SharedServerSession::default();
+    let resolver = crate::name_resolver::FakeNameResolver::knowing(&[(
+        "srv.example.invalid",
+        Ipv4Addr::new(203, 0, 113, 9),
+    )]);
+    shared.install_resolver(resolver.clone());
+
+    let refused = connect_to_server(
+        &shared,
+        ServerEndpoint::new("srv.example.invalid", 4661).unwrap(),
+        identity(),
+        &shared_filter,
+    )
+    .await;
+
+    assert!(matches!(refused, Err(DownloadFailure::ServerFiltered)));
+    assert_eq!(resolver.asked(), ["srv.example.invalid"]);
+}
+
+/// A server that takes the TCP link and says nothing: the dial sits out its
+/// login. Every reader of the slot answers meanwhile, the operator's
+/// Disconnect above all, and the Disconnect ends the dial.
+#[tokio::test]
+async fn a_dial_holds_no_slot_and_a_cancel_ends_it() {
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = silent.local_addr().unwrap().port();
+    let shared = SharedServerSession::default();
+    shared.install_login_timeout(std::time::Duration::from_secs(120));
+    let claim = shared.claim_connect();
+    let dialing = {
+        let shared = shared.clone();
+        tokio::spawn(async move {
+            connect_to_server(
+                &shared,
+                ServerEndpoint::new("127.0.0.1", port).unwrap(),
+                identity(),
+                &SharedIpFilter::default(),
+            )
+            .await
+        })
+    };
+    let (_link, _) = silent.accept().await.unwrap();
+    let bound = std::time::Duration::from_secs(2);
+
+    let read = tokio::time::timeout(bound, shared.session_in_slot()).await;
+    assert!(matches!(read, Ok(None)), "the slot waits on a dial");
+
+    shared.cancel_dial();
+    let ended = tokio::time::timeout(bound, dialing).await;
+    assert!(
+        matches!(ended, Ok(Ok(Err(_)))),
+        "a cancelled dial ends in its bound"
+    );
+    drop(claim);
+}
+
 #[test]
 fn handshake_context_resolves_an_ipv4_literal_server() {
     let server = ServerEndpoint::new("198.51.100.7", 4661).unwrap();
