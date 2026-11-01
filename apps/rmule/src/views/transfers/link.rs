@@ -34,9 +34,8 @@ pub(super) fn copy_link_reason(row: Option<&DownloadRow>) -> Option<&'static str
     }
 }
 
-/// Build the canonical eD2k link for `Copy eD2k link` through
-/// [`Ed2kLink`]'s `Display`, the same percent-escaping idiom the Searches
-/// view's link-copy uses, so names with spaces or `|` come out escaped.
+/// Build the canonical eD2k link for `Copy eD2k link`, through the one builder
+/// every row menu uses.
 pub(super) fn copy_link_for(row: Option<&DownloadRow>) -> Option<String> {
     let (name, size, file_hash) = copy_link_facts(row)?;
     Some(crate::views::ed2k_file_link(name, size, file_hash))
