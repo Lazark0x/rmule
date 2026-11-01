@@ -5,6 +5,7 @@
 
 use rmule_core::open_durable_store;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::fixture::stub_server;
 use rmule_core::{
@@ -87,7 +88,9 @@ async fn persists_and_revalidates(repo: DurableDownloadRepository, paths: &Downl
     )
     .await;
 
-    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+    let Revalidation::Restored { progress, damaged } =
+        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+    else {
         panic!("an intact part file is not condemned");
     };
     assert!(damaged.is_empty());
@@ -131,7 +134,9 @@ async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, path
 
     // Resume-time revalidation drops the damaged part alone: its record
     // goes, the other part's stays, so a resume fetches only part 0.
-    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+    let Revalidation::Restored { progress, damaged } =
+        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+    else {
         panic!("one intact part keeps the part file");
     };
     assert!(
@@ -160,7 +165,9 @@ async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, path
         first,
     )
     .await;
-    let Revalidation::Restored { progress, damaged } = repo.revalidate(id).await.unwrap() else {
+    let Revalidation::Restored { progress, damaged } =
+        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+    else {
         panic!("a repaired part file is not condemned");
     };
     assert!(damaged.is_empty(), "{damaged:?}");

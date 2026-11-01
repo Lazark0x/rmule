@@ -24,6 +24,7 @@ pub(crate) use seeds::UPGRADE_FROM_V12;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rmule_primitives::{
     AichRootHash, ED2K_PART_SIZE, Ed2kFileLink, PartHash, ServerEndpoint, UserHash,
@@ -429,18 +430,19 @@ impl DurableDownloadRepository {
 
     /// **Start over** a failed download (ADR-0094): discard what is recorded
     /// — its verified parts and the provisional hash set a peer supplied — and
-    /// keep its identity, its row and its final path. The row stays `Failed`
-    /// with its reason until the run that follows begins. The `.part` file is
-    /// the caller's to remove.
+    /// keep its identity, its row and its final path. Only a Restart's own
+    /// run asks, from its part check, so the row is `Active`. The `.part` file
+    /// is the caller's to remove.
     ///
     /// # Errors
     /// [`CoreError::UnknownDownload`] when there is no such row, and
-    /// [`CoreError::InvalidLifecycleTransition`] when it is not `Failed`: a
-    /// running, paused or queued download still holds what it recorded.
+    /// [`CoreError::InvalidLifecycleTransition`] when it is not `Active`: a
+    /// paused or queued download still holds what it recorded, and a failed
+    /// one's parts wait for its Restart.
     pub fn discard_progress(&self, id: DownloadId) -> Result<(), CoreError> {
         self.store.write(|txn| {
             let mut row = read_row(txn, id)?;
-            if row.lifecycle != DownloadLifecycle::Failed {
+            if row.lifecycle != DownloadLifecycle::Active {
                 return Err(CoreError::InvalidLifecycleTransition);
             }
             let key = id.as_u64();
@@ -788,11 +790,15 @@ impl DownloadRepository for DurableDownloadRepository {
         })
     }
 
-    async fn revalidate(&self, id: DownloadId) -> Result<Revalidation, CoreError> {
+    async fn revalidate(
+        &self,
+        id: DownloadId,
+        stop: Arc<AtomicBool>,
+    ) -> Result<Option<Revalidation>, CoreError> {
         let record = self.load_download(id)?;
         let parts = self.verified_parts(id)?;
-        let revalidation = revalidate_verified_parts(record.paths(), &parts).await;
-        if let Revalidation::Restored { damaged, .. } = &revalidation {
+        let revalidation = revalidate_verified_parts(record.paths(), &parts, stop).await;
+        if let Some(Revalidation::Restored { damaged, .. }) = &revalidation {
             self.drop_parts(id, damaged)?;
         }
         Ok(revalidation)

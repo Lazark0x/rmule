@@ -491,7 +491,7 @@ pub(super) async fn repair_at_finalize<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
 ) -> DownloadFailure {
-    match runner.rt.store.revalidate(download_id).await {
+    match crate::download::part_check::walk_recorded(runner, download_id).await {
         Ok(Revalidation::Condemned(fault)) => DownloadFailure::StorageIntegrityFailed(fault),
         Ok(Revalidation::Restored { damaged, .. }) if !damaged.is_empty() => {
             let lost: Vec<u32> = damaged.iter().map(crate::PartFault::part_index).collect();
@@ -528,7 +528,7 @@ pub(super) async fn repair_at_finalize<S, P>(
             runner.mark_for_repair();
             DownloadFailure::PartVerificationFailed
         }
-        Err(error) => store_failed("the rejected file's parts could not be dropped")(error),
+        Err(failure) => failure,
     }
 }
 

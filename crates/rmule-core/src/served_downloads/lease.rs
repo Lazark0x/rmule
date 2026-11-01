@@ -62,6 +62,15 @@ impl RunLease {
         })
     }
 
+    /// A Restart threw away what the download recorded: no set stands, and
+    /// nothing is held, until the store says otherwise.
+    pub(crate) fn started_over(&self) -> bool {
+        self.cell.write(self, |entry| {
+            entry.served.set = None;
+            entry.served.range = VerifiedRange::default();
+        })
+    }
+
     /// The file the run holds, as it read it through its handle: a range a
     /// read emptied may be ruled again from here.
     pub(crate) fn record_identity(&self, identity: PartFileIdentity) -> bool {

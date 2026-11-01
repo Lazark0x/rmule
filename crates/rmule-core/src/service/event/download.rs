@@ -115,7 +115,8 @@ pub enum DownloadEvent {
     },
     /// The operator restarted a failed download (ADR-0094, "Restart"), and
     /// rmule chose how: it continued from what is on disk, or found nothing
-    /// there to continue from and started over. Sent before the run's
+    /// there to continue from and started over. Sent once the run's part
+    /// check has decided, after its
     /// [`DownloadResumed`](Self::DownloadResumed).
     DownloadRestarted {
         /// The download restarted.

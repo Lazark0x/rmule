@@ -95,6 +95,9 @@ pub(crate) struct DownloadRequest {
     /// What attach found of a row it found `Completing`: its run goes
     /// straight to the move's recovery (ADR-0115). `None` for every other run.
     pub(crate) recovered: Option<Recovered>,
+    /// The part check a resumed run opens with (ADR-0094); `None` for a new
+    /// download and for a run past it.
+    pub(crate) part_check: Option<crate::download::part_check::PartCheck>,
 }
 
 /// The source-discovery channels a download may wait on — server-UDP global
@@ -295,6 +298,7 @@ where
                 }
                 Ok(parts) => {
                     request.recovered = None;
+                    request.part_check = None;
                     request.verified_part_indexes =
                         parts.iter().map(|part| part.part_index).collect();
                     tracing::info!(
@@ -353,7 +357,7 @@ impl Drop for ReleaseGate {
 }
 
 async fn orchestrate_download<S, P>(
-    request: DownloadRequest,
+    mut request: DownloadRequest,
     runner: &RunnerContext<S, P>,
 ) -> Result<(), DownloadFailure>
 where
@@ -364,6 +368,12 @@ where
     // A row attach found completing goes straight to the move (ADR-0115).
     if let Some(recovered) = request.recovered {
         return completion::recover(runner, request.download_id, &request.file, recovered).await;
+    }
+    // What the store records is proved before anything leans on it, and
+    // before the run takes the file (ADR-0094).
+    if let Some(check) = request.part_check.take() {
+        request.verified_part_indexes =
+            crate::download::part_check::first_stage(runner, request.download_id, check).await?;
     }
     // The run holds its part file from its first act (ADR-0094).
     crate::download::persist::hold_part_file(runner, request.download_id).await?;

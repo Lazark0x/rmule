@@ -4,6 +4,7 @@
 //! side (ADR-0107).
 
 pub(crate) mod connection_budget;
+pub(crate) mod part_check;
 pub(crate) mod persist;
 pub(crate) mod queue_standings;
 mod reask_routes;

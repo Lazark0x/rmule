@@ -357,3 +357,81 @@ async fn next_queued_id(core: &mut Core) -> rmule_core::DownloadId {
         _ => unreachable!("matcher only returns queued events"),
     }
 }
+
+/// A part file that blocks its first read: a named pipe opens only once a
+/// writer does, so the walk over it never ends until the test says so. Any
+/// wait on that walk in the actor is a wait for ever.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_resume_reading_its_parts_leaves_the_actor_free() {
+    let bytes = vec![0xCD; ED2K_PART_SIZE as usize + 4];
+    let link = file_link("example.bin", &bytes);
+    let hashes = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_durable_store(dir.path()).unwrap();
+    let paths = DownloadPaths::from_final_path(dir.path().join("download.bin"));
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let record = repo.create_download(&link, None, &paths, None).unwrap();
+    repo.record_verified_part(
+        record.id(),
+        VerifiedPartRecord {
+            part_index: 0,
+            offset: 0,
+            len: ED2K_PART_SIZE,
+            part_hash: hashes[0],
+        },
+    )
+    .unwrap();
+    repo.set_lifecycle(record.id(), DownloadLifecycle::Paused)
+        .unwrap();
+    let made = std::process::Command::new("mkfifo")
+        .arg(paths.part_path())
+        .status()
+        .unwrap();
+    assert!(made.success());
+
+    let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
+        .settings(rmule_core::CoreSettings::default())
+        .source_lookup(source_with_high_id())
+        .peer_transfer(PendingPeerTransfer)
+        .build();
+    let download_id = record.id();
+    core.send(CoreCommand::Download(DownloadCommand::ResumeDownload {
+        download_id,
+    }))
+    .await
+    .unwrap();
+    core.send(CoreCommand::Download(DownloadCommand::PauseDownload {
+        download_id,
+    }))
+    .await
+    .unwrap();
+
+    let paused = tokio::time::timeout(
+        Duration::from_secs(5),
+        next_matching(&mut core, |event| {
+            matches!(
+                event,
+                CoreEvent::Download(DownloadEvent::DownloadPaused { .. })
+            )
+        }),
+    )
+    .await;
+    // Lets the walk go whatever the verdict, as the runtime waits for its
+    // pool. Both ends, so this open blocks on no reader when the stop came
+    // before the walk reached the pipe.
+    drop(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(paths.part_path())
+            .unwrap(),
+    );
+    assert!(paused.is_ok(), "the actor took no Pause behind the Resume");
+    assert_eq!(
+        repo.load_download(download_id).unwrap().lifecycle(),
+        DownloadLifecycle::Paused
+    );
+    let parts = repo.verified_parts(download_id).unwrap();
+    assert_eq!(parts.len(), 1, "a stopped check changes nothing");
+}

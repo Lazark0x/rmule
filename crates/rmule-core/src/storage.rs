@@ -7,6 +7,8 @@
 //! guarantee than the link it came from.
 
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use rmule_primitives::{AichRootHash, Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
 
@@ -167,7 +169,9 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// durable verified-part records (ADR-0094, "Damaged parts"). A part that
     /// no longer holds has its record dropped before this returns, so the
     /// verified set read next is the one to resume from; the part file is
-    /// condemned only when nothing recorded can be trusted.
+    /// condemned only when nothing recorded can be trusted. `None` once
+    /// `stop` is raised: the walk ends before its next part, and every record
+    /// stands.
     ///
     /// # Errors
     /// [`CoreError::UnknownDownload`] or [`CoreError::Repository`] when the
@@ -175,5 +179,6 @@ pub trait DownloadRepository: Send + Sync + 'static {
     fn revalidate(
         &self,
         id: DownloadId,
-    ) -> impl Future<Output = Result<Revalidation, CoreError>> + Send;
+        stop: Arc<AtomicBool>,
+    ) -> impl Future<Output = Result<Option<Revalidation>, CoreError>> + Send;
 }

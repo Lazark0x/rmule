@@ -128,6 +128,7 @@ where
             verified_part_indexes: parts.iter().map(|part| part.part_index).collect(),
             remembered,
             recovered: Some(Recovered { row_written }),
+            part_check: None,
         };
         self.start_run(record, &set, start).await;
         Ok(())

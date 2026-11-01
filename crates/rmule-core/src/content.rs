@@ -249,17 +249,17 @@ pub enum Revalidation {
 /// check its hash still holds. A part that does not is named in `damaged`
 /// rather than condemning the rest; the file is condemned only when it is
 /// missing or unreadable with parts recorded, or when no recorded part holds.
+///
+/// `None` once `stop` is raised: the walk ends before its next part.
 pub(crate) async fn revalidate_verified_parts(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
-) -> Revalidation {
+    stop: Arc<AtomicBool>,
+) -> Option<Revalidation> {
     let (paths, parts) = (paths.clone(), parts.to_vec());
-    on_pool(move || walk_verified_parts(&paths, &parts, &AtomicBool::new(false)))
+    on_pool(move || walk_verified_parts(&paths, &parts, &stop))
         .await
-        .map_or(
-            Revalidation::Condemned(StorageIntegrityFault::PartFileUnreadable { os_code: None }),
-            |walked| walked.revalidation,
-        )
+        .map(|walked| walked.revalidation)
 }
 
 /// What a walk of a download's recorded parts found, and the bytes it read

@@ -15,6 +15,7 @@ use crate::DurableDownloadRecord;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
+use crate::download::part_check::PartCheck;
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{DownloadRequest, DownloadTask, RunnerContext, SharedRuntime, StopReason};
 use crate::service::activity::{ActiveDownload, JOIN_GRACE};
@@ -35,6 +36,9 @@ pub(in crate::service::actor) struct RunStart {
     /// What attach found of a row it found `Completing` (ADR-0115); `None`
     /// for every other run.
     pub(in crate::service::actor) recovered: Option<crate::download::Recovered>,
+    /// The part check the run opens with (ADR-0094); `None` for a new
+    /// download and a row found `Completing`.
+    pub(in crate::service::actor) part_check: Option<PartCheck>,
 }
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
@@ -59,6 +63,7 @@ where
             verified_part_indexes,
             remembered,
             recovered,
+            part_check,
         } = start;
         let download_id = row.id();
         self.wiring.file_known.download_started(row.file_hash());
@@ -76,6 +81,7 @@ where
             remembered,
             served,
             recovered,
+            part_check,
         });
         self.activities.download_started(download_id, active);
         self.served_moved().await;
@@ -193,6 +199,8 @@ struct SpawnDownload<'a, S, P> {
     /// What attach found of a row it found `Completing` (ADR-0115); `None`
     /// for every other run.
     recovered: Option<crate::download::Recovered>,
+    /// The part check the run opens with (ADR-0094).
+    part_check: Option<PartCheck>,
 }
 
 /// Spawn one download runner and return its live handle. The single
@@ -215,6 +223,7 @@ where
         remembered,
         served,
         recovered,
+        part_check,
     } = spawn;
     let file_hash = file.file_hash;
     // A recovered move's gate settles once its run has looked at the disk.
@@ -241,6 +250,7 @@ where
                 discovery: runtime.discovery.clone(),
                 remembered,
                 recovered,
+                part_check,
             },
             run,
             runner: RunnerContext {

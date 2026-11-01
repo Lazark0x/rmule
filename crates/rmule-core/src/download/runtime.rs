@@ -125,6 +125,9 @@ pub(crate) struct SharedRuntime<S, P> {
     /// The core's one **Completion Copy** turn (ADR-0115): copies across
     /// volumes run one at a time, as aMule's completion tasks do.
     pub(crate) copy_turn: Arc<tokio::sync::Semaphore>,
+    /// The turn to read a file the scans and the Offer Check share, which a
+    /// resumed run's part check takes too (ADR-0094).
+    pub(crate) hash_turn: crate::directory_scan::HashTurn,
     /// Where a run reports its finished file in place to the core actor,
     /// which writes the registry row and ends the Served Download in one
     /// step (ADR-0115, step 6).

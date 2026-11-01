@@ -782,6 +782,9 @@ _Avoid_: downloaded range, gap list
 What a read of a **Served Download**'s part file is checked against before it reads (ADR-0113): the file key (device and inode, on Windows volume serial number and file index), the length and the modification time, taken from the **Held Part File** handle at pause or from the handle the **Offer Check** read through; while a run writes, its key alone, read after each part, since exFAT renumbers a file at its first write. The key is always compared, the length and time only while no run writes the file; a mismatch sends nothing and empties the **Verified Range**. Kept in memory only.
 _Avoid_: part file fingerprint, stored identity
 
+**Part Check**:
+A resumed run's first stage: every recorded part re-read and hashed against its record, on the blocking pool, under the hashing turn and the run's stop (ADR-0094). The actor has stored `Active` and said so before it starts; a stop ends it before its next part and changes nothing.
+
 **Offer Check**:
 The core actor's re-read of every recorded part of a queued or paused download after a restart, hashed against its record, before it is offered again (ADR-0113): Resume's own revalidation, with Resume's effect, run on the blocking pool behind the scans, one download at a time. A Resume stops it and the run's own check takes over. Each check applied is said as `OfferChecked`, with the bytes read and how long the read took.
 _Avoid_: share recheck, Registry Check (that one is for registry rows)

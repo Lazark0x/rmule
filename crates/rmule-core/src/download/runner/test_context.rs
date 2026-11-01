@@ -97,6 +97,7 @@ pub(in crate::download) fn runner_context<S, P>(
         server_session: crate::server_session::SharedServerSession::default(),
         awaited_inbound: crate::adapters::AwaitedInbound::default(),
         peer_links: crate::adapters::SharedPeerLinks::default(),
+        hash_turn: crate::directory_scan::HashTurn::default(),
         source_lookup_timeout: Duration::from_secs(5),
         callback_timeout: Duration::from_secs(30),
         global_source_registry: Arc::new(std::sync::Mutex::new(HashMap::new())),

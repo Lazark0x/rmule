@@ -2,8 +2,9 @@
 //! ED2K digest core has (`FileHashSummary::digest_reader`), stoppable
 //! between reads. Every scan takes the one [`HashTurn`] before
 //! it reads a file, so one file is read at a time across every shared
-//! directory (ADR-0101, "Shared Directories"); the actor's Offer Check takes
-//! it too before it re-reads a download's parts (ADR-0113).
+//! directory (ADR-0101, "Shared Directories"); the actor's Offer Check and a
+//! resumed run's part check take it too before they re-read a download's
+//! parts (ADR-0113, ADR-0094).
 
 use std::io::{self, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +24,7 @@ const READ_CAP: usize = 1 << 20;
 const TURN_TICK: Duration = Duration::from_millis(250);
 
 /// The one turn to read a file that every scan of a core shares, and the
-/// Offer Check with them: transfers keep the disk, so hashing is one file at
+/// Offer Check and a run's part check with them: transfers keep the disk, so hashing is one file at
 /// a time whatever the number of shared directories.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HashTurn(Arc<(Mutex<bool>, Condvar)>);
@@ -31,7 +32,7 @@ pub(crate) struct HashTurn(Arc<(Mutex<bool>, Condvar)>);
 impl HashTurn {
     /// Wait for the turn, looking at `stop` every [`TURN_TICK`]; `None` once
     /// it is raised. The turn is given back when the guard drops.
-    pub(crate) fn take(&self, stop: &AtomicBool) -> Option<TurnGuard<'_>> {
+    pub(crate) fn take(&self, stop: &AtomicBool) -> Option<TurnGuard> {
         let (taken, freed) = &*self.0;
         let mut held = taken.lock().expect("hash turn");
         while *held {
@@ -44,14 +45,15 @@ impl HashTurn {
             return None;
         }
         *held = true;
-        Some(TurnGuard(self))
+        drop(held);
+        Some(TurnGuard(self.clone()))
     }
 }
 
 /// The turn, held.
-pub(crate) struct TurnGuard<'a>(&'a HashTurn);
+pub(crate) struct TurnGuard(HashTurn);
 
-impl Drop for TurnGuard<'_> {
+impl Drop for TurnGuard {
     fn drop(&mut self) {
         let (taken, freed) = &*(self.0).0;
         *taken.lock().expect("hash turn") = false;

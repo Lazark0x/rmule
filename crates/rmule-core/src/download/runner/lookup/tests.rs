@@ -151,6 +151,7 @@ fn request_for<S, P>(
         },
         remembered: Vec::new(),
         recovered: None,
+        part_check: None,
     }
 }
 

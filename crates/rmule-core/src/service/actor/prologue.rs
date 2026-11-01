@@ -467,8 +467,10 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // The runs' in-place reports (ADR-0115, step 6): each waits on its own
     // answer, so a report never queues behind another run's.
     let (in_place_tx, in_place_rx) = mpsc::channel(16);
+    let hash_turn = crate::directory_scan::HashTurn::default();
     let download_runtime = DownloadRuntime {
         shared: Arc::new(SharedRuntime {
+            hash_turn: hash_turn.clone(),
             download_reach_tx,
             source_lookup_timeout: wiring.config.source_lookup_timeout,
             callback_timeout: wiring.config.callback_timeout,
@@ -540,6 +542,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
         directories: super::shared_directory::DirectoryList {
             temp_dir,
             guards: share_guards,
+            turn: hash_turn,
             ..Default::default()
         },
         scan_tx,

@@ -28,6 +28,7 @@ use crate::adapters::{
 };
 use crate::content::{PartsWalked, Revalidation, walk_verified_parts};
 use crate::directory_scan::HashTurn;
+use crate::download::part_check::tell_damaged;
 use crate::service::{DownloadId, ServeEvent};
 use crate::storage::DownloadRepository;
 use crate::{DownloadLifecycle, DownloadPaths, VerifiedPartRecord};
@@ -223,7 +224,13 @@ where
         let Ok(record) = self.wiring.store.load_download(download_id) else {
             return;
         };
-        self.drop_damaged(download_id, &record, damaged).await;
+        tell_damaged(
+            &self.wiring.store,
+            &self.diagnostics,
+            &self.evt_tx,
+            &record,
+            damaged,
+        );
         let (Some(identity), Ok(held)) = (
             progress.read_through(),
             self.wiring.store.verified_parts(download_id),

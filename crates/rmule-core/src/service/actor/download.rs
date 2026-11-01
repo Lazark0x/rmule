@@ -8,19 +8,17 @@ use rmule_primitives::Ed2kFileLink;
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
-use crate::content::{ContentFileStore, RestoredProgress, Revalidation, free_space, on_pool};
+use crate::content::{ContentFileStore, free_space, on_pool};
+use crate::download::part_check::{PartCheck, Restart};
 use crate::download::source_seeds::SourceSeed;
 use crate::download::{RunNumber, StopReason, file_link_from_record};
 use crate::service::activity::ActiveDownload;
 use crate::service::{
-    CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId, RestartOutcome,
+    CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId,
     send_download_event,
 };
 use crate::storage::DownloadRepository;
-use crate::{
-    CoreError, DownloadFailure, DownloadLifecycle, DownloadPaths, DurableDownloadRecord, PartFault,
-    StorageIntegrityFault, VerifiedPartRecord,
-};
+use crate::{CoreError, DownloadFailure, DownloadLifecycle, DownloadPaths, DurableDownloadRecord};
 
 use super::{CoreActor, send_event};
 
@@ -133,6 +131,7 @@ where
                     verified_part_indexes: Vec::new(),
                     remembered: Vec::new(),
                     recovered: None,
+                    part_check: None,
                 };
                 self.start_run(&record, &link_set, start).await;
             }
@@ -269,88 +268,6 @@ where
         if record.lifecycle() == DownloadLifecycle::Completing {
             return self.resume_completing(&record, remembered).await;
         }
-        let restart = record.lifecycle() == DownloadLifecycle::Failed;
-        let Ok(recorded) = self.wiring.store.verified_parts(download_id) else {
-            return Err(CoreCommandRejectReason::UnknownDownload);
-        };
-        let (recorded_parts, recorded_bytes) = tally(&recorded);
-        // Resume-time revalidation lives behind the repository seam: the
-        // store re-hashes whatever it persisted against the durable
-        // verified-part records and drops the record of any part that no
-        // longer holds, so it is fetched again (ADR-0094, "Damaged parts").
-        // Only a part file that backs nothing recorded fails the download —
-        // or, on the operator's Restart, starts it over.
-        let (restored, restarted) = match self.wiring.store.revalidate(download_id).await {
-            Ok(Revalidation::Restored { progress, damaged }) => {
-                self.drop_damaged(download_id, &record, damaged).await;
-                let kept_parts = u32::try_from(progress.verified_parts()).unwrap_or(u32::MAX);
-                let outcome = RestartOutcome::Continued {
-                    kept_parts,
-                    kept_bytes: progress.verified_bytes(),
-                    dropped_parts: recorded_parts.saturating_sub(kept_parts),
-                    dropped_bytes: recorded_bytes.saturating_sub(progress.verified_bytes()),
-                };
-                (progress, restart.then_some(outcome))
-            }
-            Ok(Revalidation::Condemned(fault)) if restart && starts_over(&fault) => {
-                if let Some(candidate) = self.moved_part_candidate(&record, &fault)
-                    && on_pool(move || candidate.is_file()).await
-                {
-                    return Err(CoreCommandRejectReason::PartFileMoved);
-                }
-                self.discard(download_id, &record).await?;
-                let outcome = RestartOutcome::StartedOver {
-                    fault,
-                    dropped_parts: recorded_parts,
-                    dropped_bytes: recorded_bytes,
-                };
-                (RestoredProgress::new(0, 0), Some(outcome))
-            }
-            Ok(Revalidation::Condemned(fault)) => {
-                tracing::warn!(
-                    download_id = download_id.as_u64(),
-                    %fault,
-                    "download failed: its part file backs none of its verified parts"
-                );
-                self.fail_at_rest(download_id, DownloadFailure::StorageIntegrityFailed(fault))
-                    .await;
-                return Ok(());
-            }
-            Err(error) => {
-                tracing::warn!(
-                    download_id = download_id.as_u64(),
-                    %error,
-                    "the store could not revalidate a download's verified parts"
-                );
-                return Err(CoreCommandRejectReason::DownloadStoreFailed);
-            }
-        };
-        let Ok(parts) = self.wiring.store.verified_parts(download_id) else {
-            return Err(CoreCommandRejectReason::UnknownDownload);
-        };
-        send_download_event(
-            &self.evt_tx,
-            DownloadEvent::DownloadProgressRestored {
-                download_id,
-                verified_parts: restored.verified_parts(),
-                verified_bytes: restored.verified_bytes(),
-            },
-        );
-        if let Some(outcome) = restarted {
-            tracing::info!(
-                download_id = download_id.as_u64(),
-                ?outcome,
-                "download restarted"
-            );
-            send_download_event(
-                &self.evt_tx,
-                DownloadEvent::DownloadRestarted {
-                    download_id,
-                    outcome,
-                },
-            );
-        }
-
         let file = match file_link_from_record(&record) {
             Ok(file) => file,
             Err(reason) => {
@@ -358,7 +275,10 @@ where
                 return Ok(());
             }
         };
-        let verified_part_indexes = parts.iter().map(|part| part.part_index).collect::<Vec<_>>();
+        let restart = (record.lifecycle() == DownloadLifecycle::Failed).then(|| Restart {
+            failure: record.failure().cloned(),
+            moved_to: self.moved_part_candidate(&record),
+        });
         if self
             .wiring
             .store
@@ -381,82 +301,18 @@ where
         // now; a paused one's entry is the actor's to hand on (ADR-0113).
         let active_row = self.wiring.store.load_download(download_id);
         let set = self.recorded_set(download_id);
+        // The re-hash is the run's first stage, so nothing here waits on the
+        // disk: its parts arrive from the check, and a part that no longer
+        // holds is fetched again (ADR-0094, "Damaged parts").
         let start = RunStart {
             file,
-            verified_part_indexes,
+            verified_part_indexes: Vec::new(),
             remembered,
             recovered: None,
+            part_check: Some(PartCheck { restart }),
         };
         self.start_run(active_row.as_ref().unwrap_or(&record), &set, start)
             .await;
-        Ok(())
-    }
-
-    /// Tell of the parts revalidation dropped, and rest the part picture on
-    /// the verified set that is left.
-    pub(super) async fn drop_damaged(
-        &mut self,
-        download_id: DownloadId,
-        record: &DurableDownloadRecord,
-        damaged: Vec<PartFault>,
-    ) {
-        if damaged.is_empty() {
-            return;
-        }
-        let dropped = damaged
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("; ");
-        tracing::warn!(
-            download_id = download_id.as_u64(),
-            damaged = damaged.len(),
-            %dropped,
-            "verified parts no longer hold on disk; fetching them again"
-        );
-        let held = self
-            .wiring
-            .store
-            .verified_parts(download_id)
-            .map(|parts| parts.iter().map(|part| part.part_index).collect::<Vec<_>>())
-            .unwrap_or_default();
-        self.diagnostics.rest_download(
-            download_id,
-            record.file_hash(),
-            record.metadata().clone(),
-            &held,
-        );
-        send_download_event(
-            &self.evt_tx,
-            DownloadEvent::DamagedPartsDropped {
-                download_id,
-                damaged,
-            },
-        );
-    }
-
-    /// Discard what a failed download recorded and the part file its row
-    /// names, keeping its identity and place, so its run starts from nothing.
-    /// The part file is removed only here, with no run holding it: `resume`
-    /// refuses a download that has one.
-    async fn discard(
-        &mut self,
-        download_id: DownloadId,
-        record: &DurableDownloadRecord,
-    ) -> Result<(), CoreCommandRejectReason> {
-        if let Err(error) = self.wiring.store.discard_progress(download_id) {
-            tracing::warn!(%error, "a failed download's progress could not be discarded");
-            return Err(CoreCommandRejectReason::DownloadStoreFailed);
-        }
-        if let Err(error) = ContentFileStore::delete_part(record.paths()).await {
-            tracing::warn!(%error, "a failed download's part file could not be removed");
-        }
-        self.diagnostics.rest_download(
-            download_id,
-            record.file_hash(),
-            record.metadata().clone(),
-            &[],
-        );
         Ok(())
     }
 
@@ -520,14 +376,7 @@ where
 
     /// Where a Restart that found the part file gone would look before
     /// throwing it away: the name in the current Temp Directory (ADR-0094).
-    fn moved_part_candidate(
-        &self,
-        record: &DurableDownloadRecord,
-        fault: &StorageIntegrityFault,
-    ) -> Option<std::path::PathBuf> {
-        let StorageIntegrityFault::PartFileMissing = fault else {
-            return None;
-        };
+    fn moved_part_candidate(&self, record: &DurableDownloadRecord) -> Option<std::path::PathBuf> {
         let temp_dir = self.directories.temp_dir.as_deref()?;
         Some(temp_dir.join(record.paths().part_path().file_name()?))
     }
@@ -683,22 +532,5 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
         CoreError::DuplicateDownloadIdentity => CoreCommandRejectReason::DuplicateDownload,
         CoreError::PathConflict => CoreCommandRejectReason::DownloadPathConflict,
         _ => CoreCommandRejectReason::DownloadStoreFailed,
-    }
-}
-
-/// How many verified parts `parts` records, and the bytes they hold.
-fn tally(parts: &[VerifiedPartRecord]) -> (u32, u64) {
-    let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
-    (count, parts.iter().map(|part| part.len).sum())
-}
-
-/// Whether a Restart that met `fault` starts over rather than failing again:
-/// the part file is gone, or none of what it recorded matches it. A part file
-/// that exists but cannot be read may read again once its disk or its
-/// permissions are back, so what it holds is not thrown away for it.
-const fn starts_over(fault: &StorageIntegrityFault) -> bool {
-    match fault {
-        StorageIntegrityFault::PartFileMissing | StorageIntegrityFault::NoPartHolds { .. } => true,
-        StorageIntegrityFault::PartFileUnreadable { .. } => false,
     }
 }
