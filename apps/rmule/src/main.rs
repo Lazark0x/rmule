@@ -165,19 +165,17 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
 
     // Every stop the OS can ask for is the operator's `q`; held on the bus
     // until the UI reads it, however early it comes.
-    match StopRequest::install() {
+    let stop_signals_refused = match StopRequest::install() {
         Ok(mut stop) => {
             let actions_tx = actions_tx.clone();
             tokio::spawn(async move {
                 stop.recv().await;
                 let _ = actions_tx.send(Action::Quit).await;
             });
+            false
         }
-        Err(_) => {
-            let note = Action::Note(rmule::words::app::NO_STOP_SIGNALS);
-            let _ = actions_tx.send(note).await;
-        }
-    }
+        Err(_) => true,
+    };
 
     let mut tui = Tui::enter()?;
     let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown));
@@ -199,24 +197,19 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     }
     run_log_level.set(Level::from_full(preferences.run_log_full));
     let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
-    if let Some(lowered) = ceiling_lowered {
-        let words = rmule::words::download::ceiling_lowered(lowered);
-        let _ = actions_tx.send(Action::Note(words)).await;
-    }
     // The operator's connect, given ahead of time — or nothing
     // (ADR-0095): no other road in the app dials a server.
-    match at_start {
-        rmule::connect::AtStart::Nothing => {}
+    let cannot_connect = match at_start {
+        rmule::connect::AtStart::Nothing => None,
         rmule::connect::AtStart::Connect(server) => {
             let command = CoreCommand::ConnectToServer { server };
             if let Err(error) = rmule::client::CoreClient::send(&handle, command) {
                 tracing::warn!(%error, "connect at start could not be sent");
             }
+            None
         }
-        rmule::connect::AtStart::CannotConnect(why) => {
-            let _ = actions_tx.send(Action::Note(why)).await;
-        }
-    }
+        rmule::connect::AtStart::CannotConnect(why) => Some(why),
+    };
     // The Kad join, parked behind the run's first eD2k login
     // or the operator's `K`: nothing of Kad's reaches the
     // network — not the seed acquisition, not the UDP socket — until
@@ -231,10 +224,17 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     tokio::spawn(rmule::player::play_each(launches, actions_tx.clone()));
     let (kad_start, mut kad_starts) = rmule::kad::start_lane();
     // …and the panel's bare "Kad: off" says nothing about *why* until
-    // then, so the app does.
-    let _ = actions_tx
-        .send(Action::Note(rmule::words::kad::WAITING_FOR_CONNECT))
-        .await;
+    // then, so the app does, among what else a start has to say.
+    let notes = rmule::start_notes::start_notes(rmule::start_notes::StartFacts {
+        no_run_log: run_log.err().map(rmule::words::app::no_run_log),
+        stop_signals_refused,
+        ceiling_lowered: ceiling_lowered.map(rmule::words::download::ceiling_lowered),
+        cannot_connect,
+        download_dir_set: session.download_dir.is_some(),
+    });
+    for note in notes {
+        let _ = actions_tx.send(Action::Note(note)).await;
+    }
     let kad_client = handle.clone();
     tokio::spawn(async move {
         while let Some(joined) = rmule::kad::join_on_next_start(
@@ -270,9 +270,6 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         .with_config(config, preferences)
         .with_kad_start(kad_start)
         .with_player(player);
-    if let Err(failure) = run_log {
-        app.state.notable = Some(rmule::words::app::no_run_log(failure));
-    }
     let result = app.run(&mut tui, actions_rx).await;
 
     shutdown.store(true, Ordering::Relaxed);

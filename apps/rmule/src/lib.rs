@@ -69,6 +69,7 @@ pub mod input;
 pub mod kad;
 pub mod player;
 pub mod rates;
+pub mod start_notes;
 pub mod row_selection;
 pub mod state;
 pub mod table_sort;
