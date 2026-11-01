@@ -90,6 +90,58 @@ fn an_add_the_core_refuses_still_runs_quit_before_exiting() {
     );
 }
 
+/// A stop signal is one more way out (ADR-0118): `rmule-cli` leaves through
+/// the Quit, so the credit snapshot stands. A server that accepts and says
+/// nothing holds the run open for the signal.
+#[cfg(unix)]
+#[test]
+fn a_sigterm_ends_an_add_through_quit() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let dir = tempdir().unwrap();
+    let downloads = tempdir().unwrap();
+    off_the_host(dir.path());
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = server.local_addr().unwrap().to_string();
+    cli(dir.path())
+        .args(["server", "add", &endpoint])
+        .assert()
+        .success();
+    cli(dir.path())
+        .args([
+            "config",
+            "set-download-dir",
+            downloads.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let mut add = Command::new(assert_cmd::cargo::cargo_bin("rmule-cli"))
+        .arg("--data-dir")
+        .arg(dir.path())
+        .args(["add", SOURCED_LINK])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut lines = BufReader::new(add.stdout.take().unwrap()).lines();
+    assert!(
+        lines.any(|line| line.is_ok_and(|line| line.contains("queued id="))),
+        "the add never queued"
+    );
+    let killed = Command::new("kill")
+        .args(["-TERM", &add.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let out = add.wait_with_output().unwrap();
+
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("stopped by a signal"), "stderr: {said}");
+    assert!(dir.path().join("clients.met").exists());
+}
+
 /// A link that names its own source needs no server (ADR-0089): the add
 /// runs from the link, says so, and ends on what the source
 /// did — here a port nothing listens on, so the run fails, not the add.

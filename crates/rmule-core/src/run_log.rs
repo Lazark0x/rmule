@@ -35,6 +35,7 @@
 pub(crate) mod codes;
 mod event;
 mod level;
+mod panic;
 mod record;
 mod setting;
 mod sink;
@@ -43,6 +44,7 @@ mod tests;
 pub(crate) mod trail;
 
 pub use level::{Level, LevelHandle};
+pub use panic::panic_record;
 pub use record::{Address, Kind, Number, Record};
 pub use sink::{DrainAtExit, RunLog, drain};
 

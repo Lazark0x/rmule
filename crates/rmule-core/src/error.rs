@@ -161,6 +161,10 @@ pub enum DownloadFailure {
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
     },
+    /// The run's task panicked (ADR-0118). A defect in rmule, written to the
+    /// Run Log; the verified parts are kept and a Restart runs it again.
+    #[error("the download's task panicked")]
+    TaskPanicked,
 }
 
 /// Why the completion move's check did not pass a finished file (ADR-0115,

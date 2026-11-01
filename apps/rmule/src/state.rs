@@ -221,6 +221,10 @@ impl UiState {
                 self.core_alive = false;
                 self.connected_server = None;
                 self.reconnect = None;
+                // No snapshot follows: a stopped core claims nothing.
+                self.ed2k = Ed2kConnection::Disconnected;
+                self.diagnostics.kad = None;
+                self.rates = TransferRates::default();
                 note(self, app_words::CORE_STOPPED)
             }
             // An app-learned fact: same two surfaces a core event's
@@ -333,6 +337,9 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         CoreEvent::KadStopped { reason } => note(state, crate::words::kad::stopped(reason)),
         // Quit's progress is the status bar's, reduced by the app.
         CoreEvent::Quitting { .. } => false,
+        // What stopped working for the rest of the run: a fact the operator
+        // is owed in the status line, whose level no snapshot shows.
+        CoreEvent::TaskDied { task } => note(state, app_words::task_died(task)),
         // A login step is evidence for the log pane and the Run Log; no
         // level moves with it.
         CoreEvent::ServerLogin { .. } => false,

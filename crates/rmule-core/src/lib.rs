@@ -133,8 +133,10 @@ mod server_udp;
 mod service;
 mod settings;
 mod source_discovery;
+mod stop_request;
 mod storage;
 mod store;
+mod supervisor;
 mod upload_queue;
 
 pub use adapters::{
@@ -188,6 +190,7 @@ pub use server_list::{
 pub use settings::{
     CoreSettings, CoreSettingsHandle, Setting, SettingError, SettingRefusal, TakesEffect,
 };
+pub use stop_request::StopRequest;
 // The one obfuscation policy `CoreSettings::obfuscation` carries across the peer
 // stream + datagram surfaces (ADR-0042/0046), re-exported so an application can
 // set it without depending on `rmule_net::peer` directly.
@@ -232,7 +235,7 @@ pub use service::{
     CoreBuilder, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent,
     DEFAULT_SLOT_WAIT_TIMEOUT, DialEnd, DialFailure, DownloadCommand, DownloadEvent, DownloadId,
     EventStream, IdAssignment, IgnoredReaskReply, Ipv6Probe, KadStopReason, KadUnavailableReason,
-    LegNotSent, LoginClaim, LoginCloseCause, LoginLink, LoginStep, NameTaken,
+    LegNotSent, LoginClaim, LoginCloseCause, LoginLink, LoginStep, LongTask, NameTaken,
     NatTraversalUnavailableReason, NattConfig, PartReleaseReason, PartsLost, PeerBuddy,
     PeerConnections, PeerReach, PeerReachDropReason, PeerReachRoute, PeerRetirementReason,
     PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,

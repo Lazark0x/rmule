@@ -18,7 +18,7 @@ pub use download::LinkTurn;
 pub use download::{
     CompletionStep, DownloadEvent, PartsLost, RestartOutcome, SourceWait, VolumeStop,
 };
-pub use lifecycle::{KadStopReason, QuitStep, ServeStopReason};
+pub use lifecycle::{KadStopReason, LongTask, QuitStep, ServeStopReason};
 pub use login::{
     DialFailure, IdAssignment, Ipv6Probe, LoginClaim, LoginCloseCause, LoginLink, LoginStep,
     PlainLinkReason, PortTestAdmission, PortTestClosedBy, PortTestEnd, PortTestLateAdmission,
@@ -753,6 +753,14 @@ pub enum CoreEvent {
     Quitting {
         /// The step now running.
         step: QuitStep,
+    },
+    /// A long task no ledger retires panicked (ADR-0118). The panic hook's
+    /// record says where; this says what stopped working for the rest of the
+    /// run. [`LongTask::Core`] is the core's end, whatever still holds the
+    /// event stream open.
+    TaskDied {
+        /// The task that stopped.
+        task: LongTask,
     },
     /// A step of a login to `server` between its session edges (ADR-0075,
     /// Run Log): evidence for a reachability diagnosis, never a level.

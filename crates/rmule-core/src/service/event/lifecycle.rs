@@ -57,6 +57,23 @@ pub enum QuitStep {
     CreditCheckpoint,
 }
 
+/// A long task no ledger retires, named when its panic is told (ADR-0118).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LongTask {
+    /// The core's own actor: nothing else of the node goes on working.
+    Core,
+    /// The client-UDP front, which reads the one peer UDP socket.
+    ClientUdpFront,
+    /// The drain that sends on the one peer UDP socket.
+    ClientUdpSends,
+    /// The router that hands a reask reply to the download that asked.
+    ReaskRouter,
+    /// The firewalled front (ADR-0061).
+    FirewalledFront,
+    /// The NAT-T front (ADR-0091).
+    NattFront,
+}
+
 impl QuitStep {
     /// The step as a front end names it.
     #[must_use]

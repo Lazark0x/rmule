@@ -15,7 +15,8 @@
 //! v1 semantics are stock-aMule monolith: quitting the UI stops transfers —
 //! gracefully (`App::graceful_quit`): the core's own quit
 //! stops every activity in order and flushes the credit checkpoint,
-//! bounded so a stuck core cannot hang the terminal.
+//! bounded so a stuck core cannot hang the terminal. A stop signal is the
+//! same Quit, and the panic hook decides what a panic costs (ADR-0118).
 
 #![warn(missing_docs)]
 
@@ -23,6 +24,7 @@ use std::io::IsTerminal;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use rmule::action::Action;
 use rmule::app::App;
@@ -33,14 +35,18 @@ use rmule::input::spawn_input_pump;
 use rmule::theme::Theme;
 use rmule::tui::Tui;
 use rmule::words::front_door;
-use rmule_core::CoreCommand;
 use rmule_core::run_log::{self, Level, RunLog, RunLogFailure};
+use rmule_core::{CoreCommand, StopRequest};
 
 /// A refused command line.
 const EXIT_USAGE: u8 = 2;
 /// A run that could not start: no terminal, or the runtime or the terminal
 /// failed.
 const EXIT_FAILURE: u8 = 1;
+/// How long the blocking pool is given once the run is over: past the core's
+/// own grace a walk still on it has no one left to answer, and must not keep
+/// the process alive behind a restored terminal.
+const RUNTIME_SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
 
 fn main() -> ExitCode {
     // Nothing above the terminal check may touch the data directory.
@@ -67,7 +73,11 @@ fn main() -> ExitCode {
         return ExitCode::from(EXIT_FAILURE);
     }
     // One multi-thread runtime for UI loop, bridge, and core tasks.
-    let result = tokio::runtime::Runtime::new().and_then(|runtime| runtime.block_on(run(run_args)));
+    let result = tokio::runtime::Runtime::new().and_then(|runtime| {
+        let result = runtime.block_on(run(run_args));
+        runtime.shutdown_timeout(RUNTIME_SHUTDOWN_BOUND);
+        result
+    });
     rmule_core::run_log::drain();
     match result {
         Ok(code) => code,
@@ -110,6 +120,17 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         .and_then(|data_dir| RunLog::open(&data_dir.path, run_args.log_level.unwrap_or_default()));
     // Without a log the handle still exists, held by nobody who writes.
     let run_log_level = opened.as_ref().map(RunLog::level).unwrap_or_default();
+    // Ahead of everything that can panic. This future runs on the main
+    // thread, which is the UI's.
+    rmule::fault::install_hook(
+        std::thread::current().id(),
+        run_log_level.clone(),
+        actions_tx.downgrade(),
+        data_dir
+            .as_ref()
+            .filter(|_| opened.is_ok())
+            .map(|data_dir| data_dir.path.join(run_log::FILE_NAME)),
+    );
     let run_log = match opened.and_then(RunLog::install) {
         Ok(failures) => {
             // The log names the build that wrote it, so two runs' logs tell
@@ -141,6 +162,22 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
             return Ok(ExitCode::from(EXIT_FAILURE));
         }
     };
+
+    // Every stop the OS can ask for is the operator's `q`; held on the bus
+    // until the UI reads it, however early it comes.
+    match StopRequest::install() {
+        Ok(mut stop) => {
+            let actions_tx = actions_tx.clone();
+            tokio::spawn(async move {
+                stop.recv().await;
+                let _ = actions_tx.send(Action::Quit).await;
+            });
+        }
+        Err(_) => {
+            let note = Action::Note(rmule::words::app::NO_STOP_SIGNALS);
+            let _ = actions_tx.send(note).await;
+        }
+    }
 
     let mut tui = Tui::enter()?;
     let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown));

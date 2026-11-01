@@ -103,9 +103,11 @@ impl UiState {
     /// Whether `download_id`'s row says bytes are moving: only a Downloading
     /// row has a speed or an estimate (ADR-0071, "Download ETA").
     fn download_running(&self, download_id: DownloadId) -> bool {
-        self.downloads
-            .get(&download_id)
-            .is_some_and(|row| row.status == DownloadStatus::Downloading)
+        self.core_alive
+            && self
+                .downloads
+                .get(&download_id)
+                .is_some_and(|row| row.status == DownloadStatus::Downloading)
     }
 
     /// The download's Speed, bytes/sec: its meter while the row is

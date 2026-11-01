@@ -19,7 +19,7 @@ use crate::chrome::{self, ChromeState};
 use crate::client::CoreClient;
 use crate::state::UiState;
 use crate::theme::Theme;
-use crate::tui::{Surface, Tui};
+use crate::tui::Surface;
 use views::Views;
 
 mod history;
@@ -184,11 +184,24 @@ impl App {
         self
     }
 
-    /// Drive the UI until quit or until every action producer is gone.
-    pub async fn run(
+    /// Drive the UI until quit, until every action producer is gone or until
+    /// the surface stops drawing. Each of those is a Quit (ADR-0118): a
+    /// surface that failed ends the run, not the core's flush.
+    pub async fn run<S: Surface>(
         mut self,
-        tui: &mut Tui,
+        tui: &mut S,
         mut actions: mpsc::Receiver<Action>,
+    ) -> std::io::Result<()> {
+        let ended = self.drive(tui, &mut actions).await;
+        let quit = self.graceful_quit(tui, &mut actions).await;
+        ended.and(quit)
+    }
+
+    /// The loop: `Ok` on a Quit or on a bus with no producers left.
+    async fn drive<S: Surface>(
+        &mut self,
+        tui: &mut S,
+        actions: &mut mpsc::Receiver<Action>,
     ) -> std::io::Result<()> {
         let mut render = tokio::time::interval(RENDER_INTERVAL);
         render.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -200,10 +213,7 @@ impl App {
                     let now = Instant::now();
                     let immediate = matches!(action, Action::Input(_));
                     match self.reduce(action, now) {
-                        Flow::Quit => {
-                            self.graceful_quit(tui, &mut actions).await?;
-                            break;
-                        }
+                        Flow::Quit => break,
                         Flow::Continue => {}
                     }
                     if let Some(link) = self.pending_copy.take() {
@@ -242,7 +252,8 @@ impl App {
     /// it (`CoreEvent::Quitting`, reduced like any other event). The terminal
     /// is restored only once this returns and the loop breaks. A UI-only run
     /// (`self.client` is `None`) has no core to quit and returns at once,
-    /// drawing nothing.
+    /// drawing nothing. A frame that cannot be drawn stops no step of the
+    /// quit; the first such error is answered once the quit has run.
     ///
     /// `actions` is the same bus `App::run` reads — the only door onto
     /// core's events this app has, since the bridge is single-consumer; it
@@ -260,7 +271,7 @@ impl App {
         self.chrome
             .update(&Action::Flash(crate::words::app::SHUTTING_DOWN), now);
         self.dirty = true;
-        self.draw(tui, now)?;
+        let mut drawn = self.draw(tui, now);
 
         let quit = client.graceful_shutdown();
         tokio::pin!(quit);
@@ -269,7 +280,7 @@ impl App {
                 biased;
                 _ = &mut quit => break,
                 action = actions.recv() => match action {
-                    Some(step) => self.draw_quit_step(tui, step)?,
+                    Some(step) => drawn = drawn.and(self.draw_quit_step(tui, step)),
                     None => {
                         quit.await;
                         break;
@@ -282,9 +293,9 @@ impl App {
         // race with them still on the bus: draw whatever is queued before
         // the terminal is restored.
         while let Ok(step) = actions.try_recv() {
-            self.draw_quit_step(tui, step)?;
+            drawn = drawn.and(self.draw_quit_step(tui, step));
         }
-        Ok(())
+        drawn
     }
 
     /// Reduce and draw one bus action during quit if it is the status bar's
@@ -368,6 +379,10 @@ mod tests {
         fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame)) -> std::io::Result<()> {
             self.frames
                 .push(crate::golden::render_to_lines(80, 24, render));
+            Ok(())
+        }
+
+        fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
             Ok(())
         }
     }
@@ -551,6 +566,54 @@ mod tests {
             dir.path().join("clients.met").exists(),
             "Core::quit's unconditional checkpoint must have written clients.met"
         );
+    }
+
+    /// A terminal that has gone away, as a hangup leaves it.
+    struct DeadSurface;
+
+    impl Surface for DeadSurface {
+        fn draw(&mut self, _render: impl FnOnce(&mut ratatui::Frame)) -> std::io::Result<()> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+
+        fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A draw error used to return before the Quit: the flush of a run whose
+    /// terminal went away is exactly the one a hangup must not lose.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_surface_that_stops_drawing_ends_the_run_through_the_quit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let core = rmule_core::Core::builder(
+            rmule_core::CoreConfig::default(),
+            rmule_testkit::memory_store(),
+        )
+        .settings(rmule_core::CoreSettings::default())
+        .persist_credit_in(dir.path().to_path_buf())
+        .build();
+        let (actions_tx, actions_rx) = mpsc::channel(64);
+        let handle = crate::bridge::spawn(
+            core,
+            actions_tx.clone(),
+            crate::bridge::BridgeConfig::default(),
+        );
+        actions_tx
+            .send(Action::Note(crate::words::app::INTERNAL_FAULT))
+            .await
+            .expect("the bus is open");
+        let app = App::new(Theme::default_dark()).with_client(handle);
+
+        let ended = app.run(&mut DeadSurface, actions_rx).await;
+
+        assert_eq!(
+            ended
+                .expect_err("the draw's failure is the run's answer")
+                .kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert!(dir.path().join("clients.met").exists());
     }
 
     /// A core whose quit never ends, so the bridge's grace elapses and it

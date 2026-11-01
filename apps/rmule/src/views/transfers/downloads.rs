@@ -523,6 +523,15 @@ pub(super) fn status_text(
     state: &UiState,
 ) -> String {
     match (status, row.and_then(|row| row.source_wait)) {
+        // A run its stopped core no longer stands behind keeps its rank, not
+        // its claim.
+        (
+            DownloadStatus::Waiting
+            | DownloadStatus::NoConnection
+            | DownloadStatus::Downloading
+            | DownloadStatus::Completing,
+            _,
+        ) if !state.core_alive => crate::words::app::ROW_STOPPED.to_string(),
         (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
             "Reconnecting".to_string()
         }

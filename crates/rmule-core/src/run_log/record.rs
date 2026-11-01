@@ -50,6 +50,9 @@ pub enum Kind {
     Path,
     /// A URL.
     Url,
+    /// A panic's own message, which holds whatever values it was formatted
+    /// from (ADR-0118).
+    PanicMessage,
 }
 
 impl Kind {
@@ -71,7 +74,8 @@ impl Kind {
             | Kind::Hash
             | Kind::PeerIdentity
             | Kind::Path
-            | Kind::Url => Level::Full,
+            | Kind::Url
+            | Kind::PanicMessage => Level::Full,
         }
     }
 
@@ -79,7 +83,9 @@ impl Kind {
     /// and escaped to stay on one line.
     const fn quoted(self) -> bool {
         match self {
-            Kind::PeerSoftware | Kind::FileName | Kind::Path | Kind::Url => true,
+            Kind::PeerSoftware | Kind::FileName | Kind::Path | Kind::Url | Kind::PanicMessage => {
+                true
+            }
             Kind::OwnAddress
             | Kind::ServerEndpoint
             | Kind::OwnId
@@ -311,6 +317,20 @@ impl Record {
     #[must_use]
     pub fn url(self, name: &'static str, url: &str) -> Self {
         self.field(Kind::Url, name, url.to_string())
+    }
+
+    /// Where in the source a panic happened and on which thread, as code-side
+    /// names no peer's value reaches.
+    #[must_use]
+    pub(super) fn panic_site(self, thread: &str, file: &str, line: u32) -> Self {
+        self.field(Kind::Code, "thread", thread.replace(' ', "_"))
+            .field(Kind::Code, "at", format!("{file}:{line}"))
+    }
+
+    /// A panic's own message.
+    #[must_use]
+    pub(super) fn panic_message(self, message: &str) -> Self {
+        self.field(Kind::PanicMessage, "message", message.to_string())
     }
 
     /// The line `level` admits: the code, then every field its class allows.

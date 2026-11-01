@@ -3,12 +3,16 @@
 //! session's work, so no front end has to remember which activities to stop
 //! first and no task outlives the core that spawned it.
 
+use std::path::PathBuf;
+
 use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 
 use super::{CoreActor, send_event};
-use crate::service::activity::{JOIN_GRACE, join_or_abort};
+use crate::content::on_pool;
+use crate::credit::SharedCreditStore;
+use crate::service::activity::{JOIN_GRACE, join_or_abort, unix_now};
 use crate::service::{CoreEvent, QuitStep};
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
@@ -32,6 +36,9 @@ where
         // The trail first: what Quit takes down is told by Quit's own steps,
         // not written as reachability moving.
         self.trail.abort();
+        // What a front end's grace can still cut short goes first (ADR-0118):
+        // every step below can be slow, and this one has nothing to wait for.
+        self.credit_flush().await;
         // The scan feeds the share set every later activity reads, so it
         // stops first.
         if self.activities.scans().next().is_some() {
@@ -97,6 +104,41 @@ where
         self.client_udp_bound.clear();
         announce(&self.evt_tx, QuitStep::CreditCheckpoint).await;
     }
+
+    /// The credit's owners, handed to [`flush_credit`] so the actor is not
+    /// held across the pool's wait.
+    pub(super) fn credit_flush(&self) -> impl Future<Output = ()> + Send + 'static {
+        flush_credit(
+            self.wiring.credit.clone(),
+            self.wiring.clients_met_dir.clone(),
+        )
+    }
+}
+
+/// Make the ring durable, then snapshot it back to `clients.met`, off the
+/// actor. The checkpoint is unconditional: the ring is durable whether or not
+/// a `clients.met` copy was asked for.
+async fn flush_credit(credit: SharedCreditStore, clients_met_dir: Option<PathBuf>) {
+    on_pool(move || {
+        if let Err(error) = credit.checkpoint() {
+            tracing::warn!(%error, "credit checkpoint failed; the last accrual may not be durable");
+        }
+        let Some(dir) = clients_met_dir.as_deref() else {
+            return;
+        };
+        match credit.snapshot() {
+            Ok(snapshot) => {
+                if let Err(error) = crate::clients_met::save_clients_met(dir, &snapshot, unix_now())
+                {
+                    tracing::warn!(%error, "clients.met save failed; credit ring not persisted");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "credit snapshot failed; clients.met not written");
+            }
+        }
+    })
+    .await;
 }
 
 /// Report that quit's `step` begins.

@@ -63,6 +63,7 @@ pub mod chrome;
 pub mod client;
 pub mod config;
 pub mod connect;
+pub mod fault;
 pub(crate) mod form;
 pub mod input;
 pub mod kad;

@@ -281,7 +281,7 @@ where
             },
             finished_tx: runtime.finished_tx.clone(),
         }
-        .run()
+        .supervised()
         .instrument(download_span),
     );
     ActiveDownload {

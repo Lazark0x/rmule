@@ -279,7 +279,34 @@ where
     S: SourceLookupService,
     P: PeerTransferService,
 {
-    pub(crate) async fn run(self) {
+    /// The run, read by the supervisor: a panic is a failure like any other
+    /// end of a run (ADR-0118), so the row, the store and the finish notice
+    /// all say it ended.
+    pub(crate) async fn supervised(self) {
+        let download_id = self.request.download_id;
+        let run = self.run;
+        let rt = Arc::clone(&self.runner.rt);
+        let stop_rx = self.runner.stop_rx.clone();
+        let finished_tx = self.finished_tx.clone();
+        if crate::supervisor::watched(self.run()).await.is_ok() {
+            return;
+        }
+        if *stop_rx.borrow() == StopReason::Active {
+            crate::download::persist::record_failure(
+                &rt.store,
+                &rt.evt_tx,
+                download_id,
+                DownloadFailure::TaskPanicked,
+            )
+            .await;
+        }
+        rt.diagnostics.end_run(download_id, false);
+        let _ = finished_tx
+            .send(FinishedActivity::Download(download_id, run, false))
+            .await;
+    }
+
+    async fn run(self) {
         let download_id = self.request.download_id;
         let mut request = self.request;
         // A run that ends, however it ends, leaves its gate open: a stop

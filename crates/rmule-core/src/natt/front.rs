@@ -459,7 +459,12 @@ pub(crate) fn spawn<S: NattDatagramSink>(
         front.wiring.admit.clone(),
         front.wiring.events.clone(),
     );
-    tokio::spawn(front.run(inbox, command_rx, risen));
+    let events = front.wiring.events.clone();
+    crate::supervisor::spawn_told(
+        crate::service::LongTask::NattFront,
+        events,
+        front.run(inbox, command_rx, risen),
+    );
     Ok(command_tx)
 }
 

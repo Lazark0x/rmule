@@ -33,6 +33,7 @@ pub fn log_line(event: &CoreEvent) -> Sentence {
         CoreEvent::FileHistory { .. } => FILE_HISTORY,
         CoreEvent::KadStopped { reason } => kad::stopped(*reason),
         CoreEvent::Quitting { step } => super::app::quit_step(*step),
+        CoreEvent::TaskDied { task } => super::app::task_died(*task),
         CoreEvent::ServerLogin { server, step } => login::step_line(server, step),
         CoreEvent::BuddyDialFailed { buddy, cause } => kad::buddy_dial_failed(*buddy, *cause),
         CoreEvent::KadHelperTestLate {

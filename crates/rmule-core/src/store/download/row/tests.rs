@@ -86,7 +86,7 @@ fn the_completion_variants_are_appended_after_every_byte_a_store_holds() {
             lifecycle
         );
     }
-    let failures: [(DownloadFailure, &[u8]); 5] = [
+    let failures: [(DownloadFailure, &[u8]); 6] = [
         (DownloadFailure::PartVerificationFailed, &[8]),
         (DownloadFailure::FinalPathTaken, &[10]),
         (
@@ -98,6 +98,7 @@ fn the_completion_variants_are_appended_after_every_byte_a_store_holds() {
             DownloadFailure::CompletionCopyFailed { os_code: Some(28) },
             &[13, 1, 56],
         ),
+        (DownloadFailure::TaskPanicked, &[14]),
     ];
     for (failure, encoded) in failures {
         assert_eq!(postcard::to_allocvec(&failure).unwrap(), encoded);

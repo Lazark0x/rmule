@@ -13,7 +13,7 @@ use rmule_core::run_log::Level;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, CoreSettings, ExternalAddressOverride,
     KadEnableConfig, KadId, KadShutdownSlot, ObfuscationPolicy, PeerReach,
-    ServeCommand as CoreServeCommand, ServerPolicy, open_durable_store_in_memory,
+    ServeCommand as CoreServeCommand, ServerPolicy, StopRequest, open_durable_store_in_memory,
 };
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint, ServerEndpoint};
 
@@ -304,7 +304,7 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
     let mut verdict_tick = (args.kad && args.report_kad_verdicts_every_secs > 0)
         .then(|| tokio::time::interval(Duration::from_secs(args.report_kad_verdicts_every_secs)));
     let mut last_verdicts = None;
-    let mut stop = StopRequest::install()?;
+    let mut stop = StopRequest::install().context("install the stop handlers")?;
 
     // The select is resolved into a `Step` first: `next_event` borrows the core
     // mutably for the whole select, so a `core.send` arm can only run once that
@@ -392,51 +392,6 @@ pub(crate) async fn start(args: ServeStartArgs) -> Result<()> {
 }
 
 /// The OS asking serve to stop, each way running the same graceful sequence:
-/// SIGTERM (a `docker stop` or an orchestrator's shutdown) or SIGINT (Ctrl-C)
-/// on Unix, Ctrl-C on Windows. Installed once before the loop, so a request
-/// that lands between two turns of it is held, not lost.
-#[cfg(unix)]
-pub(crate) struct StopRequest {
-    terminate: tokio::signal::unix::Signal,
-    interrupt: tokio::signal::unix::Signal,
-}
-
-#[cfg(unix)]
-impl StopRequest {
-    pub(crate) fn install() -> Result<Self> {
-        use tokio::signal::unix::{SignalKind, signal};
-        Ok(Self {
-            terminate: signal(SignalKind::terminate()).context("install SIGTERM handler")?,
-            interrupt: signal(SignalKind::interrupt()).context("install SIGINT handler")?,
-        })
-    }
-
-    pub(crate) async fn recv(&mut self) {
-        tokio::select! {
-            _ = self.terminate.recv() => {}
-            _ = self.interrupt.recv() => {}
-        }
-    }
-}
-
-#[cfg(windows)]
-pub(crate) struct StopRequest {
-    ctrl_c: tokio::signal::windows::CtrlC,
-}
-
-#[cfg(windows)]
-impl StopRequest {
-    pub(crate) fn install() -> Result<Self> {
-        Ok(Self {
-            ctrl_c: tokio::signal::windows::ctrl_c().context("install Ctrl-C handler")?,
-        })
-    }
-
-    pub(crate) async fn recv(&mut self) {
-        self.ctrl_c.recv().await;
-    }
-}
-
 /// Print the Kad self-check verdicts `snapshot` carries when they differ from
 /// the last ones printed.
 fn report_kad_verdicts(

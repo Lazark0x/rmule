@@ -293,7 +293,12 @@ fn spawn_with<D: Dialer>(
         kad_start: shared.kad_starts(),
         dialed_tx,
     };
-    tokio::spawn(front.run(command_rx, dialed_rx, tick));
+    let events = front.wiring.events.clone();
+    crate::supervisor::spawn_told(
+        crate::service::LongTask::FirewalledFront,
+        events,
+        front.run(command_rx, dialed_rx, tick),
+    );
     command_tx
 }
 

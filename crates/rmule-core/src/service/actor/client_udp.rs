@@ -18,7 +18,9 @@ use crate::client_udp::{
     ClientUdpDatagram, ClientUdpEngine, ClientUdpSend, PeerUdpCrypt, drain_client_udp_sends,
 };
 use crate::own_identity::SharedOwnIdentity;
+use crate::service::LongTask;
 use crate::service::{CoreConfig, SharedReaskReplySink};
+use crate::supervisor::spawn_told;
 
 /// Bring up the client-UDP front on the one bound socket: the demuxing engine,
 /// the send drain, the routing of downloader-consumed reask replies
@@ -42,6 +44,7 @@ pub(super) fn spawn_client_udp_front(
     // dual-path while armed, and send is gated per datagram at the drain
     // below.
     let policy = &natt.hello_adverts.obfuscation;
+    let events = Some(natt.events.clone());
     let peer_udp_crypt = PeerUdpCrypt::new(own_identity.clone(), policy.clone());
     let (reply_tx, reply_rx) = mpsc::channel::<ClientUdpSend>(32);
     let (engine, inboxes) = ClientUdpEngine::new(
@@ -67,15 +70,19 @@ pub(super) fn spawn_client_udp_front(
         // Every datagram of a banned IP stops at the front (ADR-0064).
         sinks.bans,
     );
-    tokio::spawn(engine.run());
+    spawn_told(LongTask::ClientUdpFront, events.clone(), engine.run());
     // The send drain: each serve/download `SendClientUdp` datagram (an
     // uploader reply or a downloader `0x90` reask ping), and each NAT-T punch,
     // meets the crypt gate on its way to the one bound socket.
-    tokio::spawn(drain_client_udp_sends(
-        reply_rx,
-        Arc::clone(&socket),
-        PeerUdpCrypt::new(own_identity.clone(), policy.clone()),
-    ));
+    spawn_told(
+        LongTask::ClientUdpSends,
+        events.clone(),
+        drain_client_udp_sends(
+            reply_rx,
+            Arc::clone(&socket),
+            PeerUdpCrypt::new(own_identity.clone(), policy.clone()),
+        ),
+    );
     // The quartet names no file, so a reply goes to the one download whose
     // `0x90` to that endpoint is in flight (ADR-0107) — aMule's one requested
     // file per client — and a reply nothing asked for drops. A pool that has
@@ -84,7 +91,7 @@ pub(super) fn spawn_client_udp_front(
     let routes = Arc::clone(sinks.reask_reply);
     let mut reask_reply_rx = inboxes.reask_reply;
     let reply_diagnostics = diagnostics.clone();
-    tokio::spawn(async move {
+    spawn_told(LongTask::ReaskRouter, events, async move {
         while let Some(datagram) = reask_reply_rx.recv().await {
             let sink = routes
                 .lock()

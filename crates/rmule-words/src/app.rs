@@ -3,7 +3,9 @@
 
 use std::path::Path;
 
-use rmule_core::{CoreCommandRejectReason, DirectoryRefusal, KadUnavailableReason, QuitStep};
+use rmule_core::{
+    CoreCommandRejectReason, DirectoryRefusal, KadUnavailableReason, LongTask, QuitStep,
+};
 
 use super::Sentence;
 use super::kad::kad_unavailable_words;
@@ -12,6 +14,55 @@ use super::os::refusal_words;
 /// The quit path's opening flash, up before the core names its
 /// first step.
 pub const SHUTTING_DOWN: Sentence = Sentence::fixed("Shutting down…");
+
+/// `rmule-cli add` was asked to stop by the OS (ADR-0118); it still quits.
+pub const CLI_STOPPED: &str = "stopped by a signal before the download completed";
+
+/// A running download's status once its core has stopped.
+pub const ROW_STOPPED: &str = "Stopped";
+
+/// A panic ended one task and the run goes on (ADR-0118).
+pub const INTERNAL_FAULT: Sentence =
+    Sentence::fixed("rmule hit an internal fault, written to its log; restart it when you can");
+
+/// The operator could not be promised a clean Quit on a signal, since the OS
+/// refused the handlers (ADR-0118).
+pub const NO_STOP_SIGNALS: Sentence =
+    Sentence::fixed("rmule cannot hear a stop signal this run; quit with q");
+
+/// What the normal screen says after a panic ended rmule (ADR-0118): where it
+/// happened, and the log that holds it.
+#[must_use]
+pub fn stopped_on_fault(file: &str, line: u32, log: Option<&Path>) -> String {
+    match log {
+        Some(log) => format!(
+            "rmule stopped on an internal fault at {file}:{line}; the record is in {}",
+            log.display()
+        ),
+        None => format!("rmule stopped on an internal fault at {file}:{line}; this run has no log"),
+    }
+}
+
+/// A long task stopped on an internal fault (ADR-0118). It says what no longer
+/// works for the rest of the run.
+#[must_use]
+pub const fn task_died(task: LongTask) -> Sentence {
+    Sentence::fixed(match task {
+        LongTask::Core => "rmule hit an internal fault and its engine stopped; see the log",
+        LongTask::ClientUdpFront | LongTask::ClientUdpSends => {
+            "rmule hit an internal fault: peer UDP stopped until the next start; see the log"
+        }
+        LongTask::ReaskRouter => {
+            "rmule hit an internal fault: reask replies stopped until the next start; see the log"
+        }
+        LongTask::FirewalledFront => {
+            "rmule hit an internal fault: buddy relays stopped until the next start; see the log"
+        }
+        LongTask::NattFront => {
+            "rmule hit an internal fault: NAT traversal stopped until the next start; see the log"
+        }
+    })
+}
 
 /// The step of quit now running.
 #[must_use]
@@ -33,7 +84,8 @@ pub const SHUTDOWN_GRACE_ELAPSED: Sentence =
     Sentence::fixed("Shutdown grace period elapsed — flush unconfirmed");
 
 /// The core's event stream ended.
-pub const CORE_STOPPED: Sentence = Sentence::fixed("core stopped");
+pub const CORE_STOPPED: Sentence =
+    Sentence::fixed("the engine stopped; press q and start rmule again");
 
 /// A command on a run with no core.
 pub const CORE_NOT_ATTACHED: Sentence = Sentence::fixed("core not attached (UI-only run)");

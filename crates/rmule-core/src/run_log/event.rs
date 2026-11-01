@@ -67,6 +67,9 @@ impl CoreEvent {
             CoreEvent::Quitting { step } => {
                 Record::new("quit.step").code("step", codes::quit_step(*step))
             }
+            CoreEvent::TaskDied { task } => {
+                Record::new("task.died").code("task", codes::long_task(*task))
+            }
             CoreEvent::ServerLogin { server, step } => login::record(server, step),
             CoreEvent::BuddyDialFailed { buddy, cause } => buddy::dial_failed(buddy, *cause),
             CoreEvent::KadHelperTestLate {

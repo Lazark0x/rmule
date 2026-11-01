@@ -112,3 +112,4 @@ mod store_repository;
 
 // Diagnostics: what a front-end reads while a session runs.
 mod diagnostics_snapshot;
+mod panic_cost;

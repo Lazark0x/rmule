@@ -252,8 +252,9 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     let mut stop = args
         .served
         .persist_credit
-        .then(crate::serve::StopRequest::install)
-        .transpose()?;
+        .then(rmule_core::StopRequest::install)
+        .transpose()
+        .context("install the stop handlers")?;
 
     // The operator's word, given on the command line (ADR-0095): the one
     // login, which binds the listener if `--serve` has not, then the download

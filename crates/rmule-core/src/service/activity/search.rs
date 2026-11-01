@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 
 use crate::search::{KadKeywordLeg, SearchEnd, SentServerLeg};
 use crate::service::{FinishedActivity, SearchEvent, SearchFailure, SearchId};
+use crate::supervisor::watched;
 
 use super::join_or_abort;
 
@@ -126,7 +127,9 @@ impl Searches {
         let task = task(SearchLevers { cancel_rx, more_rx });
         let finished_tx = finished_tx.clone();
         let handle = tokio::spawn(async move {
-            let end = run_watched(task).await;
+            // A panic is a death (ADR-0118): it reaches the same finish notice
+            // as any other end and so the same retire.
+            let end = watched(task).await.unwrap_or(SearchEnd::Panicked);
             let _ = end_tx.send(end);
             if end != SearchEnd::Stopped {
                 let _ = finished_tx
@@ -285,32 +288,6 @@ impl WaitingSearch {
     /// only said to be cancelled.
     async fn retire(self, evt_tx: &crate::service::Outbox) {
         say_cancelled(self.search_id, evt_tx).await;
-    }
-}
-
-/// Aborts the task it holds when dropped, so aborting the watcher that owns
-/// it (the retire's abort past the grace) takes the task down with it.
-struct AbortOnDrop(JoinHandle<SearchEnd>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-/// Run `task` as its own task and read how it ended from its join handle
-/// (ADR-0093): a panic is a death, `SearchEnd::Panicked`, which reaches the
-/// same finish notice as any other end and so the same retire.
-async fn run_watched<F>(task: F) -> SearchEnd
-where
-    F: Future<Output = SearchEnd> + Send + 'static,
-{
-    let mut inner = AbortOnDrop(tokio::spawn(task));
-    match (&mut inner.0).await {
-        Ok(end) => end,
-        Err(joined) if joined.is_panic() => SearchEnd::Panicked,
-        // Aborted from outside this watcher: nobody asked for it to say more.
-        Err(_) => SearchEnd::Stopped,
     }
 }
 

@@ -33,7 +33,7 @@ rmule-primitives = { path = "../rmule-primitives", features = ["serde"] }
 rmule-store = { path = "../rmule-store" }
 serde.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 tracing.workspace = true
 # The Run Log (`run_log`): the file every `tracing` event of a run lands in.
 tracing-subscriber.workspace = true

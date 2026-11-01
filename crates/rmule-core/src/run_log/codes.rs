@@ -10,12 +10,13 @@ use crate::{BlockAskFault, DeadDialSign};
 use crate::{
     ConfidenceTier, CoreCommandRejectReason, DialBackEnd, DialEnd, DialFailure, DownloadFailure,
     DownloadLifecycle, GrantRoad, IgnoredReaskReply, KadStopReason, KadUnavailableReason,
-    LegNotSent, NatTraversalUnavailableReason, PairRole, PartFileChange, PartReleaseReason,
-    PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole, QuitStep, ReconnectEnd,
-    RelatedSearchRefusal, SearchFailure, SearchLegState, SearchResultSkipReason, ServeStartFailure,
-    ServeStopReason, ServerConnectFailure, ServerListUpdateFailure, ShareRejectReason,
-    SharesWithheld, SocketRole, SourcePurgeReason, SourceWait, TunnelTransport,
-    VerificationAuthority, VolumeStop, WaiterLeaveCause, WatchFault, WithheldReason,
+    LegNotSent, LongTask, NatTraversalUnavailableReason, PairRole, PartFileChange,
+    PartReleaseReason, PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole,
+    QuitStep, ReconnectEnd, RelatedSearchRefusal, SearchFailure, SearchLegState,
+    SearchResultSkipReason, ServeStartFailure, ServeStopReason, ServerConnectFailure,
+    ServerListUpdateFailure, ShareRejectReason, SharesWithheld, SocketRole, SourcePurgeReason,
+    SourceWait, TunnelTransport, VerificationAuthority, VolumeStop, WaiterLeaveCause, WatchFault,
+    WithheldReason,
 };
 use rmule_primitives::AddressFamily;
 
@@ -95,6 +96,7 @@ pub(super) fn failure(record: Record, failure: &DownloadFailure) -> Record {
         DownloadFailure::PartVerificationFailed => "part_verification_failed",
         DownloadFailure::FinalPathTaken => "final_path_taken",
         DownloadFailure::StoreFailed => "store_failed",
+        DownloadFailure::TaskPanicked => "task_panicked",
         DownloadFailure::CompletedFileNotMoved { os_code } => {
             let record = record.code("failure", "completed_file_not_moved");
             return match os_code {
@@ -587,6 +589,17 @@ pub(super) const fn kad_stop(reason: KadStopReason) -> &'static str {
         KadStopReason::Ended => "ended",
         KadStopReason::Stopped => "stopped",
         KadStopReason::TaskFailed => "task_failed",
+    }
+}
+
+pub(super) const fn long_task(task: LongTask) -> &'static str {
+    match task {
+        LongTask::Core => "core",
+        LongTask::ClientUdpFront => "client_udp_front",
+        LongTask::ClientUdpSends => "client_udp_sends",
+        LongTask::ReaskRouter => "reask_router",
+        LongTask::FirewalledFront => "firewalled_front",
+        LongTask::NattFront => "natt_front",
     }
 }
 

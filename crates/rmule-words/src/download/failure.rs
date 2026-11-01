@@ -50,6 +50,9 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
         DownloadFailure::StoreFailed => {
             "rmule's store could not read or write this download's record"
         }
+        DownloadFailure::TaskPanicked => {
+            "rmule hit an internal fault, written to its log; every checked part is kept, so Restart it"
+        }
         DownloadFailure::CompletionCopyFailed { os_code } => {
             return format!(
                 "the finished file could not be copied to the disk where it goes{}; every checked part is kept, so Restart once that disk takes it",

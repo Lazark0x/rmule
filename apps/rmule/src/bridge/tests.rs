@@ -453,3 +453,46 @@ async fn a_full_inbox_holds_no_event_and_no_sender() {
     assert!(matches!(forwarded, CoreEvent::Download(_)));
     drop(room_rx);
 }
+
+/// Whether `CoreClosed` reaches the bus, whatever precedes it.
+async fn core_closed_arrives(actions: &mut mpsc::Receiver<Action>) -> bool {
+    while let Some(action) = actions.recv().await {
+        if matches!(action, Action::CoreClosed) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A panic in the bridge must not leave the UI showing a live core: the
+/// fake's poisoned snapshot lock stands in for any defect on the data tick.
+#[tokio::test(start_paused = true)]
+async fn a_panicked_bridge_closes_the_core_on_the_bus() {
+    let (core, controls) = fake_core();
+    let poisoner = Arc::clone(&controls.snapshot);
+    let _ = std::thread::spawn(move || {
+        let _held = poisoner.lock().unwrap();
+        panic!("poison the fake's snapshot");
+    })
+    .join();
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let _handle = spawn(core, action_tx, BridgeConfig::default());
+    assert!(core_closed_arrives(&mut action_rx).await);
+}
+
+/// The actor's tasks can hold the event stream open past the actor, so its
+/// told death is the core's end.
+#[tokio::test(start_paused = true)]
+async fn the_actors_told_death_closes_the_core_on_the_bus() {
+    let (core, controls) = fake_core();
+    let (action_tx, mut action_rx) = mpsc::channel(64);
+    let _handle = spawn(core, action_tx, BridgeConfig::default());
+    controls
+        .events
+        .send(CoreEvent::TaskDied {
+            task: LongTask::Core,
+        })
+        .await
+        .unwrap();
+    assert!(core_closed_arrives(&mut action_rx).await);
+}

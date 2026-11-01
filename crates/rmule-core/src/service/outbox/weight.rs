@@ -55,6 +55,7 @@ pub(super) fn of(event: &CoreEvent) -> Weight {
         | CoreEvent::FileHistory { .. }
         | CoreEvent::KadStopped { .. }
         | CoreEvent::Quitting { .. }
+        | CoreEvent::TaskDied { .. }
         | CoreEvent::ObfuscationPolicyAtStart { .. }
         | CoreEvent::ObfuscationPolicyChanged { .. }
         | CoreEvent::EventsShed { .. } => Weight::Edge,

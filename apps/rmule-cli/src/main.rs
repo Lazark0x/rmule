@@ -19,9 +19,9 @@ use rmule_core::run_log::{self, Level, LevelHandle, RunLog, RunLogFailure};
 use rmule_core::{
     AppConfigStore, Core, CoreBuilder, CoreCommand, CoreConfig, CoreEvent, CoreSettings,
     CoreSettingsHandle, DownloadCommand, DownloadEvent, DownloadId, DurableAppConfig, DurableStore,
-    ManagedServer, NameTaken, RuntimeKadFactory, RuntimePeerTransferService,
+    LongTask, ManagedServer, NameTaken, RuntimeKadFactory, RuntimePeerTransferService,
     RuntimeServeRuntimeService, RuntimeSourceLookupService, ScanEvent, ServerListStore,
-    ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards, VolumeStop,
+    ServerPriority, Setting, SettingError, SettingRefusal, ShareGuards, StopRequest, VolumeStop,
     open_durable_store,
 };
 use rmule_primitives::{Ed2kLink, SafeFileName, ServerEndpoint};
@@ -167,6 +167,10 @@ fn install_run_log(
         }
     });
     let level = opened.as_ref().map(RunLog::level).unwrap_or_default();
+    install_panic_hook(
+        level.clone(),
+        opened.is_ok().then(|| data_dir.join(run_log::FILE_NAME)),
+    );
     match opened.and_then(RunLog::install) {
         Ok(failures) => {
             // The run's boundary: a log many runs append to tells them apart
@@ -190,6 +194,22 @@ fn install_run_log(
         Err(failure) => say_err!("{}", no_run_log(failure)),
     }
     Ok(level)
+}
+
+/// A panic's record first (ADR-0118), then the place and the log in the
+/// operator's words on stderr. Past the hook the task ends, or in a dist build
+/// the process does.
+fn install_panic_hook(level: LevelHandle, log: Option<std::path::PathBuf>) {
+    std::panic::set_hook(Box::new(move |info| {
+        run_log::panic_record(info, &level);
+        let (file, line) = info
+            .location()
+            .map_or(("unknown", 0), |site| (site.file(), site.line()));
+        say_err!(
+            "{}",
+            rmule_words::app::stopped_on_fault(file, line, log.as_deref())
+        );
+    }));
 }
 
 /// What the operator is told when the Run Log is not, or no longer, written:
@@ -465,6 +485,7 @@ async fn drive_add(
         .await?;
     }
     let serverless = server.is_none();
+    let mut stop = StopRequest::install().context("install the stop handlers")?;
     // Core places the file in the download directory its settings name, or
     // refuses the start, so a fresh add never lands on a file it did not make.
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
@@ -478,10 +499,20 @@ async fn drive_add(
 
     let mut download_id: Option<DownloadId> = None;
     loop {
-        let Some(event) = core.next_event().await else {
+        let event = tokio::select! {
+            event = core.next_event() => event,
+            // A stop signal leaves through the caller's Quit, as every other
+            // way out does (ADR-0118).
+            () = stop.recv() => anyhow::bail!("{}", rmule_words::app::CLI_STOPPED),
+        };
+        let Some(event) = event else {
             anyhow::bail!("core event stream ended before the download completed");
         };
         match event {
+            // The tasks the actor left would hold the stream open past it.
+            CoreEvent::TaskDied {
+                task: task @ LongTask::Core,
+            } => anyhow::bail!("{}", rmule_words::app::task_died(task)),
             CoreEvent::Download(DownloadEvent::DownloadQueued {
                 download_id: id, ..
             }) => {

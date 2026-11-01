@@ -56,7 +56,7 @@ use crate::store::download::DurableDownloadRepository;
 use crate::store::registry::DurableSharedFileRegistry;
 
 use self::download::{DownloadRuntime, Stopping};
-use super::activity::{Activities, GlobalSearchContext, ServerUdpFront, unix_now};
+use super::activity::{Activities, GlobalSearchContext, ServerUdpFront};
 use super::{CoreCommand, CoreConfig, CoreEvent, FinishedActivity};
 
 pub(super) use self::prologue::run_core_with_adapters;
@@ -644,29 +644,9 @@ where
         if let Some(credit_flush) = self.credit_flush.take() {
             credit_flush.finish().await;
         }
-        // Shutdown flush: make the ring durable, then snapshot it
-        // back to `clients.met`. Runs on the command-channel-close path above;
-        // the event sender drops when this function returns, which is what
-        // `Core::shutdown` awaits. The checkpoint is unconditional — the ring
-        // is durable whether or not a `clients.met` copy was asked for.
-        if let Err(error) = self.wiring.credit.checkpoint() {
-            tracing::warn!(%error, "credit checkpoint failed; the last accrual may not be durable");
-        }
-        if let Some(dir) = self.wiring.clients_met_dir.as_deref() {
-            let snapshot = self.wiring.credit.snapshot();
-            match snapshot {
-                Ok(snapshot) => {
-                    if let Err(error) =
-                        crate::clients_met::save_clients_met(dir, &snapshot, unix_now())
-                    {
-                        tracing::warn!(%error, "clients.met save failed; credit ring not persisted");
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "credit snapshot failed; clients.met not written");
-                }
-            }
-        }
+        // Last, for what the stops themselves accrued. The event sender drops
+        // when this function returns, which is what `Core::shutdown` awaits.
+        self.credit_flush().await;
         // The event stream's end is `Core::shutdown`'s completion, so the
         // last sender drops after everything else the actor holds — the store
         // views above all — whatever order the fields would drop in.

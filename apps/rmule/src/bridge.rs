@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
-use rmule_core::{CommandSender, Core, CoreCommand, CoreError, CoreEvent, EventStream};
+use rmule_core::{CommandSender, Core, CoreCommand, CoreError, CoreEvent, EventStream, LongTask};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -151,14 +151,12 @@ pub struct BridgeSnapshot {
 type ShutdownAck = oneshot::Sender<()>;
 
 /// How long [`BridgeHandle::graceful_shutdown`] waits for `Core::quit()`'s
-/// stream to drain before giving up on the confirmation and
-/// returning anyway — a stuck actor must not hang the TUI's
-/// terminal. The command channel this closes first (`Core::quit`'s own
-/// act, before any await) has already reached the actor by then, so
-/// the flush itself still runs to completion in the actor's own task; only
-/// this caller's *wait* for it is bounded. Same duration as the Kad Shutdown
-/// Lever's grace: one wait's worth of patience, not two.
-const CORE_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+/// stream to drain before giving up and returning anyway — a stuck actor must
+/// not hang the TUI's terminal. It covers the sum of quit's own bounds, 33 s
+/// with nothing wedged (ADR-0118), so only a wedged quit reaches it. Past it
+/// the run ends and the runtime takes the actor with it: quit's opening credit
+/// flush has already landed by then, and its closing one is what is lost.
+const CORE_SHUTDOWN_GRACE: Duration = Duration::from_secs(45);
 
 /// Told, not swallowed: the status-bar flash
 /// [`run`]'s shutdown arm sends when [`CORE_SHUTDOWN_GRACE`] elapses before
@@ -228,7 +226,15 @@ pub fn spawn<H: CoreHandle>(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let forwarder = tokio::spawn(forward_commands(core.door(), cmd_rx));
-    tokio::spawn(run(core, forwarder, shutdown_rx, actions, config));
+    let closed = actions.clone();
+    let bridge = tokio::spawn(run(core, forwarder, shutdown_rx, actions, config));
+    // A panic here would end the bridge with nothing said, and the UI would
+    // go on showing a live core (ADR-0118).
+    tokio::spawn(async move {
+        if bridge.await.is_err() {
+            let _ = closed.send(Action::CoreClosed).await;
+        }
+    });
     BridgeHandle {
         cmd_tx,
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
@@ -276,21 +282,24 @@ async fn run<H: CoreHandle>(
         tokio::select! {
             event = core.next_event() => match event {
                 Some(event) => {
+                    // The actor's panic is the core's end, though the tasks
+                    // it left go on holding the event stream open.
+                    let core_died = matches!(
+                        event,
+                        CoreEvent::TaskDied { task: LongTask::Core }
+                    );
                     // Edges must not be lost: await capacity instead of
                     // dropping. Err means the UI is gone — stop bridging.
                     if actions.send(Action::Core(event)).await.is_err() {
                         return;
                     }
+                    if core_died {
+                        announce_core_closed(&mut forwarder, forwarding, &actions).await;
+                        return;
+                    }
                 }
                 None => {
-                    // Core stopped. Announce and end, ending the forwarder
-                    // with it so a later `CoreClient::send` is `CoreStopped`
-                    // even with no command in flight.
-                    if forwarding {
-                        forwarder.abort();
-                        let _ = (&mut forwarder).await;
-                    }
-                    let _ = actions.send(Action::CoreClosed).await;
+                    announce_core_closed(&mut forwarder, forwarding, &actions).await;
                     return;
                 }
             },
@@ -324,13 +333,11 @@ async fn run<H: CoreHandle>(
                     .await;
                     if drained.is_err() {
                         // The grace elapsed before quit's event stream ran to
-                        // its end — the credit-checkpoint flush's completion
-                        // was never observed here, though the actor's own
-                        // task keeps running it to completion independently
+                        // its end, so its closing flush was never observed
+                        // and the runtime's end will cancel it
                         // (CORE_SHUTDOWN_GRACE's doc). `graceful_shutdown`
                         // still answers `true`, so this is the caller's only
-                        // way to learn the wait, not the flush, is what
-                        // ended.
+                        // way to learn quit did not finish.
                         let _ = actions
                             .send(Action::Flash(SHUTDOWN_GRACE_ELAPSED_FLASH))
                             .await;
@@ -344,6 +351,20 @@ async fn run<H: CoreHandle>(
             }
         }
     }
+}
+
+/// The core stopped: say so and end, ending the forwarder with it so a later
+/// `CoreClient::send` is `CoreStopped` even with no command in flight.
+async fn announce_core_closed(
+    forwarder: &mut JoinHandle<Forwarded>,
+    forwarding: bool,
+    actions: &mpsc::Sender<Action>,
+) {
+    if forwarding {
+        forwarder.abort();
+        let _ = forwarder.await;
+    }
+    let _ = actions.send(Action::CoreClosed).await;
 }
 
 /// Drain quit's event stream to its end — the flush — forwarding each fact

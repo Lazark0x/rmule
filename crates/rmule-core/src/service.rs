@@ -33,7 +33,7 @@ pub use self::event::{BlockAskFault, DeadDialSign, DialBackEnd, GrantRoad};
 pub use self::event::{
     BuddyDialFailure, CompletionStep, CoreEvent, DialEnd, DialFailure, DownloadEvent, IdAssignment,
     IgnoredReaskReply, Ipv6Probe, KadStopReason, LegNotSent, LoginClaim, LoginCloseCause,
-    LoginLink, LoginStep, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
+    LoginLink, LoginStep, LongTask, NatTraversalUnavailableReason, PartsLost, PeerBuddy, PeerReach,
     PeerReachDropReason, PeerReachRoute, PlainLinkReason, PortTestAdmission, PortTestClosedBy,
     PortTestEnd, PortTestLateAdmission, PurgedSource, QuitStep, ReconnectEnd, RestartOutcome,
     ScanEvent, SearchEvent, SearchFailure, SearchLegState, SearchLegs, ServeEvent,
@@ -201,12 +201,11 @@ impl Core {
             wiring.share_guards.clone(),
         );
         let kad_id = wiring.kad_id;
-        tokio::spawn(run_core_with_adapters(
-            wiring,
-            inbox,
-            evt_tx,
-            diagnostics.clone(),
-        ));
+        crate::supervisor::spawn_told(
+            LongTask::Core,
+            Some(evt_tx.downgrade()),
+            run_core_with_adapters(wiring, inbox, evt_tx, diagnostics.clone()),
+        );
         Self {
             commands,
             events,

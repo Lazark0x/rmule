@@ -525,3 +525,15 @@ fn the_log_and_its_rotated_twin_are_kept_to_this_user() {
     assert_eq!(mode(FILE_NAME), 0o600);
     assert_eq!(mode(PREDECESSOR_NAME), 0o600);
 }
+
+/// A panic's message holds whatever it was formatted from, so a lean log
+/// keeps the place and thread and leaves the values out (ADR-0118).
+#[test]
+fn a_panic_names_its_place_at_lean_and_its_values_at_full_alone() {
+    let (lean, full) = super::panic::lines("peer 192.0.2.1 sent \"x\"");
+    assert_eq!(lean, "panic thread=tokio-runtime-worker at=src/x.rs:7");
+    assert_eq!(
+        full,
+        "panic thread=tokio-runtime-worker at=src/x.rs:7 message=\"peer 192.0.2.1 sent \\\"x\\\"\""
+    );
+}
