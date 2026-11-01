@@ -102,9 +102,8 @@ pub const fn quit_step(step: QuitStep) -> Sentence {
 }
 
 /// Quit's grace ran out before core confirmed its flush.
-pub const SHUTDOWN_GRACE_ELAPSED: Sentence = Sentence::fixed(
-    "Quit ran out of time: recent credits may be lost and router mappings may stay",
-);
+pub const SHUTDOWN_GRACE_ELAPSED: Sentence =
+    Sentence::fixed("Quit ran out of time: recent credits may be lost");
 
 /// The core's event stream ended.
 pub const CORE_STOPPED: Sentence =
