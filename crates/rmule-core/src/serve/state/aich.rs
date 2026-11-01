@@ -16,6 +16,7 @@ use rmule_primitives::{
 use super::served::Found;
 use super::transfer::not_found;
 use super::{ServeDecision, ServeState};
+use crate::upload_queue::ScoreModifiers;
 
 /// How a build ended, as the enactor tells it.
 #[derive(Clone, Debug)]
@@ -202,7 +203,7 @@ impl ServeState {
         now: Instant,
         file_hash: FileHash,
         built: AichBuilt,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let Some(running) = self.aich.running.take() else {
             return Vec::new();

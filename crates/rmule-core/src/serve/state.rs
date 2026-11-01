@@ -33,6 +33,7 @@ mod transfer;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_ed2k::{FileCompleteness, OfferedFile};
@@ -51,6 +52,7 @@ use crate::serve::hash_track::HashTrack;
 use crate::serve::source_exchange::SourceExchangeThrottle;
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ServedLook};
 use crate::service::{DialBackEnd, GrantRoad, ServeEvent};
+use crate::upload_queue::ScoreModifiers;
 use crate::upload_queue::{Promotion, UploadSlotQueue};
 
 /// One effect the serve task must enact, drained in order from a
@@ -254,7 +256,7 @@ pub(super) struct ServeState {
     /// `IdentityRevised`; kept across a waiter's hang-up while it holds its
     /// queue standing, and shed in one place ([`Self::forget`]) when it
     /// holds none.
-    identities: HashMap<PeerEndpoint, PeerIdentity>,
+    identities: Arc<HashMap<PeerEndpoint, PeerIdentity>>,
     /// The links whose client is **identified**: its Secure User
     /// Identification proved the hello's User Hash and the link bound the key
     /// in the credit ledger (ADR-0041) — aMule's `IS_IDENTIFIED`. Shed with
@@ -313,7 +315,7 @@ impl ServeState {
             ended: HashSet::new(),
             partials: HashSet::new(),
             queue,
-            identities: HashMap::new(),
+            identities: Arc::default(),
             identified: HashSet::new(),
             dialed: HashMap::new(),
             served_ranges: HashMap::new(),
@@ -355,8 +357,8 @@ impl ServeState {
     /// The peers whose credit modifiers the entry points expect: every
     /// identified peer — a superset of the waiting set, which is all the
     /// queue needs — by the identity its session keeps.
-    pub(super) fn identities(&self) -> &HashMap<PeerEndpoint, PeerIdentity> {
-        &self.identities
+    pub(super) fn identities(&self) -> Arc<HashMap<PeerEndpoint, PeerIdentity>> {
+        Arc::clone(&self.identities)
     }
 
     /// The software `peer`'s identity names, for the row it earns.
@@ -367,7 +369,7 @@ impl ServeState {
     /// Shed everything kept about `peer` once it holds no queue standing: its
     /// identity and the part statuses it wrote.
     fn forget(&mut self, peer: PeerEndpoint) {
-        self.identities.remove(&peer);
+        Arc::make_mut(&mut self.identities).remove(&peer);
         self.identified.remove(&peer);
         self.sx_part_status
             .retain(|(held_by, _), _| *held_by != peer);
@@ -383,7 +385,7 @@ impl ServeState {
         &mut self,
         entries: Vec<SharedFileEntry>,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         for file_hash in self.ended.drain() {
             self.served.remove(&file_hash);
@@ -444,7 +446,7 @@ impl ServeState {
     pub(super) fn on_rerank_tick(
         &mut self,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let reranked = self.queue.rerank(now, modifiers);
         rank_updates(&self.queue, &self.identities, reranked)
@@ -458,7 +460,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         purge_after: Duration,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         // [`Self::in_share_set`], read by field: the queue is borrowed
         // mutably beside it.

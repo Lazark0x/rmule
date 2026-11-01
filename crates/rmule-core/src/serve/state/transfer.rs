@@ -9,7 +9,6 @@
 use rmule_peer::{MAX_REQUESTED_RANGE, PartRanges, PeerIdentity, ServerCommand};
 use rmule_primitives::{FileHash, PeerEndpoint};
 
-use std::collections::HashMap;
 use std::time::Instant;
 
 use super::connection::{record_served_range, subtract_served_ranges};
@@ -17,6 +16,7 @@ use super::served::Found;
 use super::{BlockRead, ServeDecision, ServeState, rank_updates};
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ReadTarget};
 use crate::service::{BlockAskFault, ServeEvent};
+use crate::upload_queue::ScoreModifiers;
 use crate::upload_queue::WaiterLeaveCause;
 
 impl ServeState {
@@ -39,7 +39,7 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
         ranges: &PartRanges,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         if !self.queue.is_granted(peer) {
             return Vec::new();
@@ -106,7 +106,7 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
         fault: BlockAskFault,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.served_ranges
             .retain(|(range_peer, _), _| *range_peer != peer);
@@ -177,7 +177,7 @@ impl ServeState {
         peer: PeerEndpoint,
         flow: u64,
         file_hash: FileHash,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.read_ended(peer, flow);
         let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
@@ -195,7 +195,7 @@ impl ServeState {
         peer: PeerEndpoint,
         flow: u64,
         read: (BlockRead, Option<ReadTarget>),
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.on_read_refused(now, peer, flow, read, PartialEnd::Unreadable, modifiers)
     }
@@ -211,7 +211,7 @@ impl ServeState {
         peer: PeerEndpoint,
         flow: u64,
         read: (BlockRead, Option<ReadTarget>),
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.on_read_refused(now, peer, flow, read, PartialEnd::Changed, modifiers)
     }
@@ -227,7 +227,7 @@ impl ServeState {
         flow: u64,
         (block, target): (BlockRead, Option<ReadTarget>),
         cause: PartialEnd,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let flow_lives = self.read_ended(peer, flow);
         if self.moved_since(block.file_hash, target.as_ref()) {
@@ -250,7 +250,7 @@ impl ServeState {
         peer: PeerEndpoint,
         (file_hash, checked): (FileHash, Option<PartFileIdentity>),
         cause: PartialEnd,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let mut decisions = self.stop_and_tell(now, peer, file_hash, modifiers);
         decisions.push(ServeDecision::EmptyRange {
@@ -268,7 +268,7 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         file_hash: FileHash,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let told = self.queue.engaged_peers(file_hash).contains(&peer);
         let mut decisions = self.stop_serving(file_hash, now, modifiers);
@@ -287,7 +287,7 @@ impl ServeState {
         &mut self,
         file_hash: FileHash,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.shared.remove(&file_hash);
         self.partials.remove(&file_hash);

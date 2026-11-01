@@ -3,7 +3,6 @@
 //! against its queue, refreshes the standing the answer says was heard, records
 //! the part status the ping restated, and counts a silenced malformed ping.
 
-use std::collections::HashMap;
 use std::time::Instant;
 
 use rmule_peer::peer_udp::responder::{
@@ -16,6 +15,7 @@ use super::relink::names_address;
 use super::{ServeDecision, ServeState};
 use crate::service::ServeEvent;
 use crate::upload_queue::ReaskResolution;
+use crate::upload_queue::ScoreModifiers;
 
 impl ServeState {
     /// Answer one inbound `OP_REASKFILEPING` from `udp_src` (ADR-0057
@@ -26,7 +26,7 @@ impl ServeState {
         now: Instant,
         udp_src: PeerEndpoint,
         datagram: &[u8],
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let Some(ping) = responder::read(datagram) else {
             return Vec::new();

@@ -3,7 +3,7 @@
 //! aMule's credit-weighted score, so a peer that has given more waits less; the
 //! serve brain enacts what this queue decides and never reorders it itself.
 
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -615,11 +615,7 @@ impl UploadSlotQueue {
     /// a waiter reachable, and the one it promotes is the one linked: no
     /// dial (ADR-0057). Then reports the wait list's changed ranks.
     #[must_use]
-    pub fn fill_free_slot(
-        &mut self,
-        now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
-    ) -> Promotion {
+    pub fn fill_free_slot(&mut self, now: Instant, modifiers: &dyn ScoreModifiers) -> Promotion {
         if self.granted.len() >= self.budget || self.waiting.is_empty() {
             return Promotion::default();
         }
@@ -671,7 +667,7 @@ impl UploadSlotQueue {
         &mut self,
         peer: PeerEndpoint,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Promotion {
         let was_granted = self.granted.iter().any(|g| g.peer == peer);
         self.granted.retain(|g| g.peer != peer);
@@ -699,7 +695,7 @@ impl UploadSlotQueue {
         &mut self,
         peer: PeerEndpoint,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Disconnect {
         if let Some(entry) = self.waiting.iter_mut().find(|q| q.peer == peer) {
             entry.connected = false;
@@ -722,7 +718,7 @@ impl UploadSlotQueue {
         now: Instant,
         purge_after: Duration,
         is_shared: impl Fn(FileHash) -> bool,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Purge {
         let mut removed = Vec::new();
         self.waiting.retain(|q| {
@@ -784,7 +780,7 @@ impl UploadSlotQueue {
     pub fn rerank(
         &mut self,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<(PeerEndpoint, u16)> {
         let _ = self.sort_and_mark(now, modifiers);
         self.collect_rank_changes()
@@ -823,16 +819,14 @@ impl UploadSlotQueue {
     /// that first reachable one loses the mark. aMule's `SortGetBestClient`
     /// (`UploadQueue.cpp:126-149`). Returns the first reachable waiter's
     /// index, the one a free slot promotes.
-    fn sort_and_mark(
-        &mut self,
-        now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
-    ) -> Option<usize> {
-        self.waiting.sort_by(|a, b| {
-            score(b, now, modifiers)
-                .partial_cmp(&score(a, now, modifiers))
-                .unwrap_or(Ordering::Equal)
-                .then(a.enqueued_at.cmp(&b.enqueued_at))
+    fn sort_and_mark(&mut self, now: Instant, modifiers: &dyn ScoreModifiers) -> Option<usize> {
+        // One reading per waiter: a modifier takes the credit and held-place
+        // locks, so it is read once a sort, not once a comparison.
+        self.waiting.sort_by_cached_key(|entry| {
+            (
+                Reverse(Score(score(entry, now, modifiers))),
+                entry.enqueued_at,
+            )
         });
         let mut best = None;
         for (index, entry) in self.waiting.iter_mut().enumerate() {
@@ -860,13 +854,82 @@ impl UploadSlotQueue {
     }
 }
 
-/// `wait_seconds * modifier` for one waiting entry; an absent modifier defaults
-/// to the neutral `1.0` (so an empty modifier map ranks purely by wait time).
-fn score(entry: &Queued, now: Instant, modifiers: &HashMap<PeerEndpoint, f64>) -> f64 {
+/// `wait_seconds * modifier` for one waiting entry.
+fn score(entry: &Queued, now: Instant, modifiers: &dyn ScoreModifiers) -> f64 {
     let wait = now
         .saturating_duration_since(entry.enqueued_at)
         .as_secs_f64();
-    wait * modifiers.get(&entry.peer).copied().unwrap_or(1.0)
+    wait * modifiers.modifier(entry.peer)
+}
+
+/// A score, ordered as a number. A wait and a modifier are finite.
+#[derive(Clone, Copy, PartialEq)]
+struct Score(f64);
+
+impl Eq for Score {}
+
+impl PartialOrd for Score {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Score {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+/// What a waiter's score is multiplied by. Read only when a queue ranks, which
+/// almost no serve input does.
+pub trait ScoreModifiers {
+    /// `peer`'s modifier; the neutral `1.0` for one it does not know.
+    fn modifier(&self, peer: PeerEndpoint) -> f64;
+}
+
+impl ScoreModifiers for HashMap<PeerEndpoint, f64> {
+    fn modifier(&self, peer: PeerEndpoint) -> f64 {
+        self.get(&peer).copied().unwrap_or(1.0)
+    }
+}
+
+#[cfg(test)]
+mod modifier_readings {
+    use std::cell::Cell;
+
+    use rmule_primitives::Ipv4Endpoint;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct Counted(Cell<usize>);
+
+    impl ScoreModifiers for Counted {
+        fn modifier(&self, _peer: PeerEndpoint) -> f64 {
+            self.0.set(self.0.get() + 1);
+            1.0
+        }
+    }
+
+    /// A reading takes node-wide locks: a sort reads each waiter once, not
+    /// once per comparison.
+    #[test]
+    fn a_sort_reads_each_waiter_once() {
+        let mut queue = UploadSlotQueue::new(0, 100);
+        let now = Instant::now();
+        for port in 1..=50 {
+            let peer = PeerEndpoint::V4(Ipv4Endpoint::new(
+                std::net::Ipv4Addr::new(45, 55, 0, port),
+                4662,
+            ));
+            let _ = queue.admit(peer, FileHash::from_bytes([1; 16]), now);
+        }
+        let readings = Counted::default();
+
+        queue.rerank(now, &readings);
+
+        assert_eq!(readings.0.get(), queue.waiting_len());
+    }
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@ use crate::held_places::{HeldPlace, RECIPROCITY_FACTOR, SharedHeldPlaces};
 use crate::hello_facts::HelloFacts;
 use crate::service::DownloadId;
 use crate::store::credit::DurableCreditStore;
-use crate::upload_queue::UploadSlotQueue;
+use crate::upload_queue::{ScoreModifiers, UploadSlotQueue};
 
 fn at(octet: u8) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, octet), 4662))
@@ -46,7 +46,11 @@ async fn modifiers(
         .iter()
         .map(|&(peer, user_hash)| (peer, named(user_hash).identity()))
         .collect();
-    current_modifiers(&credit, &places, &identities)
+    let live = current_modifiers(&credit, &places, Arc::new(identities));
+    peers
+        .iter()
+        .map(|&(peer, _)| (peer, live.modifier(peer)))
+        .collect()
 }
 
 fn named(user_hash: UserHash) -> HelloFacts {
@@ -70,10 +74,10 @@ async fn a_nameless_client_scores_nothing() {
     .into_iter()
     .collect();
 
-    let modifiers = current_modifiers(&credit, &places, &identities);
+    let modifiers = current_modifiers(&credit, &places, Arc::new(identities));
 
-    assert_eq!(modifiers[&at(1)], 0.0);
-    assert_eq!(modifiers[&at(2)], 1.0);
+    assert_eq!(modifiers.modifier(at(1)), 0.0);
+    assert_eq!(modifiers.modifier(at(2)), 1.0);
 }
 
 /// A held place's waiter scores by the factor; a waiter that only claims its
@@ -112,4 +116,39 @@ async fn a_waiter_we_queue_at_passes_another_only_within_the_factor() {
     let waited = Duration::from_secs(100);
     assert_eq!(promoted(Duration::from_secs(100), waited).await, at(1));
     assert_eq!(promoted(Duration::from_secs(200), waited).await, at(2));
+}
+
+/// What a serve input pays for the modifiers at 1,000 identities: by hand, in
+/// release. The walk is what every input paid when the map was built whole.
+#[tokio::test]
+#[ignore = "by hand, in release: prints a modifier reading's cost"]
+async fn modifiers_bench() {
+    let credit: SharedCreditStore =
+        Arc::new(DurableCreditStore::new(rmule_testkit::memory_store()));
+    let places = SharedHeldPlaces::default();
+    let identities: HashMap<_, _> = (0..1_000u16)
+        .map(|n| {
+            let [high, low] = n.to_be_bytes();
+            let peer = Ipv4Endpoint::new(Ipv4Addr::new(45, 55, high, low), 4662);
+            (PeerEndpoint::V4(peer), named(hash(low)).identity())
+        })
+        .collect();
+    let identities = Arc::new(identities);
+    let rounds = 1_000;
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        std::hint::black_box(current_modifiers(&credit, &places, Arc::clone(&identities)));
+    }
+    let lent = started.elapsed() / rounds;
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        let live = current_modifiers(&credit, &places, Arc::clone(&identities));
+        let walked: HashMap<_, _> = identities
+            .keys()
+            .map(|&peer| (peer, live.modifier(peer)))
+            .collect();
+        std::hint::black_box(walked);
+    }
+    let whole = started.elapsed() / rounds;
+    println!("lent {lent:?} an input, the whole map {whole:?}");
 }

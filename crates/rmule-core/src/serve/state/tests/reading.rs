@@ -18,7 +18,7 @@ type Refusal = fn(
     PeerEndpoint,
     u64,
     (BlockRead, Option<ReadTarget>),
-    &HashMap<PeerEndpoint, f64>,
+    &dyn crate::upload_queue::ScoreModifiers,
 ) -> Vec<ServeDecision>;
 
 fn identity() -> PartFileIdentity {

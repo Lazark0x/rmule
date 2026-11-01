@@ -4,7 +4,7 @@
 //! brake back to the disk; the flow's number tells a late read from one of a
 //! slot the same peer was granted since. Every way a slot ends ends its flow.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::{FileHash, PeerEndpoint};
@@ -12,6 +12,7 @@ use rmule_primitives::{FileHash, PeerEndpoint};
 use super::served::Aim;
 use super::{BlockRead, ServeDecision, ServeState};
 use crate::service::ServeEvent;
+use crate::upload_queue::ScoreModifiers;
 
 /// Blocks a flow may hold read and not yet left for the socket. aMule 3.1.0
 /// holds this many on a fast slot (`UploadDiskIOThread.cpp:192`), 2.3.3 only
@@ -247,7 +248,7 @@ impl ServeState {
     pub(in crate::serve) fn on_slot_sweep(
         &mut self,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let holders: Vec<PeerEndpoint> = self.queue.linked_holders().collect();
         let mut decisions = Vec::new();

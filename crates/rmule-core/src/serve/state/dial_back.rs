@@ -7,7 +7,7 @@
 //! place, as aMule deletes a client whose upload connect failed
 //! (`BaseClient.cpp:1333-1337`), and the slot goes on to the next waiter.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_peer::{PeerIdentity, ServerCommand};
@@ -16,6 +16,7 @@ use rmule_primitives::{FileHash, PeerCrypt, PeerEndpoint, PeerSource};
 use crate::adapters::{DialBack, FarEnd};
 use crate::service::{DialBackEnd, DialEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::Relinked;
+use crate::upload_queue::ScoreModifiers;
 
 use super::{ServeDecision, ServeState};
 
@@ -102,7 +103,7 @@ impl ServeState {
         link: PeerEndpoint,
         identity: PeerIdentity,
         far_end: FarEnd,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.dialed.insert(link, far_end);
         let mut decisions = Vec::new();
@@ -113,7 +114,7 @@ impl ServeState {
             {
                 let software = Some(identity.software().clone());
                 self.shed_link_state(waiter);
-                self.identities.insert(link, identity);
+                Arc::make_mut(&mut self.identities).insert(link, identity);
                 return vec![
                     ServeDecision::Emit(ServeEvent::WaiterRelinked {
                         from: waiter,
@@ -161,7 +162,7 @@ impl ServeState {
         now: Instant,
         waiter: PeerEndpoint,
         cause: DialEnd,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         if self.queue.pending_grant(waiter).is_none() {
             return Vec::new();
@@ -177,7 +178,7 @@ impl ServeState {
         now: Instant,
         waiter: PeerEndpoint,
         cause: DialBackEnd,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let promotion = self.leave_queue(waiter, now, modifiers);
         self.shed_link_state(waiter);

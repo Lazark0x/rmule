@@ -22,7 +22,6 @@
 //! names the other's address; anything else is unproved, and a ban waits for
 //! a proof of another key.
 
-use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
@@ -34,6 +33,7 @@ use rmule_peer::ServerCommand;
 use crate::WaiterLeaveCause;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::Relinked;
+use crate::upload_queue::ScoreModifiers;
 
 use super::{ServeDecision, ServeState};
 
@@ -118,7 +118,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Option<Vec<ServeDecision>> {
         if !self.queue.is_granted(peer) || self.queue.is_unlinked(peer) {
             return None;
@@ -337,7 +337,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> (Vec<ServeDecision>, bool) {
         let Some(user_hash) = self.identities.get(&peer).map(PeerIdentity::user_hash) else {
             return (Vec::new(), false);

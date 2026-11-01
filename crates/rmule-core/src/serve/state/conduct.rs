@@ -4,7 +4,6 @@
 //! and its place, in the batch it is seen or at the next sweep (ADR-0064). A
 //! source of ours is never banned here.
 
-use std::collections::HashMap;
 use std::time::Instant;
 
 use rmule_peer::{PeerIdentity, ServerCommand};
@@ -13,6 +12,7 @@ use rmule_primitives::{AccountingKey, PeerEndpoint};
 use crate::WaiterLeaveCause;
 use crate::service::{GrantRoad, ServeEvent};
 use crate::upload_queue::Promotion;
+use crate::upload_queue::ScoreModifiers;
 
 use super::{ServeDecision, ServeState};
 
@@ -24,7 +24,7 @@ impl ServeState {
     pub(in crate::serve) fn end_over_session(
         &mut self,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let Some(peer) = self.queue.session_to_end(now) else {
             return Vec::new();
@@ -66,7 +66,7 @@ impl ServeState {
         &mut self,
         peer: PeerEndpoint,
         now: Instant,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Promotion {
         self.track_holder(now, peer);
         self.queue.release(peer, now, modifiers)
@@ -111,7 +111,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let mut decisions = vec![ServeDecision::Ban { peer }];
         decisions.extend(self.on_banned(now, peer, modifiers));
@@ -126,7 +126,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let held_slot = self.queue.is_granted(peer);
         let waited = !held_slot && self.queue.contains(peer);
@@ -163,7 +163,7 @@ impl ServeState {
         &mut self,
         now: Instant,
         banned: &[PeerEndpoint],
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         let mut decisions = Vec::new();
         for &peer in banned {

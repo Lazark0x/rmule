@@ -3,7 +3,7 @@
 //! into reads, and the disconnect that promotes the next waiter. Served ranges
 //! are tracked here so a re-ask never re-reads what the flow already sent.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_peer::{
@@ -15,6 +15,7 @@ use rmule_primitives::{FileHash, PeerEndpoint};
 use crate::WaiterLeaveCause;
 use crate::adapters::ServeInput;
 use crate::service::{GrantRoad, ServeEvent};
+use crate::upload_queue::ScoreModifiers;
 use crate::upload_queue::{Admission, LowIdAbuseFacts, WaiterContact, refuses_as_low_id_abuse};
 
 use super::{ServeDecision, ServeState};
@@ -213,7 +214,7 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         input: ServeInput,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         self.link_moved(now, peer);
         if self.asker.banned && !self.spares(peer) && is_ask(&input) {
@@ -264,7 +265,7 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         request: ServerEvent,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         match request {
             ServerEvent::FileRequested { file_hash, status } => {
@@ -511,7 +512,7 @@ impl ServeState {
         now: Instant,
         peer: PeerEndpoint,
         fact: ConnectionEvent,
-        modifiers: &HashMap<PeerEndpoint, f64>,
+        modifiers: &dyn ScoreModifiers,
     ) -> Vec<ServeDecision> {
         match fact {
             ConnectionEvent::Identified { identity } => {
@@ -524,7 +525,7 @@ impl ServeState {
                         ServeDecision::Disconnect { peer },
                     ];
                 }
-                self.identities.insert(peer, identity.clone());
+                Arc::make_mut(&mut self.identities).insert(peer, identity.clone());
                 let relink = self.relink_waiter(now, peer, &identity);
                 let Some(mut moved) = relink else {
                     return Vec::new();
@@ -546,7 +547,7 @@ impl ServeState {
                     .identities
                     .get(&peer)
                     .is_some_and(|held| held.user_hash() != identity.user_hash());
-                if let Some(held) = self.identities.get_mut(&peer) {
+                if let Some(held) = Arc::make_mut(&mut self.identities).get_mut(&peer) {
                     *held = identity;
                     if what == IdentityChange::ReaskContact {
                         self.stamp_contact(peer);
