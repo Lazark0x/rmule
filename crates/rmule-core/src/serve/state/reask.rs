@@ -8,8 +8,8 @@ use std::time::Instant;
 use rmule_peer::peer_udp::responder::{
     self, KnownWaiter, Pinger, QueueRoom, ReaskReply, SharedFile, Silence, Standing,
 };
-use rmule_peer::{PartBitmap, PeerIdentity};
-use rmule_primitives::{PeerEndpoint, ed2k_status_part_count};
+use rmule_peer::{PeerIdentity, WireStatus};
+use rmule_primitives::PeerEndpoint;
 
 use super::relink::names_address;
 use super::{ServeDecision, ServeState};
@@ -128,6 +128,6 @@ impl ServeState {
 
 /// A bitmap with every part present, for a complete shared file, at the count
 /// a status states for it, phantom part included.
-pub(super) fn full_bitmap(file_size: u64) -> PartBitmap {
-    PartBitmap::all_present(ed2k_status_part_count(file_size))
+pub(super) fn full_bitmap(file_size: u64) -> WireStatus {
+    WireStatus::whole(file_size)
 }

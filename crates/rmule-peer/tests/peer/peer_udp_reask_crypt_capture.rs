@@ -69,11 +69,7 @@ fn amules_obfuscated_reask_decrypts_under_our_ed2k_key_and_is_a_v4_on_file_ping(
         .part_status
         .as_ref()
         .expect("a v4 reask ping carries the part status");
-    assert_eq!(
-        part_status.part_count(),
-        5,
-        "the 40 MiB file spans 5 ED2K parts",
-    );
+    assert_eq!(part_status.count(), 5, "the 40 MiB file spans 5 ED2K parts",);
     assert_eq!(ping.complete_sources, Some(1));
     assert_eq!(ping.encode_udp(), decrypted.payload);
 }
@@ -136,7 +132,7 @@ fn rmules_ack_carried_the_corrected_v4_part_status_but_went_out_plaintext() {
         .part_status
         .as_ref()
         .expect("the corrected ack carries our availability");
-    assert_eq!(part_status.part_count(), 5);
+    assert_eq!(part_status.count(), 5);
     assert_eq!(ack.rank, 1);
     assert_eq!(ack.encode_udp(), bytes);
 }

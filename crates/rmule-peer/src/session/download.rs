@@ -20,6 +20,7 @@ use crate::multipacket::{MultiPacketRequest, RequestItem};
 use crate::parts::RequestParts as RequestPartsPacket;
 use crate::parts::{CompressedPart, PartRanges};
 use crate::slot::StartUploadReq;
+use crate::wire_status::WireStatus;
 
 /// The per-file flow each hash accumulates while probe, hash-set and slot
 /// legs interleave (ADR-0025).
@@ -44,7 +45,7 @@ pub(super) struct FileFlow {
     pub(super) sources_forwarded: usize,
     /// What rmule holds of this file, as the last `ProbeFile` / `RequestFile`
     /// declared it — the part status a later standalone name ask repeats.
-    pub(super) own_status: Option<PartBitmap>,
+    pub(super) own_status: Option<WireStatus>,
 }
 
 /// The running count of `FileFlow::compressed_blocks` entries across every
@@ -225,7 +226,7 @@ impl PeerSession {
         &mut self,
         file_hash: FileHash,
         file_size: u64,
-        own_status: PartBitmap,
+        own_status: WireStatus,
     ) {
         if !matches!(self.state, State::Identified(_)) {
             self.reject(PeerError::PeerProtocolViolation {
@@ -291,12 +292,12 @@ impl PeerSession {
     }
 
     /// The status [`Self::name_ask`] follows the hash with, bundled or not.
-    fn name_ask_status(&self, file_hash: FileHash, file_size: u64) -> Option<PartBitmap> {
+    fn name_ask_status(&self, file_hash: FileHash, file_size: u64) -> Option<WireStatus> {
         self.extended_requests().carries_part_status().then(|| {
             self.per_file
                 .get(&file_hash)
                 .and_then(|flow| flow.own_status.clone())
-                .unwrap_or_else(|| PartBitmap::downloader_empty(file_size))
+                .unwrap_or_else(|| WireStatus::downloader_empty(file_size))
         })
     }
 
@@ -311,7 +312,7 @@ impl PeerSession {
         file_size: u64,
         want_sources: bool,
         want_aich_root: bool,
-        own_status: PartBitmap,
+        own_status: WireStatus,
     ) {
         if !self.require_identified() {
             return;
@@ -328,7 +329,7 @@ impl PeerSession {
         // `CKnownFile::m_iPartCount` (`KnownFile.cpp` `SetFileSize`), the
         // *data*-part count with the phantom last part folded out for an
         // exact multiple of the part size — the same count
-        // [`crate::file::PartBitmap::downloader`] calls `real` and
+        // [`crate::WireStatus::downloader`] calls `real` and
         // `rmule_primitives::part_count` computes. So a file of exactly one
         // part size (9,728,000 bytes) has `GetPartCount() == 1` and gets no
         // `0x4F`; one byte over does. The SX sub follows the existing
@@ -702,7 +703,7 @@ impl PeerSession {
         // spelled-out bitmap with every part is a part file, not complete
         // (stock 2.3.3 `DownloadClient.cpp:405-409`, `:428`; eMule
         // `DownloadClient.cpp:516`).
-        let sentinel = status.bitmap.part_count() == 0;
+        let sentinel = status.bitmap.is_complete_source();
         // A count that is not the file's is aMule's "wrong part number"
         // throw, and the connection drops (`DownloadClient.cpp:417-425`,
         // `ClientTCPSocket.cpp:2018-2047`).

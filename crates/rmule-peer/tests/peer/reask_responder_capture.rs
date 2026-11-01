@@ -9,7 +9,7 @@
 //! captured one cut at the field boundaries aMule's reader throws on.
 
 use crate::fixture::{AMULE_USER_HASH, FILE_HASH, load};
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::peer_udp::responder::{
     self, KnownWaiter, Pinger, QueueRoom, ReaskAnswer, ReaskReply, Silence, Standing,
@@ -56,8 +56,8 @@ fn amules_ping() -> Vec<u8> {
 }
 
 /// What the captured ping says of the pinger's own parts: five, two held.
-fn amules_status() -> PartBitmap {
-    PartBitmap::decode(5, &[0x12]).expect("the captured status decodes")
+fn amules_status() -> WireStatus {
+    WireStatus::decode(5, &[0x12]).expect("the captured status decodes")
 }
 
 fn answer(datagram: &[u8], pinger: Pinger, room: QueueRoom, shared: Option<u64>) -> ReaskAnswer {

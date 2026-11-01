@@ -134,7 +134,7 @@ fn packed_answer_sources_inflates_to_sources_received() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));

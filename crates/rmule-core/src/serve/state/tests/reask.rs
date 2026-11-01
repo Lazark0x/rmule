@@ -6,6 +6,7 @@
 //! responder's, tested on captures in `rmule-peer`.
 
 use super::*;
+use rmule_peer::WireStatus;
 use rmule_peer::{ConnectionEvent, ServerCommand, ServerEvent};
 
 /// A waiter is resolved by its advertised UDP endpoint, or by its IP alone
@@ -25,7 +26,7 @@ fn a_waiter_is_resolved_by_its_udp_endpoint_or_its_ip_alone() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -43,7 +44,7 @@ fn a_waiter_is_resolved_by_its_udp_endpoint_or_its_ip_alone() {
         vec![ServeDecision::SendClientUdp {
             to: other_port,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -79,7 +80,7 @@ fn a_waiters_hello_claim_decides_its_ping_and_a_silenced_one_is_counted() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -170,7 +171,7 @@ fn a_waiting_peer_keeps_its_position_across_disconnect_and_still_reasks() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -209,7 +210,7 @@ fn a_reask_from_a_promoted_dial_back_grant_answers_rank_with_part_status() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -370,7 +371,7 @@ fn an_ipv6_waiter_is_resolved_on_all_128_bits_and_answered_over_ipv6() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 2,
             }
             .encode_udp(),
@@ -461,7 +462,7 @@ fn an_emule_info_reask_contact_reaches_a_waiter_its_hello_named_none() {
         vec![ServeDecision::SendClientUdp {
             to: src,
             datagram: ReaskAck {
-                part_status: Some(PartBitmap::complete_source_sentinel()),
+                part_status: Some(WireStatus::complete_source()),
                 rank: 1,
             }
             .encode_udp(),
@@ -519,7 +520,7 @@ fn a_ping_from_the_address_the_standing_hello_names_is_the_waiters() {
     let _ = slot_request(&mut state, waiter, file, t);
 
     let ack = ReaskAck {
-        part_status: Some(PartBitmap::complete_source_sentinel()),
+        part_status: Some(WireStatus::complete_source()),
         rank: 1,
     }
     .encode_udp();

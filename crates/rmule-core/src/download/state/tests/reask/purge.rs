@@ -122,7 +122,7 @@ fn a_no_needed_parts_source_is_let_go_near_the_source_limit() {
         queue_and_hang_up(&mut state, peer(1), true, 5);
         let window = t0() + udp_due();
         let _ = state.on_tick(window);
-        let empty = PartBitmap::decode(3, &[0b0000_0000]).expect("three parts");
+        let empty = WireStatus::decode(3, &[0b0000_0000]).expect("three parts");
         let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(empty, 2));
 
         let want = if let_go {
@@ -226,7 +226,7 @@ fn the_purges_share_one_clock() {
     let window = t0() + udp_due();
     let _ = state.on_tick(window);
     let _ = state.on_reask_reply(window, contact(peer(1)), &queue_full_datagram());
-    let empty = PartBitmap::decode(3, &[0b0000_0000]).expect("three parts");
+    let empty = WireStatus::decode(3, &[0b0000_0000]).expect("three parts");
     let _ = state.on_reask_reply(window, contact(peer(2)), &v4_ack_with(empty, 2));
     let _ = state.on_reask_reply(window, contact(peer(3)), &queue_full_datagram());
 

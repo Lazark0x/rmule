@@ -46,7 +46,7 @@
 use parking_lot::{Mutex, MutexGuard};
 use std::sync::{Arc, OnceLock};
 
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_primitives::{ClientId, Ed2kFileLink, Ipv4Endpoint, PeerEndpoint, UserHash};
 use tokio::sync::mpsc;
@@ -109,7 +109,7 @@ pub(crate) struct AdoptionBrief {
     pub(crate) file: Ed2kFileLink,
     /// What the download held when it filed the road — the adopted worker's
     /// connect-time name ask carries it.
-    pub(crate) own_status: PartBitmap,
+    pub(crate) own_status: WireStatus,
     /// Whether the adopted worker's connect-time request asks for sources —
     /// the download's decision when it filed the road (ADR-0108).
     pub(crate) want_sources: bool,

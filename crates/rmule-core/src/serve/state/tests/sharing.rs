@@ -37,11 +37,11 @@ fn file_status_reports_amule_ed2k_part_count_at_an_exact_part_multiple() {
         panic!("expected one AnswerFileStatus, got {status:?}");
     };
     assert_eq!(
-        bitmap.part_count(),
+        bitmap.count(),
         3,
         "OP_FILESTATUS must carry aMule's ED2K part count (size / PARTSIZE + 1)",
     );
-    assert!((0..3).all(|i| bitmap.has(PartIndex::new(i))));
+    assert_eq!(bitmap.encode(), [0b111]);
 }
 
 /// A large file does not exist for a peer whose hello does not claim them:
@@ -163,8 +163,8 @@ fn the_share_snapshot_answers_probes_and_derives_the_announce_list() {
     else {
         panic!("expected one AnswerFileStatus, got {status:?}");
     };
-    assert_eq!(bitmap.part_count(), 2);
-    assert!((0..2).all(|i| bitmap.has(PartIndex::new(i))));
+    assert_eq!(bitmap.count(), 2);
+    assert_eq!(bitmap.encode(), [0b11]);
 }
 
 /// aMule leaves a standalone name ask for a file it does

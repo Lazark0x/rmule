@@ -11,7 +11,9 @@ use std::future::Future;
 use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
-use rmule_peer::{PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand};
+use rmule_peer::{
+    PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand, WireStatus,
+};
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
     SourceSighting,
@@ -308,8 +310,8 @@ impl PeerWorkerEvent {
 /// (ADR-0108; `m_bCompleteSource`, stock 2.3.3 `DownloadClient.cpp:405-409`,
 /// `:428`, eMule `DownloadClient.cpp:516`). A spelled-out bitmap with every
 /// part present is a part file whose last part arrived, not complete.
-pub(crate) fn advertises_complete(status: &PartBitmap) -> bool {
-    status.part_count() == 0
+pub(crate) fn advertises_complete(status: &WireStatus) -> bool {
+    status.is_complete_source()
 }
 
 /// Core's handle to one live download worker: commands down, events up. Core
@@ -445,11 +447,11 @@ pub struct WorkerBrief {
     /// [`PeerCrypt::unknown`] reads as a peer that stated no crypt.
     pub peer_crypt: PeerCrypt,
     /// What rmule already holds of the file
-    /// ([`PartBitmap::downloader`](rmule_peer::PartBitmap::downloader)) when
+    /// ([`WireStatus::downloader`]) when
     /// the worker is spawned. The connect-time name ask carries it,
     /// and aMule refuses a complete file's source-exchange answer to an
     /// asker whose name ask carried none.
-    pub own_status: PartBitmap,
+    pub own_status: WireStatus,
     /// Whether the connect-time request carries a source-exchange ask — the
     /// download's source need and timing (ADR-0108, aMule
     /// `IsSourceRequestAllowed`). The peer's own hello still decides whether it
@@ -481,7 +483,7 @@ impl WorkerBrief {
     pub fn fresh(file: &Ed2kFileLink) -> Self {
         Self {
             peer_crypt: PeerCrypt::unknown(),
-            own_status: PartBitmap::downloader_empty(file.size),
+            own_status: WireStatus::downloader_empty(file.size),
             want_sources: true,
             opening: WorkerOpening::Probe,
         }

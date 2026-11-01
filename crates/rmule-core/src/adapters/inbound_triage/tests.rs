@@ -424,7 +424,7 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
     registration.await_callback(
         key,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: Ed2kFileLink {
                 name: Ed2kText::from_utf8("adopted"),

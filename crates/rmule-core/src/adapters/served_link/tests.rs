@@ -195,7 +195,7 @@ impl Linked {
                 rmule_peer::RequesterCommand::ProbeFile {
                     file_hash: FileHash::from_bytes([0x5C; FileHash::BYTE_LEN]),
                     file_size: 4096,
-                    own_status: rmule_peer::PartBitmap::one_part_complete(),
+                    own_status: rmule_peer::WireStatus::decode(1, &[0x01]).unwrap(),
                 },
             ))
             .await

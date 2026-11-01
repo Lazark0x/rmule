@@ -28,8 +28,8 @@ use super::codec::{
     udp_header,
 };
 use super::crypt::PeerUdpCryptTarget;
-use crate::file::PartBitmap;
 use crate::file_request::{FileSizedStatus, read_file_sized_status};
+use crate::wire_status::WireStatus;
 
 /// How far above the waiting count an unknown pinger finds the queue full:
 /// aMule answers `OP_QUEUEFULL` while `waiting + 50 > queue size`
@@ -123,7 +123,7 @@ pub struct SharedFile {
     /// The parts we hold, in the writer's count (`size / PARTSIZE + 1`); a
     /// status holding every part, or the count-`0` sentinel, goes out as the
     /// count `0` alone.
-    pub status: PartBitmap,
+    pub status: WireStatus,
 }
 
 impl SharedFile {
@@ -132,7 +132,7 @@ impl SharedFile {
     pub fn whole(size: u64) -> Self {
         Self {
             size,
-            status: PartBitmap::complete_source_sentinel(),
+            status: WireStatus::complete_source(),
         }
     }
 }
@@ -185,7 +185,7 @@ pub enum Standing {
     Heard,
     /// As [`Heard`](Self::Heard), and the ping restated the waiter's part
     /// status, which the runtime records — `None` clears what it held.
-    Restated(Option<PartBitmap>),
+    Restated(Option<WireStatus>),
 }
 
 /// Answer `ping` from `pinger`, given the queue's `room` and the file as we
@@ -256,7 +256,7 @@ fn answer_waiter(ping: &ReaskPing<'_>, waiter: &KnownWaiter, shared: &SharedFile
     // that is not a part file.
     let part_status = (waiter.udp_version > 3).then(|| {
         if shared.status.is_complete() {
-            PartBitmap::complete_source_sentinel()
+            WireStatus::complete_source()
         } else {
             shared.status.clone()
         }
@@ -334,7 +334,7 @@ fn read_status(datagram: &[u8], file_size: u64, extended_requests: u8) -> PingSt
         // above `1` (`:448-455`); its absence throws after the status is
         // set. Count `0` reads nothing more (`:415-416`).
         FileSizedStatus::Read { status, end }
-            if extended_requests > 1 && status.part_count() != 0 && tail.len() < end + 2 =>
+            if extended_requests > 1 && !status.is_complete_source() && tail.len() < end + 2 =>
         {
             PingStatus::Malformed(Some(status))
         }
@@ -349,11 +349,11 @@ enum PingStatus {
     /// Read to the end the claim asks for: the pinger's status in its wire
     /// shape (count `0` is a complete copy's), or `None` where aMule clears it
     /// without reading — a claim of `0`, or a count that is not the file's.
-    Read(Option<PartBitmap>),
+    Read(Option<WireStatus>),
     /// Cut short where aMule's reader throws: its dispatcher only logs, so
     /// the ping goes unanswered. Carries the status as far as it was read
     /// before the throw, `None` when not even the count arrived.
-    Malformed(Option<PartBitmap>),
+    Malformed(Option<WireStatus>),
 }
 
 #[cfg(test)]
@@ -368,7 +368,7 @@ mod tests {
         use rmule_primitives::ED2K_PART_SIZE;
 
         let ping = |tail: &[u8]| [&[0xC5, 0x90][..], &[0xAB; 16], tail].concat();
-        let bitmap = |count, bytes: &[u8]| PartBitmap::decode(count, bytes).unwrap();
+        let bitmap = |count, bytes: &[u8]| WireStatus::decode(count, bytes).unwrap();
 
         // Twenty parts: a three-byte status, then the complete-source count.
         let size = 19 * ED2K_PART_SIZE + 1;

@@ -5,9 +5,9 @@
 
 use rmule_primitives::{AichRootHash, FileHash};
 
-use crate::file::PartBitmap;
 use crate::parts::PartRanges;
 use crate::slot::CancelTransfer;
+use crate::wire_status::WireStatus;
 
 use super::super::download::SlotState;
 use super::super::{PeerEvent, PeerSession, RequesterEvent, SlotReleaseReason};
@@ -26,7 +26,7 @@ pub enum RequesterCommand {
         file_size: u64,
         /// What rmule already holds of the file — rides the `0x58` whenever
         /// the session's extended-requests level asks for it.
-        own_status: PartBitmap,
+        own_status: WireStatus,
     },
     /// Open file negotiation with a source in one
     /// round (ADR-0054 emit): ask its name (`0x58`), and — folded per
@@ -50,11 +50,11 @@ pub enum RequesterCommand {
         /// Fold in an AICH master-root ask — set while the download still has no trusted root.
         want_aich_root: bool,
         /// What rmule already holds of the file
-        /// ([`PartBitmap::downloader`]) — rides the `0x58` whenever the
+        /// ([`WireStatus::downloader`]) — rides the `0x58` whenever the
         /// session's extended-requests level asks for it. aMule
         /// keeps it as the asker's part status, and refuses a complete file's
         /// source-exchange answer without one.
-        own_status: PartBitmap,
+        own_status: WireStatus,
     },
     /// Ask the peer for an upload slot for `file_hash` (`OP_STARTUPLOADREQ`,
     /// aMule `SendStartupLoadReq`): the flow takes the connection's slot

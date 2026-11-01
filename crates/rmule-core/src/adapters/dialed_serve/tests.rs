@@ -1,16 +1,18 @@
 //! Same-socket serve test: a peer rmule dialed asks for a file back over that
 //! very connection and is served from it.
 
+use rmule_peer::WireStatus;
+
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, PeerListener};
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
-    RequesterEvent, ServerCommand, ServerEvent,
+    ConnectionEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+    ServerCommand, ServerEvent,
 };
+use rmule_primitives::FileHashSummary;
 use rmule_primitives::{Ed2kFileLink, Ed2kText, Ipv4Endpoint, PeerEndpoint, UserHash};
-use rmule_primitives::{FileHashSummary, part_count};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -148,7 +150,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                             rmule_peer::BundledAsk::SetReqId => {
                                 ServeOutput::Server(ServerCommand::AnswerFileStatus {
                                     file_hash,
-                                    bitmap: PartBitmap::decode(part_count(4096), &[0xFF]).unwrap(),
+                                    bitmap: WireStatus::whole(4096),
                                 })
                             }
                             _ => continue,
@@ -159,7 +161,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                 ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => serve_conn
                     .send(ServeOutput::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
-                        bitmap: PartBitmap::decode(part_count(4096), &[0xFF]).unwrap(),
+                        bitmap: WireStatus::whole(4096),
                     }))
                     .await
                     .unwrap(),

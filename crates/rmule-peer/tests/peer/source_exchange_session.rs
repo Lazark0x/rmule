@@ -66,7 +66,7 @@ fn solicited_session(source_exchange_nibble: u8, hash: FileHash) -> PeerSession 
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -303,7 +303,7 @@ fn per_file_cap_is_honored_cumulatively_across_answers() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: other_hash,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -657,7 +657,7 @@ fn a_peer_below_source_exchange_version_two_is_never_asked_for_sources() {
         session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: h,
             file_size: 4096,
-            own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+            own_status: rmule_peer::WireStatus::downloader_empty(4096),
             want_sources: true,
             want_aich_root: false,
         }));

@@ -41,7 +41,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_primitives::{
     AichRootHash, ClientId, FileHash, Ipv4Endpoint, PartHash, PartHashSet, PeerCrypt, PeerEndpoint,
     UserHash,
@@ -679,7 +679,7 @@ impl DownloadState {
     }
 
     /// Our current availability for the file as aMule's `WritePartStatus` writes
-    /// it ([`PartBitmap::downloader`]) — the parts we have verified — for a
+    /// it ([`WireStatus::downloader`]) — the parts we have verified — for a
     /// source-reask ping's body (ADR-0057: rides the `0x90` when the source's
     /// UDP version is `> 3`) and a new worker's connect-time name ask,
     /// telling the uploader which parts we still need.
@@ -688,13 +688,13 @@ impl DownloadState {
     /// one is: it is outside the Verified Range, which the serve side reads
     /// (ADR-0113 rule 2), and aMule never holds such a part. A file of one part
     /// has no set; its file hash proves its part.
-    pub(crate) fn our_part_status(&self) -> PartBitmap {
+    pub(crate) fn our_part_status(&self) -> WireStatus {
         let set_held = match PartHashSet::expected_hash_count(self.file_size) {
             Ok(0) => true,
             Ok(expected) => self.resolved.hashes.len() == expected,
             Err(_) => false,
         };
-        PartBitmap::downloader(self.file_size, |part| {
+        WireStatus::downloader(self.file_size, |part| {
             set_held && self.scheduler.is_part_verified(part.value())
         })
     }

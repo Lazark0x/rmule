@@ -5,6 +5,8 @@
 //! publishes its places after every step, as the runner does; nothing else
 //! passes between them.
 
+use rmule_peer::PartBitmap;
+
 use std::sync::Arc;
 
 use super::*;

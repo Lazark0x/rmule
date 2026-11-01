@@ -15,8 +15,9 @@
 use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, WireTruncated, write_wire_string};
 use thiserror::Error;
 
-use crate::file::{PartBitmap, PartBitmapDecodeError};
+use crate::file::PartBitmapDecodeError;
 use crate::opcode::PeerOpcode;
+use crate::wire_status::WireStatus;
 
 /// The extended-requests level one session speaks: whether a name ask
 /// (`0x58`, standalone or a bundle sub) carries the asker's part status.
@@ -74,9 +75,9 @@ impl PartStatusTail {
     /// The tail a writer puts after the hash for `status`, in aMule's
     /// `WritePartStatus` shape.
     #[must_use]
-    pub fn of(status: &PartBitmap) -> Self {
+    pub fn of(status: &WireStatus) -> Self {
         let mut bytes = Vec::new();
-        write_part_status(&mut bytes, status);
+        status.write_to(&mut bytes);
         Self(bytes)
     }
 
@@ -111,7 +112,7 @@ pub enum FileSizedStatus {
     /// bytes of the tail the status took.
     Read {
         /// The status in its wire shape (count `0`, or the file's count).
-        status: PartBitmap,
+        status: WireStatus,
         /// Bytes of the tail consumed.
         end: usize,
     },
@@ -121,7 +122,7 @@ pub enum FileSizedStatus {
     /// Cut short where aMule's reader throws: `None` when not even the count
     /// arrived (`:408-414`), else the status as far as its bytes came, each
     /// byte's bits set before the next read can throw (`:426-446`).
-    Cut(Option<PartBitmap>),
+    Cut(Option<WireStatus>),
 }
 
 /// Read a part status from the front of `tail` for a file of `file_size`
@@ -135,25 +136,22 @@ pub(crate) fn read_file_sized_status(tail: &[u8], file_size: u64) -> FileSizedSt
     let Ok(count) = reader.read_u16_le("part count") else {
         return FileSizedStatus::Cut(None);
     };
-    let count = u32::from(count);
     if count == 0 {
         return FileSizedStatus::Read {
-            status: PartBitmap::decode(0, &[]).expect("an empty bitmap always decodes"),
+            status: WireStatus::complete_source(),
             end: 2,
         };
     }
     // Compared arithmetically: `file_size` may be the peer's own claim, and
     // building a bitmap to count its parts allocates by that claim.
-    if count != rmule_primitives::ed2k_status_part_count(file_size) {
+    if u32::from(count) != rmule_primitives::ed2k_status_part_count(file_size) {
         return FileSizedStatus::Cleared;
     }
     let needed = (rmule_primitives::part_count(file_size) as usize).div_ceil(8);
     // A short bitmap is a cut, not an error: take what arrived.
     let read = reader.remaining_bytes();
     let read = &read[..needed.min(read.len())];
-    let mut bytes = vec![0; (count as usize).div_ceil(8)];
-    bytes[..read.len()].copy_from_slice(read);
-    let status = PartBitmap::decode(count, &bytes).expect("sized by its own count");
+    let status = WireStatus::padded(count, read);
     if read.len() < needed {
         return FileSizedStatus::Cut(Some(status));
     }
@@ -192,14 +190,14 @@ pub struct FileStatus {
     /// The file the bitmap describes.
     pub file_hash: FileHash,
     /// The parts it holds.
-    pub bitmap: PartBitmap,
+    pub bitmap: WireStatus,
 }
 
 impl RequestFileName {
     /// The ask for `file_hash`, followed by `status` when the writer's level
     /// carries one.
     #[must_use]
-    pub fn new(file_hash: FileHash, status: Option<&PartBitmap>) -> Self {
+    pub fn new(file_hash: FileHash, status: Option<&WireStatus>) -> Self {
         Self {
             file_hash,
             status: status.map(PartStatusTail::of).unwrap_or_default(),
@@ -235,15 +233,6 @@ impl RequestFileName {
             payload,
         )
     }
-}
-
-/// Append a name ask's part status: `<u16 part count><bitmap>`, the shape of
-/// aMule's `WritePartStatus`.
-pub(crate) fn write_part_status(out: &mut Vec<u8>, status: &PartBitmap) {
-    let part_count = u16::try_from(status.part_count())
-        .expect("part_count exceeds u16 — wire encoding does not support that");
-    out.extend_from_slice(&part_count.to_le_bytes());
-    out.extend_from_slice(&status.encode());
 }
 
 impl SetReqFileId {
@@ -331,8 +320,8 @@ impl FileStatus {
         }
         let mut reader = WireReader::new(payload);
         let file_hash = reader.read_file_hash("file hash")?;
-        let part_count = u32::from(reader.read_u16_le("part count")?);
-        let bitmap = PartBitmap::decode(part_count, reader.remaining_bytes())
+        let part_count = reader.read_u16_le("part count")?;
+        let bitmap = WireStatus::decode(part_count, reader.remaining_bytes())
             .map_err(FileRequestDecodeError::Bitmap)?;
         Ok(Self { file_hash, bitmap })
     }
@@ -340,13 +329,9 @@ impl FileStatus {
     #[must_use]
     /// Frame the status answer.
     pub fn encode_packet(&self) -> Packet {
-        let bitmap_bytes = self.bitmap.encode();
-        let mut payload = Vec::with_capacity(FileHash::BYTE_LEN + 2 + bitmap_bytes.len());
+        let mut payload = Vec::with_capacity(FileHash::BYTE_LEN + 2);
         payload.extend_from_slice(self.file_hash.as_bytes());
-        let part_count = u16::try_from(self.bitmap.part_count())
-            .expect("part_count exceeds u16 — wire encoding does not support that");
-        payload.extend_from_slice(&part_count.to_le_bytes());
-        payload.extend_from_slice(&bitmap_bytes);
+        self.bitmap.write_to(&mut payload);
         Packet::new(
             PeerOpcode::FileStatus.protocol(),
             PeerOpcode::FileStatus.as_u8(),

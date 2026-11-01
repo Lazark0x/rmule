@@ -513,7 +513,7 @@ fn a_part_verified_before_the_set_is_named_only_once_the_set_arrives() {
         1,
     );
     let _ = state.start(t0());
-    let none = PartBitmap::downloader(file.file_size(), |_| false);
+    let none = WireStatus::downloader(file.file_size(), |_| false);
     assert_eq!(state.our_part_status(), none);
 
     let _ = connect(&mut state, t0(), peer(1));
@@ -525,5 +525,5 @@ fn a_part_verified_before_the_set_is_named_only_once_the_set_arrives() {
             part_hashes: hashes,
         },
     );
-    assert!(state.our_part_status().has(rmule_peer::PartIndex::new(0)));
+    assert_eq!(state.our_part_status().encode()[0] & 1, 1);
 }

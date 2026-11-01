@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use rmule_peer::{PartBitmap, PeerIdentity};
+use rmule_peer::{PeerIdentity, WireStatus};
 use rmule_primitives::{
     Ed2kFileClass, Ed2kText, FileHash, PartHashList, PartHashSet, PeerEndpoint, is_large_file,
 };
@@ -65,7 +65,7 @@ impl<'a> Found<'a> {
 
     /// The parts we hold: every one of a row's, a download's **Verified
     /// Range** — never a bitmap a download's range does not hold.
-    pub(super) fn status(&self) -> PartBitmap {
+    pub(super) fn status(&self) -> WireStatus {
         match self {
             Self::Row(entry) => full_bitmap(entry.file_size),
             Self::Download { look, .. } => look.served.range.status(look.served.file_size),

@@ -67,7 +67,7 @@ fn claim(
     registration.claim_tunnel(
         target,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file(),
         },

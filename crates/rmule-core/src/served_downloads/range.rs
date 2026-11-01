@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_primitives::{ED2K_PART_SIZE, PartHash, PartHashList, PartHashSet};
 
 use crate::VerifiedPartRecord;
@@ -62,10 +62,10 @@ impl VerifiedRange {
     }
 
     /// The status a `file_size`-byte file holding this range states: spelt by
-    /// the one function the run's own status is ([`PartBitmap::downloader`]),
+    /// the one function the run's own status is ([`WireStatus::downloader`]),
     /// so what the serve side says and what the run says are one set.
-    pub(crate) fn status(&self, file_size: u64) -> PartBitmap {
-        PartBitmap::downloader(file_size, |part| self.holds(part.value()))
+    pub(crate) fn status(&self, file_size: u64) -> WireStatus {
+        WireStatus::downloader(file_size, |part| self.holds(part.value()))
     }
 
     /// Whether the range holds any part of the file.

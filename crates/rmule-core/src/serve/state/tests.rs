@@ -19,9 +19,10 @@ mod transfer;
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    BundledAsk, PartIndex, PartRanges, PartStatusTail, ReaskAck, ReaskFilePing,
-    file_not_found_datagram, queue_full_datagram,
+    BundledAsk, PartRanges, PartStatusTail, ReaskAck, ReaskFilePing, file_not_found_datagram,
+    queue_full_datagram,
 };
 use rmule_primitives::{ClientId, ED2K_PART_SIZE, EMBLOCKSIZE, PartHash, PeerSource};
 
@@ -202,7 +203,7 @@ fn slot_request(
 fn reask_ping(file_hash: FileHash) -> Vec<u8> {
     ReaskFilePing {
         file_hash,
-        part_status: Some(PartBitmap::complete_source_sentinel()),
+        part_status: Some(WireStatus::complete_source()),
         complete_sources: Some(0),
     }
     .encode_udp()

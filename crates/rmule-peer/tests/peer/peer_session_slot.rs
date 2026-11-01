@@ -44,7 +44,7 @@ fn file_request_answered(session: &mut rmule_peer::PeerSession, h: FileHash, fil
         file_size,
         want_sources: false,
         want_aich_root: false,
-        own_status: rmule_peer::PartBitmap::downloader_empty(file_size),
+        own_status: rmule_peer::WireStatus::downloader_empty(file_size),
     }));
     session.handle_bytes(&reqfilename_answer(h, "c.bin"));
     session.handle_bytes(&file_status(h, 2, &[0b11]));
@@ -637,7 +637,7 @@ fn request_parts_with_mismatched_file_size_is_rejected() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 1_000_000,
-        own_status: rmule_peer::PartBitmap::downloader_empty(1_000_000),
+        own_status: rmule_peer::WireStatus::downloader_empty(1_000_000),
     }));
     session.handle_bytes(&reqfilename_answer(h, "x"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));

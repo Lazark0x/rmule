@@ -17,7 +17,7 @@
 //! ```
 //!
 //! **Part status** is aMule's `WritePartStatus`: `<part_count u16><ceil(n/8)
-//! bytes>`, the same bitfield [`PartBitmap`] already models for
+//! bytes>`, the same bitfield [`WireStatus`] already models for
 //! `OP_FILESTATUS`. Which optional fields a frame carries is the sender's UDP
 //! version's business; the codec takes the version it is told.
 //!
@@ -28,7 +28,8 @@
 use rmule_primitives::{FileHash, PacketProtocol, UserHash, WireReader, WireTruncated};
 use thiserror::Error;
 
-use crate::file::{PartBitmap, PartBitmapDecodeError};
+use crate::file::PartBitmapDecodeError;
+use crate::wire_status::WireStatus;
 
 /// The client-UDP opcode space (all under `OP_EMULEPROT`), distinct from the
 /// TCP [`PeerOpcode`](crate::opcode::PeerOpcode). The reask quartet plus the
@@ -96,7 +97,7 @@ pub struct ReaskFilePing {
     /// The file the ping is about.
     pub file_hash: FileHash,
     /// The pinger's own availability for the file (its `WritePartStatus`).
-    pub part_status: Option<PartBitmap>,
+    pub part_status: Option<WireStatus>,
     /// The pinger's complete-source count (`m_nCompleteSourcesCount`).
     pub complete_sources: Option<u16>,
 }
@@ -106,7 +107,7 @@ pub struct ReaskFilePing {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReaskAck {
     /// Our availability for the file, sent only when the waiter's version can read it.
-    pub part_status: Option<PartBitmap>,
+    pub part_status: Option<WireStatus>,
     /// The waiter's 1-based queue position (`GetUploadQueueWaitingPosition`).
     pub rank: u16,
 }
@@ -125,7 +126,7 @@ impl ReaskFilePing {
     pub(crate) fn write_body(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self.file_hash.as_bytes());
         if let Some(status) = &self.part_status {
-            write_part_status(out, status);
+            status.write_to(out);
         }
         if let Some(count) = self.complete_sources {
             out.extend_from_slice(&count.to_le_bytes());
@@ -161,7 +162,7 @@ impl ReaskAck {
     pub fn encode_udp(&self) -> Vec<u8> {
         let mut datagram = udp_header(ClientUdpOpcode::ReaskAck);
         if let Some(status) = &self.part_status {
-            write_part_status(&mut datagram, status);
+            status.write_to(&mut datagram);
         }
         datagram.extend_from_slice(&self.rank.to_le_bytes());
         datagram
@@ -321,16 +322,10 @@ pub(super) fn strip_header(
     Ok(reader.remaining_bytes())
 }
 
-/// aMule `WritePartStatus`: `<part_count u16><ceil(n/8) status bytes>`.
-fn write_part_status(out: &mut Vec<u8>, status: &PartBitmap) {
-    out.extend_from_slice(&(status.part_count() as u16).to_le_bytes());
-    out.extend_from_slice(&status.encode());
-}
-
-fn read_part_status(reader: &mut WireReader<'_>) -> Result<PartBitmap, ReaskDecodeError> {
-    let part_count = u32::from(reader.read_u16_le("part count")?);
-    let status = reader.take((part_count as usize).div_ceil(8), "part status")?;
-    Ok(PartBitmap::decode(part_count, status)?)
+fn read_part_status(reader: &mut WireReader<'_>) -> Result<WireStatus, ReaskDecodeError> {
+    let part_count = reader.read_u16_le("part count")?;
+    let status = reader.take(usize::from(part_count).div_ceil(8), "part status")?;
+    Ok(WireStatus::decode(part_count, status)?)
 }
 
 fn ensure_consumed(reader: &WireReader<'_>) -> Result<(), ReaskDecodeError> {

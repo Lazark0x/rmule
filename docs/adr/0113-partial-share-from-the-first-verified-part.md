@@ -59,7 +59,7 @@ the file's one registry row, from the record, without reading the file.**
    and is fetched again. While the download is queued or paused nothing writes the file, so nothing
    adds to the range; it is emptied when a read finds the file changed, and set by the Offer Check
    after a restart. Whenever the download is offered, the status it advertises and its Verified Range
-   are one set, spelt by one function (`PartBitmap::downloader`, `rmule-peer/src/file.rs:118`).
+   are one set, spelt by one function (`WireStatus::downloader`, `rmule-peer/src/wire_status.rs`).
 3. **Offered** while the Verified Range holds a part, the set is whole
    (`PartHashSet::expected_hash_count`, `rmule-primitives/src/hash.rs:388`; from the link or a peer's
    proven set) and the file is not held back. No threshold and no knob. When the registry offers the

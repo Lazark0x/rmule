@@ -325,7 +325,7 @@ async fn reask_loopback(crypt: Option<rmule_net::peer::ObfuscationPolicy>, shape
     let plain_ping = match shape {
         WaiterPing::WithStatus => ReaskFilePing {
             file_hash: file,
-            part_status: Some(rmule_peer::PartBitmap::downloader_empty(4096)),
+            part_status: Some(rmule_peer::WireStatus::downloader_empty(4096)),
             complete_sources: Some(0),
         },
         WaiterPing::HashOnly => ReaskFilePing {

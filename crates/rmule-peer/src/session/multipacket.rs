@@ -8,11 +8,11 @@
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash};
 
 use super::{PeerEvent, PeerSession};
-use crate::file::PartBitmap;
 use crate::file_request::{FileStatus, ReqFileNameAnswer};
 use crate::multipacket::{
     AnswerItem, BundledAsk, MultiPacketAnswer, MultiPacketRequest, RequestItem,
 };
+use crate::wire_status::WireStatus;
 use crate::{NoticeEvent, RequesterEvent, ServerEvent};
 
 /// Accumulates the standalone-shaped serve answers a bundled
@@ -37,7 +37,7 @@ pub(super) struct PendingMultipacketAnswer {
     pub(super) wants_status: bool,
     pub(super) wants_aich: bool,
     pub(super) name: Option<Ed2kText>,
-    pub(super) status: Option<PartBitmap>,
+    pub(super) status: Option<WireStatus>,
     pub(super) aich: Option<AichRootHash>,
 }
 

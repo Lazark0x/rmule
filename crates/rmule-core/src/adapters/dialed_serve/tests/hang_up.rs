@@ -4,6 +4,8 @@
 //! (`ClientTCPSocket.cpp:201-229`), unless another download waits on it or
 //! the peer pulls on our serve side over it.
 
+use rmule_peer::WireStatus;
+
 use rmule_primitives::FileHash;
 
 use super::*;
@@ -43,7 +45,7 @@ fn ranking_sharer(listener: PeerListener, pull: Option<FileHash>) -> mpsc::Recei
                             PeerCommand::Requester(RequesterCommand::ProbeFile {
                                 file_hash,
                                 file_size: 4096,
-                                own_status: PartBitmap::one_part_complete(),
+                                own_status: WireStatus::decode(1, &[0x01]).unwrap(),
                             })
                         }
                         PeerEvent::Server(

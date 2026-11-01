@@ -75,10 +75,10 @@ pub use fake_peer::{
 pub use hang_guard::HANG_GUARD;
 #[cfg(feature = "runtime")]
 pub use interfaces::FakeInterfaces;
-pub use peer_session::test_identity;
 pub use kad_mesh::{FakeKadPeer, KadMeshSim, LinkPolicy, TraceEntry, drain_split};
 #[cfg(feature = "runtime")]
 pub use operator::{absolute_path, connect_to, share_directory};
+pub use peer_session::test_identity;
 #[cfg(feature = "runtime")]
 pub use portmap::{FakeGateways, GrantPolicy, ScriptedBackend};
 #[cfg(feature = "runtime")]

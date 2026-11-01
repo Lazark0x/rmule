@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_primitives::Ed2kFileLink;
 
 use crate::adapters::{
@@ -118,7 +118,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
     ) -> bool {
         self.claim(candidate, file, own_status, want_sources, false)
@@ -133,7 +133,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
     ) -> bool {
         self.claim(candidate, file, own_status, want_sources, true)
@@ -143,7 +143,7 @@ impl CallbackContext {
         &mut self,
         candidate: &LowIdCandidate,
         file: &Ed2kFileLink,
-        own_status: PartBitmap,
+        own_status: WireStatus,
         want_sources: bool,
         dial_back: bool,
     ) -> bool {

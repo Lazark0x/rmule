@@ -19,8 +19,7 @@
 
 use rmule_primitives::{
     ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_SYNC, ObfuscationHandshake, ObfuscationRole,
-    ObfuscationStream, UserHash,
-    derive_peer_keys,
+    ObfuscationStream, UserHash, derive_peer_keys,
 };
 
 /// Encrypted opening header before `PaddingLen` is known: sync(4) + methods(1)

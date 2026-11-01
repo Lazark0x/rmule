@@ -51,9 +51,7 @@ impl LinkRefusal {
             | PrimitiveError::InvalidHashEncoding { .. }
             | PrimitiveError::InvalidPartHashSetCount { .. }
             | PrimitiveError::TooManyPartHashes { .. } => Self::BadHash,
-            PrimitiveError::FileSizeAboveLimit { .. } => {
-                Self::TooLarge
-            }
+            PrimitiveError::FileSizeAboveLimit { .. } => Self::TooLarge,
             PrimitiveError::FileSizeZero => Self::ZeroSize,
             PrimitiveError::DuplicateLinkField { field } => {
                 Self::DuplicateField((*field).to_string())

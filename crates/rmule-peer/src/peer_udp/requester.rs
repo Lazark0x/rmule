@@ -16,7 +16,7 @@
 use rmule_primitives::FileHash;
 
 use super::codec::{BUDDY_ID_LEN, ClientUdpOpcode, ReaskAck, ReaskCallbackUdp, ReaskFilePing};
-use crate::file::PartBitmap;
+use crate::wire_status::WireStatus;
 
 /// Frame the `0x90` for `file_hash` to a source that advertised UDP version
 /// `theirs`, ours being `ours`. Our part status rides above version 3 and is
@@ -27,7 +27,7 @@ pub fn ping(
     file_hash: FileHash,
     ours: u8,
     theirs: u8,
-    our_status: impl FnOnce() -> PartBitmap,
+    our_status: impl FnOnce() -> WireStatus,
 ) -> Vec<u8> {
     reask(file_hash, ours, theirs, our_status).encode_udp()
 }
@@ -43,7 +43,7 @@ pub fn ping_via_buddy(
     file_hash: FileHash,
     ours: u8,
     theirs: u8,
-    our_status: impl FnOnce() -> PartBitmap,
+    our_status: impl FnOnce() -> WireStatus,
 ) -> Vec<u8> {
     let mut forwarded = Vec::new();
     reask(file_hash, ours, theirs, our_status).write_body(&mut forwarded);
@@ -59,7 +59,7 @@ fn reask(
     file_hash: FileHash,
     ours: u8,
     theirs: u8,
-    our_status: impl FnOnce() -> PartBitmap,
+    our_status: impl FnOnce() -> WireStatus,
 ) -> ReaskFilePing {
     let version = ours.min(theirs);
     ReaskFilePing {
@@ -78,7 +78,7 @@ pub enum HeardReply {
         /// The 1-based queue position.
         rank: u16,
         /// The uploader's availability for the file.
-        part_status: Option<PartBitmap>,
+        part_status: Option<WireStatus>,
     },
     /// `OP_QUEUEFULL`: the uploader's queue is (near) full.
     QueueFull,

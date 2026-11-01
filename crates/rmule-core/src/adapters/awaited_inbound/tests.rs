@@ -29,7 +29,7 @@ fn brief(seed: u8) -> AdoptionBrief {
             ipv6_sources: Vec::new(),
             sources: Default::default(),
         },
-        own_status: PartBitmap::downloader_empty(4096),
+        own_status: WireStatus::downloader_empty(4096),
         want_sources: true,
     }
 }

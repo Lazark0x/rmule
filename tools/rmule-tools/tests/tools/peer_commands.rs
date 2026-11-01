@@ -3,12 +3,14 @@
 //! fields the tool prints back. The two capture commands are covered by their
 //! `--help` surface here and by a live `#[ignore]`d run.
 
+use rmule_peer::WireStatus;
+
 use std::net::Ipv4Addr;
 
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rmule_peer::{
-    FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello, HelloAnswer, PartBitmap,
+    FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello, HelloAnswer,
     PartOffsetWidth, PartRanges, PeerHelloBody, QueueRanking, ReqFileNameAnswer, RequestFileName,
     RequestParts, SendingPart, SetReqFileId, StartUploadReq,
 };
@@ -140,7 +142,7 @@ fn peer_packet_inspect_set_req_file_id_kind() {
 fn peer_packet_inspect_file_status_part_count_and_present_parts() {
     let pkt = FileStatus {
         file_hash: file_hash(),
-        bitmap: PartBitmap::decode(8, &[0b0000_1111]).unwrap(),
+        bitmap: WireStatus::decode(8, &[0b0000_1111]).unwrap(),
     }
     .encode_packet();
     run_inspect_against("status.bin", &pkt)

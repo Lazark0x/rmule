@@ -127,7 +127,7 @@ pub enum FileProbeStatus {
         file_name: Ed2kText,
         /// Which parts of it the peer holds: its **Advertised Parts**, one bit
         /// per real part of the file (`0..part_count(size)`), read by
-        /// [`PartBitmap::advertised_parts`] — the part-count-0 sentinel as
+        /// [`WireStatus::advertised_parts`](crate::WireStatus::advertised_parts) — the part-count-0 sentinel as
         /// every part, the phantom part of an exact multiple never read.
         bitmap: PartBitmap,
         /// Whether the peer said it holds the whole file (aMule

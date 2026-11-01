@@ -6,6 +6,8 @@
 //! Anything a second crate would want belongs in `rmule-testkit` instead —
 //! `test_identity`, `file_link`, and the fakes already live there.
 
+use rmule_peer::WireStatus;
+
 use parking_lot::Mutex;
 use rmule_core::{DurableStore, open_durable_store};
 use rmule_testkit::HANG_GUARD;
@@ -487,7 +489,7 @@ pub async fn serve_called_back(
     file_name: &str,
     file_bytes: &[u8],
 ) {
-    use rmule_peer::{PartBitmap, PeerCommand, PeerEvent};
+    use rmule_peer::{PeerCommand, PeerEvent};
     let _ = timeout(Duration::from_secs(10), async {
         while let Some(event) = conn.next_event().await {
             match event {
@@ -513,11 +515,7 @@ pub async fn serve_called_back(
                             rmule_peer::BundledAsk::SetReqId => {
                                 PeerCommand::Server(ServerCommand::AnswerFileStatus {
                                     file_hash,
-                                    bitmap: PartBitmap::decode(
-                                        rmule_primitives::part_count(file_bytes.len() as u64),
-                                        &[0xFF],
-                                    )
-                                    .unwrap(),
+                                    bitmap: WireStatus::whole(file_bytes.len() as u64),
                                 })
                             }
                             _ => continue,
@@ -526,11 +524,7 @@ pub async fn serve_called_back(
                     }
                 }
                 PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
-                    let bitmap = PartBitmap::decode(
-                        rmule_primitives::part_count(file_bytes.len() as u64),
-                        &[0xFF],
-                    )
-                    .unwrap();
+                    let bitmap = WireStatus::whole(file_bytes.len() as u64);
                     conn.send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
                         file_hash,
                         bitmap,

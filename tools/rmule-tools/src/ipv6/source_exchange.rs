@@ -23,9 +23,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use rmule_net::peer::{ConnectOptions as PeerConnectOptions, Connection as PeerConnection};
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    AnswerSources, AnswerSources2, ConnectionEvent, MiscOptions1, PartBitmap, PartRanges,
-    PeerCommand, PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
+    AnswerSources, AnswerSources2, ConnectionEvent, MiscOptions1, PartRanges, PeerCommand,
+    PeerEvent, PeerHandshakeContext, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kLink, Ed2kText, Ipv4Endpoint, Packet,
@@ -185,7 +186,7 @@ pub(crate) async fn run_hold_slot(args: Ipv6HoldSlotArgs) -> Result<()> {
                             .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                 file_hash: file.file_hash,
                                 file_size: file.size,
-                                own_status: PartBitmap::downloader_empty(file.size),
+                                own_status: WireStatus::downloader_empty(file.size),
                             }))
                             .await;
                     }
@@ -300,7 +301,7 @@ pub(crate) async fn run_sx_ask(args: Ipv6SxAskArgs) -> Result<()> {
                         let command = PeerCommand::Requester(RequesterCommand::RequestFile {
                             file_hash: file.file_hash,
                             file_size: file.size,
-                            own_status: PartBitmap::downloader_empty(file.size),
+                            own_status: WireStatus::downloader_empty(file.size),
                             want_sources: true,
                             want_aich_root: false,
                         });

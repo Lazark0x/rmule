@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use rmule_peer::natt::{EndpointHint, NattConnectOptions};
 use rmule_peer::{
-    ConnectionEvent, EMBLOCKSIZE, PartBitmap, PartRanges, ServerCommand, ServerEvent,
+    ConnectionEvent, EMBLOCKSIZE, PartRanges, ServerCommand, ServerEvent, WireStatus,
 };
 use rmule_primitives::{
     ClientId, Ed2kFileLink, Ed2kText, FileHash, FileHashSummary, Ipv4Endpoint, PeerEndpoint,
@@ -165,7 +165,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
                         rmule_peer::BundledAsk::SetReqId => {
                             ServeOutput::Server(ServerCommand::AnswerFileStatus {
                                 file_hash,
-                                bitmap: complete_bitmap(file.size),
+                                bitmap: WireStatus::whole(file.size),
                             })
                         }
                         _ => continue,
@@ -179,7 +179,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
             ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => {
                 ServeOutput::Server(ServerCommand::AnswerFileStatus {
                     file_hash,
-                    bitmap: complete_bitmap(file.size),
+                    bitmap: WireStatus::whole(file.size),
                 })
             }
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
@@ -193,14 +193,6 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
             return;
         }
     }
-}
-
-/// Every part of a file of `size` bytes, held: the bitmap a complete
-/// uploader answers `OP_SETREQFILEID` with.
-fn complete_bitmap(size: u64) -> PartBitmap {
-    let parts = rmule_primitives::part_count(size);
-    let bytes = vec![0xFFu8; (parts as usize).div_ceil(8)];
-    PartBitmap::decode(parts, &bytes).expect("a full bitmap for the part count it was sized by")
 }
 
 /// Cut each live range out of the file and send it in `EMBLOCKSIZE` blocks —
@@ -305,7 +297,7 @@ async fn a_download_takes_a_part_over_the_tunnel_it_adopted() {
     claim.claim_tunnel(
         target_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file.clone(),
         },
@@ -446,7 +438,7 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
     alice_claim.claim_tunnel(
         alice_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file: file.clone(),
         },
@@ -460,7 +452,7 @@ async fn triage_reports_a_confirmed_hello_and_ends_only_that_peers_hold() {
     bob_claim.claim_tunnel(
         bob_hash,
         AdoptionBrief {
-            own_status: rmule_peer::PartBitmap::downloader_empty(0),
+            own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
             file,
         },

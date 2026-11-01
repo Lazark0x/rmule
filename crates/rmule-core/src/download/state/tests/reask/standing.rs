@@ -5,6 +5,8 @@
 //! the peer's clock; and a grant on the standing calls it to the holder's
 //! link. Each brain publishes its places after every step, as the runner does.
 
+use rmule_peer::PartBitmap;
+
 use std::sync::Arc;
 
 use super::*;

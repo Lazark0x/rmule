@@ -14,9 +14,9 @@ use crate::{
     PartReleaseReason, PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole,
     QuitStep, ReconnectEnd, RelatedSearchRefusal, SearchFailure, SearchLegState,
     SearchResultSkipReason, ServeStartFailure, ServeStopReason, ServerConnectFailure,
-    ServerListUpdateFailure, ShareRefusal, ShareRejectReason, SharesWithheld, SocketRole, SourcePurgeReason,
-    SourceWait, TunnelTransport, VerificationAuthority, VolumeStop, WaiterLeaveCause, WatchFault,
-    WithheldReason,
+    ServerListUpdateFailure, ShareRefusal, ShareRejectReason, SharesWithheld, SocketRole,
+    SourcePurgeReason, SourceWait, TunnelTransport, VerificationAuthority, VolumeStop,
+    WaiterLeaveCause, WatchFault, WithheldReason,
 };
 use rmule_primitives::AddressFamily;
 

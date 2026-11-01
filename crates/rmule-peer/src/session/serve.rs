@@ -11,11 +11,11 @@ use rmule_primitives::{Ed2kText, FileHash};
 
 use super::{PeerError, PeerEvent, PeerSession};
 use crate::ServerEvent;
-use crate::file::PartBitmap;
 use crate::file_request::{FileReqAnsNoFil, FileStatus, PartStatusTail, ReqFileNameAnswer};
 use crate::parts::RequestParts as RequestPartsPacket;
 use crate::parts::{CompressedPart, SendingPart};
 use crate::slot::{AcceptUploadReq, OutOfPartReqs, QueueRanking};
+use crate::wire_status::WireStatus;
 
 impl PeerSession {
     pub(super) fn on_file_requested(&mut self, file_hash: FileHash, status: PartStatusTail) {
@@ -100,9 +100,9 @@ impl PeerSession {
     /// to spell out): the literal part-count-0 sentinel, not a real bitmap
     /// with every bit set. Both the standalone and the bundled writer share
     /// this one call site, so the collapse covers both.
-    pub(super) fn answer_file_status(&mut self, file_hash: FileHash, bitmap: PartBitmap) {
+    pub(super) fn answer_file_status(&mut self, file_hash: FileHash, bitmap: WireStatus) {
         let bitmap = if bitmap.is_complete() {
-            PartBitmap::complete_source_sentinel()
+            WireStatus::complete_source()
         } else {
             bitmap
         };

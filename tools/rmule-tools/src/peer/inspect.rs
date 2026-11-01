@@ -34,11 +34,11 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         PeerPacket::FileStatus(r) => {
             println!("kind: file_status");
             println!("file_hash: {}", r.file_hash.to_hex_upper());
-            println!("part_count: {}", r.bitmap.part_count());
-            let present: Vec<u32> = r
-                .bitmap
-                .iter_present()
-                .map(rmule_peer::PartIndex::value)
+            println!("part_count: {}", r.bitmap.count());
+            // The bits as stated: no file size here to read them against.
+            let bytes = r.bitmap.encode();
+            let present: Vec<u32> = (0..u32::from(r.bitmap.count()))
+                .filter(|part| bytes[(part / 8) as usize] >> (part % 8) & 1 == 1)
                 .collect();
             println!("present_parts: {present:?}");
         }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
+    PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent, WireStatus,
 };
 use rmule_primitives::{Ed2kFileLink, FileHash, PeerEndpoint};
 use tokio::sync::{mpsc, oneshot};
@@ -51,7 +51,7 @@ pub(crate) async fn drive_peer_worker(
     conn: PeerConnection,
     peer: PeerEndpoint,
     file: Ed2kFileLink,
-    own_status: PartBitmap,
+    own_status: WireStatus,
     want_sources: bool,
     origin: LinkOrigin,
     command_rx: mpsc::Receiver<PeerWorkerCommand>,
@@ -155,7 +155,7 @@ pub(crate) async fn drive_peer_worker(
 pub(crate) async fn drive_joined_worker(
     joined: JoinedLink,
     file: Ed2kFileLink,
-    own_status: PartBitmap,
+    own_status: WireStatus,
     want_sources: bool,
     opening: WorkerOpening,
     command_rx: mpsc::Receiver<PeerWorkerCommand>,
@@ -221,7 +221,7 @@ async fn work_the_link(
     halves: WorkerHalves,
     serve_half: Option<ServeHalf>,
     file: &Ed2kFileLink,
-    own_status: PartBitmap,
+    own_status: WireStatus,
     want_sources: bool,
     opening: WorkerOpening,
     mut command_rx: mpsc::Receiver<PeerWorkerCommand>,

@@ -163,8 +163,8 @@ pub fn filename_answer_bytes(file_hash: FileHash, name: &str) -> Vec<u8> {
 /// spelled out at the count aMule's reader demands — any other count closes
 /// the session — rather than as the complete-source sentinel.
 #[must_use]
-pub fn full_status(file_size: u64) -> rmule_peer::PartBitmap {
-    rmule_peer::PartBitmap::all_present(rmule_primitives::ed2k_status_part_count(file_size))
+pub fn full_status(file_size: u64) -> rmule_peer::WireStatus {
+    rmule_peer::WireStatus::whole(file_size)
 }
 
 /// A framed file-status answer (opcode 0x50) for a `file_size`-byte file the

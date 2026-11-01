@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::served_downloads::leased::{Leased, SIZE, leased};
-use rmule_peer::{PartBitmap, PartStatusTail};
+use rmule_peer::PartStatusTail;
+use rmule_peer::WireStatus;
 use rmule_primitives::ED2K_PART_SIZE;
 
 #[tokio::test]
@@ -78,7 +79,7 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
             other => panic!("a status answer, not {other:?}"),
         }
     };
-    assert_eq!(status().await, PartBitmap::downloader_empty(SIZE));
+    assert_eq!(status().await, WireStatus::downloader_empty(SIZE));
 
     lease.record_range(
         &set,
@@ -91,14 +92,14 @@ async fn a_part_a_run_just_verified_is_answered_on_the_next_ask_and_the_asker_re
     );
     assert_eq!(
         status().await,
-        PartBitmap::downloader(SIZE, |part| part.value() == 1),
+        WireStatus::downloader(SIZE, |part| part.value() == 1),
         "the part the run verified, on the very next ask"
     );
 
     conn_tx
         .send(ServeInput::Server(ServerEvent::FileRequested {
             file_hash: file,
-            status: PartStatusTail::of(&PartBitmap::downloader_empty(SIZE)),
+            status: PartStatusTail::of(&WireStatus::downloader_empty(SIZE)),
         }))
         .await
         .unwrap();

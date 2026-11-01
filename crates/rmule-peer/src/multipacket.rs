@@ -47,11 +47,9 @@ use rmule_primitives::{
 };
 use thiserror::Error;
 
-use crate::file::PartBitmap;
-use crate::file_request::{
-    ExtendedRequests, FileSizedStatus, read_file_sized_status, write_part_status,
-};
+use crate::file_request::{ExtendedRequests, FileSizedStatus, read_file_sized_status};
 use crate::opcode::PeerOpcode;
+use crate::wire_status::WireStatus;
 
 /// `OP_REQUESTSOURCES2` (SX2) sub-opcode byte. Kept as a local const rather
 /// than reusing [`PeerOpcode::RequestSources2`] (the standalone frame's
@@ -71,7 +69,7 @@ pub enum RequestItem {
     Name {
         /// The asker's own availability, as `file_request::RequestFileName`
         /// carries it standalone.
-        part_status: Option<PartBitmap>,
+        part_status: Option<WireStatus>,
     },
     /// `OP_SETREQFILEID` (`0x4F`) — no payload.
     SetReqId,
@@ -102,7 +100,7 @@ pub enum BundledAsk {
     /// session's level carries one and it could be read.
     Name {
         /// The asker's own availability.
-        part_status: Option<PartBitmap>,
+        part_status: Option<WireStatus>,
     },
     /// `OP_SETREQFILEID` (`0x4F`).
     SetReqId,
@@ -124,7 +122,7 @@ pub enum AnswerItem {
     /// `OP_REQFILENAMEANSWER` (`0x59`) — string only.
     Name(Ed2kText),
     /// `OP_FILESTATUS` (`0x50`) — part-count + bitmap.
-    Status(PartBitmap),
+    Status(WireStatus),
     /// `OP_AICHFILEHASHANS` (`0x9D`) — master hash.
     AichRoot(AichRootHash),
 }
@@ -170,7 +168,7 @@ pub enum BundleCut {
     /// `None` when not even its count did, as aMule clears it before the read
     /// throws, else each byte's bits set before the next read can throw
     /// (`UploadClient.cpp:400-446`).
-    NameStatus(Option<PartBitmap>),
+    NameStatus(Option<WireStatus>),
     /// Inside an SX2 sub's `<ver 1><opts 2>` trailer.
     Sources2,
 }
@@ -305,7 +303,7 @@ impl MultiPacketRequest {
                 RequestItem::Name { part_status } => {
                     payload.push(PeerOpcode::RequestFileName.as_u8());
                     if let Some(status) = part_status {
-                        write_part_status(&mut payload, status);
+                        status.write_to(&mut payload);
                     }
                 }
                 RequestItem::SetReqId => payload.push(PeerOpcode::SetReqFileId.as_u8()),
@@ -383,10 +381,7 @@ impl MultiPacketAnswer {
                 }
                 AnswerItem::Status(bitmap) => {
                     payload.push(PeerOpcode::FileStatus.as_u8());
-                    let part_count = u16::try_from(bitmap.part_count())
-                        .expect("part_count exceeds u16 — wire encoding does not support that");
-                    payload.extend_from_slice(&part_count.to_le_bytes());
-                    payload.extend_from_slice(&bitmap.encode());
+                    bitmap.write_to(&mut payload);
                 }
                 AnswerItem::AichRoot(root) => {
                     payload.push(PeerOpcode::AichFileHashAns.as_u8());
@@ -412,22 +407,21 @@ fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecod
 
 /// Read the `0x50` sub-item body — `<u16 part_count><bitmap>` — leaving the
 /// reader past exactly what it consumed (more items may follow).
-fn decode_status(reader: &mut WireReader<'_>) -> Result<PartBitmap, MultiPacketDecodeError> {
-    let part_count = u32::from(reader.read_u16_le("part count")?);
-    let bitmap = reader.take((part_count as usize).div_ceil(8), "part bitmap")?;
-    Ok(PartBitmap::decode(part_count, bitmap)
-        .expect("slice length matches part_count by construction"))
+fn decode_status(reader: &mut WireReader<'_>) -> Result<WireStatus, MultiPacketDecodeError> {
+    let part_count = reader.read_u16_le("part count")?;
+    let bitmap = reader.take(usize::from(part_count).div_ceil(8), "part bitmap")?;
+    Ok(WireStatus::padded(part_count, bitmap))
 }
 
 /// What a name sub's status took of the stream.
 enum NameStatus {
     /// Read whole, or cleared (`None`), taking `len` bytes.
     Read {
-        status: Option<PartBitmap>,
+        status: Option<WireStatus>,
         len: usize,
     },
     /// The stream ended inside it: the bits read, when any.
-    Cut(Option<PartBitmap>),
+    Cut(Option<WireStatus>),
 }
 
 /// Read a name sub's status from the front of `rest`. `OP_MULTIPACKET_EXT`

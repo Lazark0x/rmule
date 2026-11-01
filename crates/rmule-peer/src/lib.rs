@@ -39,6 +39,7 @@ mod session;
 mod slot;
 mod software;
 mod source_exchange;
+mod wire_status;
 
 pub use aich::{
     AichAnswer, AichDecodeError, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest,
@@ -104,3 +105,4 @@ pub use source_exchange::{
     RequestSources2, ServedSourcesVersion, SourceExchangeClaim, SourceExchangeEntry,
     SourceExchangeVersion,
 };
+pub use wire_status::WireStatus;

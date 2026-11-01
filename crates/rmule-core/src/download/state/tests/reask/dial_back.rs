@@ -2,6 +2,8 @@
 //! is taken"): a source waiting in the RemoteQueued stage is promoted by its
 //! uploader dialing us back, and its worker opens on that link at once.
 
+use rmule_peer::PartBitmap;
+
 use super::*;
 
 fn spawned(decisions: &[Decision]) -> Vec<(PeerEndpoint, usize)> {

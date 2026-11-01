@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rmule_peer::{PartBitmap, PartIndex, PeerHandshakeContext};
+use rmule_peer::{PeerHandshakeContext, WireStatus};
 use rmule_primitives::{
     ED2K_PART_SIZE, Ed2kFileLink, Informant, Ipv4Endpoint, PartHash, PeerEndpoint, PeerSource,
     SourceSighting,
@@ -54,7 +54,7 @@ fn part_bytes(bytes: &[u8], part_index: u32) -> &[u8] {
 struct RecordsAtDial {
     cell: ServedDownloads,
     file: rmule_primitives::FileHash,
-    seen: Arc<Mutex<Vec<(PartBitmap, VerifiedRange)>>>,
+    seen: Arc<Mutex<Vec<(WireStatus, VerifiedRange)>>>,
 }
 
 impl PeerTransferService for RecordsAtDial {
@@ -329,8 +329,9 @@ async fn a_landed_part_is_in_the_range_before_the_next_decision_is_enacted() {
 
     let seen = seen.lock();
     let (status, range) = seen.first().expect("the dial was enacted");
-    assert!(
-        status.has(PartIndex::new(part)),
+    assert_eq!(
+        status.encode()[(part / 8) as usize] >> (part % 8) & 1,
+        1,
         "the status names the part"
     );
     assert!(range.holds(part), "and the serve side already holds it");
@@ -401,7 +402,8 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
         "its record is gone"
     );
     assert!(ctx.file_hash_only_parts.is_empty());
-    assert!(!ctx.state.our_part_status().has(PartIndex::new(part)));
+    let status = ctx.state.our_part_status().encode();
+    assert_eq!(status[(part / 8) as usize] >> (part % 8) & 1, 0);
     assert_ne!(ctx.state.part_map().0[part as usize], PartState::Verified);
     assert!(cell.offered().is_empty());
     let said = std::iter::from_fn(|| held.evt_rx.try_recv().ok()).find_map(|event| match event {

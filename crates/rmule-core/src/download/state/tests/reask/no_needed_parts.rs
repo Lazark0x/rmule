@@ -3,6 +3,8 @@
 //! asked again over TCP at twice the period (aMule `DS_NONEEDEDPARTS`, stock
 //! 2.3.3 `DownloadClient.cpp:464-466`, `PartFile.cpp:1436-1444`).
 
+use rmule_peer::PartBitmap;
+
 use super::*;
 
 /// The retirement ends the worker with a cancel, so a slot it granted is

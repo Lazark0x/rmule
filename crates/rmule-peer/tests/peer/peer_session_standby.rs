@@ -51,7 +51,7 @@ fn slotless_standby_transition_on_cancel_transfer() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
     }));
     // No panic or rejection means connection stayed open.
 }
@@ -170,7 +170,7 @@ fn a_cancel_before_the_ask_gives_an_unasked_grant_back() {
         file_size: size,
         want_sources: false,
         want_aich_root: false,
-        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+        own_status: rmule_peer::WireStatus::downloader_empty(size),
     }));
     session.handle_bytes(&reqfilename_answer(h, "granted.bin"));
     let _ = drain(|| session.poll_output());

@@ -524,7 +524,7 @@ fn request_with_sources() -> rmule_peer::PeerCommand {
             0x86, 0x33,
         ]),
         file_size: 700_001,
-        own_status: rmule_peer::PartBitmap::downloader_empty(700_001),
+        own_status: rmule_peer::WireStatus::downloader_empty(700_001),
         want_sources: true,
         want_aich_root: false,
     })

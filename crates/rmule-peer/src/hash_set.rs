@@ -113,9 +113,8 @@ impl HashSetAnswer {
     /// Frame the answer.
     pub fn encode_packet(&self) -> Packet {
         let hashes = self.part_hashes.hashes();
-        let mut payload = Vec::with_capacity(
-            FileHash::BYTE_LEN + COUNT_LEN + hashes.len() * PartHash::BYTE_LEN,
-        );
+        let mut payload =
+            Vec::with_capacity(FileHash::BYTE_LEN + COUNT_LEN + hashes.len() * PartHash::BYTE_LEN);
         payload.extend_from_slice(self.file_hash.as_bytes());
         payload.extend_from_slice(&self.part_hashes.count().to_le_bytes());
         for h in hashes {

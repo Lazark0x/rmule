@@ -4,6 +4,7 @@
 //! m_nPartCount`, never validating the unused bits. rmule mirrors:
 //! `decode` ignores trailing bits, `encode` always writes them as zero.
 
+use rmule_peer::WireStatus;
 use rmule_peer::file::{PartBitmap, PartBitmapDecodeError, PartIndex};
 
 #[test]
@@ -108,13 +109,14 @@ fn advertised_parts_reads_a_status_against_the_files_real_parts() {
         let byte = present.iter().fold(0u8, |byte, &i| byte | 1 << i);
         PartBitmap::decode(parts, &[byte]).unwrap()
     };
+    let status = |count: u16, present: u8| WireStatus::decode(count, &[present]).unwrap();
     let size = 2 * ED2K_PART_SIZE;
-    for wire in [bitmap(3, &[0, 2]), bitmap(3, &[0])] {
+    for wire in [status(3, 0b101), status(3, 0b001)] {
         assert_eq!(wire.advertised_parts(size), Some(bitmap(2, &[0])));
     }
-    assert_eq!(bitmap(2, &[0, 1]).advertised_parts(size), None);
+    assert_eq!(status(2, 0b11).advertised_parts(size), None);
     assert_eq!(
-        PartBitmap::complete_source_sentinel().advertised_parts(size),
+        WireStatus::complete_source().advertised_parts(size),
         Some(bitmap(2, &[0, 1])),
     );
 }

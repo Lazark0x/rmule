@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use rmule_peer::ReaskAck;
+use rmule_peer::WireStatus;
 
 use super::*;
 use crate::DownloadId;
@@ -83,15 +84,15 @@ fn ask(state: &mut ServeState, p: PeerEndpoint, request: ServerEvent) -> Vec<Ser
 fn name_ask(file_hash: FileHash) -> ServerEvent {
     ServerEvent::FileRequested {
         file_hash,
-        status: PartStatusTail::of(&PartBitmap::downloader_empty(SIZE)),
+        status: PartStatusTail::of(&WireStatus::downloader_empty(SIZE)),
     }
 }
 
 /// The status a writer states for a file of [`SIZE`] holding `parts`, the
 /// phantom fourth part held.
-fn holding(parts: &[u32]) -> PartBitmap {
+fn holding(parts: &[u32]) -> WireStatus {
     let bits = parts.iter().fold(1u8 << 3, |bits, part| bits | 1 << part);
-    PartBitmap::decode(4, &[bits]).unwrap()
+    WireStatus::decode(4, &[bits]).unwrap()
 }
 
 /// What the run is handed for an asker at `link` identified by [`identify`]:
@@ -142,7 +143,7 @@ fn a_download_before_its_first_verified_part_answers_probes_and_moves_nobody() {
             p,
             ServerCommand::AnswerFileStatus {
                 file_hash: file,
-                bitmap: PartBitmap::downloader_empty(SIZE),
+                bitmap: WireStatus::downloader_empty(SIZE),
             },
         )],
         "the empty bitmap, phantom part held"
@@ -248,9 +249,9 @@ fn a_waiters_udp_reask_carries_a_partial_shares_range_and_a_whole_files_count_ze
     // A holder takes the one slot; each waiter after it queues.
     let _ = slot_request(&mut state, peer_at([10, 0, 0, 1], 4000), row, t);
     for (file, ip, status) in [
-        (row, [10, 0, 0, 2], PartBitmap::complete_source_sentinel()),
+        (row, [10, 0, 0, 2], WireStatus::complete_source()),
         (partial, [10, 0, 0, 3], holding(&[1])),
-        (whole, [10, 0, 0, 4], PartBitmap::complete_source_sentinel()),
+        (whole, [10, 0, 0, 4], WireStatus::complete_source()),
     ] {
         let waiter = peer_at(ip, 4662);
         identify_udp(&mut state, waiter, user(ip[3]), 4672, 4, t);

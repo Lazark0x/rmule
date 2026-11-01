@@ -133,7 +133,7 @@ Every block range a **Peer Session**'s `OP_REQUESTPARTS` carried since the uploa
 _Avoid_: done blocks (that is the uploader's own list), request history
 
 **Advertised Parts**:
-The parts a peer's part status says it holds of one file — an `OP_FILESTATUS`, a `0x91` ack's status, the status a name ask or a reask ping carries — read over the file's real parts: a count of `0` is a complete source, every part; a count of `ed2k_status_part_count(size)` gives the first `part_count(size)` bits, so the phantom part of an exact multiple is never read; any other count is refused whole, as aMule throws. `PartBitmap::advertised_parts` is the one reader; rmule-core keeps each source's on its record.
+The parts a peer's part status says it holds of one file — an `OP_FILESTATUS`, a `0x91` ack's status, the status a name ask or a reask ping carries — read over the file's real parts: a count of `0` is a complete source, every part; a count of `ed2k_status_part_count(size)` gives the first `part_count(size)` bits, so the phantom part of an exact multiple is never read; any other count is refused whole, as aMule throws. A status as the wire states it is a `WireStatus`, and `WireStatus::advertised_parts` is its only way to a `PartBitmap`; rmule-core keeps each source's on its record.
 _Avoid_: availability, file status (that is the packet), bitmap (that is the wire form)
 
 **AICH Exchange**:

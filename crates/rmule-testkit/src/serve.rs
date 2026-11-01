@@ -12,10 +12,7 @@ use rmule_core::{
 use rmule_ed2k::OfferedFile;
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
 use rmule_peer::{PeerEvent, PeerHandshakeContext};
-use rmule_primitives::{
-    ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, PeerEndpoint, PeerSource, SourceLookupTarget,
-    UserHash,
-};
+use rmule_primitives::{ClientId, Ed2kFileLink, PeerEndpoint, PeerSource, SourceLookupTarget};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{Duration, timeout};
 

@@ -27,11 +27,7 @@ fn amule_reask_ping_is_a_v4_on_file_ping_and_roundtrips() {
         .part_status
         .as_ref()
         .expect("a v4 reask ping carries the part status");
-    assert_eq!(
-        part_status.part_count(),
-        5,
-        "the 40 MiB file spans 5 ED2K parts",
-    );
+    assert_eq!(part_status.count(), 5, "the 40 MiB file spans 5 ED2K parts",);
     assert_eq!(ping.complete_sources, Some(1));
 
     // Byte-exact re-encode: our codec reproduces aMule's own datagram.

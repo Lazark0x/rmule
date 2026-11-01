@@ -9,11 +9,11 @@ use rmule_peer::{
     AichAnswer, AichFileHashAns, AichFileHashReq, AichRequest, AnswerItem, AnswerSources,
     AnswerSources2, BundleCut, Callback, ChangeClientId, CompressedPart, DirectCallbackReq,
     EmuleInfo, ExtendedRequests, FileReqAnsNoFil, FileStatus, HashSetAnswer, HashSetRequest, Hello,
-    Message, MultiPacketAnswer, MultiPacketRequest, PartBitmap, PartOffsetWidth, PartRanges,
-    PeerPacket, PublicIpAnswer, PublicKeyPacket, QueueRanking, ReaskAck, ReaskCallbackTcp,
-    ReaskFilePing, ReqFileNameAnswer, RequestFileName, RequestItem, RequestParts, RequestSources2,
+    Message, MultiPacketAnswer, MultiPacketRequest, PartOffsetWidth, PartRanges, PeerPacket,
+    PublicIpAnswer, PublicKeyPacket, QueueRanking, ReaskAck, ReaskCallbackTcp, ReaskFilePing,
+    ReqFileNameAnswer, RequestFileName, RequestItem, RequestParts, RequestSources2,
     SecIdentStatePacket, SendingPart, SetReqFileId, SignaturePacket, SourceExchangeEntry,
-    SourceExchangeVersion,
+    SourceExchangeVersion, WireStatus,
 };
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol,
@@ -26,8 +26,8 @@ fn hash() -> FileHash {
     FileHash::from_bytes([0x11; 16])
 }
 
-fn bitmap() -> PartBitmap {
-    PartBitmap::all_present(19)
+fn bitmap() -> WireStatus {
+    WireStatus::decode(19, &[0xFF, 0xFF, 0b111]).unwrap()
 }
 
 /// The packet decodes whole, and fails at every payload cut short of whole.
@@ -223,7 +223,7 @@ fn a_bundle_cut_anywhere_never_panics() {
         file_size: Some(9_728_000),
         items: vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::all_present(2)),
+                part_status: Some(WireStatus::decode(2, &[0xFF; 1]).unwrap()),
             },
             RequestItem::SetReqId,
             RequestItem::Sources2 {

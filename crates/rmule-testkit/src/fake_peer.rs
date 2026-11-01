@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rmule_peer::{
     AnswerItem, EMBLOCKSIZE, ExtendedRequests, MiscOptions1, MultiPacketAnswer, MultiPacketRequest,
-    PartBitmap, RequestItem,
+    RequestItem, WireStatus,
 };
 use rmule_primitives::{
     ClientId, Ed2kText, FileHash, PacketProtocol, PartHash, PeerSource, SourceClaim, UserHash,
@@ -183,7 +183,7 @@ pub struct SeenMultiPacketRequest {
     pub sub_opcodes: Vec<u8>,
     /// The part status the asker's `0x58` sub carried — what it says it
     /// holds; `None` for a bare name ask.
-    pub name_status: Option<PartBitmap>,
+    pub name_status: Option<WireStatus>,
 }
 
 /// Wire facts observed by a script run, for test assertions.

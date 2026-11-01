@@ -4,6 +4,7 @@
 //! replies. (ADR-0031; design §6.)
 
 use crate::fixture::plain_hello_body;
+use rmule_peer::WireStatus;
 use rmule_peer::{
     CancelTransfer, ConnectionEvent, HashSetRequest, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
     PartOffsetWidth, PartRanges, PeerCommand, PeerError, PeerEvent, PeerOpcode, PeerOutput,
@@ -462,8 +463,6 @@ fn send_block_without_grant_is_command_rejected() {
 
 #[test]
 fn full_inbound_serve_flow_hello_to_part_bytes() {
-    use rmule_peer::PartBitmap;
-
     let remote = UserHash::from_bytes([0x99; UserHash::BYTE_LEN]);
     let fh = FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]);
     let mut s = PeerSession::new_inbound(peer_at(9), serverless_ctx());
@@ -507,7 +506,7 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     )));
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
-        bitmap: PartBitmap::decode(1, &[0b1]).unwrap(),
+        bitmap: WireStatus::decode(1, &[0b1]).unwrap(),
     }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),
@@ -580,17 +579,16 @@ fn answer_file_status_for_a_complete_file_writes_amules_zero_part_count_sentinel
     // `ab483654`): `IsPartFile() ? WritePartStatus() : data.WriteUInt16(0)`
     // — a fully-owned shared file writes a literal zero part count and no
     // bitmap bytes, never a real bitmap with every bit set.
-    use rmule_peer::PartBitmap;
 
     let fh = FileHash::from_bytes([0x7A; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
-        bitmap: PartBitmap::all_present(4),
+        bitmap: WireStatus::decode(4, &[0b1111]).unwrap(),
     }));
     match decode_last_write(&drain(|| s.poll_output())) {
         PeerPacket::FileStatus(status) => {
-            assert_eq!(status.bitmap, PartBitmap::complete_source_sentinel());
+            assert_eq!(status.bitmap, WireStatus::complete_source());
         }
         other => panic!("expected FileStatus, got {other:?}"),
     }
@@ -598,11 +596,11 @@ fn answer_file_status_for_a_complete_file_writes_amules_zero_part_count_sentinel
 
 #[test]
 fn answer_file_status_for_a_partial_file_writes_the_bitmap_literally() {
-    use rmule_peer::PartBitmap;
+    use rmule_peer::WireStatus;
 
     let fh = FileHash::from_bytes([0x7B; FileHash::BYTE_LEN]);
     let mut s = inbound_session();
-    let partial = PartBitmap::decode(4, &[0b0111]).unwrap();
+    let partial = WireStatus::decode(4, &[0b0111]).unwrap();
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerFileStatus {
         file_hash: fh,
         bitmap: partial.clone(),

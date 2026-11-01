@@ -122,7 +122,7 @@ fn an_ext_bundles_name_status_is_read_by_the_size_it_carries() {
         read.items,
         vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::decode(1, &[0x01]).unwrap())
+                part_status: Some(WireStatus::decode(1, &[0x01]).unwrap())
             },
             RequestItem::SetReqId
         ]
@@ -131,7 +131,7 @@ fn an_ext_bundles_name_status_is_read_by_the_size_it_carries() {
     assert_eq!(
         bundle(&[0x58, 0x01, 0x00]).cut,
         Some(BundleCut::NameStatus(Some(
-            PartBitmap::decode(1, &[0x00]).unwrap()
+            WireStatus::decode(1, &[0x00]).unwrap()
         )))
     );
 }
@@ -228,7 +228,7 @@ fn answer_decodes_every_known_sub_item_in_order() {
         ans.items,
         vec![
             AnswerItem::Name(Ed2kText::from_bytes(name.to_vec())),
-            AnswerItem::Status(PartBitmap::decode(10, &[0b1010_1010, 0b0000_0011]).unwrap()),
+            AnswerItem::Status(WireStatus::decode(10, &[0b1010_1010, 0b0000_0011]).unwrap()),
             AnswerItem::AichRoot(AichRootHash::from_bytes([0x22; AichRootHash::BYTE_LEN])),
         ]
     );
@@ -307,7 +307,7 @@ fn answer_round_trips_through_encode_and_decode() {
         file_hash: hash(),
         items: vec![
             AnswerItem::Name(Ed2kText::from_utf8("clip.mkv")),
-            AnswerItem::Status(PartBitmap::decode(3, &[0b0000_0101]).unwrap()),
+            AnswerItem::Status(WireStatus::decode(3, &[0b0000_0101]).unwrap()),
             AnswerItem::AichRoot(AichRootHash::from_bytes([0x33; AichRootHash::BYTE_LEN])),
         ],
         unknown_sub: None,
@@ -384,7 +384,7 @@ fn a_status_count_is_checked_against_any_size_without_a_bitmap() {
 
     // Same verdict as the bitmap's own count, `size / PARTSIZE + 1`.
     for size in [1, ED2K_PART_SIZE, ED2K_PART_SIZE + 1, 5 << 30] {
-        let own = PartBitmap::downloader_empty(size).part_count();
+        let own = WireStatus::downloader_empty(size).count();
         let count = u16::try_from(own).expect("small file").to_le_bytes();
         let bitmap = vec![0u8; usize::from(u16::from_le_bytes(count)).div_ceil(8)];
         let tail = [count.as_slice(), &bitmap].concat();

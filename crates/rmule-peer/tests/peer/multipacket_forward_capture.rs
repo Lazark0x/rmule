@@ -11,6 +11,7 @@
 use std::net::Ipv4Addr;
 
 use crate::fixture::load;
+use rmule_peer::WireStatus;
 use rmule_peer::{
     FileProbeStatus, HelloAnswer, MiscOptions1, MiscOptions2, MultiPacketAnswer, PartBitmap,
     PeerCommand, PeerEvent, PeerHandshakeContext, PeerHelloBody, PeerOutput, PeerSession,
@@ -45,7 +46,7 @@ fn amule_forward_answer_0x93_walks_to_name_and_complete_status() {
         answer.items,
         vec![
             AnswerItem::Name(Ed2kText::from_utf8("shared.bin")),
-            AnswerItem::Status(PartBitmap::decode(0, &[]).expect("empty bitmap")),
+            AnswerItem::Status(WireStatus::decode(0, &[]).expect("empty bitmap")),
         ],
         "one composed answer: the name plus the complete-source empty status"
     );
@@ -105,7 +106,7 @@ fn live_shaped_request_consumes_the_genuine_answer_into_file_probed() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash,
         file_size: FILE_SIZE,
-        own_status: PartBitmap::downloader_empty(FILE_SIZE),
+        own_status: WireStatus::downloader_empty(FILE_SIZE),
         want_sources: true,
         want_aich_root: false,
     }));

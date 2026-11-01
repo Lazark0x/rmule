@@ -8,7 +8,7 @@
 //! `amule-233-reask-via-buddy-20261019`.
 
 use crate::fixture::load;
-use rmule_peer::PartBitmap;
+use rmule_peer::WireStatus;
 use rmule_peer::peer_udp::requester::{self, HeardReply, IgnoredReply};
 use rmule_primitives::FileHash;
 
@@ -33,7 +33,7 @@ const UDP_V4: u8 = 4;
 fn the_ping_to_a_udpv4_sharer_is_the_captured_one() {
     assert_eq!(
         requester::ping(FileHash::from_bytes(FILE_HASH), UDP_V4, UDP_V4, || {
-            PartBitmap::downloader_empty(FILE_SIZE)
+            WireStatus::downloader_empty(FILE_SIZE)
         }),
         load(AMULE_ACK_DIR, "reask_ping_0x90.bin")
     );
@@ -51,7 +51,7 @@ fn the_reask_through_a_buddy_relays_the_captured_ping() {
         FileHash::from_bytes(FILE_HASH),
         UDP_V4,
         UDP_V4,
-        || PartBitmap::downloader_empty(FILE_SIZE),
+        || WireStatus::downloader_empty(FILE_SIZE),
     );
     let relayed = rmule_peer::ReaskCallbackUdp::decode_udp(&datagram).expect("a 0x94");
     assert_eq!(relayed.buddy_id, buddy_id);
@@ -81,7 +81,7 @@ fn the_firewalled_amule_answers_the_reask_relayed_through_its_buddy() {
             FileHash::from_bytes(file_hash),
             UDP_V4,
             UDP_V4,
-            || PartBitmap::downloader_empty(30 * 1024 * 1024),
+            || WireStatus::downloader_empty(30 * 1024 * 1024),
         ),
         load(VIA_BUDDY_DIR, "reask_callback_udp_0x94.bin")
     );
@@ -93,7 +93,7 @@ fn the_firewalled_amule_answers_the_reask_relayed_through_its_buddy() {
         ),
         HeardReply::Rank {
             rank: 1,
-            part_status: Some(PartBitmap::complete_source_sentinel()),
+            part_status: Some(WireStatus::complete_source()),
         }
     );
 }
@@ -108,7 +108,7 @@ fn amules_ack_reads_as_rank_and_status_when_both_ends_are_udpv4() {
         requester::read_reply(&ack, UDP_V4, Some(UDP_V4)),
         HeardReply::Rank {
             rank: 1,
-            part_status: Some(PartBitmap::complete_source_sentinel()),
+            part_status: Some(WireStatus::complete_source()),
         }
     );
     assert_eq!(

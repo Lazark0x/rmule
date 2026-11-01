@@ -13,9 +13,9 @@ use std::net::Ipv4Addr;
 use rmule_peer::multipacket::{AnswerItem, MultiPacketAnswer, MultiPacketRequest, RequestItem};
 use rmule_peer::{
     BundledAsk, FileProbeStatus, FileStatus, Hello, HelloAnswer, MiscOptions1, NoticeEvent,
-    PartBitmap, PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket,
-    PeerSession, ReqFileNameAnswer, RequestFileName, RequesterCommand, RequesterEvent,
-    ServerCommand, ServerEvent, SetReqFileId,
+    PeerCommand, PeerEvent, PeerHelloBody, PeerOpcode, PeerOutput, PeerPacket, PeerSession,
+    ReqFileNameAnswer, RequestFileName, RequesterCommand, RequesterEvent, ServerCommand,
+    ServerEvent, SetReqFileId, WireStatus,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -78,7 +78,7 @@ fn identified_outbound_session() -> PeerSession {
 fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
     let fh = FileHash::from_bytes([0xB1; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("movie.avi");
-    let bitmap = PartBitmap::decode(1, &[0b1]).unwrap();
+    let bitmap = WireStatus::decode(1, &[0b1]).unwrap();
 
     // Standalone: two separate requests, two separate events, two separate
     // answer packets.
@@ -167,7 +167,7 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
                 // sentinel at the writer — same for both shapes.
                 vec![
                     AnswerItem::Name(name),
-                    AnswerItem::Status(PartBitmap::complete_source_sentinel())
+                    AnswerItem::Status(WireStatus::complete_source())
                 ]
             );
         }
@@ -179,7 +179,7 @@ fn bundled_serve_request_fans_in_identically_to_the_standalone_sequence() {
 fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     let fh = FileHash::from_bytes([0xB2; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("clip.mkv");
-    let bitmap = PartBitmap::decode(3, &[0b011]).unwrap();
+    let bitmap = WireStatus::decode(3, &[0b011]).unwrap();
 
     // Both shapes solicit the probe first: an answer for a
     // never-solicited file is dropped — identically in both shapes, which is
@@ -189,7 +189,7 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     standalone.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| standalone.poll_output());
     standalone.handle_bytes(
@@ -227,7 +227,7 @@ fn bundled_answer_fans_in_identically_to_the_standalone_sequence() {
     bundled.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: fh,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| bundled.poll_output());
     let answer = MultiPacketAnswer {
@@ -291,7 +291,7 @@ fn not_shared_answers_plain_file_req_ans_no_fil_and_sends_no_bundle() {
 fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
     let fh = FileHash::from_bytes([0xB4; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("f.bin");
-    let bitmap = PartBitmap::decode(1, &[0b1]).unwrap();
+    let bitmap = WireStatus::decode(1, &[0b1]).unwrap();
     let mut session = identified_inbound_session();
     let request = MultiPacketRequest {
         file_hash: fh,
@@ -330,7 +330,7 @@ fn aich_omitted_from_the_composed_answer_when_it_has_not_arrived_by_flush() {
                 // sentinel at the writer.
                 vec![
                     AnswerItem::Name(name),
-                    AnswerItem::Status(PartBitmap::complete_source_sentinel())
+                    AnswerItem::Status(WireStatus::complete_source())
                 ],
                 "AICH is silently omitted, per ADR-0054"
             );

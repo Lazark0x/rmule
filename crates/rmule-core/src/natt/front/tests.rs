@@ -300,7 +300,7 @@ impl Harness {
         claim.claim_tunnel(
             target,
             crate::adapters::AdoptionBrief {
-                own_status: rmule_peer::PartBitmap::downloader_empty(0),
+                own_status: rmule_peer::WireStatus::downloader_empty(0),
                 want_sources: true,
                 file: rmule_primitives::Ed2kFileLink {
                     file_hash: FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),

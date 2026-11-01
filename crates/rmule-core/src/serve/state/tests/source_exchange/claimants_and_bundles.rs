@@ -42,7 +42,7 @@ fn a_v0_claimants_name_ask_status_is_discarded_and_a_v1_claimants_kept() {
     let (mut state, [a, b, c, _d]) = pool_with_known_unknown_and_empty_status(file, size, t);
 
     // Both hold parts 0 and 1 and lack part 2, which no pooled source offers.
-    let holds_0_and_1 = PartBitmap::downloader(size, |i| i.value() < 2);
+    let holds_0_and_1 = WireStatus::downloader(size, |i| i.value() < 2);
     for (octets, claim, expected) in [([8, 8, 8, 8], 1, vec![c]), ([9, 9, 9, 9], 0, vec![a, b, c])]
     {
         let asker = identify_claiming(&mut state, octets, claim, 0, t);
@@ -71,7 +71,7 @@ fn a_v0_claimants_udp_reask_status_is_discarded_too() {
     let _ = slot_request(&mut state, waiter, file, t);
     let ping = ReaskFilePing {
         file_hash: file,
-        part_status: Some(PartBitmap::downloader(size, |i| i.value() < 2)),
+        part_status: Some(WireStatus::downloader(size, |i| i.value() < 2)),
         complete_sources: Some(0),
     }
     .encode_udp();

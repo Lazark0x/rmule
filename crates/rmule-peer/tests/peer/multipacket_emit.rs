@@ -82,7 +82,7 @@ fn peer_without_multipacket_gets_the_standalone_quintet() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → SetReqId included
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1), // multi-part → SetReqId included
         want_sources: true,
         want_aich_root: true,
     }));
@@ -107,7 +107,7 @@ fn peer_with_multipacket_but_not_ext_gets_one_base_0x92_bundle() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -143,7 +143,7 @@ fn ext_peer_gets_a_0xa4_bundle_carrying_the_file_size() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: big,
-        own_status: rmule_peer::PartBitmap::downloader_empty(big),
+        own_status: rmule_peer::WireStatus::downloader_empty(big),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -185,7 +185,7 @@ fn sub_part_file_omits_setreqid_and_optional_items_are_gated() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1), // sub-part → no part-status ask
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE - 1), // sub-part → no part-status ask
         want_sources: false,
         want_aich_root: false,
     }));
@@ -216,7 +216,7 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -232,7 +232,7 @@ fn exact_one_part_size_file_omits_setreqid_one_byte_over_includes_it() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -254,7 +254,7 @@ fn the_decision_core_gates_setreqid_identically_in_both_wire_shapes() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE - 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE - 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE - 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -277,7 +277,7 @@ fn request_file_before_identify_puts_no_bytes_on_the_wire() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -304,14 +304,14 @@ fn emitted_bundle_round_trips_through_a_serving_session_into_file_probed() {
     // (`aich_file_hash_request_and_answer_round_trip_between_two_sessions`).
     let fh = FileHash::from_bytes([0xC7; FileHash::BYTE_LEN]);
     let name = Ed2kText::from_utf8("bundle.bin");
-    let bitmap = rmule_peer::PartBitmap::decode(2, &[0b11]).unwrap();
+    let bitmap = rmule_peer::WireStatus::decode(2, &[0b11]).unwrap();
 
     // Downloader: peer advertises full multipacket + ext, so RequestFile emits 0xA4.
     let mut downloader = identified_against(vec![misc1_multipacket(), misc2_ext()]);
     downloader.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: ED2K_PART_SIZE + 1,
-        own_status: rmule_peer::PartBitmap::downloader_empty(ED2K_PART_SIZE + 1),
+        own_status: rmule_peer::WireStatus::downloader_empty(ED2K_PART_SIZE + 1),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -400,7 +400,7 @@ fn sx2_peer_gets_the_sources2_sub_per_the_source_ask_policy() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: hash(),
         file_size: size,
-        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+        own_status: rmule_peer::WireStatus::downloader_empty(size),
         want_sources: true,
         want_aich_root: true,
     }));
@@ -448,7 +448,7 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: fh,
         file_size: size,
-        own_status: rmule_peer::PartBitmap::downloader_empty(size),
+        own_status: rmule_peer::WireStatus::downloader_empty(size),
         want_sources: false,
         want_aich_root: false,
     }));
@@ -474,7 +474,7 @@ fn the_bundles_probe_is_recorded_so_request_parts_does_not_reprobe() {
         file_hash: fh,
         items: vec![
             AnswerItem::Name(Ed2kText::from_utf8("bundled.bin")),
-            AnswerItem::Status(rmule_peer::PartBitmap::decode(2, &[0b11]).unwrap()),
+            AnswerItem::Status(rmule_peer::WireStatus::decode(2, &[0b11]).unwrap()),
         ],
         unknown_sub: None,
     };

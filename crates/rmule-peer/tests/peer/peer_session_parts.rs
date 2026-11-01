@@ -97,7 +97,7 @@ fn a_peer_without_the_large_files_bit_is_asked_nothing() {
         file_size: big,
         want_sources: true,
         want_aich_root: false,
-        own_status: rmule_peer::PartBitmap::downloader_empty(big),
+        own_status: rmule_peer::WireStatus::downloader_empty(big),
     }));
     let out = drain(|| session.poll_output());
     assert!(writes(&out).is_empty());
@@ -261,7 +261,7 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h2,
         file_size: 20_000_000,
-        own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&compressedpart_chunk(h, 900_000, 1_000, &[0x11; 10]));

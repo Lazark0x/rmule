@@ -5,7 +5,8 @@
 use super::super::read_share_set;
 use super::*;
 use crate::registry_check::WithheldRows;
-use rmule_peer::{PartBitmap, PartStatusTail};
+use rmule_peer::PartStatusTail;
+use rmule_peer::WireStatus;
 
 const FILE: FileHash = FileHash::from_bytes([0x33; FileHash::BYTE_LEN]);
 const SIZE: u64 = 4096;
@@ -133,7 +134,7 @@ async fn a_links_first_asks_wait_for_the_look_and_are_answered_from_the_set() {
     conn_tx
         .send(ServeInput::Server(ServerEvent::FileRequested {
             file_hash: FILE,
-            status: PartStatusTail::of(&PartBitmap::downloader_empty(SIZE)),
+            status: PartStatusTail::of(&WireStatus::downloader_empty(SIZE)),
         }))
         .await
         .unwrap();
@@ -173,7 +174,7 @@ async fn a_reask_before_the_look_is_not_told_a_shared_file_is_gone() {
     let mut early = serving_before_the_look();
     let ping = rmule_peer::ReaskFilePing {
         file_hash: FILE,
-        part_status: Some(PartBitmap::downloader_empty(SIZE)),
+        part_status: Some(WireStatus::downloader_empty(SIZE)),
         complete_sources: Some(0),
     }
     .encode_udp();

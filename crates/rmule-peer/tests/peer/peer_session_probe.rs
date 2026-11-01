@@ -3,6 +3,7 @@
 //! (ADR-0025), and the hash-set cache that keeps a second download from
 //! re-asking.
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
     ConnectionEvent, FileProbeStatus, PartBitmap, PartRanges, PeerCloseReason, PeerCommand,
     PeerEvent, PeerOutput, RequesterCommand, RequesterEvent,
@@ -18,7 +19,7 @@ fn probe_happy_path_emits_writes_and_available_status() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let out1 = drain(|| session.poll_output());
     let probe_writes = writes(&out1);
@@ -65,7 +66,7 @@ fn probe_not_available_caches_and_replays_on_reprobe() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&filereqansnofil(h));
@@ -83,7 +84,7 @@ fn probe_not_available_caches_and_replays_on_reprobe() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let second = drain(|| session.poll_output());
     assert!(
@@ -107,12 +108,12 @@ fn interleaved_probes_demux_by_file_hash() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: a,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: b,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
 
@@ -237,7 +238,7 @@ fn a_complete_source_sentinel_status_expands_to_a_full_bitmap_on_a_bare_probe_to
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: PartBitmap::downloader_empty(20_000_000),
+        own_status: WireStatus::downloader_empty(20_000_000),
     }));
     let _ = drain(|| session.poll_output());
 
@@ -274,7 +275,7 @@ fn probe_with_status(file_size: u64, status: &[u8]) -> Result<PartBitmap, Vec<Pe
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size,
-        own_status: PartBitmap::downloader_empty(file_size),
+        own_status: WireStatus::downloader_empty(file_size),
     }));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&reqfilename_answer(h, "exact.bin"));
@@ -342,7 +343,7 @@ fn a_one_part_file_asked_again_on_the_link_settles_on_its_name_answer() {
             file_size: size,
             want_sources: false,
             want_aich_root: false,
-            own_status: PartBitmap::downloader_empty(size),
+            own_status: WireStatus::downloader_empty(size),
         }));
         let _ = drain(|| session.poll_output());
         session.handle_bytes(&reqfilename_answer(h, "one.bin"));

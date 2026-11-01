@@ -19,9 +19,10 @@
 
 use std::net::Ipv4Addr;
 
+use rmule_peer::WireStatus;
 use rmule_peer::{
-    AnswerSources, AnswerSources2, ExtendedRequests, HelloAnswer, MultiPacketRequest, PartBitmap,
-    PeerIdentity, RequestItem, SourceExchangeVersion,
+    AnswerSources, AnswerSources2, ExtendedRequests, HelloAnswer, MultiPacketRequest, PeerIdentity,
+    RequestItem, SourceExchangeVersion,
 };
 use rmule_primitives::{ClientId, FileHash, Ipv4Endpoint, Packet, PeerSource, UserHash};
 
@@ -189,7 +190,7 @@ fn emule_qt_writes_its_part_status_into_the_name_sub_at_level_one() {
         request.items,
         vec![
             RequestItem::Name {
-                part_status: Some(PartBitmap::downloader_empty(1_048_576)),
+                part_status: Some(WireStatus::downloader_empty(1_048_576)),
             },
             RequestItem::SetReqId,
             RequestItem::Sources2 {

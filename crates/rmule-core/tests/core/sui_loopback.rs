@@ -7,6 +7,8 @@
 //! peer observed rmule's proof. Asymmetric keys and user hashes per side keep
 //! a flipped signing direction detectable.
 
+use rmule_peer::WireStatus;
+
 use crate::fixture::serving_started;
 use rmule_core::DurableCreditStore;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -19,13 +21,12 @@ use rmule_core::{
 };
 use rmule_net::peer::{ConnectOptions, Connection, PeerListener};
 use rmule_peer::{
-    ConnectionEvent, PartBitmap, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig,
+    ConnectionEvent, PeerCommand, PeerEvent, PeerHandshakeContext, SecureIdentConfig,
     ServerCommand, ServerEvent,
 };
 use rmule_primitives::{
     ClientId, ClientIdentity, Ed2kFileLink, Ed2kText, FileHashSummary, Informant, PeerEndpoint,
     PeerSource, SecureIdentKey, ServerEndpoint, SourceLookupTarget, SourceSighting, UserHash,
-    part_count,
 };
 use rmule_testkit::{PendingSourceLookup, RefusingPeerTransfer};
 
@@ -99,8 +100,7 @@ async fn serve_once_with_sui(
                         rmule_peer::BundledAsk::SetReqId => {
                             PeerCommand::Server(ServerCommand::AnswerFileStatus {
                                 file_hash,
-                                bitmap: PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF])
-                                    .unwrap(),
+                                bitmap: WireStatus::whole(bytes.len() as u64),
                             })
                         }
                         _ => continue,
@@ -109,7 +109,7 @@ async fn serve_once_with_sui(
                 }
             }
             PeerEvent::Server(ServerEvent::FileIdSet { file_hash }) => {
-                let bitmap = PartBitmap::decode(part_count(bytes.len() as u64), &[0xFF]).unwrap();
+                let bitmap = WireStatus::whole(bytes.len() as u64);
                 let _ = conn
                     .send(PeerCommand::Server(ServerCommand::AnswerFileStatus {
                         file_hash,

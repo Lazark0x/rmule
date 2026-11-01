@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use rmule_peer::{PartBitmap, ServedSourcesVersion, ServerCommand};
+use rmule_peer::{ServedSourcesVersion, ServerCommand, WireStatus};
 use rmule_primitives::{FileHash, PeerEndpoint};
 
 use super::{ServeDecision, ServeState};
@@ -13,7 +13,7 @@ use crate::serve::source_exchange::{SxCandidate, SxRequester, select_sources};
 
 impl ServeState {
     /// Keep the part status `peer` just wrote for `file_hash` — its name ask's
-    /// or its UDP reask's: one reader ([`PartBitmap::advertised_parts`], the
+    /// or its UDP reask's: one reader ([`WireStatus::advertised_parts`], the
     /// one every status goes through) and one rule for both, as aMule's
     /// `ProcessExtendedInfo` serves both (ADR-0055 §Serving). aMule's uploader
     /// clears a status whose count is not the file's (`UploadClient.cpp:418-421`)
@@ -29,7 +29,7 @@ impl ServeState {
         peer: PeerEndpoint,
         file_hash: FileHash,
         file_size: u64,
-        wire: Option<PartBitmap>,
+        wire: Option<WireStatus>,
     ) {
         let claims_status = self
             .identities

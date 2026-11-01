@@ -285,7 +285,7 @@ pub(super) struct ServeState {
     aich: AichTrees,
     /// The parts each peer holds of a file we share, from the part status its
     /// last name ask or UDP reask wrote (read through
-    /// `PartBitmap::advertised_parts`, ADR-0055 §Serving) — aMule's
+    /// `WireStatus::advertised_parts`, ADR-0055 §Serving) — aMule's
     /// per-client `m_upPartStatus`. Read twice by a source-exchange answer:
     /// the asker's own entry is the needed-part filter's reference, and each
     /// pooled source's entry is what it offers. A peer or file absent here is

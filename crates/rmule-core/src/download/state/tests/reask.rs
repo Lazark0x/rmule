@@ -4,6 +4,9 @@
 //! flight; each reply shape lands on the standing it names; the gates that
 //! take a source straight to TCP; and `next_wake` naming when to look next.
 
+use rmule_peer::PartBitmap;
+
+use rmule_peer::WireStatus;
 use rmule_peer::{ReaskAck, file_not_found_datagram, queue_full_datagram};
 use rmule_primitives::Ipv6Endpoint;
 
@@ -184,10 +187,10 @@ fn the_event(decisions: &[Decision]) -> &DownloadEvent {
 /// a UDPv4 pinger: its part status — aMule's part-count-0 complete-source
 /// sentinel — rides ahead of the rank.
 fn v4_ack(rank: u16) -> Vec<u8> {
-    v4_ack_with(PartBitmap::complete_source_sentinel(), rank)
+    v4_ack_with(WireStatus::complete_source(), rank)
 }
 
-fn v4_ack_with(part_status: PartBitmap, rank: u16) -> Vec<u8> {
+fn v4_ack_with(part_status: WireStatus, rank: u16) -> Vec<u8> {
     ReaskAck {
         part_status: Some(part_status),
         rank,
@@ -316,9 +319,9 @@ fn a_reask_ack_records_the_rank_refreshes_the_clock_and_cancels_the_fallback() {
 #[test]
 fn a_reask_ack_names_a_complete_source_only_by_the_sentinel() {
     for (status, asked_again) in [
-        (PartBitmap::decode(3, &[0b0000_0111]).unwrap(), true),
-        (PartBitmap::decode(3, &[0b0000_0101]).unwrap(), true),
-        (PartBitmap::complete_source_sentinel(), false),
+        (WireStatus::decode(3, &[0b0000_0111]).unwrap(), true),
+        (WireStatus::decode(3, &[0b0000_0101]).unwrap(), true),
+        (WireStatus::complete_source(), false),
     ] {
         let mut state = pooled_state(
             file_hash_only_content(THREE_PARTS),
@@ -370,7 +373,7 @@ fn three_part_standing() -> (DownloadState, Instant) {
 #[test]
 fn a_reask_ack_holding_no_part_we_lack_makes_the_source_no_needed_parts() {
     let (mut state, window) = three_part_standing();
-    let empty = PartBitmap::decode(3, &[0b0000_0000]).expect("three parts");
+    let empty = WireStatus::decode(3, &[0b0000_0000]).expect("three parts");
     let heard = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(empty, 2));
     assert!(matches!(
         the_event(&heard),
@@ -392,9 +395,10 @@ fn a_reask_ack_holding_no_part_we_lack_makes_the_source_no_needed_parts() {
 fn a_reask_acks_part_status_replaces_the_records_parts() {
     let (mut state, window) = three_part_standing();
     assert_eq!(state.sources.part_frequency(), [1, 1, 1]);
-    let middle = PartBitmap::decode(3, &[0b0000_0010]).expect("three parts");
-    let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(middle.clone(), 2));
-    assert_eq!(state.sources.parts(peer(1)), Some(&middle));
+    let middle = WireStatus::decode(3, &[0b0000_0010]).expect("three parts");
+    let _ = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(middle, 2));
+    let parts = PartBitmap::decode(3, &[0b0000_0010]).expect("three parts");
+    assert_eq!(state.sources.parts(peer(1)), Some(&parts));
     assert_eq!(
         (state.sources.part_frequency(), state.sources.parts_known()),
         (&[0, 1, 0][..], 1)
@@ -408,7 +412,7 @@ fn a_reask_acks_part_status_replaces_the_records_parts() {
 #[test]
 fn a_reask_ack_counting_other_parts_is_ignored() {
     let (mut state, window) = three_part_standing();
-    let two = PartBitmap::decode(2, &[0b0000_0011]).expect("two parts");
+    let two = WireStatus::decode(2, &[0b0000_0011]).expect("two parts");
     let heard = state.on_reask_reply(window, contact(peer(1)), &v4_ack_with(two, 2));
     assert!(matches!(
         the_event(&heard),

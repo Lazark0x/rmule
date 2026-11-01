@@ -5,6 +5,8 @@
 //! answer, its worker's end and the **Hash-Set Deadline**. A queued worker
 //! left holding nothing we need goes without a slot to give back.
 
+use rmule_peer::PartBitmap;
+
 use super::*;
 use crate::download::state::slot_ask::HASH_SET_DEADLINE;
 

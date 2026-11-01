@@ -30,7 +30,7 @@ fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
         file_hash: h,
         file_size: 20_000_000,
-        own_status: rmule_peer::PartBitmap::downloader_empty(20_000_000),
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
     }));
     let out = drain(|| session.poll_output());
     assert!(writes(&out).iter().any(|p| p.opcode() == 0x58));
@@ -141,7 +141,7 @@ fn unsolicited_answer_sources_is_dropped() {
     session.handle_command(PeerCommand::Requester(RequesterCommand::RequestFile {
         file_hash: h,
         file_size: 4096,
-        own_status: rmule_peer::PartBitmap::downloader_empty(4096),
+        own_status: rmule_peer::WireStatus::downloader_empty(4096),
         want_sources: false,
         want_aich_root: false,
     }));

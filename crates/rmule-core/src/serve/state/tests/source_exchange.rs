@@ -460,7 +460,7 @@ fn name_ask(
     state: &mut ServeState,
     p: PeerEndpoint,
     file: FileHash,
-    part_status: Option<PartBitmap>,
+    part_status: Option<WireStatus>,
     t: Instant,
 ) {
     let _ = state.on_conn_event(
@@ -505,7 +505,7 @@ fn pool_with_known_unknown_and_empty_status(
             t,
         );
         if let Some(parts) = held {
-            let status = PartBitmap::downloader(size, |i| parts.contains(&i.value()));
+            let status = WireStatus::downloader(size, |i| parts.contains(&i.value()));
             name_ask(&mut state, p, file, Some(status), t);
         }
         let _ = slot_request(&mut state, p, file, t);

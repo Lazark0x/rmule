@@ -88,7 +88,7 @@ fn context(registry: &AwaitedInbound) -> CallbackContext {
 fn brief() -> AdoptionBrief {
     AdoptionBrief {
         file: file(),
-        own_status: PartBitmap::downloader_empty(0),
+        own_status: WireStatus::downloader_empty(0),
         want_sources: true,
     }
 }
@@ -118,7 +118,7 @@ fn ending_a_callback_drops_both_roads() {
     let mut ctx = context(&registry);
     ctx.await_callback(key, brief());
     assert!(
-        ctx.claim_tunnel(&candidate, &file(), PartBitmap::downloader_empty(0), true),
+        ctx.claim_tunnel(&candidate, &file(), WireStatus::downloader_empty(0), true),
         "a candidate carrying a User Hash claims its Tunnel"
     );
 
@@ -156,7 +156,7 @@ fn a_candidate_without_a_user_hash_claims_no_tunnel() {
         !ctx.claim_tunnel(
             &bare_candidate(7),
             &file(),
-            PartBitmap::downloader_empty(0),
+            WireStatus::downloader_empty(0),
             true
         ),
         "a plain 0x42 candidate has no hash to be claimed under"
@@ -174,7 +174,7 @@ fn ending_one_callback_leaves_another_targets_claim_standing() {
     let first = candidate_with_hash(7, hash(0xAB));
     let second = candidate_with_hash(8, hash(0xCD));
     for candidate in [&first, &second] {
-        ctx.claim_tunnel(candidate, &file(), PartBitmap::downloader_empty(0), true);
+        ctx.claim_tunnel(candidate, &file(), WireStatus::downloader_empty(0), true);
     }
 
     ctx.end_callback(first.key());

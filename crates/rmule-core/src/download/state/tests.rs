@@ -433,7 +433,7 @@ fn our_part_status_reports_the_verified_parts_as_the_reask_ping_bitfield() {
     );
     assert_eq!(
         state.our_part_status(),
-        PartBitmap::decode(6, &[0b0011_0101]).unwrap(),
+        WireStatus::decode(6, &[0b0011_0101]).unwrap(),
     );
 }
 

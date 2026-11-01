@@ -5,8 +5,8 @@
 
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHashList, SourceSighting};
 
-use crate::file::PartBitmap;
 use crate::hash_set::HashSetAnswer;
+use crate::wire_status::WireStatus;
 
 use super::super::PeerSession;
 use crate::source_exchange::ServedSourcesVersion;
@@ -38,7 +38,7 @@ pub enum ServerCommand {
         /// The file the bitmap describes.
         file_hash: FileHash,
         /// Which parts we hold.
-        bitmap: PartBitmap,
+        bitmap: WireStatus,
     },
     /// Answer an inbound `HashSetRequest` with the
     /// part-hash set (`OP_HASHSETANSWER`).
