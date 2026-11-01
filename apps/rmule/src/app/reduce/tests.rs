@@ -735,6 +735,18 @@ fn a_refused_download_dir_is_said_before_the_share_warning() {
     assert_eq!(app.views.settings.warned_dir(), Some(elsewhere.path()));
 }
 
+/// The bar may shorten a flash and drops it in seconds: the log keeps it whole.
+#[test]
+fn a_flash_stays_in_the_log_whole() {
+    let mut app = App::new(Theme::default_dark());
+    let now = Instant::now();
+    app.reduce(Action::Flash(crate::fixture::LONG_FLASH), now);
+    assert_eq!(
+        app.state.log.back().map(|line| &line.text),
+        Some(&crate::fixture::LONG_FLASH)
+    );
+}
+
 /// The next run opens on the tab this one left up, however it got there.
 #[test]
 fn the_tab_left_up_is_the_tab_the_next_run_opens_on() {

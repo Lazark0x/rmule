@@ -510,7 +510,9 @@ fn a_fast_rate_scales_its_unit_and_keeps_the_speed_column_on_one_row() {
         .insert(download_id(1), 12_345.6 * 1024.0);
     let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
     terminal
-        .draw(|frame| view.draw(frame, frame.area(), &state, &Theme::default_dark(), now()))
+        .draw(|frame| {
+            view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+        })
         .expect("draw");
     let buffer = terminal.backend().buffer();
     let rows: Vec<String> = (0..GOLDEN_H)

@@ -14,6 +14,20 @@ All notable changes to rmule are recorded here. The format follows
 - `Enter` on a search moves to its results, and `u` brings back the search
   closed last.
 - No field loses what was typed: a refusal stays under it, with the text.
+### Status bar and start
+
+- The status bar always shows the rates, in fixed cells and a unit that adapts
+  past KB/s. Notes leave it after five minutes and stay in the log; a long note
+  or flash shortens in its middle and never takes a row from the table.
+- A tally of active, failed and done downloads sits on the bar. The last tab
+  comes back at the next start.
+- Settings can write rates and the tally to the terminal's title and ring the
+  bell when a download finishes; both start off.
+- A dial reads `connecting…`, a chosen off is dim, a lost connection red, and a
+  flash no longer wears the warning's amber.
+- Eighty columns name all six tabs.
+- Autoconnect is on by default and dials the last server you connected to,
+  nothing on a first run. If you turned it off, it stays off.
 
 ### Transfers
 
