@@ -105,7 +105,7 @@ What the app resolves before anything else, by core's rule (`--data-dir`, `RMULE
 _Avoid_: profile, workspace, config dir (the config is a seam of the store, not a file of its own)
 
 **Table Sort**:
-The one column a table is ordered by, and its direction — view state, never core's. Every visible column can hold it and nothing else can; the header of the column holding it carries the arrow. Each table has one, kept across runs. Rows re-order as they change, and the cursor stays on its row rather than its position. A column may rank its rows into groups before its value (Transfers' Progress: moving bytes, then completed, then the rest); reversing reverses the value inside each group, never the groups. A table lists each column once — its stored key, header text and kind — so none of the three is a switch of its own.
+The one column a table is ordered by, and its direction — view state, never core's. Every visible column can hold it and nothing else can; the header of the column holding it carries the arrow. Each table has one, kept across runs; until the operator picks one a table opens by name, or by the fact it is read for: Transfers by Progress, Searches by Sources. Rows re-order as they change, and the cursor stays on its row rather than its position. A column may rank its rows into groups before its value (Transfers' Progress: moving bytes, then completed, then the rest); reversing reverses the value inside each group, never the groups. A table lists each column once — its stored key, header text and kind — so none of the three is a switch of its own.
 _Avoid_: ordering, ranking, sort mode, sort key (a key with no column)
 
 **Row Selection**:
