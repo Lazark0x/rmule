@@ -8,7 +8,7 @@
 │fakes, no adverts, moderated around the clock · Fail 0 · Static no          │
 │Health: not reached yet — no answer and no failed try so far                │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 2 ┘
-┌ Log (0) ──── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │

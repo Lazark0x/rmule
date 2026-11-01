@@ -8,7 +8,7 @@
 │Off-screen: De│  Copy server link                            │              │
 │Health: dead s│  Remove… (x)                                 │(limit 3)     │
 └ too narrow to│  Pin as static                               │─────── 2 / 4 ┘
-┌ Log (0) ──── │  Priority: Low → Norm                        │───── K start ┐
+┌ Log (0) ─────│  Priority: Low → Norm                        │───── K start ┐
 │nothing has ha│  Details (d)                                 │              │
 │              │  Add server… (a)                             │arted)        │
 │              │  Update list from URL… (U)                   │              │

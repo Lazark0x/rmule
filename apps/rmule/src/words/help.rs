@@ -83,7 +83,10 @@ pub const NETWORKS: Section = Section {
         ),
         ("K", "start or stop Kad"),
         ("d", "the selected server's grants, flags and health"),
-        ("f", "in the log: every line, warnings and failures, or failures"),
+        (
+            "f",
+            "in the log: every line, warnings and failures, or failures",
+        ),
     ],
 };
 
@@ -135,10 +138,7 @@ pub const SHARED: Section = Section {
 /// Statistics.
 pub const STATISTICS: Section = Section {
     title: "Statistics",
-    rows: &[(
-        "w",
-        "graph seconds, a minute a column, or an hour a column",
-    )],
+    rows: &[("w", "graph seconds, a minute a column, or an hour a column")],
 };
 
 /// Settings.

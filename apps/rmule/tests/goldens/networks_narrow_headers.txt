@@ -8,7 +8,7 @@
 │Age 12s · Prio Norm · Fail 0 · Static no  │
 │Health: answering — its last… came 12s ago│
 └ 9 columns not shown ────────────── 1 / 4 ┘
-┌ Log (0) ── / filter  Tab servers  z zoom ┐
+┌ Log (0) ───────────────────────── z zoom ┐
 │nothing has happened yet                  │
 │                                          │
 │                                          │

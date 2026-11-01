@@ -4,11 +4,12 @@
 │                                                                             █│
 │ Networks                                                                    █│
 │ a               add server                                                  █│
-│ U               update server list from URL                                 █│
+│ U               update server list from URL                                 ▂│
 │ c               connect to the selected server, or disconnect from the one   │
 │                 you are on                                                   │
 │ K               start or stop Kad                                            │
 │ d               the selected server's grants, flags and health               │
+│ f               in the log: every line, warnings and failures, or failures   │
 │                                                                              │
 │ Everywhere                                                                   │
 │ 1–6             switch view directly                                         │
@@ -17,8 +18,7 @@
 │ PgUp / PgDn     a page; Ctrl-U / Ctrl-D too                                  │
 │ g / G           top / bottom; Home / End too                                 │
 │ /               filter the focused list as you type                          │
-│ Space / T       tag a row / every row on show                                │
-│ Tab / Shift-Tab cycle panes (accent border = focus)                         ▼│
-│/                                                                     58 of 58│
-└─────────────────────────────────────────────────────────────── ↑/↓ ─ 19 / 80 ┘
+│ Space / T       tag a row / every row on show                               ▼│
+│/                                                                     62 of 62│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 19 / 86 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

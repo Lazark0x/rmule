@@ -8,6 +8,7 @@
 │ c               connect to the selected server, or disconnect from the one you are on           █│
 │ K               start or stop Kad                                                               █│
 │ d               the selected server's grants, flags and health                                  █│
+│ f               in the log: every line, warnings and failures, or failures                      █│
 │                                                                                                 █│
 │ Everywhere                                                                                      █│
 │ 1–6             switch view directly                                                            █│
@@ -15,8 +16,8 @@
 │ j/k  ↑/↓        select row in focused pane                                                      █│
 │ PgUp / PgDn     a page; Ctrl-U / Ctrl-D too                                                     █│
 │ g / G           top / bottom; Home / End too                                                    █│
-│ /               filter the focused list as you type                                             █│
-│ Space / T       tag a row / every row on show                                                   ▆│
+│ /               filter the focused list as you type                                             ▂│
+│ Space / T       tag a row / every row on show                                                    │
 │ Tab / Shift-Tab cycle panes (accent border = focus)                                              │
 │ z               zoom the focused pane to the whole tab, or back                                  │
 │ m / Enter       row action menu; acts on the tagged rows if any                                  │
@@ -25,6 +26,8 @@
 │ ?               this help; type to filter it, ↑/↓ and PgUp/PgDn scroll                           │
 │ q               quit; asks first while anything is under way                                     │
 │ Ctrl-C          quit, from anywhere                                                              │
+│ Ctrl-Z          stop as a job; transfers stand still until fg                                    │
+│ Ctrl-L          repaint the screen                                                               │
 │ Esc             clear a filter or the tags; close a menu, a form or a confirm; leave the query;  │
 │                 a share question waits for y or n                                                │
 │ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word                             │
@@ -33,8 +36,7 @@
 │ mouse           click tab/row selects, header sorts, a click runs a menu item, the wheel scrolls │
 │                 the pane under it                                                                │
 │ copy text       hold Shift, or Option on macOS, to drag; or turn Mouse off in Settings or start  │
-│                 with --no-mouse: clicks and the wheel then do nothing                            │
-│                                                                                                 ▼│
-│/                                                                                         58 of 58│
-└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 35 / 76 ┘
+│                 with --no-mouse: clicks and the wheel then do nothing                           ▼│
+│/                                                                                         62 of 62│
+└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 37 / 82 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —──────────────────Esc leave ┘

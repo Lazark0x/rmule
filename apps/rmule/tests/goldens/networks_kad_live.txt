@@ -8,7 +8,7 @@
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
-┌ Log (0) ──── / filter  Tab servers ┐┌ Kad ───────────────────────── K stop ┐
+┌ Log (0) ─────────────────── z zoom ┐┌ Kad ───────────────────────── K stop ┐
 │nothing has happened yet            ││● Kad: running                        │
 │                                    ││Joined    yes                         │
 │                                    ││Contacts  54                          │

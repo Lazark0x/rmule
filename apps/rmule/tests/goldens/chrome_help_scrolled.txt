@@ -14,11 +14,11 @@
 │ downloading     a result in Transfers now: bold                              │
 │ failed          a result whose download failed and holds its place: bold,    │
 │                 underlined                                                   │
-│ have            a result on your disk, shared: dim                          █│
+│ have            a result on your disk, shared: dim                          ▆│
 │ withheld        a result rmule cannot read now, offered to nobody:          █│
 │                 underlined                                                  █│
 │ had             a result you downloaded once and no longer hold: italic     █│
 │ cancelled       a result you cancelled: struck through                      ▼│
-│/                                                                     58 of 58│
-└─────────────────────────────────────────────────────────────── ↑/↓ ─ 80 / 80 ┘
+│/                                                                     62 of 62│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 86 / 86 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

@@ -8,14 +8,14 @@
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
-┌ Log (4) ──── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
-│11:50:00 connected to 10.0.0.1:4661 ││● Kad: off                            │
-│         (HighID)                   ││Joined    — (node not started)        │
-│11:55:00 42 sources found (12       ││Contacts  —                           │
-│         usable)                    ││Firewall  — (never run)               │
-│11:59:45 peer 10.0.0.1:4662 queued  ││UDP       — (never run)               │
-│         us at rank 3               ││Keywords  —                           │
-│11:59:55 part 17 verified           ││Node id   —                           │
-│                                    ││Received  —                           │
+┌ Log (4) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
+│2026-01-01                          ││● Kad: off                            │
+│12:00:00 · connected to             ││Joined    — (node not started)        │
+│           10.0.0.1:4661 (HighID)   ││Contacts  —                           │
+│12:05:00 · 42 sources found (12     ││Firewall  — (never run)               │
+│           usable)                  ││UDP       — (never run)               │
+│12:09:45 · peer 10.0.0.1:4662 queued││Keywords  —                           │
+│           us at rank 3             ││Node id   —                           │
+│12:09:55 · part 17 verified         ││Received  —                           │
 │                                    ││Sent      —                           │
 └────────────────────────────────────┘└──────────────────────────────────────┘

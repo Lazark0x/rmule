@@ -21,7 +21,7 @@
 │Off-scr│and other servers still have them                             │       │
 │Health:└─────────────────────────────────────────────────── Esc close ┘       │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 1 / 4 ┘
-┌ Log (0) ────── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ───────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │
 │                                      ││Contacts  —                           │
