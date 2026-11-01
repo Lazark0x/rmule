@@ -20,6 +20,7 @@
 //!   (backpressure); datagram taps drop on full — capture never stalls a
 //!   driver.
 
+use rmule_primitives::{EventRow, RowValue};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -282,6 +283,21 @@ fn render_rows(spec: &RowsFile, rows: &[String]) -> String {
         out.push('\n');
     }
     out
+}
+
+/// One session event's [`EventRow`] as the TOML table a capture's
+/// `events.toml` carries.
+pub fn row_to_toml(row: &EventRow) -> String {
+    let mut table = format!("type = \"{}\"\n", row.capture_type());
+    for (key, value) in row.capture_fields() {
+        let value = match value {
+            RowValue::Plain(plain) => plain.clone(),
+            RowValue::Text(text) => toml_basic_string(text),
+            RowValue::Opcode(opcode) => opcode.to_string(),
+        };
+        table.push_str(&format!("{key} = {value}\n"));
+    }
+    table
 }
 
 /// Encode `s` as a TOML basic string with proper escaping. Used by the

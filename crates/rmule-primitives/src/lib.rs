@@ -14,6 +14,7 @@ mod capabilities;
 mod datagram_obfuscation;
 mod endpoint;
 mod error;
+mod event_row;
 mod file_class;
 mod file_name;
 mod hash;
@@ -49,6 +50,7 @@ pub use datagram_obfuscation::{
 };
 pub use endpoint::{AddressFamily, Ipv4Endpoint, Ipv6Endpoint};
 pub use error::{PrimitiveError, Result};
+pub use event_row::{EventRow, RowValue};
 pub use file_class::Ed2kFileClass;
 pub use file_name::{SafeFileName, fold_as_a_volume, is_unprintable};
 pub use hash::{

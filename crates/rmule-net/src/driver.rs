@@ -18,8 +18,8 @@ mod crypt;
 mod outgoing;
 
 pub use capture::{
-    CaptureFormat, CaptureHandle, FrameWrite, OverflowPolicy, RowsFile, run_capture, spawn_capture,
-    toml_basic_string,
+    CaptureFormat, CaptureHandle, FrameWrite, OverflowPolicy, RowsFile, row_to_toml, run_capture,
+    spawn_capture, toml_basic_string,
 };
 pub use crypt::{
     CryptStream, HandshakeProgress, ObfuscationConfig, ObfuscationPolicy, ObfuscationTransport,

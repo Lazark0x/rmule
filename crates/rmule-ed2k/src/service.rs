@@ -5,7 +5,6 @@
 //! construction-time inputs the driver owns, and a `Connect` command here
 //! would fork the connect path in two.
 
-use std::fmt;
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{
@@ -422,120 +421,6 @@ impl Ed2kEvent {
                 opcode: *opcode,
                 payload_len: payload.len(),
             },
-        }
-    }
-}
-
-/// Compact one-line diagnostic summary of a server-connection event — the
-/// co-located projection `rmule-tools` prints (the `s2c` prefix marks a
-/// server→client fact; `CommandRejected` is local and `Disconnected` terminal,
-/// so they carry no direction). Exhaustive by design: a new [`Ed2kEvent`]
-/// variant fails to compile until its projection lands here, keeping the label
-/// in the enum's own crate rather than re-walked by every consumer.
-impl fmt::Display for Ed2kEvent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ed2kEvent::LoginRequested { endpoint } => write!(
-                f,
-                "s2c connection_started {}:{}",
-                endpoint.host(),
-                endpoint.port()
-            ),
-            Ed2kEvent::LoginAccepted { client_id, .. } => {
-                write!(f, "s2c login_accepted client_id={}", client_id.as_u32())
-            }
-            Ed2kEvent::LoginRejected => write!(f, "s2c login_rejected"),
-            Ed2kEvent::ServerRejectedCommand => write!(f, "s2c server_rejected_command"),
-            Ed2kEvent::FoundSourcesSkipped { opcode, reason } => {
-                write!(
-                    f,
-                    "s2c found_sources_skipped opcode={opcode:#04x} reason={reason}"
-                )
-            }
-            Ed2kEvent::ServerMessageReceived { text } => {
-                write!(f, "s2c server_message text_len={}", text.as_bytes().len())
-            }
-            Ed2kEvent::ServerStatusReceived { status } => write!(
-                f,
-                "s2c server_status user={} file={}",
-                status.user_count, status.file_count
-            ),
-            Ed2kEvent::ServerIdentified { .. } => write!(f, "s2c server_ident"),
-            Ed2kEvent::ServerListReceived {
-                servers,
-                ipv6_servers,
-            } => {
-                write!(
-                    f,
-                    "s2c server_list count={} ipv6_count={}",
-                    servers.len(),
-                    ipv6_servers.len()
-                )
-            }
-            Ed2kEvent::SourcesFound {
-                file_hash,
-                sources,
-                tail,
-            } => write!(
-                f,
-                "s2c sources_found file_hash={} count={} malformed_tail={}",
-                file_hash.to_hex_upper(),
-                sources.len(),
-                tail.is_malformed()
-            ),
-            Ed2kEvent::SearchResultsFound {
-                results,
-                skipped,
-                more_available,
-            } => write!(
-                f,
-                "s2c search_results count={} skipped={} more={more_available}",
-                results.len(),
-                skipped.len()
-            ),
-            Ed2kEvent::SearchResultSkipped { reason } => {
-                write!(f, "s2c search_result_skipped reason={reason:?}")
-            }
-            Ed2kEvent::PeerCallbackRequested { peer, crypt } => {
-                write!(
-                    f,
-                    "s2c peer_callback_requested peer={peer} crypt={}",
-                    crypt.is_some()
-                )
-            }
-            Ed2kEvent::CommandRejected { command, reason } => {
-                write!(f, "command_rejected command={command:?} reason={reason:?}")
-            }
-            Ed2kEvent::UnknownServerPacket {
-                opcode,
-                payload_len,
-            } => write!(
-                f,
-                "s2c unknown opcode=0x{opcode:02X} payload_len={payload_len}"
-            ),
-            Ed2kEvent::CompressedFrameSkipped {
-                opcode,
-                compressed_len,
-                reason,
-            } => write!(
-                f,
-                "s2c compressed_frame_skipped opcode=0x{opcode:02X} compressed_len={compressed_len} reason={reason:?}"
-            ),
-            Ed2kEvent::CallbackFailed => write!(f, "s2c callback_failed"),
-            Ed2kEvent::HolepunchIntroduced { info } => write!(
-                f,
-                "s2c holepunch_info peer_udp={} role={:?}",
-                info.peer_udp, info.role
-            ),
-            Ed2kEvent::HolepunchRefused { fail } => write!(
-                f,
-                "s2c holepunch_fail target={} reason={:?}",
-                fail.target.as_u32(),
-                fail.reason
-            ),
-            Ed2kEvent::Disconnected { reason } => {
-                write!(f, "disconnected reason={}", reason.label())
-            }
         }
     }
 }

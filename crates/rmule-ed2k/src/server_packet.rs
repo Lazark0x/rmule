@@ -155,17 +155,10 @@ impl ServerPacket {
     }
 
     /// Decode a plain (non-packed) eDonkey-protocol [`Packet`] into a
-    /// logical [`ServerPacket`]. Centralises the opcode-dispatch table
-    /// shared by [`Self::decode`] and [`Self::decode_frame`]; rejecting
-    /// any other protocol byte here keeps the inflate path structurally
-    /// non-recursive.
+    /// logical [`ServerPacket`]: the opcode-dispatch table behind
+    /// [`Self::decode_edonkey_frame`], which alone has already refused any
+    /// other protocol byte, so the inflate path stays non-recursive.
     fn decode_edonkey(packet: &Packet) -> Result<Self> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode: packet.opcode(),
-                reason: "unsupported packet protocol",
-            });
-        }
         let opcode = packet.opcode();
         if opcode == Opcode::IdChange.as_u8() {
             Ok(Self::IdChange(IdChange::decode_packet(packet)?))

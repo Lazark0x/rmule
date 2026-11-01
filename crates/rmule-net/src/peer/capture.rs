@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use crate::driver::{
-    CaptureFormat, FinalizeVerdict, FrameWrite, RowsFile, StreamTap, toml_basic_string,
+    CaptureFormat, FinalizeVerdict, FrameWrite, RowsFile, StreamTap, row_to_toml, toml_basic_string,
 };
-use rmule_peer::{PeerEvent, RowValue};
+use rmule_peer::PeerEvent;
 
 use crate::peer::options::CaptureMode;
 
@@ -182,17 +182,7 @@ fn elide_sending_part_payloads(buf: &mut [u8]) -> u64 {
 
 /// One event as the TOML table a capture's `events.toml` carries.
 pub(crate) fn event_to_toml(event: &PeerEvent) -> String {
-    let row = event.row();
-    let mut table = format!("type = \"{}\"\n", row.capture_type());
-    for (key, value) in row.capture_fields() {
-        let value = match value {
-            RowValue::Plain(plain) => plain.clone(),
-            RowValue::Text(text) => toml_basic_string(text),
-            RowValue::Opcode(opcode) => opcode.to_string(),
-        };
-        table.push_str(&format!("{key} = {value}\n"));
-    }
-    table
+    row_to_toml(&event.row())
 }
 
 // Elision offsets, meta counts, and clean-path byte content are exercised

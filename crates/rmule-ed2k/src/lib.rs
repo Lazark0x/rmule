@@ -15,6 +15,7 @@ mod client_packet;
 mod close_reason;
 mod compressed_frame;
 mod error;
+mod event_row;
 mod found_sources;
 mod get_server_list;
 mod get_sources;

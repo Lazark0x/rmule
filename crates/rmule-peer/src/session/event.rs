@@ -13,9 +13,9 @@ mod side;
 pub use self::connection::{ConnectionEvent, IdentityChange};
 pub use self::notice::NoticeEvent;
 pub use self::requester::RequesterEvent;
-pub use self::row::{EventRow, RowValue};
 pub use self::server::ServerEvent;
 pub use self::side::SideEvent;
+pub use rmule_primitives::{EventRow, RowValue};
 
 use rmule_primitives::Ed2kText;
 
