@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::content::{ContentFileStore, Revalidation, on_pool};
-use crate::diagnostics::DiagnosticsState;
+use crate::diagnostics::{DiagnosticsState, PartCheckProgress};
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, DownloadEvent, DownloadId, Outbox, RestartOutcome,
     send_download_event,
@@ -54,8 +54,23 @@ impl Drop for WalkStop {
     }
 }
 
+/// Takes the part check's level off the row when the walk ends, however it
+/// ends.
+struct CheckLevel {
+    diagnostics: DiagnosticsState,
+    download_id: DownloadId,
+}
+
+impl Drop for CheckLevel {
+    fn drop(&mut self) {
+        self.diagnostics.part_check(self.download_id, None);
+    }
+}
+
 /// Walk `download_id`'s recorded parts under the hashing turn and the run's
-/// stop, dropping the record of each part that no longer holds.
+/// stop, dropping the record of each part that no longer holds. The row's
+/// [`part_check`](crate::diagnostics::DownloadDiagnostics::part_check) level
+/// stands from before the turn until the walk ends.
 ///
 /// # Errors
 /// The stop's failure, or [`DownloadFailure::StoreFailed`].
@@ -64,6 +79,21 @@ pub(super) async fn walk_recorded<S, P>(
     download_id: DownloadId,
 ) -> Result<Revalidation, DownloadFailure> {
     let stop = WalkStop::default();
+    let diagnostics = runner.rt.diagnostics.clone();
+    let of = runner
+        .rt
+        .store
+        .verified_parts(download_id)
+        .map_or(0, |parts| u32::try_from(parts.len()).unwrap_or(u32::MAX));
+    let report = move |checked| {
+        let level = PartCheckProgress { checked, of };
+        diagnostics.part_check(download_id, Some(level));
+    };
+    report(0);
+    let _level = CheckLevel {
+        diagnostics: runner.rt.diagnostics.clone(),
+        download_id,
+    };
     let walked = runner
         .until_stop(async {
             let turn = runner.rt.hash_turn.clone();
@@ -74,7 +104,7 @@ pub(super) async fn walk_recorded<S, P>(
             runner
                 .rt
                 .store
-                .revalidate(download_id, Arc::clone(&stop.0))
+                .revalidate(download_id, Arc::clone(&stop.0), report)
                 .await
         })
         .await?

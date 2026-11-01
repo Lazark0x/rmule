@@ -331,6 +331,18 @@ pub struct DownloadDiagnostics {
     /// Where the run's completion move stands (ADR-0115): `None` until the
     /// move begins, and again once its run has ended.
     pub completion: Option<CompletionProgress>,
+    /// How far a resumed run's part check has read (ADR-0094): `None` until it
+    /// begins, and again once it has ended.
+    pub part_check: Option<PartCheckProgress>,
+}
+
+/// A resumed run's part check, as a level the walk publishes at each part.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PartCheckProgress {
+    /// Recorded parts read back so far.
+    pub checked: u32,
+    /// Recorded parts the check reads.
+    pub of: u32,
 }
 
 /// How many of a running download's sources are in each activity (ADR-0116):

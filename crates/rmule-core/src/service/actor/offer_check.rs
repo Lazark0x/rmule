@@ -99,7 +99,7 @@ async fn run_checks(waiting: Vec<Waiting>, turn: HashTurn, reports: RegistrySend
         let walked = tokio::task::spawn_blocking(move || {
             let _turn = turn.take(&stop)?;
             let began = Instant::now();
-            walk_verified_parts(&paths, &parts, &stop).map(|walked| (walked, began.elapsed()))
+            walk_verified_parts(&paths, &parts, &stop, &|_| {}).map(|walked| (walked, began.elapsed()))
         })
         .await
         .ok()

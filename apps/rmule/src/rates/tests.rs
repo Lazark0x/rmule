@@ -59,6 +59,7 @@ fn downloading(received_bytes: u64, slots: &[(usize, WorkerPhase)]) -> Diagnosti
             allocated_bytes: None,
             hole_verdict: None,
             completion: None,
+            part_check: None,
             reask_replies_ignored: 0,
         },
     );

@@ -255,9 +255,10 @@ pub(crate) async fn revalidate_verified_parts(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
     stop: Arc<AtomicBool>,
+    checked: impl Fn(u32) + Send + 'static,
 ) -> Option<Revalidation> {
     let (paths, parts) = (paths.clone(), parts.to_vec());
-    on_pool(move || walk_verified_parts(&paths, &parts, &stop))
+    on_pool(move || walk_verified_parts(&paths, &parts, &stop, &checked))
         .await
         .map(|walked| walked.revalidation)
 }
@@ -274,16 +275,17 @@ pub(crate) struct PartsWalked {
 }
 
 /// [`revalidate_verified_parts`]' walk, on the calling thread, looking at
-/// `stop` before each part: `None` once it is raised. The walk the Offer
-/// Check runs on the blocking pool under the scans' hashing turn (ADR-0113),
-/// and Resume's own.
+/// `stop` before each part: `None` once it is raised. `checked` hears how many
+/// parts are behind it as it reaches each one. The walk the Offer Check runs on
+/// the blocking pool under the scans' hashing turn (ADR-0113), and Resume's own.
 pub(crate) fn walk_verified_parts(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
     stop: &AtomicBool,
+    checked: &dyn Fn(u32),
 ) -> Option<PartsWalked> {
     let mut bytes_read = 0;
-    let revalidation = walk(paths, parts, stop, &mut bytes_read)?;
+    let revalidation = walk(paths, parts, stop, checked, &mut bytes_read)?;
     Some(PartsWalked {
         revalidation,
         bytes_read,
@@ -295,6 +297,7 @@ fn walk(
     paths: &DownloadPaths,
     parts: &[VerifiedPartRecord],
     stop: &AtomicBool,
+    checked: &dyn Fn(u32),
     bytes_read: &mut u64,
 ) -> Option<Revalidation> {
     if parts.is_empty() {
@@ -330,10 +333,11 @@ fn walk(
     let mut held = 0usize;
     let mut verified_bytes = 0u64;
     let mut damaged = Vec::new();
-    for part in parts {
+    for (behind, part) in (0u32..).zip(parts) {
         if stop.load(Ordering::Relaxed) {
             return None;
         }
+        checked(behind);
         let expected_end = part.offset.saturating_add(part.len);
         if expected_end > found_len {
             damaged.push(PartFault::Short {

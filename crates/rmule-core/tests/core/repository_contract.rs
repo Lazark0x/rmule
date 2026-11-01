@@ -89,13 +89,20 @@ async fn persists_and_revalidates(repo: DurableDownloadRepository, paths: &Downl
     .await;
 
     let Revalidation::Restored { progress, damaged } =
-        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+        repo.revalidate(id, Arc::default(), |_| {}).await.unwrap().unwrap()
     else {
         panic!("an intact part file is not condemned");
     };
     assert!(damaged.is_empty());
     assert_eq!(progress.verified_parts(), 2);
     assert_eq!(progress.verified_bytes(), bytes.len() as u64);
+
+    let heard = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let hearing = Arc::clone(&heard);
+    repo.revalidate(id, Arc::default(), move |behind| hearing.lock().push(behind))
+        .await
+        .unwrap();
+    assert_eq!(*heard.lock(), [0, 1], "the walk says how far it has read");
 }
 
 /// Corrupted bytes behind a genuine-looking record: revalidation drops the
@@ -135,7 +142,7 @@ async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, path
     // Resume-time revalidation drops the damaged part alone: its record
     // goes, the other part's stays, so a resume fetches only part 0.
     let Revalidation::Restored { progress, damaged } =
-        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+        repo.revalidate(id, Arc::default(), |_| {}).await.unwrap().unwrap()
     else {
         panic!("one intact part keeps the part file");
     };
@@ -166,7 +173,7 @@ async fn corrupted_bytes_fail_revalidation(repo: DurableDownloadRepository, path
     )
     .await;
     let Revalidation::Restored { progress, damaged } =
-        repo.revalidate(id, Arc::default()).await.unwrap().unwrap()
+        repo.revalidate(id, Arc::default(), |_| {}).await.unwrap().unwrap()
     else {
         panic!("a repaired part file is not condemned");
     };

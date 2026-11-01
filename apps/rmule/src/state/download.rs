@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use rmule_core::{
     CompletionStep, DownloadEvent, DownloadFailure, DownloadId, DownloadLifecycle,
-    DownloadMetadata, SourceWait,
+    DownloadMetadata, SourceWait, VolumeStop,
 };
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
@@ -82,6 +82,19 @@ pub struct DownloadRow {
     /// Who can still find a source for a run that has none to try, as its
     /// last `WaitingForSources` said; `None` once the status moves on.
     pub source_wait: Option<SourceWait>,
+    /// Why the volume stopped the run, while the row stays Paused for it
+    /// (ADR-0094, "A volume's refusal is a Volume Stop"). The store keeps no
+    /// such thing, so a restart finds a plain Paused row.
+    pub volume_stop: Option<VolumeStopped>,
+}
+
+/// A volume's stop of a run, as its edge said it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VolumeStopped {
+    /// The directory that holds the part file.
+    pub directory: PathBuf,
+    /// What the volume did.
+    pub stop: VolumeStop,
 }
 
 impl DownloadRow {
@@ -95,6 +108,7 @@ impl DownloadRow {
             file_path: None,
             failure: None,
             source_wait: None,
+            volume_stop: None,
         }
     }
 }
@@ -335,6 +349,7 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             stop,
         } => {
             let text = words::volume_stopped(&download_name(state, download_id), &directory, stop);
+            row_mut(state, download_id).volume_stop = Some(VolumeStopped { directory, stop });
             note(state, text)
         }
         E::PartsDisproved {
@@ -492,6 +507,9 @@ fn set_status(state: &mut UiState, download_id: DownloadId, status: DownloadStat
     let changed = row.status != status;
     row.status = status;
     row.source_wait = None;
+    if status != DownloadStatus::Paused {
+        row.volume_stop = None;
+    }
     changed
 }
 

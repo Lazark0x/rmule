@@ -35,8 +35,8 @@ pub use link::{
 };
 pub use part_file::{
     damaged_parts, finished_file_rejected, part_file_change_words, part_file_lost, parts_disproved,
-    parts_lost_words, parts_to_fetch_again, restart_words, restarted, volume_stop_words,
-    volume_stopped,
+    parts_lost_words, parts_to_fetch_again, restart_words, restarted, volume_stop_status,
+    volume_stop_words, volume_stopped,
 };
 pub use source::link_turn_words;
 pub use source::{
@@ -123,6 +123,20 @@ pub const NOTHING_TO_PAUSE: Sentence =
 /// A download asked for with no download directory set.
 pub const NO_DOWNLOAD_DIR: Sentence =
     Sentence::fixed("no download dir yet: press 6, then set Download dir in Settings");
+
+/// A resumed run reading its parts back, as a status cell. Rounds down, so the
+/// cell says 100% only of a check that has ended.
+#[must_use]
+pub fn part_check_status(checked: u32, of: u32) -> String {
+    let percent = u64::from(checked) * 100 / u64::from(of.max(1));
+    format!("Hashing {percent}%")
+}
+
+/// A resumed run reading its parts back, as the details say it.
+#[must_use]
+pub fn part_check_progress(checked: u32, of: u32) -> String {
+    format!("reading its parts back to prove them: {checked} of {of} done")
+}
 
 /// A row menu's Download, greyed until a directory is set.
 pub const SET_DOWNLOAD_DIR_FIRST: &str = "set a download dir first: press 6";

@@ -44,7 +44,9 @@ attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:105
 - **Attach and Resume return at once.** The actor stores `Active`, says `DownloadResumed` and
   starts the run; the re-hash is the run's first stage, on the blocking pool, under the hashing
   turn the scans and the Offer Check share (ADR-0102) and under the run's stop. Its findings
-  follow as `DownloadProgressRestored` and any `DamagedPartsDropped` or `DownloadRestarted`. Since
+  follow as `DownloadProgressRestored` and any `DamagedPartsDropped` or `DownloadRestarted`, and
+  how far it has read is a level on the download's diagnostics row, so a row checking its parts
+  says so rather than reading as a wait. Since
   the stage is the run's, a Pause, a Cancel or Quit stops a check the way it stops a transfer: the
   walk ends before its next part, and what it had not finished changes nothing. The re-hash is the
   only protection against a power cut (a part file gets no sync before completion), so no start

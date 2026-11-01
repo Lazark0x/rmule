@@ -171,7 +171,8 @@ pub trait DownloadRepository: Send + Sync + 'static {
     /// verified set read next is the one to resume from; the part file is
     /// condemned only when nothing recorded can be trusted. `None` once
     /// `stop` is raised: the walk ends before its next part, and every record
-    /// stands.
+    /// stands. `checked` hears how many parts are behind the walk as it reaches
+    /// each one.
     ///
     /// # Errors
     /// [`CoreError::UnknownDownload`] or [`CoreError::Repository`] when the
@@ -180,5 +181,6 @@ pub trait DownloadRepository: Send + Sync + 'static {
         &self,
         id: DownloadId,
         stop: Arc<AtomicBool>,
+        checked: impl Fn(u32) + Send + 'static,
     ) -> impl Future<Output = Result<Option<Revalidation>, CoreError>> + Send;
 }

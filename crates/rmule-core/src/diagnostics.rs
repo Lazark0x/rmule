@@ -71,7 +71,7 @@ pub use crate::firewalled::recruit::RecruitRefusal;
 
 pub use counters::SessionCounters;
 pub use download::{
-    CompletionProgress, DIAL_ENDS_KEPT, DownloadDiagnostics, PartCounts, PartState, SourceActivity,
+    CompletionProgress, DIAL_ENDS_KEPT, DownloadDiagnostics, PartCheckProgress, PartCounts, PartState, SourceActivity,
     SourceDialEnd, UploadDiagnostics, WorkerEntry, WorkerPhase, WorkerSlot,
 };
 pub use kad::{

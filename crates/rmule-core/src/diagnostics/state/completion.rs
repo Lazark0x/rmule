@@ -1,10 +1,11 @@
-//! A completing download's move on its diagnostics row (ADR-0115): the step
-//! the run publishes as each begins, and the bytes its Completion Copy has
-//! written. Levels the run sets as it goes; nothing is computed here.
+//! A download's long stages on its diagnostics row: a completing move's step
+//! and the bytes its Completion Copy has written (ADR-0115), and how far a
+//! resumed run's part check has read (ADR-0094). Levels the run sets as it
+//! goes; nothing is computed here.
 
 use super::DiagnosticsState;
 use crate::DownloadId;
-use crate::diagnostics::CompletionProgress;
+use crate::diagnostics::{CompletionProgress, PartCheckProgress};
 use crate::service::CompletionStep;
 
 impl DiagnosticsState {
@@ -28,6 +29,14 @@ impl DiagnosticsState {
             .and_then(|row| row.completion.as_mut())
         {
             progress.copied = copied;
+        }
+    }
+
+    /// How far a part check has read, or that it has ended. A no-op when the
+    /// row is gone.
+    pub fn part_check(&self, download_id: DownloadId, level: Option<PartCheckProgress>) {
+        if let Some(row) = self.inner.lock().downloads.get_mut(&download_id) {
+            row.part_check = level;
         }
     }
 }

@@ -56,6 +56,7 @@ impl DiagnosticsState {
                 allocated_bytes: None,
                 hole_verdict: None,
                 completion: None,
+                part_check: None,
             });
         row.parts = parts;
         row.workers.clear();

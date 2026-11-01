@@ -141,6 +141,7 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             allocated_bytes: None,
             hole_verdict: None,
             completion: None,
+            part_check: None,
             reask_replies_ignored: 0,
         },
     );

@@ -507,3 +507,32 @@ fn completing_edges_hold_the_row_completing_until_it_completes_or_pauses() {
     assert_eq!(row.status, DownloadStatus::Completed);
     assert_eq!(row.file_path.as_deref(), Some(to.as_path()));
 }
+
+/// The stop stays on the row through the Pause that follows it and leaves with
+/// the Resume, or the row would say the disk is full after it no longer is.
+#[test]
+fn a_volume_stop_stays_on_the_row_until_the_run_comes_back() {
+    let mut state = UiState::default();
+    let id = download_id(1);
+    let stop = rmule_core::VolumeStop::OutOfSpace { free_bytes: 7 };
+    fold(
+        &mut state,
+        download_event(DownloadEvent::VolumeStopped {
+            download_id: id,
+            directory: "/srv/Temp".into(),
+            stop,
+        }),
+    );
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadPaused { download_id: id }),
+    );
+    let row = &state.downloads[&id];
+    assert_eq!(row.status, DownloadStatus::Paused);
+    assert_eq!(row.volume_stop.as_ref().map(|it| it.stop), Some(stop));
+    fold(
+        &mut state,
+        download_event(DownloadEvent::DownloadResumed { download_id: id }),
+    );
+    assert_eq!(state.downloads[&id].volume_stop, None);
+}

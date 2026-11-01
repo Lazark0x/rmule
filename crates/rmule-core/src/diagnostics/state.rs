@@ -218,6 +218,7 @@ impl DiagnosticsState {
                 allocated_bytes: None,
                 hole_verdict: None,
                 completion: None,
+                part_check: None,
             });
     }
 

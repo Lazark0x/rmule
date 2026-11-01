@@ -27,6 +27,54 @@ fn done_cell(row: Option<&DownloadRow>, diag: Option<&DownloadDiagnostics>) -> S
 /// Both Speed columns are real: the download's from its own
 /// monotonic total, a source's from the level its slot carries. A worker
 /// that is not receiving has no meter, so its cell stays an honest dash.
+fn status_of(row: &DownloadRow, diag: Option<&DownloadDiagnostics>) -> String {
+    status_text(row.status, Some(row), diag, &UiState::default())
+}
+
+/// A full disk is not the operator's own pause: the row says so until it
+/// resumes.
+#[test]
+fn a_volume_stop_reads_as_the_volume_and_not_as_a_pause() {
+    let mut row = download_row(DownloadStatus::Paused, 0x07, 10);
+    assert_eq!(status_of(&row, None), "Paused");
+    let stopped = |stop| {
+        Some(crate::state::VolumeStopped {
+            directory: "/srv/Temp".into(),
+            stop,
+        })
+    };
+    use rmule_core::VolumeStop::{OutOfSpace, PartFileOutOfReach, WriteRefused};
+    row.volume_stop = stopped(OutOfSpace { free_bytes: 1024 });
+    assert_eq!(status_of(&row, None), "Disk full");
+    row.volume_stop = stopped(WriteRefused { os_code: Some(5) });
+    assert_eq!(status_of(&row, None), "Disk error");
+    row.volume_stop = stopped(PartFileOutOfReach);
+    assert_eq!(status_of(&row, None), "Disk gone");
+}
+
+/// Queued at twelve peers and nobody has it are not one wait.
+#[test]
+fn a_queued_wait_has_its_own_word() {
+    let mut row = download_row(DownloadStatus::Waiting, 0x07, 10);
+    row.source_wait = Some(SourceWait::Asking);
+    assert_eq!(status_of(&row, None), "Waiting");
+    row.source_wait = Some(SourceWait::OnStanding);
+    assert_eq!(status_of(&row, None), "Queued");
+}
+
+/// A resume reading its parts back is at work: it says how far, and the word
+/// outranks what it will wait on next.
+#[test]
+fn a_run_reading_its_parts_back_is_not_waiting() {
+    let mut row = download_row(DownloadStatus::Waiting, 0x07, 10);
+    row.source_wait = Some(SourceWait::Asking);
+    let mut level = diag(download_id(1), 0x07, "", 0, Vec::new());
+    level.part_check = Some(rmule_core::diagnostics::PartCheckProgress { checked: 1, of: 4 });
+    assert_eq!(status_of(&row, Some(&level)), "Hashing 25%");
+    level.part_check = None;
+    assert_eq!(status_of(&row, Some(&level)), "Waiting");
+}
+
 #[test]
 fn both_speed_columns_meter_what_is_moving_and_dash_what_is_not() {
     let mut view = TransfersView::new();

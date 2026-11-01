@@ -36,9 +36,9 @@ pub use crate::words::serve::withheld_words;
 pub use crate::words::units::seconds;
 pub(crate) use crate::words::units::server_label;
 pub use download::{
-    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, download_failure_words,
-    integrity_fault_words, lifecycle_words, part_fault_words, release_words, restart_failed_again,
-    retirement_words,
+    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, VolumeStopped,
+    download_failure_words, integrity_fault_words, lifecycle_words, part_fault_words,
+    release_words, restart_failed_again, retirement_words,
 };
 pub use known_file::{KnownFileMark, KnownFileMarks};
 pub use log::LogLine;

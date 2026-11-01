@@ -32,7 +32,10 @@ use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
-use crate::words::download::{ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time};
+use crate::words::download::{
+    ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time, part_check_status,
+    volume_stop_status,
+};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
 
@@ -515,13 +518,16 @@ pub(super) fn swarm_exhausted(status: DownloadStatus, diag: Option<&DownloadDiag
 /// who asks; a running one no known source can feed says so, whatever it
 /// last waited on; a completing one says what its move waits for or has
 /// copied, from its diagnostics row. Each wording keeps the rank of the
-/// status it words.
+/// status it words. A row the volume stopped says so where a Pause would, and a
+/// run reading its parts back says how far, ahead of what it will wait on.
 pub(super) fn status_text(
     status: DownloadStatus,
     row: Option<&DownloadRow>,
     diag: Option<&DownloadDiagnostics>,
     state: &UiState,
 ) -> String {
+    let volume_stop = row.and_then(|row| row.volume_stop.as_ref());
+    let check = diag.and_then(|diag| diag.part_check);
     match (status, row.and_then(|row| row.source_wait)) {
         // A run its stopped core no longer stands behind keeps its rank, not
         // its claim.
@@ -535,8 +541,18 @@ pub(super) fn status_text(
         (DownloadStatus::NoConnection, _) if state.reconnect.is_some() => {
             "Reconnecting".to_string()
         }
+        (DownloadStatus::Paused, _) if volume_stop.is_some() => {
+            volume_stop.map_or_else(String::new, |stopped| {
+                volume_stop_status(stopped.stop).to_string()
+            })
+        }
+        (DownloadStatus::Waiting | DownloadStatus::NoConnection, _) if check.is_some() => check
+            .map_or_else(String::new, |level| {
+                part_check_status(level.checked, level.of)
+            }),
         _ if swarm_exhausted(status, diag) => NO_NEEDED_PARTS_STATUS.to_string(),
         (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => "Asking Kad".to_string(),
+        (DownloadStatus::Waiting, Some(SourceWait::OnStanding)) => "Queued".to_string(),
         (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),
         _ => status_label(status).to_string(),
     }

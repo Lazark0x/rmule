@@ -30,6 +30,7 @@ pub(crate) fn download_row(
         file_path: None,
         failure: None,
         source_wait: None,
+        volume_stop: None,
     }
 }
 
@@ -93,6 +94,7 @@ pub(crate) fn diag(
         allocated_bytes: None,
         hole_verdict: None,
         completion: None,
+        part_check: None,
         reask_replies_ignored: 0,
     }
 }

@@ -20,7 +20,8 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
 use crate::words::download::{
-    completion_progress, no_needed_parts_words, on_disk, source_activity_words, source_wait_words,
+    completion_progress, no_needed_parts_words, on_disk, part_check_progress,
+    source_activity_words, source_wait_words, volume_stop_words,
 };
 use crate::wrap::labeled_lines;
 
@@ -146,6 +147,16 @@ impl TransfersView {
                 if let Some(wait) = wait {
                     lines.extend(detail_rows("waiting", &wait, value_w, theme));
                 }
+            }
+            // A row the volume stopped says what the volume did, and a run
+            // reading its parts back says how far it is.
+            if let Some(stopped) = row.and_then(|row| row.volume_stop.as_ref()) {
+                let why = volume_stop_words(&stopped.directory, stopped.stop);
+                lines.extend(detail_rows("stopped", &why, value_w, theme));
+            }
+            if let Some(level) = diag.and_then(|d| d.part_check) {
+                let doing = part_check_progress(level.checked, level.of);
+                lines.extend(detail_rows("checking", &doing, value_w, theme));
             }
             // A completing row says what its move does, and what its copy has
             // written (ADR-0115).

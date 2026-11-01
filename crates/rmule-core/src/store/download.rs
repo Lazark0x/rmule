@@ -818,10 +818,11 @@ impl DownloadRepository for DurableDownloadRepository {
         &self,
         id: DownloadId,
         stop: Arc<AtomicBool>,
+        checked: impl Fn(u32) + Send + 'static,
     ) -> Result<Option<Revalidation>, CoreError> {
         let record = self.load_download(id)?;
         let parts = self.verified_parts(id)?;
-        let revalidation = revalidate_verified_parts(record.paths(), &parts, stop).await;
+        let revalidation = revalidate_verified_parts(record.paths(), &parts, stop, checked).await;
         if let Some(Revalidation::Restored { damaged, .. }) = &revalidation {
             self.drop_parts(id, damaged)?;
         }

@@ -24,6 +24,16 @@ pub fn part_file_change_words(found: PartFileChange) -> String {
     }
 }
 
+/// A volume's stop in a status cell of eleven cells.
+#[must_use]
+pub const fn volume_stop_status(stop: VolumeStop) -> &'static str {
+    match stop {
+        VolumeStop::OutOfSpace { .. } => "Disk full",
+        VolumeStop::WriteRefused { .. } => "Disk error",
+        VolumeStop::PartFileOutOfReach => "Disk gone",
+    }
+}
+
 /// Why the volume paused a download, and what brings it back (ADR-0094).
 #[must_use]
 pub fn volume_stop_words(directory: &Path, stop: VolumeStop) -> String {
