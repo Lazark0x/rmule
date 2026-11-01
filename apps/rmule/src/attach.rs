@@ -315,10 +315,10 @@ pub async fn attach<D: Deployment>(
     if no_seeds {
         tracing::warn!("this build carries no seed list");
     }
-    if let Some(acquisition) = list_acquisition_at_start(&bootstrap, listed.is_empty()) {
-        if let Err(error) = core.send(CoreCommand::ServerList(acquisition)).await {
-            tracing::warn!(%error, "the server list acquisition at start could not be sent");
-        }
+    if let Some(acquisition) = list_acquisition_at_start(&bootstrap, listed.is_empty())
+        && let Err(error) = core.send(CoreCommand::ServerList(acquisition)).await
+    {
+        tracing::warn!(%error, "the server list acquisition at start could not be sent");
     }
 
     let session = SessionConfig {
