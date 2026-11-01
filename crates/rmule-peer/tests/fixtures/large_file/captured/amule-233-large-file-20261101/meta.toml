@@ -1,0 +1,28 @@
+# Large-file capture — genuine stock aMule 2.3.3 wire bytes, tcpdump tap on rmule's
+# container. Hand-staged in bench window w44 under `~/Projects/rmule-bench-runs/w44-fix/`:
+# stock serving rmule a 4,400,000,000-byte file across the 4 GiB offset, and stock
+# downloading the same file whole from rmule. Only counterparty bytes are kept.
+
+[provenance]
+counterparty = "aMule 2.3.3 (source pin 4e8f2b3c), stock interop image rmule/interop-amule:local"
+server       = "Lugdunum 17.15 (rmule/interop-eserver:local)"
+date         = "2026-11-01"
+
+[frames.hello_answer_0x4c]
+run  = "leg4/t.pcap"
+note = "stock's OP_HELLOANSWER; its CT_EMULE_MISCOPTIONS2 lights bit 4"
+
+[frames.request_parts_i64_0xa3]
+run       = "leg2/t.pcap"
+file_hash = "49DC216EB611BA0AFE3172E79BA74985"
+note      = "stock's first OP_REQUESTPARTS_I64, three blocks past 4 GiB"
+
+[frames.sending_part_i64_0xa2]
+run       = "leg4/t.pcap"
+file_hash = "F7724E86FD35E9B6B9ED1E5C4D78B536"
+note      = "stock's first OP_SENDINGPART_I64, an incompressible part past 4 GiB"
+
+[frames.compressed_part_i64_0xa1]
+run       = "leg4/t.pcap"
+file_hash = "F7724E86FD35E9B6B9ED1E5C4D78B536"
+note      = "stock's first OP_COMPRESSEDPART_I64: the block across 4 GiB, its start below it, one whole block in the frame"

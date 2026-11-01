@@ -64,6 +64,7 @@ mod amule_source_ask_capture;
 mod buddy_callback_capture;
 mod client_software_capture;
 mod direct_callback_capture;
+mod large_file_capture;
 mod multipacket_forward_capture;
 mod natt_transport_capture;
 mod obfuscation_capture;
