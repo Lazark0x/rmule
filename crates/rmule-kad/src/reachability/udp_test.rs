@@ -113,6 +113,26 @@ pub(crate) enum UdpVerdict {
     Unverified,
 }
 
+/// What the UDP test stands at. Only [`Self::Firewalled`] and [`Self::Open`] are
+/// real test results: they gate the direct-callback path, and a retest keeps
+/// reporting them until a fresh result overwrites them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UdpStanding {
+    /// Nothing concluded.
+    Untested,
+    /// Firewalled purely by the six-minute timeout: reads firewalled, and a
+    /// later positive can still overturn it.
+    TimedOut,
+    /// One helper's packet reached us on `port`.
+    Open {
+        /// The port that packet arrived on, intern- or extern-preferred per
+        /// [`use_extern_port`](UdpFirewallTester::use_extern_port).
+        port: u16,
+    },
+    /// Both helpers failed.
+    Firewalled,
+}
+
 /// The **UDP** half of the Kad firewall self-check (ADR-0058 execution breakdown
 /// 3): the sans-I/O counters and verdict of rmule's own UDP reachability test,
 /// mirroring aMule's `CUDPFirewallTester`. It holds the candidates the helper
@@ -147,15 +167,9 @@ pub(crate) struct UdpFirewallTester {
     /// Helper checks that produced a pass/fail result (`m_fwChecksFinishedUDP`);
     /// the test runs while this is below [`UDP_CLIENTS_TO_ASK`].
     finished: u8,
-    /// The verified verdict: `true` = firewalled (aMule `m_firewalledUDP`).
-    firewalled: bool,
-    /// Whether the verdict is a real test result, not a default or a timeout
-    /// (aMule `m_isFWVerifiedUDP`) — gates the direct-callback path and blocks a
-    /// second timeout once we have proven open.
-    verified: bool,
-    /// Firewalled purely by the six-minute timeout (aMule `m_timedOut`): reads
-    /// firewalled though unverified, and a later positive can still overturn it.
-    timed_out: bool,
+    /// What the test stands at (aMule's `m_firewalledUDP`, `m_isFWVerifiedUDP`
+    /// and `m_timedOut` together).
+    standing: UdpStanding,
     /// When the current test began (aMule `m_testStart`; `None` = 0 = concluded)
     /// — the anchor the six-minute timeout measures from.
     test_start: Option<KadInstant>,
@@ -168,9 +182,6 @@ pub(crate) struct UdpFirewallTester {
     /// (aMule `Prefs::GetUseExternKadPort`). Defaults to the extern port; a positive
     /// result on the intern port flips it, because a forwarded port is more durable.
     use_extern_port: bool,
-    /// The concluded open UDP port (`None` until a positive result), intern- or
-    /// extern-preferred per [`use_extern_port`](Self::use_extern_port).
-    open_port: Option<u16>,
     /// The **Extern Port Round** this test waits on before engaging any
     /// helper (`QueryNextClient`'s `FindExternKadPort(false)` gate).
     extern_port: ExternPortRound,
@@ -188,13 +199,10 @@ impl UdpFirewallTester {
             used: Vec::new(),
             running: 0,
             finished: 0,
-            firewalled: false,
-            verified: false,
-            timed_out: false,
+            standing: UdpStanding::Untested,
             test_start: Some(now),
             last_succeeded: None,
             use_extern_port: true,
-            open_port: None,
             extern_port: ExternPortRound::new(now),
         }
     }
@@ -230,7 +238,7 @@ impl UdpFirewallTester {
     pub(crate) fn begin_helper_lookup(&mut self, now: KadInstant) {
         self.helper_lookup_started = true;
         self.test_start = Some(now);
-        self.timed_out = false;
+        self.forget_timeout();
     }
 
     /// Queue a candidate helper (aMule `AddPossibleTestContact`): ignored once
@@ -295,8 +303,7 @@ impl UdpFirewallTester {
                 continue;
             }
             let concluded_open_recently = !Self::running_at(self.finished)
-                && !self.firewalled
-                && self.verified
+                && matches!(self.standing, UdpStanding::Open { .. })
                 && self
                     .last_succeeded
                     .is_some_and(|t| now < t + UDP_INTERN_RETRO_WINDOW);
@@ -304,7 +311,7 @@ impl UdpFirewallTester {
                 // A proper forwarded intern port outlives a NAT-set extern port,
                 // so prefer it even retroactively.
                 self.use_extern_port = false;
-                self.open_port = Some(intern_port);
+                self.standing = UdpStanding::Open { port: intern_port };
                 return UdpResultOutcome::InternPortCorrected { port: intern_port };
             } else if helper.answered {
                 return UdpResultOutcome::Duplicate;
@@ -336,9 +343,6 @@ impl UdpFirewallTester {
         if succeeded {
             // One positive result is enough: conclude open, cancel the rest.
             self.test_start = None;
-            self.firewalled = false;
-            self.verified = true;
-            self.timed_out = false;
             self.finished = UDP_CLIENTS_TO_ASK;
             self.running = 0;
             self.possible.clear();
@@ -354,14 +358,12 @@ impl UdpFirewallTester {
             } else {
                 incoming_port
             };
-            self.open_port = Some(port);
+            self.standing = UdpStanding::Open { port };
             UdpResultOutcome::Open { port }
         } else if self.finished >= UDP_CLIENTS_TO_ASK {
             // Both helpers failed — verified firewalled.
             self.test_start = None;
-            self.firewalled = true;
-            self.verified = true;
-            self.timed_out = false;
+            self.standing = UdpStanding::Firewalled;
             self.possible.clear();
             UdpResultOutcome::Firewalled
         } else {
@@ -386,14 +388,8 @@ impl UdpFirewallTester {
         let elapsed = self
             .test_start
             .is_some_and(|start| now >= start + UDP_TEST_TIMEOUT);
-        if self.is_running()
-            && !self.timed_out
-            && !self.firewalled
-            && !self.verified
-            && tcp_firewalled
-            && elapsed
-        {
-            self.timed_out = true;
+        if self.can_time_out() && tcp_firewalled && elapsed {
+            self.standing = UdpStanding::TimedOut;
             true
         } else {
             false
@@ -412,8 +408,7 @@ impl UdpFirewallTester {
     /// touches `m_firewalledUDP` at all (`UDPFirewallTester.cpp:213-219`) — so
     /// a node that already proved itself open or firewalled keeps reporting
     /// that while the retest runs, and only a fresh result overwrites it. A
-    /// tester that was never verified has both flags already false, so this
-    /// changes nothing for it.
+    /// tester that never concluded stays [`UdpStanding::Untested`].
     ///
     /// The **used-helper memory is deliberately kept**: aMule never clears
     /// `m_usedTestClients`, and it is the whole freshness rule — a helper that
@@ -431,7 +426,7 @@ impl UdpFirewallTester {
         self.helper_lookup_started = false;
         self.running = 0;
         self.finished = 0;
-        self.timed_out = false;
+        self.forget_timeout();
         self.last_succeeded = None;
         self.test_start = Some(now);
         self.extern_port.restart();
@@ -457,14 +452,24 @@ impl UdpFirewallTester {
 
     /// The current verdict for the core store (see [`UdpVerdict`]).
     pub(crate) fn verdict(&self) -> UdpVerdict {
-        if self.firewalled || self.timed_out {
-            UdpVerdict::Firewalled
-        } else if self.verified {
-            UdpVerdict::Open {
-                port: self.open_port.unwrap_or(0),
-            }
-        } else {
-            UdpVerdict::Unverified
+        match self.standing {
+            UdpStanding::Firewalled | UdpStanding::TimedOut => UdpVerdict::Firewalled,
+            UdpStanding::Open { port } => UdpVerdict::Open { port },
+            UdpStanding::Untested => UdpVerdict::Unverified,
+        }
+    }
+
+    /// Whether the six-minute budget can still conclude: a running test with
+    /// nothing concluded, by a result or an earlier timeout.
+    fn can_time_out(&self) -> bool {
+        self.is_running() && matches!(self.standing, UdpStanding::Untested)
+    }
+
+    /// A timeout's verdict ends with the budget that reached it; a real result
+    /// outlives a retest.
+    const fn forget_timeout(&mut self) {
+        if matches!(self.standing, UdpStanding::TimedOut) {
+            self.standing = UdpStanding::Untested;
         }
     }
 
@@ -477,12 +482,7 @@ impl UdpFirewallTester {
     /// is open/unknown the instant is withheld — otherwise, once elapsed, it
     /// would sit permanently past in the wake set and busy-loop the driver.
     pub(crate) fn next_wake(&self, tcp_firewalled: bool) -> Option<KadInstant> {
-        let timeout = if tcp_firewalled
-            && self.is_running()
-            && !self.timed_out
-            && !self.verified
-            && !self.firewalled
-        {
+        let timeout = if tcp_firewalled && self.can_time_out() {
             self.test_start.map(|start| start + UDP_TEST_TIMEOUT)
         } else {
             None
