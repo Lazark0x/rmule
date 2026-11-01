@@ -3,7 +3,9 @@
 //! before every clear, a resize's among them, and crossterm answers by
 //! writing a query to the terminal and waiting up to two seconds on the
 //! input it shares with the pump: a loop that waits on nothing cannot ask,
-//! and a full frame follows every clear, so the answer is never read.
+//! and a full frame follows every clear, so the answer is never read. Nor
+//! can a size fail: a closing terminal takes its answer first, and telling
+//! that loss is the Line's.
 
 use std::io::Write;
 
@@ -36,6 +38,8 @@ impl Write for FrameBytes {
 pub(super) struct Screen {
     crossterm: CrosstermBackend<FrameBytes>,
     cursor: Position,
+    /// What the terminal last said its size was.
+    size: std::cell::Cell<Size>,
 }
 
 impl Screen {
@@ -47,6 +51,7 @@ impl Screen {
         Self {
             crossterm: CrosstermBackend::new(bytes),
             cursor: Position::ORIGIN,
+            size: std::cell::Cell::new(Size::new(80, 24)),
         }
     }
 }
@@ -101,8 +106,12 @@ impl Backend for Screen {
         self.crossterm.clear_region(clear_type)
     }
 
+    /// The terminal's size, or the last it gave.
     fn size(&self) -> std::io::Result<Size> {
-        self.crossterm.size()
+        if let Ok(size) = self.crossterm.size() {
+            self.size.set(size);
+        }
+        Ok(self.size.get())
     }
 
     fn window_size(&mut self) -> std::io::Result<WindowSize> {

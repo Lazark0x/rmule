@@ -105,10 +105,8 @@ fn assert_ends_by_itself(mut child: Child) {
         let _ = Command::new("kill").arg("-9").arg(id.to_string()).status();
         panic!("the run did not end after its terminal closed");
     });
-    assert!(
-        status.expect("waited").success(),
-        "a closed window is no fault"
-    );
+    let status = status.expect("waited");
+    assert!(status.success(), "a closed window is no fault: {status}");
 }
 
 /// One test for both, so no second pty is being opened while this one's

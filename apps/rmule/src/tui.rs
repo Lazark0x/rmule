@@ -360,8 +360,6 @@ impl Surface for Tui {
         if std::mem::take(&mut self.repaint_owed) {
             let _ = self.terminal.clear();
         }
-        // Past the writes, which cannot fail, only asking the terminal for
-        // its size can, and that is a terminal going: its frame is held.
         let glyphs = self.glyphs;
         let drawn = self
             .terminal
