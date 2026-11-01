@@ -383,6 +383,9 @@ impl App {
         let theme = &self.theme;
         let views = &mut self.views;
         let mut too_small = false;
+        chrome_state
+            .text_open
+            .set(views.text_open(chrome_state.active, state));
         let title = chrome::terminal_title(state);
         let new_title = (title != self.shown_title).then_some(title);
         let drawn = tui.draw(|frame| {

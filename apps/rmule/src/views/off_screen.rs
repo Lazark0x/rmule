@@ -47,21 +47,30 @@ fn text(parts: &[String]) -> String {
 }
 
 /// Draw `parts` as the `Off-screen:` line at the bottom of `body`, wrapped
-/// rather than cut, and return what is left of `body` above it — all of it
-/// when there is nothing off screen ([`height`]).
-pub(crate) fn draw(frame: &mut Frame, body: Rect, parts: &[String], theme: &Theme) -> Rect {
-    let height = height(body, parts);
-    if height == 0 {
+/// rather than cut, in the `held` lines its table keeps for it, and return
+/// what is left of `body` above them. A line held with nothing to say stays
+/// blank: the rows above it do not move as the cursor walks them.
+pub(crate) fn draw(
+    frame: &mut Frame,
+    body: Rect,
+    parts: &[String],
+    held: u16,
+    theme: &Theme,
+) -> Rect {
+    if held == 0 {
         return body;
     }
-    let lines = wrapped_lines(
-        &text(parts),
-        usize::from(body.width),
-        Style::new().fg(theme.fg),
-    );
-    let line_area = Rect::new(body.x, body.bottom() - height, body.width, height);
-    frame.render_widget(Paragraph::new(lines), line_area);
-    Rect::new(body.x, body.y, body.width, body.height - height)
+    let said = height(body, parts).min(held);
+    if said > 0 {
+        let lines = wrapped_lines(
+            &text(parts),
+            usize::from(body.width),
+            Style::new().fg(theme.fg),
+        );
+        let line_area = Rect::new(body.x, body.bottom() - said, body.width, said);
+        frame.render_widget(Paragraph::new(lines), line_area);
+    }
+    Rect::new(body.x, body.y, body.width, body.height - held)
 }
 
 #[cfg(test)]

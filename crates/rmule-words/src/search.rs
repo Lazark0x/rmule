@@ -156,7 +156,7 @@ pub const MORE_REFUSED_NOTE: Sentence = Sentence::fixed(MORE_REFUSED);
 
 /// What the status bar says when a search waits for a connection.
 pub const WAITING_FOR_CONNECTION: Sentence =
-    Sentence::fixed("search waits for a connection: connect to a server (c) to send it");
+    Sentence::fixed("search waits for a connection: press c on a server in Networks (1)");
 
 /// A search's Kad lookup put off Kad's publishing of the operator's shared
 /// files under the same word.

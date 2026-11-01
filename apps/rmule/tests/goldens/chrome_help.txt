@@ -3,22 +3,22 @@
 │ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                            ▲│
 │                                                                             █│
 │ 1–6             switch view directly                                        █│
-│ h / l           previous / next view                                        █│
+│ h / l  ← / →    previous / next view                                        █│
 │ j/k  ↑/↓        select row in focused pane                                  █│
 │ g / G           top / bottom                                                █│
 │ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
 │ z               zoom the focused pane to the whole tab, or back             █│
 │ m / Enter       row action menu                                             █│
-│ s / S           sort the focused table by next column / reverse             ▃│
-│ ?               this help; j/k, PgUp/PgDn scroll it when it is long          │
+│ s / S           sort the focused table by next column / reverse             █│
+│ ?               this help; j/k, PgUp/PgDn scroll it when it is long         ▆│
 │ q               quit; asks first while a download runs                       │
 │ Ctrl-C          quit, from anywhere                                          │
-│ Esc             close a menu, a form or a question; leave the query          │
+│ Esc             close a menu, a form or a confirm; leave the query; a share  │
+│                 question waits for y or n                                    │
 │ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word         │
 │ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back │
 │ Tab             in a path field: complete it; ~ is your home                 │
 │ mouse           click tab/row selects, header sorts, wheel scrolls           │
-│ a               Networks: add server                                         │
-│ U               Networks: update server list from URL                       ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 20 / 42 ┘
+│ a               Networks: add server                                        ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 39 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

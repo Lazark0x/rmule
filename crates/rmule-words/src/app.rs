@@ -21,14 +21,58 @@ pub const HELP_KEY: &str = "?";
 /// Beside the status bar's [`HELP_KEY`].
 pub const HELP_HINT: &str = " help";
 
+/// The status bar's key out of a text field.
+pub const LEAVE_KEY: &str = "Esc";
+
+/// Beside the status bar's [`LEAVE_KEY`].
+pub const LEAVE_HINT: &str = " leave";
+
 /// The quit confirm's title.
 pub const QUIT_TITLE: &str = " Quit rmule? ";
 
-/// What a quit does to the downloads running now.
+/// What a quit would interrupt: the counts the quit confirm says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QuitCost {
+    /// Downloads moving bytes, or moving the finished file into place.
+    pub running: usize,
+    /// Downloads waiting for a source, a queue place or a connection.
+    pub waiting: usize,
+    /// Peers holding an upload slot.
+    pub uploads: usize,
+    /// Peers waiting in the upload queue.
+    pub queued: usize,
+}
+
+impl QuitCost {
+    /// Whether nothing is under way, so a quit needs no asking.
+    #[must_use]
+    pub const fn is_idle(self) -> bool {
+        self.running == 0 && self.waiting == 0 && self.uploads == 0 && self.queued == 0
+    }
+}
+
+/// What a quit does to what is under way now. Every count that is not zero is
+/// said, and a peer's place in the queue is said to be lost: the downloads come
+/// back at the next start, that place does not.
 #[must_use]
-pub fn quit_confirm(running: usize) -> String {
-    let downloads = super::units::count(running as u64, "download", "downloads");
-    format!("{downloads} running. They stop now and carry on at the next start.")
+pub fn quit_confirm(cost: QuitCost) -> String {
+    let count = |n: usize, one: &str, many: &str| super::units::count(n as u64, one, many);
+    let parts: Vec<String> = [
+        (cost.running, count(cost.running, "download", "downloads") + " running"),
+        (cost.waiting, count(cost.waiting, "download", "downloads") + " waiting"),
+        (cost.uploads, count(cost.uploads, "upload", "uploads") + " running"),
+        (cost.queued, count(cost.queued, "peer", "peers") + " queued"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(_, part)| part)
+    .collect();
+    let parts = parts.join(", ");
+    if cost.uploads + cost.queued > 0 {
+        format!("{parts}. They stop now, and peers lose their place in your queue.")
+    } else {
+        format!("{parts}. They stop now and carry on at the next start.")
+    }
 }
 
 /// Beside the quit confirm's `y`.

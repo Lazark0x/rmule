@@ -157,7 +157,7 @@ impl App {
             }
             // A second ask while the confirm is up is its answer: Ctrl-C
             // twice leaves, whatever is running.
-            Action::AskQuit if self.chrome.quit_open || self.state.running_downloads() == 0 => {
+            Action::AskQuit if self.chrome.quit_open || self.state.quit_cost().is_idle() => {
                 Flow::Quit
             }
             Action::StartKad => {

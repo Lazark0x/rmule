@@ -8,7 +8,7 @@ pub type Binding = (&'static str, &'static str);
 /// What every tab shares.
 pub const EVERYWHERE: &[Binding] = &[
     ("1–6", "switch view directly"),
-    ("h / l", "previous / next view"),
+    ("h / l  ← / →", "previous / next view"),
     ("j/k  ↑/↓", "select row in focused pane"),
     ("g / G", "top / bottom"),
     ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
@@ -20,7 +20,10 @@ pub const EVERYWHERE: &[Binding] = &[
     ("Ctrl-C", "quit, from anywhere"),
     ("Ctrl-Z", "stop as a job; transfers stand still until fg"),
     ("Ctrl-L", "repaint the screen"),
-    ("Esc", "close a menu, a form or a question; leave the query"),
+    (
+        "Esc",
+        "close a menu, a form or a confirm; leave the query; a share question waits for y or n",
+    ),
     (
         "Ctrl-A / E",
         "in a text field: to the start / end; Alt-←/→ by word",
@@ -92,7 +95,7 @@ pub const STATISTICS: &[Binding] = &[(
 
 /// Settings.
 pub const SETTINGS: &[Binding] = &[
-    ("Enter  ← / →", "Settings: edit a field / step a selector"),
+    ("Enter  ←→  h/l", "Settings: edit a field / step a selector"),
     ("x", "Settings: stop sharing the selected directory"),
 ];
 

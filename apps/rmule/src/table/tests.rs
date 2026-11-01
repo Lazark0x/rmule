@@ -132,3 +132,16 @@ fn a_narrow_pane_takes_a_column_away_and_says_which() {
     let said = lines.join(" ");
     assert!(said.contains("Off-screen: Size 1.0 MB"), "{said}");
 }
+
+/// The cursor walks from a row that fits onto one that is cut: the table's
+/// bottom edge stands, for the Off-screen line kept its place.
+#[test]
+fn the_frame_does_not_move_as_the_cursor_enters_a_cut_row() {
+    let names = ["short.iso", "a-very-long-name-that-cannot-fit-its-cell.iso"];
+    let (fits, on_fits) = drawn(&names, 0, 24, 6);
+    let (cut, on_cut) = drawn(&names, 1, 24, 6);
+    assert_eq!(on_fits.line_of(1), on_cut.line_of(1), "{fits:?}\n{cut:?}");
+    assert!(cut.iter().any(|line| line.contains("Off-screen")), "{cut:?}");
+    assert!(!fits.iter().any(|line| line.contains("Off-screen")), "{fits:?}");
+    assert_eq!(on_fits.rows_height(), on_cut.rows_height());
+}

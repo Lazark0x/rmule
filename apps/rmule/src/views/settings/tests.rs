@@ -666,3 +666,17 @@ fn golden_settings_fits_a_tall_pane() {
         );
     });
 }
+
+/// On a selector `h` / `l` step it, as `←` / `→` do, rather than leaving the
+/// tab under the operator.
+#[test]
+fn h_and_l_step_a_selector_and_leave_the_tab_alone() {
+    let state = state();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    focus_on(&mut view, Row::Theme);
+    let stepped = view.handle_key(press(KeyCode::Char('l')), &state);
+    assert!(matches!(stepped, ViewOutcome::Emit(_)), "{stepped:?}");
+    let back = view.handle_key(press(KeyCode::Char('h')), &state);
+    assert!(matches!(back, ViewOutcome::Emit(_)), "{back:?}");
+}

@@ -352,3 +352,17 @@ fn golden_status_bar_keeps_an_overlong_flash_on_its_row() {
         );
     });
 }
+
+/// A field takes `?` as text, so the bar offers the way out instead.
+#[test]
+fn a_text_field_turns_the_way_to_help_into_the_way_out() {
+    let chrome = ChromeState::default();
+    let right = |chrome: &ChromeState| {
+        status_bar(&UiState::default(), chrome, &Theme::default_dark(), now(), 80)
+            .right
+            .to_string()
+    };
+    assert!(right(&chrome).contains("? help"));
+    chrome.text_open.set(true);
+    assert!(right(&chrome).contains("Esc leave"), "{}", right(&chrome));
+}

@@ -193,6 +193,37 @@ impl UiState {
             .count()
     }
 
+    /// What a quit would interrupt: every download not resting, and every
+    /// peer holding a slot or a place in the upload queue. Nothing while the
+    /// core is gone, for then it is already over.
+    #[must_use]
+    pub fn quit_cost(&self) -> crate::words::app::QuitCost {
+        if !self.core_alive {
+            return crate::words::app::QuitCost::default();
+        }
+        let waiting = self
+            .downloads
+            .values()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    DownloadStatus::Waiting | DownloadStatus::NoConnection
+                )
+            })
+            .count();
+        let queued = self
+            .upload_peers
+            .values()
+            .filter(|peer| matches!(peer.state, crate::state::UploadState::Queued { .. }))
+            .count();
+        crate::words::app::QuitCost {
+            running: self.running_downloads(),
+            waiting,
+            uploads: self.upload_peers.len() - queued,
+            queued,
+        }
+    }
+
     /// Whether `download_id`'s row says bytes are moving: only a Downloading
     /// row has a speed or an estimate (ADR-0071, "Download ETA").
     fn download_running(&self, download_id: DownloadId) -> bool {

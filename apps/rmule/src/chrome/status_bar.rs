@@ -247,9 +247,15 @@ pub(super) fn render(
             1,
         )
     };
+    // A field takes `?` as text, so the way out stands in for the way to help.
+    let (key, hint) = if chrome.text_open.get() {
+        (words::LEAVE_KEY, words::LEAVE_HINT)
+    } else {
+        (words::HELP_KEY, words::HELP_HINT)
+    };
     let help = row.right_end(vec![
-        Span::styled(words::HELP_KEY, Style::new().fg(theme.accent)),
-        Span::styled(words::HELP_HINT, theme.dim_text()),
+        Span::styled(key, Style::new().fg(theme.accent)),
+        Span::styled(hint, theme.dim_text()),
     ]);
     let connection = row.whole(connection(state, theme));
     let counts = state.tally();

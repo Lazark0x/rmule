@@ -53,6 +53,9 @@ pub struct ChromeState {
     help_scroll: help::HelpScroll,
     /// The build line the help overlay opens with.
     help_version: help::HelpVersion,
+    /// Whether a view's text field holds the keyboard, as the app read it
+    /// before this frame: the status bar then names the way out of it.
+    pub text_open: std::cell::Cell<bool>,
     flash: Option<Flash>,
     /// Frame width from the last draw, cached because the tab bar's *form*
     /// depends on it and a click has to be hit-tested against the form that
@@ -95,7 +98,7 @@ pub fn draw_frame(
 /// Chrome-owned overlays, drawn after the view so they sit on top.
 pub fn draw_overlays(frame: &mut Frame, state: &UiState, chrome: &ChromeState, theme: &Theme) {
     if chrome.quit_open {
-        quit_confirm::draw(frame, state.running_downloads(), theme);
+        quit_confirm::draw(frame, state.quit_cost(), theme);
     } else if chrome.help_open {
         draw_help(
             frame,

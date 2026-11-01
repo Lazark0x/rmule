@@ -90,6 +90,50 @@ fn an_open_field_claims_its_chords_at_the_gate() {
     assert_eq!(app.views.searches.query_text(), "big ", "no field open");
 }
 
+/// A node serving a queue, or with a download waiting for a source, is under
+/// way as much as one moving bytes: one `q` must not throw that away.
+#[test]
+fn a_quit_over_a_queue_or_a_waiting_download_asks_first() {
+    let now = Instant::now();
+    let peer = |state| crate::state::UploadPeer {
+        peer: crate::fixture::peer_endpoint(1),
+        state,
+        software: None,
+    };
+    let file = crate::fixture::file_hash(1);
+    for under_way in [
+        crate::state::UploadState::Uploading { file },
+        crate::state::UploadState::Queued { rank: 3, file },
+    ] {
+        let mut app = App::new(Theme::default_dark());
+        let row = peer(under_way);
+        app.state.upload_peers.insert(row.peer, row);
+        assert!(matches!(
+            app.reduce(key_action(KeyCode::Char('q')), now),
+            Flow::Continue
+        ));
+        assert!(app.chrome.quit_open);
+    }
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    for row in app.state.downloads.values_mut() {
+        row.status = crate::state::DownloadStatus::Waiting;
+    }
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Continue
+    ));
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    for row in app.state.downloads.values_mut() {
+        row.status = crate::state::DownloadStatus::Paused;
+    }
+    assert!(
+        matches!(app.reduce(key_action(KeyCode::Char('q')), now), Flow::Quit),
+        "paused downloads are at rest"
+    );
+}
+
 #[test]
 fn a_quit_over_a_running_download_asks_first() {
     let now = Instant::now();

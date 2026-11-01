@@ -34,8 +34,8 @@
 //!
 //! # Two gestures, because the fields are two kinds
 //!
-//! A selector has nothing to type into, so `←`/`→` step it and it commits on
-//! the spot. A text field needs an editing mode — `Enter` opens it, `Enter`
+//! A selector has nothing to type into, so `←`/`→` and `h`/`l` step it and it
+//! commits on the spot. A text field needs an editing mode — `Enter` opens it, `Enter`
 //! commits it, `Esc` restores what was stored — because a tab is not a modal
 //! and `q` must stay `q` while nobody is typing. Only those two leave an open
 //! field: one field commits at a time, so `Tab`, the arrows and the wheel stay
@@ -550,9 +550,16 @@ impl SettingsView {
         // an editing mode for one would be ceremony with no purpose.
         if !self.editing
             && self.form.focus_is_choice()
-            && matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Enter)
+            && matches!(
+                key.code,
+                KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Enter
+                    | KeyCode::Char('h' | 'l')
+            )
         {
-            self.form.step_choice(key.code != KeyCode::Left);
+            let back = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+            self.form.step_choice(!back);
             return self.emit(&state.preferences);
         }
 

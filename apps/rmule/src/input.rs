@@ -93,12 +93,12 @@ pub fn map_key(chrome: &ChromeState, key: KeyEvent) -> Option<Action> {
             let number = digit.to_digit(10).and_then(|n| u8::try_from(n).ok())?;
             crate::view::ViewId::from_number(number).map(Action::SwitchView)
         }
-        // The tabs are reached by the digits and `h` / `l` alone. `[` / `]`
-        // are not global: one key, one meaning (ADR-0073, Held Searches) —
-        // they move between a tab's own sub-entries, and a tab with none
-        // leaves them unbound. A focused query input claims `h` / `l` as text.
-        KeyCode::Char('l') => Some(Action::CycleView(1)),
-        KeyCode::Char('h') => Some(Action::CycleView(-1)),
+        // The tabs are reached by the digits, `h` / `l` and `←` / `→`, wherever
+        // no field or selector claims them first. `[` / `]` are not global:
+        // one key, one meaning (ADR-0073, Held Searches) — they move between
+        // a tab's own sub-entries, and a tab with none leaves them unbound.
+        KeyCode::Char('l') | KeyCode::Right => Some(Action::CycleView(1)),
+        KeyCode::Char('h') | KeyCode::Left => Some(Action::CycleView(-1)),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
         KeyCode::Char('q') => Some(Action::AskQuit),
         _ => None,
@@ -267,6 +267,14 @@ mod tests {
         ));
         assert!(matches!(
             map_key(&chrome, press(KeyCode::Char('h'))),
+            Some(Action::CycleView(-1))
+        ));
+        assert!(matches!(
+            map_key(&chrome, press(KeyCode::Right)),
+            Some(Action::CycleView(1))
+        ));
+        assert!(matches!(
+            map_key(&chrome, press(KeyCode::Left)),
             Some(Action::CycleView(-1))
         ));
         assert!(matches!(

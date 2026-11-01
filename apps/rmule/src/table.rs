@@ -295,6 +295,10 @@ impl Drawn {
     pub(crate) const fn header_height(&self) -> u16 {
         self.header.height
     }
+
+    pub(crate) const fn rows_height(&self) -> u16 {
+        self.rows.height
+    }
 }
 
 /// Draw `table` into `body`, the inside of the bordered `pane`: its header,
@@ -311,27 +315,40 @@ pub(crate) fn draw(
     viewport: &mut Viewport,
     theme: &Theme,
 ) -> Drawn {
+    let said_of = |row: usize, widths: &[usize]| {
+        off_screen::hidden(
+            table.labels.iter().copied(),
+            &(rows.cells)(row, widths),
+            widths,
+        )
+    };
     let said = |widths: &[usize]| {
         rows.selected
             .filter(|row| *row < rows.count)
-            .map_or_else(Vec::new, |row| {
-                off_screen::hidden(
-                    table.labels.iter().copied(),
-                    &(rows.cells)(row, widths),
-                    widths,
-                )
-            })
+            .map_or_else(Vec::new, |row| said_of(row, widths))
+    };
+    // The lines the Off-screen line holds: as many as the rows on screen
+    // could ask for, so the frame stands still as the cursor walks them.
+    let held = |widths: &[usize]| {
+        let height = off_screen::height(body, &said(widths));
+        if rows.selected.is_none() {
+            return height;
+        }
+        let room = body.height.saturating_sub(height.max(1) + 1);
+        let mut place = *viewport;
+        let first = place.follow(rows.selected.unwrap_or(0), rows.count, room, |_| 1);
+        let last = first.saturating_add(usize::from(room)).min(rows.count);
+        (first..last)
+            .map(|row| off_screen::height(body, &said_of(row, widths)))
+            .fold(height, u16::max)
     };
     let bar = {
         let widths = table.widths(body.width, false);
-        let room = body
-            .height
-            .saturating_sub(off_screen::height(body, &said(&widths)))
-            .saturating_sub(1);
+        let room = body.height.saturating_sub(held(&widths)).saturating_sub(1);
         rows.count > usize::from(room)
     };
     let widths = table.widths(body.width, bar);
-    let list = off_screen::draw(frame, body, &said(&widths), theme);
+    let list = off_screen::draw(frame, body, &said(&widths), held(&widths), theme);
     let (list, bar) = viewport::split(list, bar);
     let header_h = u16::from(list.height >= 2);
     let room = list.height - header_h;
