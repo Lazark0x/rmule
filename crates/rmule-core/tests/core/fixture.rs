@@ -9,6 +9,7 @@
 use parking_lot::Mutex;
 use rmule_core::{DurableStore, open_durable_store};
 use rmule_testkit::HANG_GUARD;
+use std::collections::VecDeque;
 use std::net::SocketAddrV4;
 use std::path::Path;
 use std::sync::Arc;
@@ -250,14 +251,19 @@ pub async fn next_matching(core: &mut Core, pred: impl Fn(&CoreEvent) -> bool) -
     next_expected(core, "a matching core event", pred).await
 }
 
+/// How many of the newest skipped events a timeout names.
+const SKIPPED_NAMED: usize = 40;
+
 /// [`next_matching`] naming what the leg is waiting for, so a timeout says
-/// which step of the sequence never arrived.
+/// which step of the sequence never arrived, and how far the run got: the
+/// events it skipped on the way.
 pub async fn next_expected(
     core: &mut Core,
     waiting_for: &str,
     pred: impl Fn(&CoreEvent) -> bool,
 ) -> CoreEvent {
-    timeout(EVENT_BUDGET, async {
+    let mut skipped = VecDeque::with_capacity(SKIPPED_NAMED);
+    let waited = timeout(EVENT_BUDGET, async {
         loop {
             let event = core
                 .next_event()
@@ -266,10 +272,17 @@ pub async fn next_expected(
             if pred(&event) {
                 return event;
             }
+            if skipped.len() == SKIPPED_NAMED {
+                skipped.pop_front();
+            }
+            skipped.push_back(format!("{event:?}"));
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for: {waiting_for}"))
+    .await;
+    waited.unwrap_or_else(|_| {
+        let skipped = Vec::from(skipped).join("\n  ");
+        panic!("timed out waiting for: {waiting_for}\nnewest skipped events:\n  {skipped}")
+    })
 }
 
 /// Pump events until the serve activity reports the listener it bound.
