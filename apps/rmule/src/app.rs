@@ -341,7 +341,7 @@ impl App {
             tui.draw(|frame| {
                 let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
                 views.draw(chrome_state.active, frame, content, state, theme, now);
-                chrome::draw_overlays(frame, chrome_state, theme);
+                chrome::draw_overlays(frame, state, chrome_state, theme);
             })
         })?;
         self.dirty = false;
@@ -428,7 +428,7 @@ mod tests {
                     &app.theme,
                     now,
                 );
-                chrome::draw_overlays(frame, &app.chrome, &app.theme);
+                chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
             });
             assert_eq!(lines, dark, "theme changed glyphs, not just styles");
         }
@@ -449,7 +449,7 @@ mod tests {
                 &app.theme,
                 now,
             );
-            chrome::draw_overlays(frame, &app.chrome, &app.theme);
+            chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
 
@@ -477,7 +477,7 @@ mod tests {
                 &app.theme,
                 now,
             );
-            chrome::draw_overlays(frame, &app.chrome, &app.theme);
+            chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
 
@@ -506,7 +506,7 @@ mod tests {
                 &app.theme,
                 now,
             );
-            chrome::draw_overlays(frame, &app.chrome, &app.theme);
+            chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
 
@@ -533,7 +533,7 @@ mod tests {
                 &app.theme,
                 now,
             );
-            chrome::draw_overlays(frame, &app.chrome, &app.theme);
+            chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
 

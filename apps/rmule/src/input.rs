@@ -11,12 +11,44 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::chrome::{self, ChromeState};
+
+/// What the reducer does with a key before anything else reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyGate {
+    /// A press the views and the globals may read.
+    Pass,
+    /// Means nothing: a release, or a Ctrl or Alt chord no surface binds.
+    Drop,
+    /// Ctrl-C: the quit path, from every surface.
+    Interrupt,
+}
+
+/// The one reading of a key's kind and modifiers, so no view has to.
+///
+/// Windows reports a release for every key, and the kitty protocol may; only
+/// a press acts. In raw mode Ctrl-C reaches here as `c` with a modifier, so a
+/// view that read the code alone would take it for its own `c`. Ctrl with Alt
+/// on a character is AltGr on a Windows console, and that is typed text.
+#[must_use]
+pub fn gate(key: &KeyEvent) -> KeyGate {
+    if key.kind == KeyEventKind::Release {
+        return KeyGate::Drop;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Char(_) if ctrl && alt => KeyGate::Pass,
+        KeyCode::Char('c' | 'C') if ctrl => KeyGate::Interrupt,
+        _ if ctrl || alt => KeyGate::Drop,
+        _ => KeyGate::Pass,
+    }
+}
 
 /// Map one key press against current chrome state. `None` = the key means
 /// nothing here; view-local keys arrive with their views. `c` is among them:
@@ -25,9 +57,12 @@ use crate::chrome::{self, ChromeState};
 /// clock.
 #[must_use]
 pub fn map_key(chrome: &ChromeState, key: KeyEvent) -> Option<Action> {
-    // Kitty keyboard may report releases/repeats; only presses act.
-    if key.kind == KeyEventKind::Release {
-        return None;
+    if chrome.quit_open {
+        return match crate::views::modal::confirm_key(key.code) {
+            Some(true) => Some(Action::Quit),
+            Some(false) => Some(Action::DismissOverlay),
+            None => None,
+        };
     }
     if chrome.help_open {
         let page = i16::try_from(chrome.help_page()).unwrap_or(i16::MAX);
@@ -54,7 +89,7 @@ pub fn map_key(chrome: &ChromeState, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('l') => Some(Action::CycleView(1)),
         KeyCode::Char('h') => Some(Action::CycleView(-1)),
         KeyCode::Char('?') => Some(Action::ToggleHelp),
-        KeyCode::Char('q') => Some(Action::Quit),
+        KeyCode::Char('q') => Some(Action::AskQuit),
         _ => None,
     }
 }
@@ -63,7 +98,7 @@ pub fn map_key(chrome: &ChromeState, key: KeyEvent) -> Option<Action> {
 /// row clicks and wheel scroll belong to the table views.
 #[must_use]
 pub fn map_mouse(chrome: &ChromeState, mouse: MouseEvent) -> Option<Action> {
-    if chrome.help_open {
+    if chrome.help_open || chrome.quit_open {
         return None;
     }
     match mouse.kind {
@@ -130,8 +165,6 @@ fn pump(
 
 #[cfg(test)]
 mod tests {
-    use ratatui::crossterm::event::{KeyEventState, KeyModifiers};
-
     use super::*;
     use crate::fixture::press;
     use crate::view::ViewId;
@@ -163,15 +196,6 @@ mod tests {
         let (actions, mut bus) = mpsc::channel(4);
         pump(actions, Arc::new(AtomicBool::new(true)), || Ok(None));
         assert!(bus.try_recv().is_err());
-    }
-
-    fn release(code: KeyCode) -> KeyEvent {
-        KeyEvent {
-            code,
-            modifiers: KeyModifiers::NONE,
-            kind: KeyEventKind::Release,
-            state: KeyEventState::NONE,
-        }
     }
 
     #[test]
@@ -211,7 +235,7 @@ mod tests {
         ));
         assert!(matches!(
             map_key(&chrome, press(KeyCode::Char('q'))),
-            Some(Action::Quit)
+            Some(Action::AskQuit)
         ));
         assert!(
             map_key(&chrome, press(KeyCode::Esc)).is_none(),
@@ -237,9 +261,25 @@ mod tests {
     }
 
     #[test]
-    fn key_releases_never_act() {
-        let chrome = ChromeState::default();
-        assert!(map_key(&chrome, release(KeyCode::Char('q'))).is_none());
+    fn the_gate_reads_kind_and_modifiers_once() {
+        let chord = |code, modifiers| KeyEvent::new(code, modifiers);
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert_eq!(gate(&release), KeyGate::Drop);
+        assert_eq!(gate(&press(KeyCode::Char('a'))), KeyGate::Pass);
+        let shifted = chord(KeyCode::Char('A'), KeyModifiers::SHIFT);
+        assert_eq!(gate(&shifted), KeyGate::Pass);
+        let ctrl = KeyModifiers::CONTROL;
+        assert_eq!(gate(&chord(KeyCode::Char('c'), ctrl)), KeyGate::Interrupt);
+        assert_eq!(gate(&chord(KeyCode::Char('p'), ctrl)), KeyGate::Drop);
+        assert_eq!(gate(&chord(KeyCode::Left, ctrl)), KeyGate::Drop);
+        let alt = KeyModifiers::ALT;
+        assert_eq!(gate(&chord(KeyCode::Char('q'), alt)), KeyGate::Drop);
+        let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        assert_eq!(gate(&chord(KeyCode::Char('@'), alt_gr)), KeyGate::Pass);
     }
 
     #[test]

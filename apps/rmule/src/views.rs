@@ -13,7 +13,7 @@
 //! }
 //! ```
 
-mod modal;
+pub(crate) mod modal;
 pub mod networks;
 pub(crate) mod off_screen;
 pub(crate) mod related;

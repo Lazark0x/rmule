@@ -255,6 +255,7 @@ impl UiState {
             | Action::SearchRelated(_)
             | Action::StartKad
             | Action::Preview(_)
+            | Action::AskQuit
             | Action::Quit => false,
         }
     }

@@ -4,7 +4,7 @@
 //! for the list, which loses every completed row at once.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -15,7 +15,7 @@ use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::readd as readd_words;
 use crate::wrap::wrapped_lines;
 
@@ -50,8 +50,8 @@ impl TransfersView {
         key: KeyEvent,
         counted: &[DownloadId],
     ) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => {
+        match confirm_key(key.code) {
+            Some(true) => {
                 self.overlay = Overlay::None;
                 ViewOutcome::Emit(Action::Commands(vec![CoreCommand::Download(
                     DownloadCommand::ClearDownloads {
@@ -59,12 +59,12 @@ impl TransfersView {
                     },
                 )]))
             }
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+            Some(false) => {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            code => {
-                scroll_key(&mut self.confirm_viewport, code);
+            None => {
+                scroll_key(&mut self.confirm_viewport, key.code);
                 ViewOutcome::Redraw
             }
         }

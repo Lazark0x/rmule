@@ -1,0 +1,24 @@
+
+
+
+
+
+
+
+
+
+                  ┌ Quit rmule? ─────────────────────────────┐
+                  │2 downloads running. They stop now and    │
+                  │carry on at the next start.               │
+                  │                                          │
+                  │y quit    Esc keep running                │
+                  └──────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+

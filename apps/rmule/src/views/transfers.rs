@@ -50,7 +50,7 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Text;
@@ -246,10 +246,6 @@ impl TransfersView {
     /// `Emit` to hand the app a command/flash, `Redraw` when view state
     /// changed (or an open modal swallowed the key), `Ignored` to bubble on.
     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        // Kitty keyboard may report releases/repeats; only presses act.
-        if key.kind == KeyEventKind::Release {
-            return ViewOutcome::Ignored;
-        }
         if self.add_link.is_some() {
             return self.handle_add_link_key(key, state);
         }

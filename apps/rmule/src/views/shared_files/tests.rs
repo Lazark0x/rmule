@@ -1,6 +1,6 @@
 //! Unit tests for the Shared Files view: the files table over the upload-peers pane, focus, filters and goldens.
 
-use ratatui::crossterm::event::{KeyModifiers, ModifierKeyCode};
+use ratatui::crossterm::event::ModifierKeyCode;
 
 use crate::golden::assert_golden;
 
@@ -113,21 +113,9 @@ fn q_dismisses_an_open_modal_rather_than_bubbling_to_quit() {
 }
 
 #[test]
-fn key_releases_are_ignored() {
+fn a_modifier_key_is_not_a_view_key() {
     let state = served_files();
     let mut view = SharedView::default();
-    let release = KeyEvent {
-        code: KeyCode::Char('a'),
-        modifiers: KeyModifiers::NONE,
-        kind: KeyEventKind::Release,
-        state: ratatui::crossterm::event::KeyEventState::NONE,
-    };
-    assert!(matches!(
-        view.handle_key(release, &state),
-        ViewOutcome::Ignored
-    ));
-    assert!(view.active_only, "a release must not toggle the filter");
-    // A modifier key press is not a view key either.
     assert!(matches!(
         view.handle_key(press(KeyCode::Modifier(ModifierKeyCode::LeftShift)), &state),
         ViewOutcome::Ignored

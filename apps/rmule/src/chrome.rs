@@ -21,6 +21,7 @@ use tabs::{BRAND, brand_fits, tabs_line};
 
 mod help;
 
+mod quit_confirm;
 mod status_bar;
 mod tabs;
 
@@ -42,6 +43,8 @@ pub struct ChromeState {
     /// Whether the help overlay is up. It is modal while it is: only
     /// `Esc`/`q`/`?` and its scroll keys act, and mouse input is dropped.
     pub help_open: bool,
+    /// Whether the quit confirm is up, the same kind of modal as help.
+    pub quit_open: bool,
     /// The help overlay's first line on screen, and how far it can scroll and
     /// page as the last draw laid it out — the same draw-time cache as
     /// `frame_width`.
@@ -97,8 +100,10 @@ pub fn draw_frame(
 }
 
 /// Chrome-owned overlays, drawn after the view so they sit on top.
-pub fn draw_overlays(frame: &mut Frame, chrome: &ChromeState, theme: &Theme) {
-    if chrome.help_open {
+pub fn draw_overlays(frame: &mut Frame, state: &UiState, chrome: &ChromeState, theme: &Theme) {
+    if chrome.quit_open {
+        quit_confirm::draw(frame, state.running_downloads(), theme);
+    } else if chrome.help_open {
         draw_help(
             frame,
             frame.area(),
@@ -138,9 +143,14 @@ impl ChromeState {
                 true
             }
             Action::ScrollHelp(lines) => self.help_scroll.scroll(*lines),
+            Action::AskQuit => {
+                self.quit_open = true;
+                true
+            }
             Action::DismissOverlay => {
-                let was_open = self.help_open;
+                let was_open = self.help_open || self.quit_open;
                 self.help_open = false;
+                self.quit_open = false;
                 was_open
             }
             Action::Flash(text) => {

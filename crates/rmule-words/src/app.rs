@@ -15,6 +15,22 @@ use super::os::refusal_words;
 /// first step.
 pub const SHUTTING_DOWN: Sentence = Sentence::fixed("Shutting down…");
 
+/// The quit confirm's title.
+pub const QUIT_TITLE: &str = " Quit rmule? ";
+
+/// What a quit does to the downloads running now.
+#[must_use]
+pub fn quit_confirm(running: usize) -> String {
+    let downloads = super::units::count(running as u64, "download", "downloads");
+    format!("{downloads} running. They stop now and carry on at the next start.")
+}
+
+/// Beside the quit confirm's `y`.
+pub const QUIT_YES: &str = " quit    ";
+
+/// Beside the quit confirm's `Esc`.
+pub const QUIT_NO: &str = " keep running";
+
 /// `rmule-cli add` was asked to stop by the OS (ADR-0118); it still quits.
 pub const CLI_STOPPED: &str = "stopped by a signal before the download completed";
 

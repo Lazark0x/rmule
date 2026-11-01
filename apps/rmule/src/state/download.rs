@@ -100,6 +100,24 @@ impl DownloadRow {
 }
 
 impl UiState {
+    /// How many downloads a quit would interrupt: moving bytes, or moving the
+    /// finished file into place.
+    #[must_use]
+    pub fn running_downloads(&self) -> usize {
+        if !self.core_alive {
+            return 0;
+        }
+        self.downloads
+            .values()
+            .filter(|row| {
+                matches!(
+                    row.status,
+                    DownloadStatus::Downloading | DownloadStatus::Completing
+                )
+            })
+            .count()
+    }
+
     /// Whether `download_id`'s row says bytes are moving: only a Downloading
     /// row has a speed or an estimate (ADR-0071, "Download ETA").
     fn download_running(&self, download_id: DownloadId) -> bool {

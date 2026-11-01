@@ -45,8 +45,8 @@ pub(crate) fn consent_key(
     (answered, viewport): (&mut BTreeSet<u64>, &mut Cell<Viewport>),
 ) -> ViewOutcome {
     let share = match key.code {
-        KeyCode::Char('y') => true,
-        KeyCode::Char('n') => false,
+        KeyCode::Char('y' | 'Y') => true,
+        KeyCode::Char('n' | 'N') => false,
         KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down => {
             scroll_key(viewport, key.code);
             return ViewOutcome::Redraw;

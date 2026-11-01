@@ -23,11 +23,18 @@ impl App {
             Action::Input(event) => {
                 let mapped = match event {
                     Event::Key(key) => {
+                        match input::gate(&key) {
+                            input::KeyGate::Pass => {}
+                            input::KeyGate::Drop => return Flow::Continue,
+                            input::KeyGate::Interrupt => {
+                                return self.reduce(Action::AskQuit, now);
+                            }
+                        }
                         // View-first routing (views/mod.rs contract): the
                         // active view sees keys before the globals — that is
                         // what lets a focused query input treat `h`/`q` as
-                        // text. The help overlay preempts everything.
-                        if self.chrome.help_open {
+                        // text. A chrome modal preempts everything.
+                        if self.chrome.help_open || self.chrome.quit_open {
                             input::map_key(&self.chrome, key)
                         } else {
                             match self.views.handle_key(self.chrome.active, key, &self.state) {
@@ -53,7 +60,7 @@ impl App {
                             _ => None,
                         };
                         if let Some(code) = synthesized {
-                            if !self.chrome.help_open {
+                            if !self.chrome.help_open && !self.chrome.quit_open {
                                 let key = KeyEvent::new(code, KeyModifiers::NONE);
                                 match self.views.handle_key(self.chrome.active, key, &self.state) {
                                     ViewOutcome::Redraw => self.dirty = true,
@@ -68,7 +75,7 @@ impl App {
                         {
                             // Row 0 is the tab bar (global); anything lower
                             // is the active view's click (row select).
-                            if mouse.row == 0 || self.chrome.help_open {
+                            if mouse.row == 0 || self.chrome.help_open || self.chrome.quit_open {
                                 input::map_mouse(&self.chrome, mouse)
                             } else {
                                 match self.views.handle_click(
@@ -99,6 +106,11 @@ impl App {
                 }
             }
             Action::Quit => Flow::Quit,
+            // A second ask while the confirm is up is its answer: Ctrl-C
+            // twice leaves, whatever is running.
+            Action::AskQuit if self.chrome.quit_open || self.state.running_downloads() == 0 => {
+                Flow::Quit
+            }
             Action::StartKad => {
                 self.kad_first_login_owed = false;
                 match self.kad_start.as_ref().map(|start| start.send(())) {
@@ -239,13 +251,19 @@ impl App {
                 }
                 Flow::Continue
             }
-            chrome_action @ (Action::SwitchView(_)
+            chrome_action @ (Action::AskQuit
+            | Action::SwitchView(_)
             | Action::CycleView(_)
             | Action::ToggleHelp
             | Action::DismissOverlay
             | Action::ScrollHelp(_)
             | Action::Flash(_)) => {
+                let from = self.chrome.active;
                 self.dirty |= self.chrome.update(&chrome_action, now);
+                if self.chrome.active == crate::view::ViewId::Searches && from != self.chrome.active
+                {
+                    self.views.searches.arrive(&self.state);
+                }
                 Flow::Continue
             }
         }

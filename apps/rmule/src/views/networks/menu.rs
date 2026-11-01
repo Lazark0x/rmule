@@ -23,7 +23,7 @@ use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{UiState, server_label};
 use crate::theme::Theme;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
 use crate::wrap::{clamp_u16, labeled_lines, wrap_text, wrapped_lines};
 
@@ -290,7 +290,7 @@ impl NetworksView {
 
     pub(super) fn handle_menu_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         match key.code {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') => {
                 self.menu = None;
                 ViewOutcome::Redraw
             }
@@ -369,8 +369,8 @@ impl NetworksView {
     }
 
     pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
+        match confirm_key(key.code) {
+            Some(true) => {
                 let Some(confirm) = self.confirm.take() else {
                     return ViewOutcome::Redraw;
                 };
@@ -382,13 +382,13 @@ impl NetworksView {
                     },
                 )))
             }
-            KeyCode::Esc | KeyCode::Char('n') => {
+            Some(false) => {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            code => {
+            None => {
                 if let Some(confirm) = self.confirm.as_mut() {
-                    scroll_key(&mut confirm.viewport, code);
+                    scroll_key(&mut confirm.viewport, key.code);
                 }
                 ViewOutcome::Redraw
             }

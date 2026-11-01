@@ -2,7 +2,7 @@
 //! the one action that asks first.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -13,14 +13,14 @@ use crate::action::Action;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::units::short_hash_or_dash;
 use crate::wrap::wrapped_lines;
 
 impl TransfersView {
     pub(super) fn handle_confirm(&mut self, key: KeyEvent, ids: &[DownloadId]) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => {
+        match confirm_key(key.code) {
+            Some(true) => {
                 self.overlay = Overlay::None;
                 match selected_id(ids, &self.table_state) {
                     Some(id) => ViewOutcome::Emit(Action::Command(CoreCommand::Download(
@@ -29,12 +29,12 @@ impl TransfersView {
                     None => ViewOutcome::Redraw,
                 }
             }
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+            Some(false) => {
                 self.overlay = Overlay::None;
                 ViewOutcome::Redraw
             }
-            code => {
-                scroll_key(&mut self.confirm_viewport, code);
+            None => {
+                scroll_key(&mut self.confirm_viewport, key.code);
                 ViewOutcome::Redraw
             }
         }

@@ -217,6 +217,17 @@ impl Modal {
     }
 }
 
+/// The one reading of a confirm's keys: `Some(true)` for `y`, `Some(false)` for
+/// `n`, `Esc` or `q`, `None` for a key that answers nothing. `q` declines so it
+/// never falls through to quit from under a question.
+pub(crate) const fn confirm_key(code: KeyCode) -> Option<bool> {
+    match code {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc => Some(false),
+        _ => None,
+    }
+}
+
 /// Scroll a modal that only reads — a confirm, the details — by `code` when
 /// it is one of the list keys: `j` / `k` a line, `g` / `G` the ends.
 pub(crate) fn scroll_key(viewport: &mut Cell<Viewport>, code: KeyCode) {

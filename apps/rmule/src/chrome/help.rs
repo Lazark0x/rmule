@@ -244,7 +244,7 @@ mod tests {
         chrome.update(&Action::ToggleHelp, now());
         let rendered = crate::golden::render_to_lines(80, 24, |frame| {
             draw_frame(frame, &UiState::default(), &chrome, &theme, now());
-            draw_overlays(frame, &chrome, &theme);
+            draw_overlays(frame, &UiState::default(), &chrome, &theme);
         });
         let rows: Vec<&str> = rendered.lines().collect();
         assert!(
@@ -271,7 +271,7 @@ mod tests {
                 &Theme::default_dark(),
                 now(),
             );
-            draw_overlays(frame, &chrome, &Theme::default_dark());
+            draw_overlays(frame, &UiState::default(), &chrome, &Theme::default_dark());
         });
     }
 
@@ -289,7 +289,7 @@ mod tests {
                 &Theme::default_dark(),
                 now(),
             );
-            draw_overlays(frame, &chrome, &Theme::default_dark());
+            draw_overlays(frame, &UiState::default(), &chrome, &Theme::default_dark());
         });
     }
 
@@ -305,7 +305,7 @@ mod tests {
         let draw = |chrome: &ChromeState| {
             crate::golden::render_to_lines(80, 24, |frame| {
                 draw_frame(frame, &UiState::default(), chrome, &theme, now());
-                draw_overlays(frame, chrome, &theme);
+                draw_overlays(frame, &UiState::default(), chrome, &theme);
             })
         };
         let top = draw(&chrome);
@@ -314,7 +314,7 @@ mod tests {
         assert!(chrome.update(&Action::ScrollHelp(i16::MAX), now()));
         assert_golden("chrome_help_scrolled", 80, 24, |frame| {
             draw_frame(frame, &UiState::default(), &chrome, &theme, now());
-            draw_overlays(frame, &chrome, &theme);
+            draw_overlays(frame, &UiState::default(), &chrome, &theme);
         });
         let end = draw(&chrome);
         assert!(end.contains("mouse"), "{end}");

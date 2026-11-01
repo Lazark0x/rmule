@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
 use rmule_core::file_history::{Ed2kIdentity, FileHistory, HadFile, SharedFileFact};
 use rmule_core::{DownloadEvent, DownloadMetadata, DownloadMetadataOrigin, SearchEvent};

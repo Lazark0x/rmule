@@ -108,6 +108,26 @@ impl SearchesView {
         Self::default()
     }
 
+    /// The operator arrived on the tab. With no results to act on the one
+    /// thing to do here is type, and a typed letter must not reach the
+    /// globals, where `q` quits.
+    pub(crate) fn arrive(&mut self, state: &UiState) {
+        self.held.bind(state);
+        let has_results = self
+            .held
+            .current_pane(state)
+            .is_some_and(|pane| !pane.results.is_empty());
+        if !has_results && self.menu.is_none() && !self.filters_open && self.readd.is_none() {
+            self.input_focused = true;
+        }
+    }
+
+    /// The query as typed.
+    #[cfg(test)]
+    pub(crate) fn query_text(&self) -> &str {
+        &self.query
+    }
+
     /// Take up the results' sort as the durable preferences kept it.
     pub fn restore_sort(&mut self, sorts: &TableSorts) {
         self.sort = TableSort::restore(sorts);
@@ -127,7 +147,7 @@ impl SearchesView {
         // 1. The row-action menu is modal: it captures every key until closed.
         if let Some(cursor) = self.menu {
             return match key.code {
-                KeyCode::Esc => {
+                KeyCode::Esc | KeyCode::Char('q') => {
                     self.menu = None;
                     ViewOutcome::Redraw
                 }

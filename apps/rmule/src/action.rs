@@ -26,6 +26,9 @@ pub enum Action {
     SwitchView(ViewId),
     /// Cycle views (`l` forward, `h` back); sign is the direction.
     CycleView(i8),
+    /// `q` or Ctrl-C: quit, once the operator has said so over a running
+    /// download. An OS stop is [`Quit`](Self::Quit) and asks nobody.
+    AskQuit,
     /// `?` — open/close the help overlay.
     ToggleHelp,
     /// `Esc`/`q` while a modal is up.

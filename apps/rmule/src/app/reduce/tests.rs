@@ -4,7 +4,115 @@ use super::*;
 use crate::fixture::key_action;
 use crate::theme::Theme;
 use crate::view::ViewId;
-use ratatui::crossterm::event::KeyCode;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+fn release(code: KeyCode) -> Action {
+    Action::Input(Event::Key(KeyEvent::new_with_kind(
+        code,
+        KeyModifiers::NONE,
+        KeyEventKind::Release,
+    )))
+}
+
+fn chord(code: KeyCode, modifiers: KeyModifiers) -> Action {
+    Action::Input(Event::Key(KeyEvent::new(code, modifiers)))
+}
+
+/// Windows reports a release for every key: one press types one letter, on
+/// the tabs that read their keys raw too.
+#[test]
+fn a_release_never_acts_on_any_surface() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(key_action(KeyCode::Char('b')), now);
+    app.reduce(release(KeyCode::Char('b')), now);
+    assert_eq!(app.views.searches.query_text(), "b");
+    app.reduce(key_action(KeyCode::Esc), now);
+    for view in ViewId::ALL {
+        app.chrome.active = view;
+        assert!(matches!(
+            app.reduce(release(KeyCode::Char('q')), now),
+            Flow::Continue
+        ));
+    }
+}
+
+/// The reflex every terminal user has: Ctrl-C leaves, from every tab and over
+/// any modal, and is never the tab's own `c`.
+#[test]
+fn ctrl_c_quits_from_every_surface_and_never_toggles_the_server() {
+    let now = Instant::now();
+    let ctrl_c = || chord(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut app = App::new(Theme::default_dark());
+    for view in ViewId::ALL {
+        app.chrome.active = view;
+        assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit), "{view:?}");
+    }
+    app.chrome.help_open = true;
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit));
+    assert!(app.pending_commands.is_empty());
+}
+
+#[test]
+fn a_chord_reaches_no_view_and_altgr_is_text() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(chord(KeyCode::Char('w'), KeyModifiers::CONTROL), now);
+    app.reduce(chord(KeyCode::Char('b'), KeyModifiers::ALT), now);
+    assert_eq!(app.views.searches.query_text(), "");
+    let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+    app.reduce(chord(KeyCode::Char('@'), alt_gr), now);
+    assert_eq!(app.views.searches.query_text(), "@");
+}
+
+/// `q` is one letter on the wrong tab away: over a running download it asks,
+/// `y` leaves, anything that declines stays, and a second Ctrl-C is the answer.
+#[test]
+fn a_quit_over_a_running_download_asks_first() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    assert!(
+        matches!(app.reduce(key_action(KeyCode::Char('q')), now), Flow::Quit),
+        "nothing running, nothing to ask"
+    );
+    app.state = crate::fixture::three_downloads();
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Continue
+    ));
+    assert!(app.chrome.quit_open);
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    assert_eq!(app.chrome.active, ViewId::Networks, "the confirm is modal");
+    app.reduce(key_action(KeyCode::Esc), now);
+    assert!(!app.chrome.quit_open);
+    app.reduce(key_action(KeyCode::Char('q')), now);
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('y')), now),
+        Flow::Quit
+    ));
+    let ctrl_c = || chord(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Continue));
+    assert!(matches!(app.reduce(ctrl_c(), now), Flow::Quit));
+}
+
+/// A first press of `2` then a typed word must search, not quit on its `q`.
+#[test]
+fn arriving_on_searches_with_no_results_focuses_the_query() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    for letter in "queen".chars() {
+        assert!(matches!(
+            app.reduce(key_action(KeyCode::Char(letter)), now),
+            Flow::Continue
+        ));
+    }
+    assert_eq!(app.views.searches.query_text(), "queen");
+}
 
 #[test]
 fn input_routes_through_mapping_into_chrome_state() {

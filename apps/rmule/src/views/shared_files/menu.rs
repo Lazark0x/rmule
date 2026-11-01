@@ -23,7 +23,7 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::units::short_hash;
 use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
 
@@ -189,9 +189,9 @@ fn step_menu(current: usize, delta: isize, state: &UiState) -> usize {
 
 impl SharedView {
     pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> ViewOutcome {
-        match key.code {
+        match (confirm_key(key.code), key.code) {
             // Confirm: emit the real unshare command for the named file.
-            KeyCode::Char('y') => match self.confirm.take() {
+            (Some(true), _) => match self.confirm.take() {
                 Some(confirm) => ViewOutcome::Emit(Action::Command(CoreCommand::Serve(
                     ServeCommand::UnshareFile {
                         file_hash: confirm.file_hash,
@@ -199,13 +199,11 @@ impl SharedView {
                 ))),
                 None => ViewOutcome::Redraw,
             },
-            // Abort back to the table. `q` dismisses a modal too,
-            // so it never falls through to the global quit mid-confirm.
-            KeyCode::Esc | KeyCode::Char('q') => {
+            (Some(false), _) => {
                 self.confirm = None;
                 ViewOutcome::Redraw
             }
-            code => match self.confirm.as_mut() {
+            (None, code) => match self.confirm.as_mut() {
                 Some(confirm) if RowMove::of(code).is_some() => {
                     scroll_key(&mut confirm.viewport, code);
                     ViewOutcome::Redraw

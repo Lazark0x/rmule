@@ -24,7 +24,7 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
@@ -187,9 +187,6 @@ impl SharedView {
     /// Offer one key to the view. Modals capture first; otherwise
     /// the focused pane navigates. Anything unclaimed bubbles to the globals.
     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        if key.kind == KeyEventKind::Release {
-            return ViewOutcome::Ignored;
-        }
         if let Some(consent) = scan::open_consent(state, &self.answered, false) {
             return scan::consent_key(
                 key,

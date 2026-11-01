@@ -22,7 +22,7 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::Sentence;
 use crate::words::app::{self as words, AddDirectoryRefusal};
 use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
@@ -134,8 +134,8 @@ impl SettingsView {
     /// The remove confirm takes every key: `y` stops sharing, `n` or `Esc`
     /// keeps it.
     pub(super) fn remove_key(&mut self, key: KeyEvent) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => {
+        match (confirm_key(key.code), key.code) {
+            (Some(true), _) => {
                 let Some(path) = self.removing.take() else {
                     return ViewOutcome::Redraw;
                 };
@@ -143,16 +143,16 @@ impl SettingsView {
                     ScanCommand::RemoveSharedDirectory { path },
                 )))
             }
-            KeyCode::Char('n') | KeyCode::Esc => {
+            (Some(false), _) => {
                 self.removing = None;
                 ViewOutcome::Redraw
             }
-            code @ (KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down) => {
+            (None, code @ (KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down)) => {
                 scroll_key(&mut self.modal_viewport, code);
                 ViewOutcome::Redraw
             }
-            KeyCode::Char('q' | 'x') => ViewOutcome::Redraw,
-            _ => ViewOutcome::Ignored,
+            (None, KeyCode::Char('x')) => ViewOutcome::Redraw,
+            (None, _) => ViewOutcome::Ignored,
         }
     }
 }

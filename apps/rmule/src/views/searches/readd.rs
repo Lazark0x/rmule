@@ -8,7 +8,7 @@
 //! place (ADR-0094, "Failed").
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -22,7 +22,7 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::{KnownFileMark, KnownFileMarks, UiState};
 use crate::theme::Theme;
 use crate::views::day;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::download as download_words;
 use crate::words::readd::{self as readd_words, Tone};
 use crate::wrap::wrapped_lines;
@@ -65,8 +65,8 @@ impl SearchesView {
     /// The confirm is modal: `y` starts the download, `n` / `Esc` / `q` keep
     /// things as they are, anything else is swallowed.
     pub(super) fn handle_readd_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        match key.code {
-            KeyCode::Char('y') => match self.readd.take() {
+        match confirm_key(key.code) {
+            Some(true) => match self.readd.take() {
                 Some(ReAdd {
                     mark: KnownFileMark::Failed { download_id, .. },
                     ..
@@ -74,13 +74,13 @@ impl SearchesView {
                 Some(readd) => start_download(&readd.result, state, true),
                 None => ViewOutcome::Redraw,
             },
-            KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('q') => {
+            Some(false) => {
                 self.readd = None;
                 ViewOutcome::Redraw
             }
-            code => {
+            None => {
                 if let Some(readd) = self.readd.as_mut() {
-                    scroll_key(&mut readd.viewport, code);
+                    scroll_key(&mut readd.viewport, key.code);
                 }
                 ViewOutcome::Redraw
             }

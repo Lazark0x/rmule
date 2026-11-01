@@ -25,7 +25,7 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 
 use rmule_core::diagnostics::ServerDiagnostics;
@@ -195,9 +195,6 @@ impl NetworksView {
     /// first; otherwise the focused pane navigates, and anything unclaimed
     /// bubbles back out as [`ViewOutcome::Ignored`].
     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        if key.kind == KeyEventKind::Release {
-            return ViewOutcome::Ignored;
-        }
         self.clamp_selection(state);
 
         // Modals capture input (globals must not fire underneath them), in
