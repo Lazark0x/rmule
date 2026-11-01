@@ -324,7 +324,10 @@ async fn a_temp_directory_inside_the_data_directory_follows_a_move() {
     let mut core = machine.core(Arc::clone(&store), settings.temp_dir, &bytes);
     let mut adopted = false;
     while !adopted {
-        let event = timeout(HANG_GUARD, core.next_event()).await.unwrap().unwrap();
+        let event = timeout(HANG_GUARD, core.next_event())
+            .await
+            .unwrap()
+            .unwrap();
         adopted = matches!(
             event,
             CoreEvent::Download(DownloadEvent::PartFilesAdopted { parts: 1 })
