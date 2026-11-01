@@ -65,8 +65,8 @@ fn seat(svc: &mut BuddyService, buddy_id: KadId, link: Ipv4Endpoint, now: Instan
 fn past_their_table_the_oldest_recruit_goes() {
     let mut svc = BuddyService::new();
     let t0 = Instant::now();
-    let requests: Vec<_> = (0..=RECRUIT_ROWS as u8)
-        .map(|n| recruit(kad_id(n + 1), endpoint(n + 1, 5000)))
+    let requests: Vec<_> = (0..=RECRUIT_ROWS as u32)
+        .map(|n| recruit(kad_id(0x11), Ipv4Endpoint::new(Ipv4Addr::from(n + 1), 5000)))
         .collect();
     for req in &requests {
         svc.consider_findbuddy(req, &open_posture(), our_identity(), t0);

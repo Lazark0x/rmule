@@ -168,7 +168,7 @@ The Kad pump's published reading of its own ADR-0061 recruit rule (`RecruitStatu
 _Avoid_: recruit state, walking flag
 
 **Buddy Recruit**:
-A `0x51` waiting for its dial as an open node's candidate: 80 s, sixteen at most, oldest first. It holds no slot, because a datagram proves nothing; the first recruit to dial from the address it named fills the slot and the others go (ADR-0061).
+A `0x51` waiting for its dial as an open node's candidate: 80 s, 1024 at most, oldest first. It holds no slot, because a datagram proves nothing; the first recruit to dial from the address it named fills the slot and the others go (ADR-0061).
 _Avoid_: pending buddy, buddy request
 
 **Buddy Link**:

@@ -48,6 +48,7 @@
 //! driver's policy (timeouts are driver-owned, `rmule-peer`'s session doctrine),
 //! so the staleness sweep takes it as a parameter.
 
+use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
@@ -263,8 +264,9 @@ struct BuddyLink {
 pub(crate) const RECRUIT_WINDOW: Duration = Duration::from_secs(80);
 
 /// How many **Buddy Recruit**s wait at once, the oldest going first. Stock's
-/// list has no cap; a forger rotating addresses would make this one its own.
-const RECRUIT_ROWS: usize = 16;
+/// list has no cap. A forger rotating addresses can push out a real recruit
+/// only by keeping this many `0x51`s inside its short dial, some 13 a second.
+const RECRUIT_ROWS: usize = 1024;
 
 /// How long a held link may stay silent: stock's buddy socket timeout, 15
 /// minutes on the connection timeout (`ClientTCPSocket.cpp:207-218`), which a
@@ -277,7 +279,7 @@ pub(crate) struct BuddyService {
     slot: Option<BuddyLink>,
     /// The **Buddy Recruit**s waiting for their dial, oldest first. A `0x51`
     /// is spoofable, so it waits here and fills nothing (ADR-0061).
-    recruits: Vec<BuddyLink>,
+    recruits: VecDeque<BuddyLink>,
 }
 
 impl BuddyService {
@@ -285,7 +287,7 @@ impl BuddyService {
     pub(crate) fn new() -> Self {
         Self {
             slot: None,
-            recruits: Vec::new(),
+            recruits: VecDeque::new(),
         }
     }
 
@@ -352,9 +354,9 @@ impl BuddyService {
             recruit.hash != req.requester_hash || recruit.endpoint.ip != req.requester.ip
         });
         if self.recruits.len() == RECRUIT_ROWS {
-            self.recruits.remove(0);
+            self.recruits.pop_front();
         }
-        self.recruits.push(BuddyLink {
+        self.recruits.push_back(BuddyLink {
             buddy_id: req.buddy_id,
             hash: req.requester_hash,
             endpoint: req.requester,
@@ -382,10 +384,14 @@ impl BuddyService {
             return true;
         }
         self.expire_recruits(now);
-        let Some(index) = self.recruits.iter().position(names) else {
+        let Some(mut link) = self
+            .recruits
+            .iter()
+            .position(names)
+            .and_then(|index| self.recruits.remove(index))
+        else {
             return false;
         };
-        let mut link = self.recruits.swap_remove(index);
         link.last_seen = now;
         self.slot = Some(link);
         self.recruits.clear();

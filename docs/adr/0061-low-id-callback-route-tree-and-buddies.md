@@ -103,7 +103,7 @@ in no server's namespace, so the server road is refused for it.
   Otherwise rmule keeps the **Buddy Recruit** and answers
   `0x5A <buddyID><ourHash><ourTCPport>[connectopts]`. A recruit waits two connection timeouts
   (80 s, `CONNECTION_TIMEOUT`) for its dial, a repeat `0x51` restarts its wait, and the table
-  holds 16, the oldest going first, where stock's list has no cap.
+  holds 1024, the oldest going first, where stock's list has no cap.
 - **The held link is the first recruit to dial**, adopted at inbound triage before the
   adopt/serve split: `try_attach` holds a connection when its `OP_HELLO` reports the User
   Hash a live recruit named and its address is the one the `0x51` came from, the same address
