@@ -1,6 +1,6 @@
 ┌ Downloads (1) ──── s sort  S reverse  L add link ┐
-│  File ▲ Size  Done Progress Speed  ETA Src Status│
-│▸ film.m 9.3   0%   ▓▓▓▓░░░░ —      —   0   Downlo│
+│  File ▲                               Status     │
+│▸ film.mkv                             Downloading│
 ┌ Actions — 4D4D4D4D4D… ───────────────────────────┐
 │▸ Pause                                           │
 │  Cancel…                                         │

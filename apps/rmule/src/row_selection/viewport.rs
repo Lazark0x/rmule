@@ -4,8 +4,8 @@
 //! The draw writes it. A list with a cursor asks it to [`follow`] the cursor;
 //! one without asks it to [`show`] the list where it was scrolled, and its
 //! keys [`scroll`] it between draws within what the last draw laid out. An
-//! item is whatever the list scrolls by — a row however many lines it wraps
-//! to, or a line. A [`Viewport`] is `Copy`, so a `&self` draw keeps one in a
+//! item is whatever the list scrolls by — a row, a menu entry however many
+//! lines it wraps to, or a line. A [`Viewport`] is `Copy`, so a `&self` draw keeps one in a
 //! `Cell`.
 //!
 //! [`follow`]: Viewport::follow
@@ -85,9 +85,10 @@ impl TrackCell {
     }
 }
 
-/// Whether a list needs its bar's column: surely when it has more items than
-/// its viewport has lines, else when laid out at its full width its wrapped
-/// rows overflow — asked only of a list short enough to be cheap to lay out.
+/// Whether a list that wraps needs its bar's column: surely when it has more
+/// items than its viewport has lines, else when laid out at its full width its
+/// wrapped lines overflow — asked only of a list short enough to be cheap to
+/// lay out.
 #[must_use]
 pub(crate) fn needs_bar(
     items: usize,

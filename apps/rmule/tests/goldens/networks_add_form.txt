@@ -1,12 +1,12 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─────── c disconnect · a add · U update ┐
-│   Name ▲    Address          Port   Ping Users Files  Age Prio Fail Static▲│
-│▸● eDonkey   10.0.0.1         4661   42ms    1M   24M  12s Norm    0 no    █│
-│   Prime                                                                    │
-│                                                                           ▼│
-│Off-screen: Desc Main hub, no fakes                                         │
-│Grants at┌ Add server ────────────────────────────────────────────┐search,  │
-│large fil│ Name                                                   │ew tags, │
-│unicode, │ Address      10.0.0.300▮                               │on       │
+┌ Servers (4) · 10.0.0.1:4661 HighID ────── c disconnect · d details · a add ┐
+│   Name ▲                  Address          Port  Ping Users Files  Age Prio│
+│▸● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
+│   Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
+│   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
+│   —                       192.168.4.4      4661  soon  soon  soon soon Norm│
+│         ┌ Add server ────────────────────────────────────────────┐         │
+│Off-scree│ Name                                                   │         │
+│Health: a│ Address      10.0.0.300▮                               │         │
 └ too narr│ Port         1–65535                                   │── 1 / 4 ┘
 ┌ Log (0) │                                                        │ K start ┐
 │nothing h│ ✗ '10.0.0.300' is not a valid IPv4 address             │         │

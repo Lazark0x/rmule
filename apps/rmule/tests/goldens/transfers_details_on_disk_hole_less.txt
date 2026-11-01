@@ -1,5 +1,5 @@
-┌ Downloads (3) ─────────── s sort  S reverse  C clear completed  L add link ┐
-│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
+┌ Downloads (3) ─── s sort  S reverse  C clear completed  L add link  z zoom ┐
+│  File ▲                              Size Progress        Speed Status     │
 │▸ bunny.mp4 ┌ File details ────────────────────────────────────┐ Downloading│
 │  ABABABABAB│ name    bunny.mp4                                │ Paused     │
 │  5C5C5C5C5C│ hash    07070707070707070707070707070707         │ Completed  │
@@ -9,12 +9,12 @@
 │            │ speed   123.4 KB/s                               │            │
 │            │ sources 8 known: 1 asking, 3 queued, 1           │            │
 │            │         transferring                             │            │
-│            │ on disk 64.9 MB allocated; this disk holds no    │            │
-└────────────│         holes, so the part file takes its full   │───── 1 / 3 ┘
-┌ Sources · b│         length on disk up to its last verified   │  S reverse ┐
-│  Source ▲  │         part                                     │  Speed     │
-│▸ 10.0.0.1:4│                                                  │  98.7 KB/s │
-│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│  —         │
+│Off-screen: │ on disk 64.9 MB allocated; this disk holds no    │            │
+└ too narrow │         holes, so the part file takes its full   │───── 1 / 3 ┘
+┌ Sources · b│         length on disk up to its last verified   │rse  z zoom ┐
+│  Source ▲  │         part                                     │       Speed│
+│▸ 10.0.0.1:4│                                                  │   98.7 KB/s│
+│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│           —│
 │            └──────────────────────────────────────────────────┘            │
 │                                                                            │
 │                                                                            │

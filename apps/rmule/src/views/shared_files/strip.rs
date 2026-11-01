@@ -16,9 +16,10 @@ use rmule_core::SharedDirectoryDiagnostics;
 use super::SharedView;
 use crate::row_selection::{gutter, viewport};
 use crate::state::UiState;
+use crate::table::cut_middle;
 use crate::theme::Theme;
 use crate::words::scan::{role_words, state_words, under_words};
-use crate::wrap::{clamp_u16, wrap_text};
+use crate::wrap::clamp_u16;
 
 /// The listed directories, in list order.
 fn listed(state: &UiState) -> &[SharedDirectoryDiagnostics] {
@@ -86,34 +87,25 @@ impl SharedView {
             (text, selected == Some(entry.dir.as_path()))
         }));
         let cursor = texts.iter().position(|(_, on)| *on).unwrap_or(0);
-        let rows_at = |width: u16| -> Vec<Vec<Line<'static>>> {
-            let text_w = usize::from(width).saturating_sub(2).max(1);
-            texts
-                .iter()
-                .map(|(text, on)| entry_lines(text, *on, text_w, theme))
-                .collect()
-        };
         // The table keeps at least its header and one row; the hint line
         // takes one more.
         let room = area.height.saturating_sub(3);
-        let bar = viewport::needs_bar(texts.len(), room, || {
-            rows_at(area.width).iter().map(Vec::len).sum::<usize>() > usize::from(room)
-        });
-        let rows = rows_at(if bar {
+        let bar = texts.len() > usize::from(room);
+        let width = if bar {
             area.width.saturating_sub(viewport::BAR_W)
         } else {
             area.width
-        });
-        let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
-        let entries_h = clamp_u16(heights.iter().map(|h| usize::from(*h)).sum()).min(room);
+        };
+        let text_w = usize::from(width).saturating_sub(2);
+        let entries_h = clamp_u16(texts.len()).min(room);
         let first = self
             .strip_viewport
-            .follow(cursor, heights.len(), entries_h, |index| heights[index]);
-        let lines: Vec<Line<'static>> = rows
-            .into_iter()
+            .follow(cursor, texts.len(), entries_h, |_| 1);
+        let lines: Vec<Line<'static>> = texts
+            .iter()
             .skip(first)
-            .flatten()
             .take(usize::from(entries_h))
+            .map(|(text, on)| entry_line(text, *on, text_w, theme))
             .collect();
         let (list, bar) = viewport::split(
             Rect {
@@ -143,28 +135,18 @@ impl SharedView {
     }
 }
 
-/// One strip entry's lines, marked when selected, wrapped under its own
-/// gutter.
-fn entry_lines(text: &str, selected: bool, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+/// One strip entry on its line, marked when selected, its path cut in the
+/// middle where the strip is too narrow for it.
+fn entry_line(text: &str, selected: bool, width: usize, theme: &Theme) -> Line<'static> {
     let style = if selected {
         Style::new().fg(theme.fg)
     } else {
         theme.dim_text()
     };
-    wrap_text(text, width)
-        .into_iter()
-        .enumerate()
-        .map(|(index, part)| {
-            Line::from(vec![
-                if index == 0 {
-                    gutter(selected, true, theme)
-                } else {
-                    Span::raw("  ")
-                },
-                Span::styled(part, style),
-            ])
-        })
-        .collect()
+    Line::from(vec![
+        gutter(selected, true, theme),
+        Span::styled(cut_middle(text, width), style),
+    ])
 }
 
 #[cfg(test)]

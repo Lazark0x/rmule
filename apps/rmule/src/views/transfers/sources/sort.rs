@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::WorkerEntry;
 
-use super::super::{COL_SPACING, TransfersView};
+use super::super::TransfersView;
 pub(in crate::views::transfers) use super::row::SourceKey;
 use super::row::{SourceRow, source_rows};
 use crate::state::UiState;
@@ -129,13 +129,9 @@ impl TransfersView {
         column: u16,
         row: u16,
     ) -> Option<ViewOutcome> {
-        self.source_sort.header_click(
-            self.source_header_area,
-            &self.source_header_cols,
-            usize::from(COL_SPACING),
-            column,
-            row,
-        )
+        let (area, widths) = self.source_drawn.header();
+        self.source_sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

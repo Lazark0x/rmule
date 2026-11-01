@@ -31,12 +31,13 @@ use ratatui::widgets::Paragraph;
 
 use rmule_primitives::FileHash;
 
-use super::{DrawnRows, ViewOutcome, rate_cell};
-use crate::row_selection::viewport::{BAR_W, Viewport};
+use super::{ViewOutcome, rate_cell};
+use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table::Drawn;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::wrap::{TableColumns, clamp_u16, greedy_widths, wrap_text};
+use crate::wrap::{clamp_u16, wrap_text};
 use menu::{Confirm, FileMenu, draw_confirm};
 use sort::SharedTable;
 
@@ -58,8 +59,6 @@ pub struct SharedView {
     sort: TableSort<SharedTable>,
     /// The table's lines, in that order.
     lines_memo: Memo<sort::LinesKey, sort::SharedLine>,
-    /// Each line's height at the widths last drawn.
-    heights_memo: Memo<(sort::LinesKey, Vec<usize>), u16>,
     /// The selected file, by hash.
     cursor: RowCursor<FileHash>,
     /// The selected file's position in the current order — `cursor`
@@ -95,23 +94,15 @@ pub struct SharedView {
     /// Pane areas cached at draw time for click hit-testing.
     files_area: Rect,
     peers_area: Rect,
-    /// The files header as last drawn, and its column widths: a click there
-    /// sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
-    /// The peers header as last drawn, and its column widths.
-    peer_header_area: Rect,
-    peer_header_cols: Vec<usize>,
-    /// Both tables' rows as last drawn, for row clicks.
-    file_rows: DrawnRows,
-    peer_rows: DrawnRows,
+    /// Both tables as last drawn, for clicks.
+    drawn_files: Drawn,
+    drawn_peers: Drawn,
 }
 
 impl Default for SharedView {
     fn default() -> Self {
         Self {
             lines_memo: Memo::default(),
-            heights_memo: Memo::default(),
             focus: Pane::Files,
             sort: TableSort::default(),
             cursor: RowCursor::default(),
@@ -130,12 +121,8 @@ impl Default for SharedView {
             dir_filter: None,
             files_area: Rect::default(),
             peers_area: Rect::default(),
-            header_area: Rect::default(),
-            header_cols: Vec::new(),
-            peer_header_area: Rect::default(),
-            peer_header_cols: Vec::new(),
-            file_rows: DrawnRows::default(),
-            peer_rows: DrawnRows::default(),
+            drawn_files: Drawn::default(),
+            drawn_peers: Drawn::default(),
         }
     }
 }
@@ -144,18 +131,6 @@ impl Default for SharedView {
 enum Pane {
     Files,
     Peers,
-}
-
-/// Column widths for a pane's table: the greedy column absorbs everything
-/// the fixed ones leave over, after the selection gutter and the Viewport's
-/// bar column while it has a `bar`, and no header is split.
-fn table_widths(area: Rect, bar: bool, table: &TableColumns<'_>) -> Vec<usize> {
-    let bar = if bar { usize::from(BAR_W) } else { 0 };
-    greedy_widths(
-        usize::from(area.width).saturating_sub(GUTTER_W + bar),
-        table,
-        1,
-    )
 }
 
 fn pane_border(theme: &Theme, focused: bool) -> Style {
@@ -284,13 +259,13 @@ impl SharedView {
             self.focus = Pane::Peers;
             return outcome;
         }
-        if let Some(index) = self.file_rows.hit(column, row) {
+        if let Some(index) = self.drawn_files.hit(column, row) {
             self.focus = Pane::Files;
             self.cursor.select(&self.file_ids(state), index);
             self.clamp_selection(state);
             return ViewOutcome::Redraw;
         }
-        if let Some(index) = self.peer_rows.hit(column, row) {
+        if let Some(index) = self.drawn_peers.hit(column, row) {
             self.focus = Pane::Peers;
             self.peer_cursor.select(&self.peer_ids(state), index);
             self.clamp_selection(state);

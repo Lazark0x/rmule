@@ -36,6 +36,7 @@ use crate::action::Action;
 use crate::line_edit::LineEdit;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table::Drawn;
 use crate::table_sort::{Memo, RowMove, TableSort, TableSorts};
 use crate::theme::Theme;
 use crate::words::Sentence;
@@ -70,8 +71,8 @@ pub struct SearchesView {
     /// Why the typed query was not sent, under it until the typing changes.
     refusal: Option<Sentence>,
     /// Drawing state only: the row the current Held Search's cursor was
-    /// placed on each frame, and the Viewport's offset.
-    results_state: TableState,
+    /// placed on each frame.
+    selected: Option<usize>,
     /// What part of the results table is on screen.
     viewport: Viewport,
     /// What part of the row menu is on screen, in a frame too short for it.
@@ -82,8 +83,6 @@ pub struct SearchesView {
     order_memo: Memo<sort::OrderKey, usize>,
     /// The widest value of each column, for its width.
     wants_memo: Memo<sort::OrderKey, usize>,
-    /// Each result's height at the widths last drawn.
-    heights_memo: Memo<(sort::OrderKey, Vec<usize>), u16>,
     /// Every search of the run, each with its query and its own cursor.
     held: HeldSearches,
     /// `Some(cursor)` while the row-action menu is open; `cursor` indexes a
@@ -101,13 +100,8 @@ pub struct SearchesView {
     /// Pane areas cached at draw time for click hit-testing.
     input_area: Rect,
     results_area: Rect,
-    /// The header row, from the first column's left edge, and its column
-    /// widths: a click there sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
-    /// The table's rows region and each display row's drawn height.
-    rows_area: Rect,
-    row_heights: Vec<u16>,
+    /// The results table as last drawn, for clicks.
+    drawn: Drawn,
 }
 
 impl SearchesView {
@@ -361,7 +355,7 @@ impl SearchesView {
             self.input_focused = false;
             return outcome;
         }
-        if let Some(index) = self.row_at(column, row) {
+        if let Some(index) = self.drawn.hit(column, row) {
             self.input_focused = false;
             let ids = self.result_ids(state);
             return self.with_cursor(|cursor| cursor.select(&ids, index));

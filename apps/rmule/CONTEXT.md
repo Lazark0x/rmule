@@ -61,7 +61,7 @@ The chrome modal that asks before `q` or Ctrl-C stops a running download: `y` or
 _Avoid_: exit prompt
 
 **Revision**:
-A number on the UI state that moves whenever a fold changed something. A table's order and row heights stand on it, with the table's own sort and filter, so a wheel notch over ten thousand rows rebuilds nothing.
+A number on the UI state that moves whenever a fold changed something. A table's order stands on it, with the table's own sort and filter, so a wheel notch over ten thousand rows rebuilds nothing.
 _Avoid_: generation, dirty flag
 
 **Flash**:
@@ -77,12 +77,16 @@ What the Networks log, the status bar's note and a flash hold: a line written fr
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
-The one line at the bottom of a table that says the selected row's values in the columns that gave way, as `Label value`, above the border's note naming those columns — every table the same way (`views::off_screen`), so a column giving way never loses its value. Shared Files' counters shortened to fit ride it too.
+The one line at the bottom of a table that says what the selected row does not show: the value of every column that gave way and the whole of every value a cell cut or shortened, as `Label value`, above the border's note naming the hidden columns — every table the same way (`views::off_screen`), so a row on one line never loses a value (ADR-0119). It wraps, up to half the table.
 _Avoid_: detail row, tooltip, footer
 
 **Greedy width**:
-A column budget where each column declares a floor and the greedy column — the one holding free text; Servers has two — takes the slack left after the bounded columns (an endpoint, a phase, a rate) have asked for the widest value they show, up to a cap. A row that still cannot fit wraps onto further lines — every character is kept, and a line maps back to the row it came from, so nothing is ever cut. A header is never split: no column is narrower than its header and the sort arrow, and a pane too narrow for every header takes columns away in the table's stated give-way order — the greedy column last of all, never — and says on its bottom border which, or how many, are not shown.
-_Avoid_: truncation, ellipsis, fixed layout
+A table's column budget (`table::greedy_widths`), one line per row. Each column declares a floor it is shown at or not at all, and the greedy column — the one holding free text; Servers has two — takes the slack left after the bounded columns (an endpoint, a phase, a rate) have asked for the widest value they show, up to a cap. Its floor is the room it keeps: a pane that cannot hold every floor takes columns away in the table's stated give-way order, the greedy column never, and says on its bottom border which, or how many, are not shown. A header is never split: no column is narrower than its header and the sort arrow. Numbers and rates sit right, words left, by the column's kind.
+_Avoid_: fixed layout, shrink, wrap (a row does not)
+
+**Middle cut**:
+What free text does in a cell too narrow for it (`table::cut_middle`, ADR-0119): its start and end around `…`, the file extension kept, measured in display cells and walked by grapheme cluster, so a wide glyph or a combining mark is never split. A figure with a shorter form draws that first. The whole value rides the **Off-screen line**.
+_Avoid_: truncation, ellipsis, clipping
 
 **Data directory**:
 What the app resolves before anything else, by core's rule (`--data-dir`, `RMULE_DATA`, then `$XDG_DATA_HOME` or `$HOME` on Unix and `%LOCALAPPDATA%` on Windows): rmule's Durable Store (`rmule.redb`, ADR-0083) and the data files beside it (`clients.met`, `nodes.dat`, the IP filter). The TUI opens that one store and hands its seams to the embedded core, so a directory carries exactly one running client — the engine holds the file lock.

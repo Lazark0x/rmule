@@ -1,6 +1,6 @@
 //! What a server grants and what it was told (ADR-0080, ADR-0099): the
-//! selected server's detail words under the Networks tab's server table, and
-//! the Networks log's line when the connected server's shares are news.
+//! selected server's health line, its details modal, and the Networks log's
+//! line when the connected server's shares are news.
 
 use std::time::Duration;
 
@@ -82,18 +82,6 @@ fn flag_words<'a>(named: impl Iterator<Item = &'a str>, rest: u32) -> String {
     }
 }
 
-/// The selected server's collapsed detail line: what it granted at its last
-/// login and what its last status answer named, each with how long ago —
-/// `age` words a duration the way the table's Age column does.
-#[must_use]
-pub fn grants_line(row: &ServerDiagnostics, age: impl Fn(Duration) -> String) -> String {
-    format!(
-        "{} · {}",
-        grants_sentence(row, &age),
-        udp_sentence(row, &age)
-    )
-}
-
 /// What the server granted at its last login, with how long ago.
 fn grants_sentence(row: &ServerDiagnostics, age: &impl Fn(Duration) -> String) -> String {
     match (row.server.grants, row.grants_age) {
@@ -149,9 +137,18 @@ pub struct DetailContext {
     pub policy: ServerPolicy,
 }
 
-/// The selected server's detail pane (ADR-0080): its
-/// grants, its UDP flags, its health and its shares, one sentence each, in
-/// that order.
+/// The selected server's health, the one line under the server table.
+#[must_use]
+pub fn health_line(
+    row: &ServerDiagnostics,
+    context: DetailContext,
+    age: impl Fn(Duration) -> String,
+) -> String {
+    health_sentence(row, context.policy.dead_after, &age)
+}
+
+/// The selected server's details modal (ADR-0080): its grants, its UDP flags,
+/// its health and its shares, one sentence each, in that order.
 #[must_use]
 pub fn detail_pane(
     row: &ServerDiagnostics,

@@ -1,5 +1,5 @@
-//! The managed-server table (spec §3.4): its column budget, the greedy widths
-//! that keep a row fitting any terminal, and the row projection itself.
+//! The managed-server table (spec §3.4): its column budget and the row
+//! projection itself, with the selected server's health on one line under it.
 //!
 //! Every row is a projection of a level — [`ServerDiagnostics`] joined with
 //! the one session fact — so nothing here is edited locally and reconciled
@@ -16,99 +16,35 @@ use ratatui::widgets::{Block, Paragraph};
 
 use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_core::{ServerHealth, ServerPriority};
-use rmule_primitives::ServerEndpoint;
 
-use super::sort::ServersTable;
 use super::{NetworksView, Pane};
-use crate::row_selection::viewport::{self, Viewport};
-use crate::row_selection::{mark_row, selection_style};
+use crate::row_selection::selection_style;
 use crate::state::{Ed2kConnection, UiState, server_label};
-use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table, cut_middle};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way, short_count};
-use crate::wrap::{
-    Column, TableColumns, clamp_u16, column_lines, gave_way, greedy_widths, wrapped_lines,
-};
+use crate::views::short_count;
+use crate::words::server::DetailContext;
 
-/// Declared widths of the eleven server columns — Name · Address · Port ·
-/// Description · Ping · Users · Files · Age · Prio · Fail · Static.
+/// Floors of the eleven server columns — Name · Address · Port · Description
+/// · Ping · Users · Files · Age · Prio · Fail · Static.
 ///
-/// Name and Description are **greedy**: their entries are floors, and
-/// the two of them share whatever the eight fixed columns leave over. Every
-/// floor is at least its *header*'s width, and the whole set plus its gaps and
-/// gutter fits an 80-column terminal exactly — a wrapped header row reads as a
-/// layout fault rather than as content, so the narrowest supported frame is
-/// where the budget is set.
-/// Address's floor fits the widest IPv4 (`255.255.255.255`, 15 cells) whole —
-/// an address split across lines reads as two rows, not one host (a hands-on
-/// run's finding). The slack came out of the description column,
-/// whose header shortened to `Desc` to keep the header-fits-floor invariant,
-/// and Age took the rest of the description's floor above its header. Age
-/// then took one cell of Name's floor, so a row nothing has dated says why in
-/// a four-cell word (ADR-0080); Name is greedy and wins it back from any
-/// slack.
-const SERVER_COLS: [usize; 11] = [7, 15, 5, 4, 5, 5, 5, 4, 4, 4, 6];
-/// The narrowest Description worth a row's height.
-const SERVER_DESC_MIN: usize = 16;
+/// Name and Description are **greedy** and share what the fixed columns leave
+/// over. Name's floor is the room it keeps before other columns give way to
+/// it, Description's the narrowest worth showing. Address's floor fits the
+/// widest IPv4 (`255.255.255.255`) whole.
+const SERVER_COLS: [usize; 11] = [20, 15, 5, 16, 5, 5, 5, 4, 4, 4, 6];
 /// The greedy pair's indices in [`SERVER_COLS`].
 const SERVER_NAME_COL: usize = 0;
 const SERVER_DESC_COL: usize = 3;
 
-/// The order the server table's columns give way in when the pane cannot hold
-/// every header: Static, Fail, Prio, Files, Users, Desc, Port, Ping,
-/// Age — the last of the figures, so none shows without its age — then
+/// The order the server table's columns give way in: Description, which reads
+/// whole on the Off-screen line, then Static, Fail, Prio, Files, Users, Port,
+/// Ping, Age — the last of the figures, so none shows without its age — then
 /// Address. Name never gives way.
-const SERVER_GIVE_WAY: [usize; 10] = [10, 9, 8, 6, 5, 3, 2, 4, 7, 1];
+const SERVER_GIVE_WAY: [usize; 10] = [3, 10, 9, 8, 6, 5, 2, 4, 7, 1];
 /// Row gutter: selection arrow, connected dot, separator. Both marks are
 /// glyphs, so neither fact is carried by colour alone (spec §5).
 const SERVER_GUTTER_W: usize = 3;
-
-/// Column widths for the server table: [`greedy_widths`] with the slack shared
-/// between the two identity columns.
-///
-/// `greedy_widths` grows exactly one column, which is the right primitive for a
-/// table with one name; this table has two things worth reading in full, so the
-/// surplus is handed to Name and then levelled: the pair end up as equal as
-/// their floors allow, Name keeping the odd column. Description's floor is the
-/// wider of the two only because its header is, so at the tightest frame it
-/// stays wider and everywhere else they match. When there is no surplus at all
-/// the primitive's proportional shrink stands untouched — every column keeps a
-/// usable share and the cells wrap.
-fn server_widths(pane_width: usize, floors: &[usize], headers: &[usize]) -> Vec<usize> {
-    let total = pane_width.saturating_sub(SERVER_GUTTER_W);
-    let table = TableColumns {
-        floors,
-        headers,
-        flex: SERVER_NAME_COL,
-        wants: &[],
-        give_way: &SERVER_GIVE_WAY,
-    };
-    let mut widths = greedy_widths(total, &table, 1);
-    let slack = widths[SERVER_NAME_COL].saturating_sub(floors[SERVER_NAME_COL]);
-    let pair = floors[SERVER_NAME_COL] + floors[SERVER_DESC_COL] + slack;
-    let to_description = (pair / 2)
-        .saturating_sub(floors[SERVER_DESC_COL])
-        .min(slack);
-    widths[SERVER_NAME_COL] -= to_description;
-    widths[SERVER_DESC_COL] += to_description;
-    // A description in a sliver wraps a row to four lines and pushes the rest
-    // of a first-run list off the screen. It gives way to Name instead, and
-    // the selected row's Off-screen line still reads it.
-    if widths[SERVER_DESC_COL] < SERVER_DESC_MIN {
-        let (mut floors, mut headers) = (floors.to_vec(), headers.to_vec());
-        floors[SERVER_DESC_COL] = 0;
-        headers[SERVER_DESC_COL] = 0;
-        let table = TableColumns {
-            floors: &floors,
-            headers: &headers,
-            ..table
-        };
-        widths = greedy_widths(total, &table, 1);
-        widths[SERVER_NAME_COL] += widths[SERVER_DESC_COL];
-        widths[SERVER_DESC_COL] = 0;
-    }
-    widths
-}
 
 /// A row's display name: the server's own banner, or an honest dash. Core
 /// never invents one, and the address is its own column — repeating it here
@@ -162,70 +98,24 @@ fn format_age(age: Duration) -> String {
     }
 }
 
-/// The fewest lines the detail pane takes: one per sentence.
-const DETAIL_PANE_MIN_H: u16 = 4;
-
-/// The selected server's detail as it sits at the bottom of `body` (ADR-0080): its lines and the
-/// height it takes. The table has no
-/// room for these as columns at 80 cells, so they are said whole, wrapped,
-/// for whichever row the cursor is on.
-///
-/// The pane — grants, UDP flags, health and shares, one sentence each —
-/// takes the height its sentences wrap to, at least [`DETAIL_PANE_MIN_H`].
-/// Where that would take more than half of `body` from the table, it
-/// collapses to one wrapped line of grants, UDP flags and the connected
-/// server's share news (ADR-0099).
-fn detail(
-    body: Rect,
-    row: Option<&ServerDiagnostics>,
-    state: &UiState,
-    theme: &Theme,
-) -> (Vec<Line<'static>>, u16) {
-    let Some(row) = row else {
-        return (Vec::new(), 0);
-    };
-    if body.height < 3 || body.width == 0 {
-        return (Vec::new(), 0);
-    }
-    let width = usize::from(body.width);
-    let age = format_age;
-    let told = state
-        .diagnostics
-        .share_announcement
-        .as_ref()
-        .filter(|told| told.server == row.server.endpoint)
-        .map(|told| told.shares);
-    let context = crate::words::server::DetailContext {
+/// What the detail words need beyond the row.
+fn detail_context(row: &ServerDiagnostics, state: &UiState) -> DetailContext {
+    DetailContext {
         connected: state.diagnostics.connected_server.as_ref() == Some(&row.server.endpoint),
-        told,
+        told: state
+            .diagnostics
+            .share_announcement
+            .as_ref()
+            .filter(|told| told.server == row.server.endpoint)
+            .map(|told| told.shares),
         policy: state.preferences.server_policy(),
-    };
-    let pane: Vec<Line<'static>> = crate::words::server::detail_pane(row, context, age)
-        .iter()
-        .flat_map(|sentence| wrapped_lines(sentence, width, theme.dim_text()))
-        .collect();
-    let pane_h = clamp_u16(pane.len()).max(DETAIL_PANE_MIN_H);
-    if pane_h <= body.height / 2 {
-        return (pane, pane_h);
     }
-    let mut text = crate::words::server::grants_line(row, age);
-    if let Some(news) = told.and_then(crate::words::server::shares_line) {
-        text = format!("{text} · {news}");
-    }
-    let lines = wrapped_lines(&text, width, theme.dim_text());
-    let height = clamp_u16(lines.len()).min(body.height / 2);
-    (lines, height)
 }
 
-/// Draw the detail [`detail`] laid out at the bottom of `body` and return
-/// what is left of `body` above it.
-fn draw_detail(frame: &mut Frame, body: Rect, (lines, height): (Vec<Line<'static>>, u16)) -> Rect {
-    if height == 0 {
-        return body;
-    }
-    let line_area = Rect::new(body.x, body.bottom() - height, body.width, height);
-    frame.render_widget(Paragraph::new(lines), line_area);
-    Rect::new(body.x, body.y, body.width, body.height - height)
+/// The selected server's four detail sentences (ADR-0080): grants, UDP flags,
+/// health, shares. What the `d` modal says.
+pub(super) fn detail_sentences(row: &ServerDiagnostics, state: &UiState) -> [String; 4] {
+    crate::words::server::detail_pane(row, detail_context(row, state), format_age)
 }
 
 /// A row's **Ping State** in its five-column cell: the measured UDP round
@@ -258,8 +148,7 @@ impl NetworksView {
         theme: &Theme,
     ) {
         // No rows or header until this draw says so.
-        self.server_rows = DrawnRows::default();
-        self.header_area = Rect::default();
+        self.drawn = table::Drawn::default();
         let focused = self.focus == Pane::Servers;
         let border = if focused { theme.accent } else { theme.dim };
         let rows = self.ordered(state);
@@ -298,7 +187,7 @@ impl NetworksView {
         } else if rows.is_empty() {
             " a add · U update · m menu ".to_string()
         } else {
-            format!(" {toggle}a add · U update · m menu · s/S sort ")
+            format!(" {toggle}d details · a add · U update · m menu · s/S sort · z zoom ")
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(Style::new().fg(border)),
@@ -312,206 +201,97 @@ impl NetworksView {
             return;
         }
 
-        // Greedy Name + Description; every cell wraps rather than clipping.
-        // The sorted column's floor holds its label and the arrow, so the
-        // header stays one line; Name pays for the arrow.
-        let floors = arrow_floors(&self.sort, &SERVER_COLS, SERVER_NAME_COL);
-        let headers = header_widths(&self.sort);
-        let widths_at = |bar: bool| {
-            let bar = if bar { viewport::BAR_W } else { 0 };
-            server_widths(usize::from(inner.width - bar), &floors, &headers)
-        };
-        let dim = theme.dim_text();
-        let header_at = |widths: &[usize]| {
-            let labels: Vec<Column> = ServersTable::COLUMNS
-                .iter()
-                .map(|column| {
-                    let label = header_label(column.label, self.sort.arrow(column.column));
-                    if column.kind.right_aligned() {
-                        Column::right(label, dim)
-                    } else {
-                        Column::left(label, dim)
-                    }
-                })
-                .collect();
-            column_lines(&labels, widths, 1, &Span::raw(" ".repeat(SERVER_GUTTER_W)))
-        };
         let selected = rows.get(self.server_sel).copied();
-        // The selected server's values in the columns that gave way.
-        let off_screen_at = |widths: &[usize]| {
-            selected.map_or_else(Vec::new, |row| {
-                let values: Vec<String> = server_columns(row, Style::new(), theme)
-                    .into_iter()
-                    .map(|column| column.text)
-                    .collect();
-                crate::views::off_screen::hidden(
-                    ServersTable::COLUMNS.iter().map(|column| column.label),
-                    &values,
-                    widths,
-                )
-            })
+        let body = draw_health(frame, inner, selected, state, theme);
+        let cells =
+            |index: usize, _: &[usize]| server_cells(rows[index], Style::new().fg(theme.fg), theme);
+        let server_sel = self.server_sel;
+        let marker = |index: usize| {
+            let is_connected = connected == Some(&rows[index].server.endpoint);
+            server_marker(index == server_sel, is_connected, focused, theme)
         };
-        // The rows' room below the header, above the detail pane and the
-        // `Off-screen:` line, at `widths`.
-        let body_at = |widths: &[usize]| {
-            let header_h = clamp_u16(header_at(widths).len()).min(inner.height);
-            let body = Rect::new(
-                inner.x,
-                inner.y + header_h,
-                inner.width,
-                inner.height - header_h,
-            );
-            let (_, detail_h) = detail(body, selected, state, theme);
-            let body = Rect {
-                height: body.height - detail_h,
-                ..body
-            };
-            body.height - crate::views::off_screen::height(body, &off_screen_at(widths))
+        let table = Table::of(
+            &self.sort,
+            &SERVER_COLS,
+            SERVER_NAME_COL,
+            &SERVER_GIVE_WAY,
+            theme.dim_text(),
+        )
+        .flex_pair(SERVER_DESC_COL)
+        .gutter(SERVER_GUTTER_W)
+        .empty("no servers — press a to add one, or U to update the list from a URL");
+        let rows = Rows {
+            count: rows.len(),
+            selected: Some(server_sel),
+            focused,
+            cells: &cells,
+            marker: Some(&marker),
         };
-        let bar = viewport::needs_bar(rows.len(), inner.height.saturating_sub(1), || {
-            let widths = widths_at(false);
-            let drawn: usize = (0..rows.len())
-                .map(|index| {
-                    self.row_lines(rows[index], index, &widths, connected, theme)
-                        .len()
-                })
-                .sum();
-            drawn > usize::from(body_at(&widths))
-        });
-        let widths = widths_at(bar);
-        let header = header_at(&widths);
-        let header_h = clamp_u16(header.len()).min(inner.height);
-        let (list, _) = viewport::split(inner, bar);
-        frame.render_widget(
-            Paragraph::new(header),
-            Rect::new(list.x, list.y, list.width, header_h),
-        );
-        self.header_area = Rect::new(
-            list.x.saturating_add(clamp_u16(SERVER_GUTTER_W)),
-            list.y,
-            list.width.saturating_sub(clamp_u16(SERVER_GUTTER_W)),
-            header_h,
-        );
-        self.header_cols.clone_from(&widths);
-        if inner.height <= header_h {
-            return;
-        }
-        let body = Rect::new(
-            inner.x,
-            inner.y + header_h,
-            inner.width,
-            inner.height - header_h,
-        );
-
-        if rows.is_empty() {
-            self.viewport = Viewport::default();
-            frame.render_widget(
-                Paragraph::new(wrapped_lines(
-                    "no servers — press a to add one, or U to update the list from a URL",
-                    usize::from(body.width),
-                    dim,
-                )),
-                body,
-            );
-            return;
-        }
-
-        let body = draw_detail(frame, body, detail(body, selected, state, theme));
-        let body = crate::views::off_screen::draw(frame, body, &off_screen_at(&widths), theme);
-        let (body, _) = viewport::split(body, bar);
-        let budget = body.height;
-        let mut viewport = self.viewport;
-        let first = viewport.follow(self.server_sel, rows.len(), budget, |index| {
-            clamp_u16(
-                self.row_lines(rows[index], index, &widths, connected, theme)
-                    .len(),
-            )
-        });
-        self.viewport = viewport;
-
-        let mut lines: Vec<Line> = Vec::new();
-        let mut heights: Vec<u16> = Vec::new();
-        let budget = usize::from(budget);
-        for (index, row) in rows.iter().enumerate().skip(first) {
-            let rendered = self.row_lines(row, index, &widths, connected, theme);
-            // A row that cannot fit whole is not started: half a wrapped row
-            // at the pane edge reads as truncation, which is the one thing
-            // the never-truncate rule forbids. A row taller than the whole pane still renders.
-            if !lines.is_empty() && lines.len() + rendered.len() > budget {
-                break;
-            }
-            heights.push(clamp_u16(rendered.len()));
-            lines.extend(rendered);
-            if lines.len() >= budget {
-                break;
-            }
-        }
-        self.server_rows = DrawnRows::new(body, first, heights);
-        frame.render_widget(Paragraph::new(lines), body);
-        // The bar runs down the header and the rows.
-        let bar = Rect::new(
-            body.right(),
-            inner.y,
-            if bar { viewport::BAR_W } else { 0 },
-            header_h + body.height,
-        );
-        let foot = self.viewport.draw(frame, area, bar, theme);
-        say_gave_way(
+        self.drawn = table::draw(
             frame,
-            foot,
-            &gave_way(ServersTable::COLUMNS.iter().map(|c| c.label), &widths),
+            (area, body),
+            &table,
+            &rows,
+            &mut self.viewport,
             theme,
         );
     }
+}
 
-    /// One listed server as display lines: the ten cells, wrapped, under a
-    /// gutter that carries the selection arrow and the connected dot.
-    fn row_lines(
-        &self,
-        row: &ServerDiagnostics,
-        index: usize,
-        widths: &[usize],
-        connected: Option<&ServerEndpoint>,
-        theme: &Theme,
-    ) -> Vec<Line<'static>> {
-        let selected = index == self.server_sel;
-        let focused = self.focus == Pane::Servers;
-        let is_connected = connected == Some(&row.server.endpoint);
-        let marker = Span::styled(
-            format!(
-                "{}{} ",
-                if selected { "▸" } else { " " },
-                if is_connected { "●" } else { " " }
-            ),
-            if selected {
-                selection_style(theme, focused)
-            } else if is_connected {
-                Style::new().fg(theme.good)
-            } else {
-                theme.dim_text()
-            },
-        );
-        let mut lines = column_lines(
-            &server_columns(row, Style::new().fg(theme.fg), theme),
-            widths,
-            1,
-            &marker,
-        );
-        if selected {
-            mark_row(&mut lines, focused, theme);
-        }
-        lines
+/// The selected server's health on the last line of `body`, its full detail a
+/// key away, and what is left of `body` above it.
+fn draw_health(
+    frame: &mut Frame,
+    body: Rect,
+    row: Option<&ServerDiagnostics>,
+    state: &UiState,
+    theme: &Theme,
+) -> Rect {
+    let Some(row) = row.filter(|_| body.height >= 3) else {
+        return body;
+    };
+    let health = crate::words::server::health_line(row, detail_context(row, state), format_age);
+    let line = Rect::new(body.x, body.bottom() - 1, body.width, 1);
+    let text = cut_middle(&health, usize::from(body.width));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(text, theme.dim_text()))),
+        line,
+    );
+    Rect {
+        height: body.height - 1,
+        ..body
     }
 }
 
-/// One listed server's eleven cells, in [`ServersTable::COLUMNS`]' order: what
-/// its row draws, and what the `Off-screen:` line says of a column that gave
-/// way.
+/// A server row's gutter: the selection arrow and the connected dot.
+fn server_marker(
+    selected: bool,
+    is_connected: bool,
+    focused: bool,
+    theme: &Theme,
+) -> Span<'static> {
+    Span::styled(
+        format!(
+            "{}{} ",
+            if selected { "▸" } else { " " },
+            if is_connected { "●" } else { " " }
+        ),
+        if selected {
+            selection_style(theme, focused)
+        } else if is_connected {
+            Style::new().fg(theme.good)
+        } else {
+            theme.dim_text()
+        },
+    )
+}
+
+/// One listed server's eleven cells, in [`ServersTable::COLUMNS`]' order.
 ///
 /// A **Dead Server** (ADR-0052) is dimmed whole and its Fail cell says
 /// `dead` instead of the tally, in the colour of bad news — the word, not the
 /// colour, carries the state, and the column still sorts by the tally.
-fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Column> {
+fn server_cells(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Cell> {
     let dead = row.health == ServerHealth::Dead;
     let base = if dead { base.fg(theme.dim) } else { base };
     // Unknown dynamics stay dim on whatever background the row has, so a
@@ -523,10 +303,10 @@ fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Co
     let has_description = !description.trim().is_empty();
     let fails = row.server.fail_count;
     vec![
-        Column::left(name, known(!row.server.name.as_bytes().is_empty())),
-        Column::left(row.server.endpoint.host().to_string(), base),
-        Column::right(row.server.endpoint.port().to_string(), base),
-        Column::left(
+        Cell::new(name, known(!row.server.name.as_bytes().is_empty())),
+        Cell::new(row.server.endpoint.host().to_string(), base),
+        Cell::new(row.server.endpoint.port().to_string(), base),
+        Cell::new(
             if has_description {
                 description
             } else {
@@ -534,14 +314,14 @@ fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Co
             },
             known(has_description),
         ),
-        Column::right(format_ping(&row.ping), known(row.ping.measured().is_some())),
-        Column::right(count_cell(row.users, &row.ping), known(row.users.is_some())),
-        Column::right(count_cell(row.files, &row.ping), known(row.files.is_some())),
-        Column::right(age_cell(row.age, &row.ping), known(row.age.is_some())),
-        Column::left(priority_word(row.server.priority), base),
+        Cell::new(format_ping(&row.ping), known(row.ping.measured().is_some())),
+        Cell::new(count_cell(row.users, &row.ping), known(row.users.is_some())),
+        Cell::new(count_cell(row.files, &row.ping), known(row.files.is_some())),
+        Cell::new(age_cell(row.age, &row.ping), known(row.age.is_some())),
+        Cell::new(priority_word(row.server.priority), base),
         // A climbing tally is the row's own bad news; the number says
         // it and the colour only underlines it.
-        Column::right(
+        Cell::new(
             if dead {
                 crate::words::server::DEAD_CELL.to_string()
             } else {
@@ -555,7 +335,7 @@ fn server_columns(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Co
         ),
         // A known no, not an unknown: aMule's Yes/No
         // (`ServerListCtrl.cpp:334`), never a dash.
-        Column::left(
+        Cell::new(
             if row.server.is_static { "yes" } else { "no" },
             known(row.server.is_static),
         ),

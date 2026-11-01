@@ -49,8 +49,8 @@
 //! - [`row_selection`] — the one mark every table puts on its selected row.
 //! - `form` — the one field-list editor the add-server modal, the search
 //!   options and the Settings tab all run on; validation stays with the view.
-//! - `wrap` — width-budgeted wrapping, so a line that does not fit is folded
-//!   rather than cut.
+//! - `table` — the one table: greedy widths, a row on one line, the cut.
+//! - `wrap` — prose that folds onto further lines where it does not fit.
 
 #![warn(missing_docs)]
 
@@ -73,6 +73,7 @@ pub mod rates;
 pub mod row_selection;
 pub mod start_notes;
 pub mod state;
+pub(crate) mod table;
 pub mod table_sort;
 pub mod theme;
 pub mod tui;

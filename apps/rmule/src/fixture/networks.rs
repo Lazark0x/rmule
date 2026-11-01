@@ -121,10 +121,8 @@ pub(crate) fn with_kad(contact_responded: bool) -> UiState {
     state
 }
 
-/// A long name and a long description at the 80-column design floor have
-/// nowhere to go but down. Nothing is clipped and no ellipsis appears
-/// The identity columns are at their floors, so the wrap is the
-/// tightest the table ever renders without the shrink path.
+/// A long name and a long description at the 80-column design floor: both
+/// cut on one line, both whole on the Off-screen line.
 pub(crate) fn long_row() -> UiState {
     let mut row = listed(
         "198.51.100.200",

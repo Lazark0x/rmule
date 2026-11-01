@@ -136,35 +136,9 @@ impl SearchesView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
-        self.sort.header_click(
-            self.header_area,
-            &self.header_cols,
-            super::results::COL_SPACING_CELLS,
-            column,
-            row,
-        )
-    }
-
-    /// The display row a click on the table's rows region lands on, walking
-    /// the drawn rows' heights — a wrapped name makes one row several lines.
-    pub(super) fn row_at(&self, column: u16, row: u16) -> Option<usize> {
-        let area = self.rows_area;
-        let inside = column >= area.x
-            && column < area.x.saturating_add(area.width)
-            && row >= area.y
-            && row < area.y.saturating_add(area.height);
-        if !inside {
-            return None;
-        }
-        let mut line = row - area.y;
-        let first = self.viewport.first();
-        for (index, height) in self.row_heights.iter().enumerate().skip(first) {
-            if line < *height {
-                return Some(index);
-            }
-            line -= height;
-        }
-        None
+        let (area, widths) = self.drawn.header();
+        self.sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -293,7 +267,7 @@ mod tests {
     #[test]
     fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
         let state = tiers();
-        for width in [78, 50] {
+        for width in [78, 64] {
             let mut view = SearchesView::new();
             let lines = screen_lines(&draw_searches(&mut view, &state, width, GOLDEN_H));
             let (x, y) = header_cell(&lines, "Sources");
@@ -337,7 +311,7 @@ mod tests {
         state.searches.get_mut(&search_id).expect("pane").results = batch;
         state.revision += 1;
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
-        assert_eq!(view.results_state.selected(), Some(3));
+        assert_eq!(view.selected, Some(3));
         assert_eq!(
             view.selected_result(&state)
                 .map(|result| result.primary_name().to_display_string()),
@@ -359,7 +333,7 @@ mod tests {
             .push(server_result(0x44, "alpha.mkv", 10, 2, 0));
         state.revision += 1;
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
-        assert_eq!(view.results_state.selected(), Some(0));
+        assert_eq!(view.selected, Some(0));
         assert_eq!(
             view.selected_result(&state)
                 .map(|result| result.primary_name().to_display_string()),

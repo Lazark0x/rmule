@@ -341,7 +341,7 @@ fn the_cursor_follows_its_file_as_rows_arrive_leave_and_reorder() {
 #[test]
 fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
     let state = four();
-    for width in [GOLDEN_W, 66] {
+    for width in [110, 130] {
         let mut view = SharedView::default();
         let lines = draw(&mut view, &state, width);
         let (x, y) = cell_of(&lines, "Request");
@@ -361,28 +361,6 @@ fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
         view.handle_click(x + 2, y, &state);
         assert_eq!(view.sort.column(), SharedColumn::File, "width {width}");
     }
-}
-
-#[test]
-fn a_click_on_any_line_of_a_wrapped_row_selects_that_row() {
-    let state = four();
-    let mut view = SharedView::default();
-    // At 64 columns the File column is too narrow for a name: every
-    // named row wraps over several lines. A taller pane than the usual
-    // golden height keeps every row on screen despite the wrap — this
-    // test is about wrapped-row clicking, not scrolling.
-    let lines = render_to_lines(64, 40, |frame| {
-        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
-    })
-    .lines()
-    .map(str::to_string)
-    .collect::<Vec<_>>();
-    let (x, y) = cell_of(&lines, "charli");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(view.files_selected, 2, "{}", lines.join("\n"));
-    let (x, y) = cell_of(&lines, "bravo");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(view.files_selected, 1);
 }
 
 #[test]

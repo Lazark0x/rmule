@@ -156,13 +156,9 @@ impl SharedView {
         column: u16,
         row: u16,
     ) -> Option<ViewOutcome> {
-        self.peer_sort.header_click(
-            self.peer_header_area,
-            &self.peer_header_cols,
-            1,
-            column,
-            row,
-        )
+        let (area, widths) = self.drawn_peers.header();
+        self.peer_sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

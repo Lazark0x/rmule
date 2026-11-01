@@ -16,26 +16,20 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span, Text};
+use ratatui::text::Text;
 use ratatui::widgets::{Block, Paragraph};
 use rmule_primitives::FileHash;
 
 use super::rate_cell;
-use super::{Pane, SharedView, pane_border, render_empty, table_widths};
-use crate::row_selection::viewport;
-use crate::row_selection::{gutter, mark_row};
+use super::{Pane, SharedView, pane_border, render_empty};
 use crate::state::{UiState, UploadPeer, UploadState};
-use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way, software_label};
+use crate::views::software_label;
 use crate::words::units::short_hash;
-use crate::wrap::{
-    Column, TableColumns, clamp_u16, column_lines, display_width, gave_way, wrapped_lines,
-};
+use crate::wrap::{display_width, wrapped_lines};
 
 pub(super) mod sort;
-
-use sort::{PeerColumn, PeersTable};
 
 /// Floors of the peers table's columns: Peer · Software · State · Speed ·
 /// File. `File` holds the free text and is greedy: it takes the slack left
@@ -56,28 +50,6 @@ const PEER_FLEX: usize = 4;
 /// every header: Software, Speed, State, then Peer. File never gives way.
 const PEER_GIVE_WAY: [usize; 4] = [1, 3, 2, 0];
 
-/// The header, the sort's arrow on the column holding it, which is floored
-/// wide enough for it ([`arrow_floors`]).
-fn peers_header(
-    widths: &[usize],
-    sort: &TableSort<PeersTable>,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let style = theme.dim_text().add_modifier(Modifier::BOLD);
-    let labels: Vec<Column> = PeersTable::COLUMNS
-        .iter()
-        .map(|column| {
-            let label = header_label(column.label, sort.arrow(column.column));
-            if column.column == PeerColumn::Speed {
-                Column::right(label, style)
-            } else {
-                Column::left(label, style)
-            }
-        })
-        .collect();
-    column_lines(&labels, widths, 1, &Span::styled("  ", style))
-}
-
 /// The file a peer is served or waits for, by its shared name — a Partial
 /// Share's by its download's; the short hash until a name is read.
 fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
@@ -94,30 +66,8 @@ fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
         .map_or_else(|| (short_hash(file), false), |name| (name, true))
 }
 
-fn peers_row(
-    peer: &UploadPeer,
-    state: &UiState,
-    bps: f64,
-    widths: &[usize],
-    selected: bool,
-    focused: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let mut row = column_lines(
-        &peer_columns(peer, state, bps, theme),
-        widths,
-        1,
-        &gutter(selected, focused, theme),
-    );
-    if selected {
-        mark_row(&mut row, focused, theme);
-    }
-    row
-}
-
-/// One upload peer's cells, in [`PeersTable::COLUMNS`]' order: what its row
-/// draws, and what the `Off-screen:` line says of a column that gave way.
-fn peer_columns(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Column> {
+/// One upload peer's cells, in [`PeersTable::COLUMNS`]' order.
+fn peer_cells(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Cell> {
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {
         UploadState::Uploading { file } => (crate::words::serve::UPLOADING.to_string(), file),
@@ -135,11 +85,11 @@ fn peer_columns(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> 
         .as_ref()
         .map_or_else(|| ("—".to_string(), dim), |s| (software_label(s), plain));
     vec![
-        Column::left(addr, plain),
-        Column::left(software, software_style),
-        Column::left(state_text, plain),
-        Column::right(speed_text, speed_style),
-        Column::left(file_text, if named { plain } else { dim }),
+        Cell::new(addr, plain),
+        Cell::new(software, software_style),
+        Cell::new(state_text, plain),
+        Cell::new(speed_text, speed_style),
+        Cell::new(file_text, if named { plain } else { dim }),
     ]
 }
 
@@ -165,8 +115,7 @@ impl SharedView {
         state: &UiState,
         theme: &Theme,
     ) {
-        self.peer_rows = DrawnRows::default();
-        self.peer_header_area = Rect::default();
+        self.drawn_peers = table::Drawn::default();
         let focused = self.focus == Pane::Peers;
         let mode = if self.active_only {
             "active only"
@@ -176,7 +125,7 @@ impl SharedView {
         let hint = if state.upload_peers.is_empty() {
             ""
         } else {
-            " s sort  S reverse "
+            " s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(pane_border(theme, focused)),
@@ -218,114 +167,43 @@ impl SharedView {
                 .copied()
                 .unwrap_or(0.0)
         };
-        let cells: Vec<Vec<Column>> = visible
-            .iter()
-            .map(|peer| peer_columns(peer, state, bps_of(peer), theme))
-            .collect();
+        // Join the folded peer row with the tick's synthesized rate by
+        // endpoint — the same key core's upload counters use.
+        let cells = |index: usize, _: &[usize]| {
+            let peer = visible[index];
+            peer_cells(peer, state, bps_of(peer), theme)
+        };
         let mut wants = [0; 5];
         for (index, cap) in PEER_CAPS.into_iter().enumerate() {
-            let widest = cells
-                .iter()
-                .map(|row| display_width(&row[index].text))
+            let widest = (0..visible.len())
+                .map(|row| display_width(&cells(row, &[])[index].text))
                 .max()
                 .unwrap_or(0);
             wants[index] = widest.min(cap);
         }
-        let floors = arrow_floors(&self.peer_sort, &PEER_COLS, PEER_FLEX);
-        let headers = header_widths(&self.peer_sort);
-        let widths_at = |bar: bool| {
-            table_widths(
-                body,
-                bar,
-                &TableColumns {
-                    floors: &floors,
-                    headers: &headers,
-                    flex: PEER_FLEX,
-                    wants: &wants,
-                    give_way: &PEER_GIVE_WAY,
-                },
-            )
+        let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
+        let table = Table::of(
+            &self.peer_sort,
+            &PEER_COLS,
+            PEER_FLEX,
+            &PEER_GIVE_WAY,
+            header_style,
+        )
+        .wants(&wants)
+        .empty("no active uploads");
+        let rows = Rows {
+            count: visible.len(),
+            selected: Some(self.peers_selected),
+            focused,
+            cells: &cells,
+            marker: None,
         };
-        // The selected peer's values in the columns that gave way.
-        let off_screen_at = |widths: &[usize]| {
-            visible
-                .get(self.peers_selected)
-                .map_or_else(Vec::new, |peer| {
-                    let values: Vec<String> = peer_columns(peer, state, bps_of(peer), theme)
-                        .into_iter()
-                        .map(|column| column.text)
-                        .collect();
-                    crate::views::off_screen::hidden(
-                        PeersTable::COLUMNS.iter().map(|c| c.label),
-                        &values,
-                        widths,
-                    )
-                })
-        };
-        // Join the folded peer row with the tick's synthesized rate by
-        // endpoint — the same key core's upload counters use.
-        let rows_at = |widths: &[usize]| -> Vec<Vec<Line<'static>>> {
-            visible
-                .iter()
-                .enumerate()
-                .map(|(idx, peer)| {
-                    let selected = idx == self.peers_selected;
-                    peers_row(peer, state, bps_of(peer), widths, selected, focused, theme)
-                })
-                .collect()
-        };
-        let bar = viewport::needs_bar(visible.len(), body.height.saturating_sub(1), || {
-            let widths = widths_at(false);
-            let room = body
-                .height
-                .saturating_sub(crate::views::off_screen::height(
-                    body,
-                    &off_screen_at(&widths),
-                ))
-                .saturating_sub(clamp_u16(
-                    peers_header(&widths, &self.peer_sort, theme).len(),
-                ));
-            rows_at(&widths).iter().map(Vec::len).sum::<usize>() > usize::from(room)
-        });
-        let widths = widths_at(bar);
-        let rows = rows_at(&widths);
-        let body = crate::views::off_screen::draw(frame, body, &off_screen_at(&widths), theme);
-        let (list, bar) = viewport::split(body, bar);
-        let mut lines = peers_header(&widths, &self.peer_sort, theme);
-        let header_h = clamp_u16(lines.len()).min(list.height);
-        self.peer_header_area = Rect::new(
-            list.x.saturating_add(clamp_u16(super::GUTTER_W)),
-            list.y,
-            list.width.saturating_sub(clamp_u16(super::GUTTER_W)),
-            header_h,
-        );
-        self.peer_header_cols.clone_from(&widths);
-        let heights: Vec<u16> = rows.iter().map(|row| clamp_u16(row.len())).collect();
-        let room = list.height - header_h;
-        let first = self
-            .peers_viewport
-            .follow(self.peers_selected, heights.len(), room, |index| {
-                heights[index]
-            });
-        if visible.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no active uploads",
-                theme.dim_text(),
-            )));
-        } else {
-            lines.extend(rows.into_iter().skip(first).flatten());
-        }
-        self.peer_rows = DrawnRows::new(
-            Rect::new(list.x, list.y + header_h, list.width, room),
-            first,
-            heights[first..].to_vec(),
-        );
-        frame.render_widget(Paragraph::new(lines), list);
-        let foot = self.peers_viewport.draw(frame, area, bar, theme);
-        say_gave_way(
+        self.drawn_peers = table::draw(
             frame,
-            foot,
-            &gave_way(PeersTable::COLUMNS.iter().map(|c| c.label), &widths),
+            (area, body),
+            &table,
+            &rows,
+            &mut self.peers_viewport,
             theme,
         );
         if let (Some(area), Some(text)) = (footer_area, footer) {

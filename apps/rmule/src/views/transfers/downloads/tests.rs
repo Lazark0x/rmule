@@ -2,9 +2,10 @@
 
 use crate::golden::assert_golden;
 
-use super::super::sort::{DownloadColumn, DownloadLine};
+use super::super::sort::{DownloadColumn, DownloadLine, DownloadsTable};
 use super::*;
 use crate::fixture::*;
+use crate::table_sort::SortedTable;
 use rmule_core::DownloadEvent;
 
 /// The line a row reads with the diagnostics beside it, as a table would
@@ -135,15 +136,26 @@ fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
         named.contains("87.7 MB") && !named.contains('≈'),
         "exact size: {named}"
     );
-    assert!(named.contains("42%"), "byte-based done: {named}");
+    assert!(
+        rendered.contains("Off-screen: Done 42%"),
+        "byte-based done:\n{rendered}"
+    );
     // download_id(2): no metadata edge landed — honest fallbacks survive unchanged.
     // Its part map has not landed either, so Done has nothing to divide:
     // `—`, not a 0% that would read as "started and getting nowhere".
     let stub = row("ABABABABAB…");
     assert!(stub.contains("≈ 27.8 MB"), "approx size fallback: {stub}");
+    let state_of = |row: usize| {
+        let mut view = TransfersView::new();
+        view.select_row(&state, row);
+        crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
+            view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+        })
+    };
+    let stub_said = state_of(1);
     assert!(
-        !stub.contains('%'),
-        "no part map, so no done reading: {stub}"
+        stub_said.contains("Off-screen: Done —"),
+        "no part map, so no done reading:\n{stub_said}"
     );
     // download_id(3): metadata known but nameless (Unknown origin) — the name
     // still falls back to the hash stub, but the size is exact (still a
@@ -153,9 +165,10 @@ fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
         unnamed.contains("42.9 MB") && !unnamed.contains('≈'),
         "exact size, no name: {unnamed}"
     );
+    let unnamed_said = state_of(2);
     assert!(
-        unnamed.contains("100%"),
-        "byte-based done reaches 100 exactly: {unnamed}"
+        unnamed_said.contains("Off-screen: Done 100%"),
+        "byte-based done reaches 100 exactly:\n{unnamed_said}"
     );
 }
 
@@ -433,84 +446,50 @@ fn golden_transfers_narrow_headers_whole() {
     });
 }
 
+/// The Status column is floored at its widest word: no width splits or cuts
+/// `Downloading`, and from the canonical width up File keeps its room.
 #[test]
-fn an_overwide_cell_grows_the_row_and_keeps_every_character() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let mut view = TransfersView::new();
-    let mut state = three_downloads();
-    // 12345.6 KB/s is 12 chars in a 10-wide Speed column.
-    state
-        .rates
-        .download_bps
-        .insert(download_id(1), 12_345.6 * 1024.0);
-    let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
-    terminal
-        .draw(|frame| {
+fn no_width_cuts_a_status_word_and_the_name_keeps_its_room() {
+    let state = three_downloads();
+    for width in 60..=140 {
+        let mut view = TransfersView::new();
+        let rendered = crate::golden::render_to_lines(width, GOLDEN_H, |frame| {
             view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
-        })
-        .expect("draw");
-    let buffer = terminal.backend().buffer();
-    let rows: Vec<String> = (0..GOLDEN_H)
-        .map(|y| {
-            (0..GOLDEN_W)
-                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
-                .collect::<String>()
-        })
-        .collect();
-    // The rate wraps at its space: "12345.6" then "KB/s" on the row below.
-    let head = rows
-        .iter()
-        .position(|row| row.contains("12345.6"))
-        .unwrap_or_else(|| panic!("rate head missing:\n{}", rows.join("\n")));
-    assert!(
-        rows[head + 1].contains("KB/s"),
-        "the rate tail was clipped, not wrapped:\n{}",
-        rows.join("\n")
-    );
+        });
+        assert!(rendered.contains("Downloading"), "{width}:\n{rendered}");
+        assert!(view.drawn.header().1[0] >= 30, "{width}:\n{rendered}");
+    }
 }
 
 #[test]
-fn golden_wrap_long_download_name() {
+fn golden_long_download_name() {
     let mut view = TransfersView::new();
     let state = state_with_named_download(&long_name());
-    assert_golden(
-        "transfers_wrap_long_name",
-        WRAP_LONG_NAME_W,
-        WRAP_LONG_NAME_H,
-        |frame| {
-            let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now());
-        },
-    );
+    assert_golden("transfers_cut_long_name", 80, 24, |frame| {
+        let area = frame.area();
+        view.draw(frame, area, &state, &Theme::default_dark(), now());
+    });
 }
 
 #[test]
-fn a_long_real_name_wraps_whole_instead_of_being_cut() {
+fn a_long_real_name_keeps_its_row_to_one_line_and_rides_the_off_screen_line() {
     let name = long_name();
     assert_eq!(name.chars().count(), 200);
     let mut view = TransfersView::new();
     let state = state_with_named_download(&name);
-    let rendered = crate::golden::render_to_lines(WRAP_LONG_NAME_W, WRAP_LONG_NAME_H, |frame| {
+    let rendered = crate::golden::render_to_lines(80, 40, |frame| {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
     });
-    // Scoped to the downloads box: the unrelated
-    // Sources pane title still renders its own short-hash stand-in,
-    // ellipsis and all — that is not the truncation this test guards.
-    let downloads_box: String = rendered
+    let row = rendered
         .lines()
-        .take_while(|line| !line.contains("Sources"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        downloads_box.contains("END-OF-NAME.iso"),
-        "the 200-char name was cut:\n{rendered}"
-    );
-    assert!(
-        !downloads_box.contains('…'),
-        "an ellipsis crept back in:\n{rendered}"
-    );
+        .find(|line| line.contains('▸'))
+        .expect("the row is drawn");
+    assert!(row.contains('…') && row.contains(".iso"), "{row}");
+    let said: String = rendered
+        .lines()
+        .map(|line| line.trim_matches(|c| c == '│' || c == ' '))
+        .collect();
+    assert!(said.contains("END-OF-NAME.iso"), "{rendered}");
 }
 
 /// Downloads waiting for sources say who can still find them one: the first,

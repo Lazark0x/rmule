@@ -4,11 +4,11 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [alpha · 3…]
-┌ Results · Running… ───── Enter menu  [ ] search  x stop  s sort  S reverse ┐
-│  Name ▲  ┌ Download again? ─────────────────────────────────────┐Type      │
-│▸ clip_low│clip_low.avi                                          │Videos    │
-│  distro_h│You have this file, at                                │CD-Images │
-│  song_mid│/home/me/Downloads/clip_low.avi                       │Audio     │
+┌ Results · Running… ───────────────── [ ] search  x stop  s sort  S reverse ┐
+│  Name ▲  ┌ Download again? ─────────────────────────────────────┐ Type     │
+│▸ clip_low│clip_low.avi                                          │ Videos   │
+│  distro_h│You have this file, at                                │ CD-Images│
+│  song_mid│/home/me/Downloads/clip_low.avi                       │ Audio    │
 │          │                                                      │          │
 │          │y download again    Esc keep                          │          │
 │          └──────────────────────────────────────────────────────┘          │

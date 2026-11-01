@@ -511,4 +511,4 @@ pub const SWEEP_UNHEARD: Sentence = Sentence::fixed(
 pub const SHARES_ANNOUNCED: &str = "Shares announced to this server";
 
 mod detail;
-pub use detail::{DetailContext, detail_pane, grants_line, shares_line, shares_log_line};
+pub use detail::{DetailContext, detail_pane, health_line, shares_line, shares_log_line};

@@ -156,58 +156,9 @@ pub(crate) fn table_rows(area: Rect) -> Rect {
     }
 }
 
-/// A table's rows as the last draw laid them out: the region they occupy and
-/// each drawn row's height from the first one on screen. A click is mapped
-/// back through the heights, because a wrapped row is several screen lines
-/// (**Greedy width**) and a line count is not a row count.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct DrawnRows {
-    area: Rect,
-    first: usize,
-    heights: Vec<u16>,
-}
-
-impl DrawnRows {
-    /// Rows drawn into `area`, the topmost being display row `first`, each
-    /// `heights[i]` lines tall.
-    pub(crate) fn new(area: Rect, first: usize, heights: Vec<u16>) -> Self {
-        Self {
-            area,
-            first,
-            heights,
-        }
-    }
-
-    /// The display row a click at (`column`, `row`) lands on, if any.
-    pub(crate) fn hit(&self, column: u16, row: u16) -> Option<usize> {
-        if !self.area.contains(Position::new(column, row)) {
-            return None;
-        }
-        let mut line = row - self.area.y;
-        for (index, height) in self.heights.iter().enumerate() {
-            if line < *height {
-                return Some(self.first + index);
-            }
-            line -= height;
-        }
-        None
-    }
-}
-
-#[cfg(test)]
-impl DrawnRows {
-    /// The screen line display row `index` starts on, if it was drawn.
-    pub(crate) fn line_of(&self, index: usize) -> Option<u16> {
-        let drawn = index.checked_sub(self.first)?;
-        (drawn < self.heights.len())
-            .then(|| self.area.y + self.heights[..drawn].iter().sum::<u16>())
-    }
-}
-
 /// A server-reported population, five columns wide at most: exact under ten
 /// thousand, then whole thousands, then whole millions — `—` when nothing
-/// was reported. A rounded population is still the server's claim; a wrapped
-/// cell would only be noise.
+/// was reported. A rounded population is still the server's claim.
 pub(crate) fn short_count(count: Option<u32>) -> String {
     match count {
         None => "—".to_string(),
@@ -224,7 +175,7 @@ pub(crate) fn pane_hit(area: Rect, column: u16, row: u16) -> bool {
 }
 
 /// Say on a bordered pane's bottom border which of its table's columns gave
-/// way at this width ([`crate::wrap::gave_way`]): a column the pane cannot
+/// way at this width ([`crate::table::gave_way`]): a column the pane cannot
 /// hold is a gap in what the operator sees, and a gap is said in words — by
 /// name when the border holds them, else by count, never cut. `foot` is the
 /// stretch of the border the Viewport's count left
@@ -235,7 +186,7 @@ pub(crate) fn say_gave_way(frame: &mut ratatui::Frame, foot: Rect, hidden: &[&st
     if foot.width == 0 || foot.height == 0 {
         return;
     }
-    let Some(note) = crate::wrap::gave_way_note(hidden, usize::from(foot.width)) else {
+    let Some(note) = crate::table::gave_way_note(hidden, usize::from(foot.width)) else {
         return;
     };
     let line = Rect { height: 1, ..foot };

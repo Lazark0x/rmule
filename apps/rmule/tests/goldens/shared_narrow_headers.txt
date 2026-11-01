@@ -1,21 +1,21 @@
 ┌ Shared Files · 2 files · — ────┐
-│  File ▲ State Size Uploading   │
-│▸ 010101 share    —         1   │
-│  0101…  d                      │
-│  020202 share    —         0   │
-│  0202…  d                      │
+│  File ▲                        │
+│▸ 0101010101…                   │
+│  0202020202…                   │
 │                                │
 │                                │
-│Off-screen: Requests 3 (12) ·   │
-│Accepted 1 (5) · Transferred 1.0│
-│MB (4.0 MB)                     │
-└ 3 columns not shown ──── 1 / 2 ┘
+│                                │
+│Off-screen: State shared · Size │
+│— · Uploading 1 · Requests 3    │
+│(12) · Accepted 1 (5) ·         │
+│Transferred 1.0 MB (4.0 MB)     │
+└ 6 columns not shown ──── 1 / 2 ┘
 ┌ Uploads · active only ─ s sort ┐
-│  Peer ▲     State Speed File   │
-│▸ 10.0.0.1:  Uploa     — 0101010│
-│  4662       ding        101…   │
+│  File                          │
+│▸ 0101010101…                   │
 │                                │
-│Off-screen: Software aMule      │
-│v2.3.3                          │
+│Off-screen: Peer 10.0.0.1:4662 ·│
+│Software aMule v2.3.3 · State   │
+│Uploading · Speed —             │
 │  2 hidden queued               │
-└ 1 column not shown ───── 1 / 1 ┘
+└ 4 columns not shown ──── 1 / 1 ┘

@@ -190,6 +190,7 @@ ratatui = "0.30"
 # What a reader calls a character, for a caret.
 unicode-segmentation = "1"
 # The cells a glyph takes, the same table ratatui draws by.
+unicode-segmentation = "1"
 unicode-width = "0.2"
 # Confined to rmule-bootstrap (ADR-0065): rustls only, no native-tls, minimal
 # features — the fetch impl behind the `Fetcher` seam.

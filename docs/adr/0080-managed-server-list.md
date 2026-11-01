@@ -300,9 +300,9 @@ Flag words are listed in bit order, never sorted by spelling. Every bit aMule 2.
 (`Client2Server/TCP.h:65-71`, `UDP.h:50-57`), eMule (`Server.h:40-53`) and emule-qt's
 IPv6 bit define is named; any other set bit is said by position ("bits 6, 7 and 12, which
 no client names", bit 0 being `0x1`), and the lean Run Log writes the raw TCP and UDP
-words in hex as a `server.grants` record when either changes. The pane takes the height
-its sentences wrap to, at least four lines; where it would take more than half the
-table's body it collapses to one wrapped line.
+words in hex as a `server.grants` record when either changes. One line under the table
+says the health, so the list keeps the screen (ADR-0119); `d` or the row menu opens a modal
+with all four sentences.
 
 ## Consequences
 
@@ -326,5 +326,4 @@ table's body it collapses to one wrapped line.
   Rejected: the operator presses connect and nothing happens.
 - **A timer per outstanding ping.** Rejected: counting at send and absolving on the answer
   is aMule's posture and needs no timer state.
-- **A detail column per grant.** Rejected: the 80-column budget has no room, and a column
-  narrower than its words wraps every row.
+- **A detail column per grant.** Rejected: the 80-column budget has no room.

@@ -35,7 +35,7 @@ An announce's result is typed (`AnnounceOutcome::Announced { file_count }`,
 `Withheld { file_count, reason }`, or `Unsaid`), and the serve raises
 `ServeEvent::FilesAnnounced` or `ServeEvent::FilesWithheld` from it, so a withheld set is never
 logged as announced. `DiagnosticsSnapshot::share_announcement` carries what the connected session
-was told, and the Networks detail pane words it (ADR-0080).
+was told, and the Networks server details word it (ADR-0080).
 
 **The Offer Queue.** The follower hands a session the whole set; what crosses the link is what the
 connection has not been told, in batches, at a pace the server allows. One queue per session, in

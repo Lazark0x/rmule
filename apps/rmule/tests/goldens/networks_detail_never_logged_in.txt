@@ -1,10 +1,9 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─── c connect · a add · U update · m menu ┐
-│   Name ▲       Address          Port   Ping Users Files  Age Prio Fail Static│
-│ ● eDonkey      10.0.0.1         4661   42ms    1M   24M  12s Norm    0 no    │
-│   Prime                                                                      │
-│   Flaky Mirror 172.16.9.9       5000   lost  lost  lost lost Low  dead no    │
-│   Static Pin   10.0.0.2         4242   1.2s  9812  431k   2h High    0 yes   │
-│▸  —            192.168.4.4      4661   soon  soon  soon soon Norm    0 no    │
+┌ Servers (4) · 10.0.0.1:4661 HighID ─────────── c connect · d details · a add ┐
+│   Name ▲               Address          Port  Ping Users Files  Age Prio Fail│
+│ ● eDonkey Prime        10.0.0.1         4661  42ms    1M   24M  12s Norm    0│
+│   Flaky Mirror         172.16.9.9       5000  lost  lost  lost lost Low  dead│
+│   Static Pin           10.0.0.2         4242  1.2s  9812  431k   2h High    0│
+│▸  —                    192.168.4.4      4661  soon  soon  soon soon Norm    0│
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -12,15 +11,16 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│Off-screen: Desc —                                                            │
-│Grants: never logged in, so it has not said what it grants                    │
-│UDP: no status answer yet — the status ping has not asked it this run         │
+│       ┌ — ───────────────────────────────────────────────────────────┐       │
+│       │Grants: never logged in, so it has not said what it grants    │       │
+│       │UDP: no status answer yet — the status ping has not asked it  │       │
+│       │this run                                                      │       │
+│       │Health: not reached yet — no answer and no failed try so far  │       │
+│       │Shares: announced at its next login, as to every server       │       │
+│       └──────────────────────────────────────────────────────────────┘       │
+│Off-screen: Desc — · Static no                                                │
 │Health: not reached yet — no answer and no failed try so far                  │
-│Shares: announced at its next login, as to every server                       │
-└ too narrow to show: Desc ───────────────────────────────────────────── 4 / 4 ┘
+└ too narrow to show: Desc, Static ───────────────────────────────────── 4 / 4 ┘
 ┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │

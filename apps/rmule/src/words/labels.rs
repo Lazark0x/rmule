@@ -44,6 +44,8 @@ pub const UNPIN: &str = "Unpin (currently static)";
 pub const PIN: &str = "Pin as static";
 /// A server row's copy of its link.
 pub const COPY_SERVER_LINK: &str = "Copy server link";
+/// The server menu's item for what the server grants, its health and shares.
+pub const DETAILS: &str = "Details";
 /// A server row's removal, which asks first.
 pub const REMOVE: &str = "Remove…";
 

@@ -64,7 +64,7 @@ impl TransfersView {
         theme: &Theme,
         ids: &[DownloadId],
     ) {
-        let Some(id) = selected_id(ids, &self.table_state) else {
+        let Some(id) = selected_id(ids, self.selected) else {
             return;
         };
         let row = state.downloads.get(&id);

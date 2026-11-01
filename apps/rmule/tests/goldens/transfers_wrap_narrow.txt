@@ -1,18 +1,18 @@
 ┌ Downloads (3) ─────── s sort  S reverse  C clear completed ┐
-│  File ▲     Size    Done Progress Speed   ETA  Src Status  │
-│▸ bunny.mp4  87.7 MB 42%  ██░▓░█▓░ 12345.6 7m00 8   Download│
-│                                   KB/s    s    (1) ing     │
-│  ABABABABAB ≈ 27.8  —    ░░░░░░░░ —       —    0   Paused  │
-│  …          MB                                             │
-│  5C5C5C5C5C 42.9 MB 100% ████████ —       —    1   Complete│
-│  …                                                 d       │
+│  File ▲                              Progress   Status     │
+│▸ bunny.mp4                           ██░█▓░█▓░░ Downloading│
+│  ABABABABAB…                         ░░░░░░░░░░ Paused     │
+│  5C5C5C5C5C…                         ██████████ Completed  │
 │                                                            │
 │                                                            │
-└───────────────────────────────────────────────────── 1 / 3 ┘
-┌ Sources · bunny.mp4 ──────────────────── s sort  S reverse ┐
-│  Source ▲             Software     Phase          Speed    │
-│▸ 10.0.0.1:4662        aMule v2.3.3 recv p4        98.7 KB/s│
-│  10.0.0.2:4662 ·      —            queued #3      —        │
-│  remembered                                                │
 │                                                            │
-└───────────────────────────────────────────────────── 1 / 2 ┘
+│Off-screen: Size 87.7 MB · Done 42% · Speed 12345.6 KB/s ·  │
+│ETA 7m00s · Src 8 (1)                                       │
+└ too narrow to show: Size, Done, Speed, ETA, Src ──── 1 / 3 ┘
+┌ Sources · bunny.mp4 ──────────── s sort  S reverse  z zoom ┐
+│  Source ▲                   Software       Phase           │
+│▸ 10.0.0.1:4662              aMule v2.3.3   recv p4         │
+│  10.0.0.2:4662 · remembered —              queued #3       │
+│                                                            │
+│Off-screen: Speed 98.7 KB/s                                 │
+└ too narrow to show: Speed ────────────────────────── 1 / 2 ┘

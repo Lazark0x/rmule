@@ -233,9 +233,7 @@ pub(crate) fn three_downloads() -> UiState {
 }
 
 /// One download, named `name`, isolated from [`three_downloads`]'s other
-/// rows so a "no ellipsis anywhere" check is not confused by their honest
-/// short-hash stand-ins — those legitimately render one, unrelated to
-/// wrap.
+/// rows, whose short-hash stand-ins carry an ellipsis of their own.
 pub(crate) fn state_with_named_download(name: &str) -> UiState {
     let mut named = download_row(DownloadStatus::Downloading, 0x44, 10);
     named.metadata = Some(metadata(name, 92_000_000, DownloadMetadataOrigin::Link));
@@ -281,17 +279,6 @@ pub(crate) fn state_with_named_download(name: &str) -> UiState {
         ..UiState::default()
     }
 }
-
-// The downloads table splits its pane 8 ways and only gets 62% of the
-// frame height (unlike the Searches results table, which is one
-// borderless table over nearly the whole frame) — a wrapped row taller
-// than its pane's visible rows does not partially render, ratatui's
-// `Table` drops it entirely. 120×30 gives the File column and the pane
-// enough room that the 200-char name's wrapped row actually fits.
-/// Frame width the long-name wrap golden is taken at.
-pub(crate) const WRAP_LONG_NAME_W: u16 = 120;
-/// Frame height that same golden is taken at.
-pub(crate) const WRAP_LONG_NAME_H: u16 = 30;
 
 /// [`three_downloads`] with the first two runs out of sources (ADR-0051's
 /// amendment): the first asked while its session was up, then lost the

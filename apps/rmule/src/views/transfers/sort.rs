@@ -238,13 +238,9 @@ impl TransfersView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
-        self.sort.header_click(
-            self.header_area,
-            &self.header_cols,
-            usize::from(super::COL_SPACING),
-            column,
-            row,
-        )
+        let (area, widths) = self.drawn.header();
+        self.sort
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

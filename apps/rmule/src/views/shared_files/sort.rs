@@ -277,8 +277,9 @@ impl SharedView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
+        let (area, widths) = self.drawn_files.header();
         self.sort
-            .header_click(self.header_area, &self.header_cols, 1, column, row)
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 

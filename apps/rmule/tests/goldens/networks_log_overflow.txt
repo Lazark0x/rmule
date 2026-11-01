@@ -1,13 +1,13 @@
 ┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
-│   Name ▲     Address          Port   Ping Users Files  Age Prio Fail Static│
-│no servers — press a to add one, or U to update the list from a URL         │
+│   Name ▲                  Address          Port  Ping Users Files  Age Prio│
+│   no servers — press a to add one, or U to update the list from a URL      │
 │                                                                            │
 │                                                                            │
 │                                                                            │
 │                                                                            │
 │                                                                            │
 │                                                                            │
-└────────────────────────────────────────────────────────────────────────────┘
+└ too narrow to show: Desc, Fail, Static ────────────────────────────────────┘
 ┌ Log (30) ──────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │11:59:13 part 13 verified          ▲││● Kad: off                            │
 │11:59:14 part 14 verified           ││Joined    — (node not started)        │

@@ -146,8 +146,9 @@ impl NetworksView {
     /// A click on the header row: sort by the column under it. `None` when
     /// the click was not on a header cell.
     pub(super) fn header_click(&mut self, column: u16, row: u16) -> Option<ViewOutcome> {
+        let (area, widths) = self.drawn.header();
         self.sort
-            .header_click(self.header_area, &self.header_cols, 1, column, row)
+            .header_click(area, widths, crate::table::GAP, column, row)
     }
 }
 
@@ -216,7 +217,7 @@ mod tests {
             sort_to(&mut view, &state, column.column);
             for _ in 0..2 {
                 draw(&mut view, &state, 80);
-                assert_eq!(view.header_area.height, 1, "{column:?}");
+                assert_eq!(view.drawn.header_height(), 1, "{column:?}");
                 view.handle_key(press(KeyCode::Char('S')), &state);
             }
         }
@@ -356,7 +357,7 @@ mod tests {
     #[test]
     fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
         let state = listed_servers();
-        for width in [78, 110] {
+        for width in [120, 140] {
             let mut view = NetworksView::new();
             let lines = draw(&mut view, &state, width);
             let (x, y) = cell_of(&lines, "Ping");
@@ -377,7 +378,7 @@ mod tests {
             assert_eq!(view.sort.direction(), Direction::Ascending, "width {width}");
             let lines = draw(&mut view, &state, width);
             let (x, y) = cell_of(&lines, "Static");
-            let first_row = view.server_rows.line_of(0).expect("rows drawn");
+            let first_row = view.drawn.line_of(0).expect("rows drawn");
             view.handle_click(x, first_row, &state);
             assert_eq!(
                 view.sort.column(),

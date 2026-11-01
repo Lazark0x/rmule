@@ -418,13 +418,17 @@ fn missing_last<V>(a: Option<&V>, b: Option<&V>, present: impl Fn(&V, &V) -> Ord
 }
 
 /// Which column a click `x` cells right of the first column's left edge lands
-/// on, for a header laid out as `widths` separated by `gap` blank cells. A
-/// click in a gap lands on nothing.
+/// on, for a header laid out as `widths` with `gap` blank cells between shown
+/// columns. A click in a gap lands on nothing.
 #[must_use]
 pub fn column_at(x: u16, widths: &[usize], gap: usize) -> Option<usize> {
     let mut left = 0usize;
     let x = usize::from(x);
     for (index, width) in widths.iter().enumerate() {
+        // A column that gave way draws nothing and costs no gap.
+        if *width == 0 {
+            continue;
+        }
         if x < left + width {
             return Some(index);
         }
@@ -450,7 +454,7 @@ const ARROW_W: usize = 2;
 
 /// Each column's header width as [`header_label`] draws it under `sort`: the
 /// label, and the arrow's cells on the column holding the sort. What the
-/// greedy widths never split (`wrap::TableColumns::headers`).
+/// greedy widths never split (`table::TableColumns::headers`).
 #[must_use]
 pub fn header_widths<T: SortedTable>(sort: &TableSort<T>) -> Vec<usize> {
     T::COLUMNS
@@ -464,27 +468,4 @@ pub fn header_widths<T: SortedTable>(sort: &TableSort<T>) -> Vec<usize> {
             spec.label.chars().count() + arrow
         })
         .collect()
-}
-
-/// A table's column floors with the sorted column's raised to hold its label
-/// and the arrow on one line. The name column at `flex` pays for the raise,
-/// so the floors' sum — and with it every other column at every width — is
-/// what it was: only the arrow's two cells move with the sort.
-#[must_use]
-pub fn arrow_floors<T: SortedTable>(
-    sort: &TableSort<T>,
-    declared: &[usize],
-    flex: usize,
-) -> Vec<usize> {
-    let mut floors = declared.to_vec();
-    let sorted = T::COLUMNS
-        .iter()
-        .position(|spec| spec.column == sort.column());
-    if let Some(at) = sorted.filter(|at| *at != flex && *at < floors.len()) {
-        let need = T::label(sort.column()).chars().count() + ARROW_W;
-        let raise = need.saturating_sub(floors[at]);
-        floors[at] += raise;
-        floors[flex] = floors[flex].saturating_sub(raise).max(1);
-    }
-    floors
 }

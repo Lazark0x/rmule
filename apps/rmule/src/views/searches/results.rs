@@ -7,39 +7,30 @@
 //! dash when neither name nor tag classifies the file, rather than guessing.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, HighlightSpacing, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Paragraph};
 
 use rmule_primitives::{Ed2kText, SearchResult};
 
 use super::SearchesView;
-use super::sort::ResultsTable;
-use crate::row_selection::{MARKER, selection_style, viewport};
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
-use crate::table_sort::{SortedTable, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
-use crate::views::{human_size, say_gave_way};
-use crate::wrap::{
-    TableColumns, clamp_u16, display_width, gave_way, greedy_widths, wrap_text, wrapped_cell,
-};
+use crate::views::human_size;
+use crate::wrap::{clamp_u16, display_width, wrap_text};
 
-/// Results table columns: Name · Size · Sources · Type. `Name` is greedy
-/// Its declared width is ignored and it takes everything the others
-/// leave over; when the pane is too narrow even for those, they shrink and
-/// every cell wraps. Nothing is ever clipped.
-const RESULT_COLS: [usize; 4] = [20, 11, 12, 10];
+/// Results table columns: Name · Size · Sources · Type. `Name` is greedy: its
+/// entry is the room it keeps before other columns give way to it, and it
+/// takes everything the others leave over.
+const RESULT_COLS: [usize; 4] = [30, 9, 7, 8];
 const RESULT_FLEX: usize = 0;
 /// The bounded columns and the most each asks for beyond its floor when a value
 /// drawn is wider: Size, Sources, Type.
 const RESULT_CAPS: [(usize, usize); 3] = [(1, 12), (2, 16), (3, 14)];
-/// The order the results table's columns give way in when the pane cannot
-/// hold every header: Type, Sources, then Size. Name never gives way.
-const RESULT_GIVE_WAY: [usize; 3] = [3, 2, 1];
-const COL_SPACING: u16 = 1;
-/// [`COL_SPACING`] as the header hit-test counts it.
-pub(super) const COL_SPACING_CELLS: usize = COL_SPACING as usize;
-const SYMBOL_W: u16 = 2;
+/// The order the results table's columns give way in: Type, Size, then
+/// Sources, which is what a result is picked by. Name never gives way.
+const RESULT_GIVE_WAY: [usize; 3] = [3, 1, 2];
 
 /// Source-count tint (spec §3.3 inventory parity): ≥100 green, ≥10 normal fg,
 /// else dim.
@@ -277,8 +268,7 @@ impl SearchesView {
         }
 
         // Nothing to click until a table is drawn.
-        self.header_area = Rect::default();
-        self.rows_area = Rect::default();
+        self.drawn = table::Drawn::default();
         match pane {
             Some(pane) if !pane.results.is_empty() => {
                 self.draw_table(frame, area, inner, state, theme);
@@ -340,14 +330,9 @@ impl SearchesView {
             .held
             .current_mut()
             .and_then(|entry| entry.cursor.place(&ids));
-        self.results_state.select(selected);
+        self.selected = selected;
         let results = self.ordered(state);
 
-        // The Name column is greedy and wraps: a 200-character filename grows
-        // its row instead of being cut. Widths are computed rather than
-        // left to `Constraint::Fill` so an over-narrow pane shrinks the fixed
-        // columns instead of collapsing the name column to nothing.
-        let headers = header_widths(&self.sort);
         let key = self.order_key(state);
         let wants = self.wants_memo.get(key, || {
             let mut wants = vec![0; 4];
@@ -365,166 +350,45 @@ impl SearchesView {
             }
             wants
         });
-        let cols_at = |bar: bool| {
-            let bar = if bar { viewport::BAR_W } else { 0 };
-            greedy_widths(
-                usize::from(area.width.saturating_sub(SYMBOL_W).saturating_sub(bar)),
-                &TableColumns {
-                    floors: &RESULT_COLS,
-                    wants: &wants,
-                    headers: &headers,
-                    flex: RESULT_FLEX,
-                    give_way: &RESULT_GIVE_WAY,
-                },
-                usize::from(COL_SPACING),
-            )
-        };
-        // The selected result's values in the columns that gave way.
-        let off_screen_at = |cols: &[usize]| {
-            selected
-                .and_then(|index| results.get(index))
-                .map_or_else(Vec::new, |result| {
-                    let values = [
-                        result.primary_name().to_display_string(),
-                        human_size(result.file_size()),
-                        result_sources_text(result),
-                        result_type_text(result),
-                    ];
-                    crate::views::off_screen::hidden(
-                        ResultsTable::COLUMNS.iter().map(|c| c.label),
-                        &values,
-                        cols,
-                    )
-                })
-        };
-        // The arrow is part of the header's text, and every column is at
-        // least as wide as its header with the arrow, so a header is one line.
-        let header_style = Style::new().fg(theme.dim).add_modifier(Modifier::BOLD);
-        let header_at = |cols: &[usize]| -> (Row<'static>, u16) {
-            let (cells, heights): (Vec<_>, Vec<u16>) = ResultsTable::COLUMNS
-                .iter()
-                .zip(cols)
-                .map(|(column, width)| {
-                    let label = header_label(column.label, self.sort.arrow(column.column));
-                    wrapped_cell(&label, *width, header_style, column.kind.right_aligned())
-                })
-                .unzip();
-            let height = heights.into_iter().max().unwrap_or(1);
-            (Row::new(cells).style(header_style).height(height), height)
-        };
         let marks = KnownFileMarks::of(state);
-        let row_at = |result: &SearchResult, cols: &[usize]| -> (Row<'static>, u16) {
+        // The tint — or the mark — colours the whole row (inventory parity).
+        let cells = |index: usize, _: &[usize]| {
+            let result = results[index];
             let tint = marks
                 .get(result.file_hash(), result.file_size())
                 .map_or_else(
                     || Style::new().fg(source_tint(result_source_count(result), theme)),
                     |mark| mark_style(mark, theme),
                 );
-            let (name, name_h) = wrapped_cell(
-                &result.primary_name().to_display_string(),
-                cols[0],
-                tint,
-                false,
-            );
-            let (size, size_h) = wrapped_cell(&human_size(result.file_size()), cols[1], tint, true);
-            let (sources, sources_h) =
-                wrapped_cell(&result_sources_text(result), cols[2], tint, true);
-            let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);
-            let height = name_h.max(size_h).max(sources_h).max(type_h);
-            (
-                Row::new(vec![name, size, sources, ftype])
-                    // The tint — or the mark — applies to the whole row
-                    // (inventory parity).
-                    .style(tint)
-                    .height(height),
-                height,
-            )
+            vec![
+                Cell::new(result.primary_name().to_display_string(), tint),
+                Cell::new(human_size(result.file_size()), tint),
+                Cell::new(result_sources_text(result), tint),
+                Cell::new(result_type_text(result), tint),
+            ]
         };
-        // A row's height at some widths is all the viewport needs of the rows
-        // off screen, so they are laid out once and only those in view are
-        // built; the rest hold their height.
-        let heights_at = |cols: &[usize]| {
-            self.heights_memo.get((key, cols.to_vec()), || {
-                results
-                    .iter()
-                    .map(|result| row_at(result, cols).1)
-                    .collect()
-            })
+        let header_style = Style::new().fg(theme.dim).add_modifier(Modifier::BOLD);
+        let table = Table::of(
+            &self.sort,
+            &RESULT_COLS,
+            RESULT_FLEX,
+            &RESULT_GIVE_WAY,
+            header_style,
+        )
+        .wants(&wants);
+        let rows = Rows {
+            count: results.len(),
+            selected,
+            focused: !self.input_focused,
+            cells: &cells,
+            marker: None,
         };
-        let bar = viewport::needs_bar(results.len(), area.height.saturating_sub(1), || {
-            let cols = cols_at(false);
-            let room = area
-                .height
-                .saturating_sub(crate::views::off_screen::height(
-                    area,
-                    &off_screen_at(&cols),
-                ))
-                .saturating_sub(header_at(&cols).1);
-            let drawn: u32 = heights_at(&cols).iter().map(|h| u32::from(*h)).sum();
-            drawn > u32::from(room)
-        });
-        let cols = cols_at(bar);
-        let area = crate::views::off_screen::draw(frame, area, &off_screen_at(&cols), theme);
-        let (header, header_h) = header_at(&cols);
-        let (list, bar) = viewport::split(area, bar);
-        self.header_area = Rect::new(
-            list.x.saturating_add(SYMBOL_W),
-            list.y,
-            list.width.saturating_sub(SYMBOL_W),
-            header_h.min(list.height),
-        );
-        self.rows_area = Rect::new(
-            list.x,
-            list.y.saturating_add(header_h),
-            list.width,
-            list.height.saturating_sub(header_h),
-        );
-        let heights = heights_at(&cols);
-        let room = list.height.saturating_sub(header_h);
-        let first = self
-            .viewport
-            .follow(selected.unwrap_or(0), heights.len(), room, |index| {
-                heights[index]
-            });
-        let mut filled = 0u16;
-        let rows: Vec<Row> = results
-            .iter()
-            .zip(heights.iter())
-            .enumerate()
-            .map(|(index, (result, height))| {
-                if index >= first && filled < room {
-                    filled = filled.saturating_add(*height);
-                    row_at(result, &cols).0
-                } else {
-                    Row::default().height(*height)
-                }
-            })
-            .collect();
-        *self.results_state.offset_mut() = first;
-        self.row_heights = heights.to_vec();
-
-        let widths: Vec<Constraint> = cols
-            .iter()
-            .map(|width| Constraint::Length(clamp_u16(*width)))
-            .collect();
-        self.header_cols = cols;
-        let table = Table::new(rows, widths)
-            .header(header)
-            .column_spacing(COL_SPACING)
-            .row_highlight_style(selection_style(theme, !self.input_focused))
-            .highlight_symbol(MARKER)
-            // The symbol's gutter is always there, so the header's column
-            // edges — and a click on them — do not move with the selection.
-            .highlight_spacing(HighlightSpacing::Always);
-        frame.render_stateful_widget(table, list, &mut self.results_state);
-        let foot = self.viewport.draw(frame, pane, bar, theme);
-        say_gave_way(
+        self.drawn = table::draw(
             frame,
-            foot,
-            &gave_way(
-                ResultsTable::COLUMNS.iter().map(|c| c.label),
-                &self.header_cols,
-            ),
+            (pane, area),
+            &table,
+            &rows,
+            &mut self.viewport,
             theme,
         );
     }

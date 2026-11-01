@@ -12,37 +12,30 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Span;
-use ratatui::widgets::{Cell, HighlightSpacing, Row, Table};
 use rmule_core::DownloadId;
 
 use super::downloads::display_name;
-use super::{
-    COL_SPACING, Pane, SYMBOL_W, TransfersView, draw_centered, pane_block, selected_id,
-    table_widths,
-};
-use crate::row_selection::{MARKER, selection_style, viewport};
+use super::{Pane, TransfersView, draw_centered, pane_block, selected_id};
 use crate::state::{DownloadRow, DownloadStatus, NO_NETWORK_WAIT, UiState};
-use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{rate_cell, software_label};
 use crate::words::Sentence;
 use crate::words::download::source_wait_words;
-use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
+use crate::wrap::display_width;
 
 mod row;
 pub(super) mod sort;
 
 use row::{SourceRow, source_rows};
-use sort::SourcesTable;
 
 /// Sources table columns: Source · Software · Phase · Speed. `Software` holds
 /// the text a peer chose to call itself, so it is greedy and takes the slack
 /// left after the others; they are bounded — an endpoint, a phase, a rate —
-/// and ask for the widest drawn, up to [`SOURCE_CAPS`].
+/// and ask for the widest drawn, up to [`SOURCE_CAPS`]. Source's floor holds an
+/// IPv4 endpoint with its port.
 const SOURCE_COLS: [usize; 4] = [22, 12, 16, 10];
 const SOURCE_FLEX: usize = 1;
 
@@ -66,9 +59,8 @@ impl TransfersView {
         now: Instant,
     ) {
         let focused = self.focus == Pane::Sources;
-        self.source_rows = DrawnRows::default();
-        self.source_header_area = Rect::default();
-        let selected = selected_id(ids, &self.table_state);
+        self.source_drawn = table::Drawn::default();
+        let selected = selected_id(ids, self.selected);
         let title = match selected {
             Some(id) => {
                 let row = state.downloads.get(&id);
@@ -105,180 +97,70 @@ impl TransfersView {
             return;
         }
 
-        let block = pane_block(area.width, (&title, " s sort  S reverse "), focused, theme);
-        // Greedy endpoint column, wrapping cells; the sorted column is
-        // floored wide enough for its arrow, so the header stays one line.
+        let block = pane_block(
+            area.width,
+            (&title, " s sort  S reverse  z zoom "),
+            focused,
+            theme,
+        );
         let keys = self.source_keys(state, Some(id));
         let workers: Vec<SourceRow<'_>> = keys
             .iter()
             .filter_map(|key| listed.iter().find(|row| row.key() == *key).copied())
             .collect();
-        let widest = |text: &dyn Fn(&SourceRow<'_>) -> String| {
-            workers
-                .iter()
-                .map(|worker| display_width(&text(worker)))
-                .max()
-                .unwrap_or(0)
+        let plain = Style::new().fg(theme.fg);
+        // Per-slot receive rate, differenced from the `bytes_received` this
+        // worker carries while receiving. Software is a dash until the slot's
+        // peer completes its hello — and for good for a source whose dial
+        // ended before it.
+        let cells = |index: usize, _: &[usize]| {
+            let worker = &workers[index];
+            let (speed, speed_style) = rate_cell(worker.bps(id, state), theme);
+            vec![
+                Cell::new(worker.source_label(), plain),
+                worker.software().map_or_else(
+                    || Cell::new("—", theme.dim_text()),
+                    |software| Cell::new(software_label(software), plain),
+                ),
+                Cell::new(worker.phase_cell(), plain),
+                Cell::new(speed, speed_style),
+            ]
         };
-        let widths_drawn = [
-            widest(&|worker| worker.source_label()),
-            0,
-            widest(&|worker| worker.phase_cell()),
-            widest(&|worker| rate_cell(worker.bps(id, state), theme).0),
-        ];
         let mut wants = [0; 4];
         for (index, cap) in SOURCE_CAPS.into_iter().enumerate() {
             if let Some(cap) = cap {
-                wants[index] = widths_drawn[index].min(cap);
+                let widest = (0..workers.len())
+                    .map(|row| display_width(&cells(row, &[])[index].text))
+                    .max()
+                    .unwrap_or(0);
+                wants[index] = widest.min(cap);
             }
         }
-        let floors = arrow_floors(&self.source_sort, &SOURCE_COLS, SOURCE_FLEX);
-        let headers = header_widths(&self.source_sort);
-        let values: Vec<Vec<String>> = workers
-            .iter()
-            .map(|worker| {
-                vec![
-                    worker.source_label(),
-                    worker
-                        .software()
-                        .map_or_else(|| "—".to_string(), software_label),
-                    worker.phase_cell(),
-                    rate_cell(worker.bps(id, state), theme).0,
-                ]
-            })
-            .collect();
-        let row_at = |worker: &SourceRow<'_>, cols: &[usize]| -> (Row<'static>, u16) {
-            let (source, source_h) = wrapped_cell(
-                &worker.source_label(),
-                cols[0],
-                Style::new().fg(theme.fg),
-                false,
-            );
-            let (phase, phase_h) = wrapped_cell(
-                &worker.phase_cell(),
-                cols[2],
-                Style::new().fg(theme.fg),
-                false,
-            );
-            // Per-slot receive rate, differenced from the `bytes_received`
-            // this worker carries while receiving.
-            let (speed_text, speed_style) = rate_cell(worker.bps(id, state), theme);
-            let (speed, speed_h) = wrapped_cell(&speed_text, cols[3], speed_style, false);
-            // Degrade: a dash until the slot's peer completes its hello —
-            // and for good for a source whose dial ended before it.
-            let (software, software_h) = worker.software().map_or_else(
-                || (Cell::from(Span::styled("—", theme.dim_text())), 1),
-                |s| {
-                    wrapped_cell(
-                        &software_label(s),
-                        cols[1],
-                        Style::new().fg(theme.fg),
-                        false,
-                    )
-                },
-            );
-            let height = source_h.max(phase_h).max(speed_h).max(software_h);
-            (
-                Row::new(vec![source, software, phase, speed]).height(height),
-                height,
-            )
-        };
-        let cols_at = |bar: bool| {
-            table_widths(
-                area,
-                bar,
-                &TableColumns {
-                    floors: &floors,
-                    headers: &headers,
-                    flex: SOURCE_FLEX,
-                    wants: &wants,
-                    give_way: &SOURCE_GIVE_WAY,
-                },
-            )
-        };
-        // The selected source's values in the columns that gave way.
-        let selected = self.sources_state.selected();
-        let off_screen_at = |cols: &[usize]| {
-            selected
-                .and_then(|index| values.get(index))
-                .map_or_else(Vec::new, |row| {
-                    crate::views::off_screen::hidden(
-                        SourcesTable::COLUMNS.iter().map(|c| c.label),
-                        row,
-                        cols,
-                    )
-                })
-        };
-        let framed = block.inner(area);
-        // The header is one line: its labels are fixed and fit their floors.
-        let bar = viewport::needs_bar(workers.len(), framed.height.saturating_sub(1), || {
-            let cols = cols_at(false);
-            let room = framed
-                .height
-                .saturating_sub(crate::views::off_screen::height(
-                    framed,
-                    &off_screen_at(&cols),
-                ))
-                .saturating_sub(1);
-            let drawn: u32 = workers
-                .iter()
-                .map(|worker| u32::from(row_at(worker, &cols).1))
-                .sum();
-            drawn > u32::from(room)
-        });
-        let cols = cols_at(bar);
-        let header = Row::new(
-            SourcesTable::COLUMNS
-                .iter()
-                .map(|column| header_label(column.label, self.source_sort.arrow(column.column))),
+        let table = Table::of(
+            &self.source_sort,
+            &SOURCE_COLS,
+            SOURCE_FLEX,
+            &SOURCE_GIVE_WAY,
+            theme.dim_text(),
         )
-        .style(theme.dim_text());
-        let (rows, heights): (Vec<_>, Vec<u16>) =
-            workers.iter().map(|worker| row_at(worker, &cols)).unzip();
-        let widths = cols
-            .iter()
-            .map(|width| Constraint::Length(clamp_u16(*width)));
-        let table = Table::new(rows, widths)
-            .header(header)
-            .column_spacing(COL_SPACING)
-            .row_highlight_style(selection_style(theme, focused))
-            .highlight_symbol(MARKER)
-            // The gutter is always there, so a header click lands where drawn.
-            .highlight_spacing(HighlightSpacing::Always);
+        .wants(&wants);
+        let rows = Rows {
+            count: workers.len(),
+            selected: self.source_selected,
+            focused,
+            cells: &cells,
+            marker: None,
+        };
+        let inner = block.inner(area);
         frame.render_widget(block, area);
-        let table_area =
-            crate::views::off_screen::draw(frame, framed, &off_screen_at(&cols), theme);
-        let (list, bar) = viewport::split(table_area, bar);
-        let first = self.source_viewport.follow(
-            self.sources_state.selected().unwrap_or(0),
-            heights.len(),
-            list.height.saturating_sub(1),
-            |index| heights[index],
-        );
-        *self.sources_state.offset_mut() = first;
-        frame.render_stateful_widget(table, list, &mut self.sources_state);
-        let foot = self.source_viewport.draw(frame, area, bar, theme);
-        say_gave_way(
+        self.source_drawn = table::draw(
             frame,
-            foot,
-            &gave_way(SourcesTable::COLUMNS.iter().map(|c| c.label), &cols),
+            (area, inner),
+            &table,
+            &rows,
+            &mut self.source_viewport,
             theme,
         );
-        // Below the one header line, down to the `Off-screen:` line if any.
-        let inner = Rect::new(
-            list.x,
-            list.y.saturating_add(1),
-            list.width,
-            list.height.saturating_sub(1),
-        );
-        self.source_header_area = Rect::new(
-            inner.x.saturating_add(SYMBOL_W),
-            inner.y.saturating_sub(1),
-            inner.width.saturating_sub(SYMBOL_W),
-            1,
-        );
-        self.source_header_cols = cols;
-        self.source_rows = DrawnRows::new(inner, first, heights[first..].to_vec());
     }
 }
 

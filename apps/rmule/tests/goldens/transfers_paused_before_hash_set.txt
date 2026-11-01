@@ -1,6 +1,6 @@
-┌ Downloads (1) ────────────────────────────── s sort  S reverse  L add link ┐
-│  File ▲      Size       Done Progress   Speed      ETA    Src   Status     │
-│▸ early.iso   27.8 MB    0%   ░░░░░░░░░░ —          —      0     Paused     │
+┌ Downloads (1) ────────────────────── s sort  S reverse  L add link  z zoom ┐
+│  File ▲                              Size Progress        Speed Status     │
+│▸ early.iso                        27.8 MB ░░░░░░░░░░          — Paused     │
 │                                                                            │
 │                                                                            │
 │                                                                            │
@@ -9,8 +9,8 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                                                                            │
-└───────────────────────────────────────────────────────────────────── 1 / 1 ┘
+│Off-screen: Done 0% · ETA — · Src 0                                         │
+└ too narrow to show: Done, ETA, Src ───────────────────────────────── 1 / 1 ┘
 ┌ Sources · early.iso ───────────────────────────────────────────────────────┐
 │                                                                            │
 │                                                                            │

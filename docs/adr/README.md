@@ -125,3 +125,4 @@ where a rejected alternative would otherwise come back.
 | [0116](0116-asking-and-transferring.md) | A download asks for queue places under one Connection Budget and transfers from every slot it is granted; a Low-ID rmule reasks at 15 minutes; an uploader we queue at is preferred within aMule's score |
 | [0117](0117-block-level-parts-and-a-bounded-end-game.md) | A part's blocks are shared by every worker that holds it, and its last blocks are asked twice, at most three at a time |
 | [0118](0118-what-a-panic-costs.md) | What a panic costs: the process in a dist build, the task elsewhere, and always a record |
+| [0119](0119-one-line-per-row.md) | Every table draws one line per row; free text is cut in the middle keeping its extension, and the selected row says it whole on the Off-screen line |

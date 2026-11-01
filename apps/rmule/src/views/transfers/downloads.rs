@@ -15,22 +15,18 @@
 //! that pace is too slow to estimate (ADR-0071, "Download ETA").
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::Line;
-use ratatui::widgets::{Cell, HighlightSpacing, Row, Table};
 use rmule_core::diagnostics::{DownloadDiagnostics, PartCounts, PartState, WorkerPhase};
-use rmule_core::{DownloadId, DownloadMetadata, DownloadMetadataOrigin, SourceWait};
+use rmule_core::{DownloadMetadata, DownloadMetadataOrigin, SourceWait};
 use rmule_primitives::{ED2K_PART_SIZE, FileHash};
 
 use super::chunks::chunk_bar;
-use super::sort::{DownloadLine, DownloadsTable};
-use super::{COL_SPACING, Pane, SYMBOL_W, TransfersView, draw_centered, pane_block, table_widths};
-use crate::row_selection::{MARKER, selection_style, viewport};
+use super::sort::DownloadLine;
+use super::{Pane, TransfersView, draw_centered, pane_block};
 use crate::state::{DownloadRow, DownloadStatus, UiState};
-use crate::table_sort::{SortedTable, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
 use crate::words::download::{
     ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time, part_check_status,
@@ -38,22 +34,25 @@ use crate::words::download::{
 };
 use crate::words::labels;
 use crate::words::units::short_hash_or_dash;
-use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
-
-/// Width of the in-table chunk map. Fixed so the golden is deterministic
-/// regardless of the table's flex layout — and so the number of parts each
-/// glyph buckets is a property of the file, not of the terminal.
-const CHUNK_CELL_W: usize = 10;
+use crate::wrap::display_width;
 
 /// Downloads table columns: File · Size · Done · Progress · Speed · ETA · Src
-/// · Status. `File` is greedy — its declared width is ignored and it
-/// takes every column the others leave over; when the pane is too narrow even
-/// for those, they shrink and every cell wraps. Nothing is ever clipped.
-const DOWNLOAD_COLS: [usize; 8] = [11, 10, 4, CHUNK_CELL_W, 10, 6, 5, 11];
+/// · Status. `File` is greedy: its entry is the room it keeps before other
+/// columns give way to it. Status is floored at `Downloading`, so no status
+/// word is ever cut at the widths a row can be read at.
+const DOWNLOAD_COLS: [usize; 8] = [30, 9, 4, CHUNK_CELL_W, 10, 6, 5, 11];
 const DOWNLOAD_FLEX: usize = 0;
 
+/// The chunk map's floor, and the most it grows to: the details modal's width.
+const CHUNK_CELL_W: usize = 10;
+const CHUNK_CELL_MAX: usize = 50;
+
+/// The column holding the chunk map.
+const PROGRESS_COL: usize = 3;
+
 /// The most each bounded column asks for beyond its floor when a value drawn is
-/// wider (`None`: the name, which is greedy, and the fixed-width chunk bar).
+/// wider (`None`: the name, which is greedy, and the chunk bar, which asks by
+/// the pane's width).
 const DOWNLOAD_CAPS: [Option<usize>; 8] = [
     None,
     Some(12),
@@ -62,13 +61,20 @@ const DOWNLOAD_CAPS: [Option<usize>; 8] = [
     Some(14),
     Some(10),
     Some(9),
-    Some(14),
+    Some(24),
 ];
 
-/// The order the downloads table's columns give way in when the pane cannot
-/// hold every header: ETA, Src, Done, Size, Speed, Progress, then
-/// Status. File never gives way.
+/// The order the downloads table's columns give way in: ETA, Src, Done — the
+/// chunk map draws what it says — then Size, Speed, Progress and Status. File
+/// never gives way.
 const DOWNLOAD_GIVE_WAY: [usize; 7] = [5, 6, 2, 1, 4, 3, 7];
+
+/// The chunk map's width in a pane `pane_width` wide: its floor, growing with
+/// a third of what the pane has past a hundred cells, so a large file buckets
+/// fewer parts per cell where there is room for it.
+fn chunk_width(pane_width: u16) -> usize {
+    (usize::from(pane_width).saturating_sub(70) / 3).clamp(CHUNK_CELL_W, CHUNK_CELL_MAX)
+}
 
 pub(super) fn diag_counts(diag: Option<&DownloadDiagnostics>) -> PartCounts {
     diag.map_or_else(PartCounts::default, DownloadDiagnostics::part_counts)
@@ -273,15 +279,12 @@ impl TransfersView {
         theme: &Theme,
         lines: &[DownloadLine],
     ) {
-        let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
-        let ids = ids.as_slice();
         let focused = self.focus == Pane::Table;
-        let title = format!(" Downloads ({}) ", ids.len());
+        let title = format!(" Downloads ({}) ", lines.len());
         // Nothing to click until a table is drawn.
-        self.header_area = Rect::default();
-        self.rows = DrawnRows::default();
+        self.drawn = table::Drawn::default();
 
-        if ids.is_empty() {
+        if lines.is_empty() {
             let block = pane_block(area.width, (&title, " L add link "), focused, theme);
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -295,20 +298,16 @@ impl TransfersView {
         }
         // `C` is offered while it has something to clear.
         let hint = if !super::clear::completed_ids(state).is_empty() {
-            " s sort  S reverse  C clear completed  L add link "
+            " s sort  S reverse  C clear completed  L add link  z zoom "
         } else {
-            " s sort  S reverse  L add link "
+            " s sort  S reverse  L add link  z zoom "
         };
         let block = pane_block(area.width, (&title, hint), focused, theme);
         let inner = block.inner(area);
+        frame.render_widget(block, area);
 
-        // The name column is greedy: it takes whatever the fixed columns leave
-        // over, so nothing is ever cut while the pane has room. The
-        // widths are computed here rather than left to `Constraint::Fill`, so
-        // an over-narrow pane shrinks the fixed columns (their cells wrap)
-        // instead of collapsing the name column to nothing.
-        // The sorted column's floor holds its label and the arrow, so the
-        // header stays one line; the name column pays for the arrow.
+        let cells =
+            |index: usize, cols: &[usize]| download_cells(&lines[index], state, cols, theme);
         let values: Vec<Vec<String>> = lines.iter().map(|line| line.values(theme)).collect();
         let mut wants = [0; 8];
         for (index, cap) in DOWNLOAD_CAPS.into_iter().enumerate() {
@@ -321,173 +320,61 @@ impl TransfersView {
                 wants[index] = widest.min(cap);
             }
         }
-        let floors = arrow_floors(&self.sort, &DOWNLOAD_COLS, DOWNLOAD_FLEX);
-        let headers = header_widths(&self.sort);
-        let cols_at = |bar: bool| {
-            table_widths(
-                area,
-                bar,
-                &TableColumns {
-                    floors: &floors,
-                    headers: &headers,
-                    flex: DOWNLOAD_FLEX,
-                    wants: &wants,
-                    give_way: &DOWNLOAD_GIVE_WAY,
-                },
-            )
+        wants[PROGRESS_COL] = chunk_width(area.width);
+        let table = Table::of(
+            &self.sort,
+            &DOWNLOAD_COLS,
+            DOWNLOAD_FLEX,
+            &DOWNLOAD_GIVE_WAY,
+            theme.dim_text(),
+        )
+        .wants(&wants)
+        .left(PROGRESS_COL);
+        let rows = Rows {
+            count: lines.len(),
+            selected: self.selected,
+            focused,
+            cells: &cells,
+            marker: None,
         };
-        // The selected download's values in the columns that gave way.
-        let selected = self.table_state.selected();
-        let off_screen_at = |cols: &[usize]| {
-            selected
-                .and_then(|at| values.get(at))
-                .map_or_else(Vec::new, |values| {
-                    crate::views::off_screen::hidden(
-                        DownloadsTable::COLUMNS.iter().map(|c| c.label),
-                        values,
-                        cols,
-                    )
-                })
-        };
-        let bar = viewport::needs_bar(lines.len(), inner.height.saturating_sub(1), || {
-            let cols = cols_at(false);
-            let room = inner
-                .height
-                .saturating_sub(crate::views::off_screen::height(
-                    inner,
-                    &off_screen_at(&cols),
-                ))
-                .saturating_sub(self.header(&cols, theme).1);
-            let drawn: u32 = lines
-                .iter()
-                .map(|line| u32::from(self.download_row(line, state, theme, &cols).1))
-                .sum();
-            drawn > u32::from(room)
-        });
-        let cols = cols_at(bar);
-        let (header, header_h) = self.header(&cols, theme);
-        let (rows, heights): (Vec<_>, Vec<u16>) = lines
-            .iter()
-            .map(|line| self.download_row(line, state, theme, &cols))
-            .unzip();
-        let widths = cols
-            .iter()
-            .map(|width| Constraint::Length(clamp_u16(*width)));
-        let table = Table::new(rows, widths)
-            .header(header)
-            .column_spacing(COL_SPACING)
-            .row_highlight_style(selection_style(theme, focused))
-            .highlight_symbol(MARKER)
-            // The symbol's gutter is always there, so the header's column
-            // edges — and a click on them — do not move with the selection.
-            .highlight_spacing(HighlightSpacing::Always);
-        frame.render_widget(block, area);
-        let inner = crate::views::off_screen::draw(frame, inner, &off_screen_at(&cols), theme);
-        let (list, bar) = viewport::split(inner, bar);
-        let first = self.viewport.follow(
-            self.table_state.selected().unwrap_or(0),
-            heights.len(),
-            list.height.saturating_sub(header_h),
-            |index| heights[index],
-        );
-        *self.table_state.offset_mut() = first;
-        frame.render_stateful_widget(table, list, &mut self.table_state);
-        let foot = self.viewport.draw(frame, area, bar, theme);
-        say_gave_way(
+        self.drawn = table::draw(
             frame,
-            foot,
-            &gave_way(DownloadsTable::COLUMNS.iter().map(|c| c.label), &cols),
+            (area, inner),
+            &table,
+            &rows,
+            &mut self.viewport,
             theme,
         );
-
-        self.header_area = Rect::new(
-            list.x.saturating_add(SYMBOL_W),
-            list.y,
-            list.width.saturating_sub(SYMBOL_W),
-            header_h.min(list.height),
-        );
-        self.header_cols = cols;
-        self.rows = DrawnRows::new(
-            Rect::new(
-                list.x,
-                list.y.saturating_add(header_h),
-                list.width,
-                list.height.saturating_sub(header_h),
-            ),
-            first,
-            heights[first..].to_vec(),
-        );
     }
+}
 
-    /// The header row at `cols`, and its height: one line, since every
-    /// column holds its header and the sort's arrow, unless the pane is too
-    /// narrow for even the greedy column's.
-    fn header(&self, cols: &[usize], theme: &Theme) -> (Row<'static>, u16) {
-        let (cells, heights): (Vec<_>, Vec<u16>) = DownloadsTable::COLUMNS
-            .iter()
-            .zip(cols)
-            .map(|(column, width)| {
-                let label = header_label(column.label, self.sort.arrow(column.column));
-                wrapped_cell(&label, *width, theme.dim_text(), false)
-            })
-            .unzip();
-        let height = heights.into_iter().max().unwrap_or(1);
-        (
-            Row::new(cells).style(theme.dim_text()).height(height),
-            height,
-        )
-    }
-
-    fn download_row(
-        &self,
-        line: &DownloadLine,
-        state: &UiState,
-        theme: &Theme,
-        cols: &[usize],
-    ) -> (Row<'static>, u16) {
-        let diag = state.diagnostics.downloads.get(&line.id);
-        let plain = Style::new().fg(theme.fg);
-        let name_style = if line.name_real {
-            plain
-        } else {
-            theme.dim_text()
-        };
-        let (speed_text, speed_style) = rate_cell(line.bps, theme);
-        // Every cell wraps at its column instead of clipping; the row grows to
-        // the tallest of them.
-        let cells = [
-            (line.name.clone(), cols[0], name_style, false),
-            (line.size_cell(), cols[1], plain, false),
-            (line.done_cell(), cols[2], plain, false),
-            (speed_text, cols[4], speed_style, false),
-            (eta_cell(line.eta), cols[5], plain, false),
-            (line.sources_cell(), cols[6], plain, false),
-            (
-                line.status_text.clone(),
-                cols[7],
-                status_style(line.status, theme),
-                false,
-            ),
-        ];
-        let built =
-            cells.map(|(text, width, style, right)| wrapped_cell(&text, width, style, right));
-        let height = built.iter().map(|(_, height)| *height).max().unwrap_or(1);
-        let [file, size, done, speed, eta, src, status] = built.map(|(cell, _)| cell);
-
-        let table_row = Row::new(vec![
-            file,
-            size,
-            done,
-            // The bar is sized to its actual column so it is never cut.
-            Cell::from(Line::from(chunk_bar(diag_parts(diag), cols[3], theme))),
-            speed,
-            eta,
-            src,
-            status,
-        ])
-        .height(height);
-        (table_row, height)
-    }
+/// One download's cells, in [`DownloadsTable::COLUMNS`]' order. The Progress
+/// bar has no text of its own; the Off-screen line reads it as the Done figure.
+fn download_cells(
+    line: &DownloadLine,
+    state: &UiState,
+    cols: &[usize],
+    theme: &Theme,
+) -> Vec<Cell> {
+    let diag = state.diagnostics.downloads.get(&line.id);
+    let plain = Style::new().fg(theme.fg);
+    let name_style = if line.name_real {
+        plain
+    } else {
+        theme.dim_text()
+    };
+    let (speed_text, speed_style) = rate_cell(line.bps, theme);
+    let done = line.done_cell();
+    vec![
+        Cell::new(line.name.clone(), name_style),
+        Cell::new(line.size_cell(), plain),
+        Cell::new(done.clone(), plain),
+        Cell::new(done, plain).drawn(chunk_bar(diag_parts(diag), cols[PROGRESS_COL], theme)),
+        Cell::new(speed_text, speed_style),
+        Cell::new(eta_cell(line.eta), plain),
+        Cell::new(line.sources_cell(), plain),
+        Cell::new(line.status_text.clone(), status_style(line.status, theme)),
+    ]
 }
 
 /// Whether `status` is a running download's and every source its run knows
@@ -575,9 +462,9 @@ impl DownloadLine {
         }
     }
 
-    /// The cell texts, in [`DownloadsTable::COLUMNS`]' order — what the
-    /// `Off-screen:` line says of a column that gave way. The Progress bar
-    /// has no text of its own; it reads as the Done figure it draws.
+    /// The cell texts, in the table's column order: what the columns ask
+    /// their widths by. The Progress bar has no text of its own; it reads as
+    /// the Done figure.
     pub(super) fn values(&self, theme: &Theme) -> Vec<String> {
         let done = self.done_cell();
         vec![

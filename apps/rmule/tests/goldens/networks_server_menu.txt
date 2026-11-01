@@ -1,18 +1,18 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─ c connect · a add · U update · m menu ┐
-│   Name ▲    Address          Port   Ping Users Files  Age Prio Fail Static▲│
-│ ● eDonkey   10.0.0.1         4661   42ms    1M   24M  12s Norm    0 no    █│
-│   Prime                                                                   ▄│
-│▸  Flaky     172.16.9.9       5000   lost  lost  lost lost Low  dead no     │
-│   Mirror                                                                  ▼│
-│Off-screen: De┌ Server actions ──────────────────────────────┐              │
-│Grants: never │ Connect (c)                                  │DP: no status │
-│answer yet — i│ Copy server link                             │              │
-└ too narrow to│ Remove…                                      │─────── 2 / 4 ┘
-┌ Log (0) ─────│ Pin as static                                │───── K start ┐
-│nothing has ha│ Priority: Low → Norm                         │              │
+┌ Servers (4) · 10.0.0.1:4661 HighID ───────── c connect · d details · a add ┐
+│   Name ▲                  Address          Port  Ping Users Files  Age Prio│
+│ ● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
+│▸  Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
+│   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
+│   —          ┌ Server actions ──────────────────────────────┐soon soon Norm│
+│              │ Connect (c)                                  │              │
+│Off-screen: De│ Copy server link                             │              │
+│Health: dead s│ Remove…                                      │(limit 3)     │
+└ too narrow to│ Pin as static                                │─────── 2 / 4 ┘
+┌ Log (0) ─────│ Priority: Low → Norm                         │───── K start ┐
+│nothing has ha│ Details                                      │              │
 │              │ Add server… (a)                              │arted)        │
 │              │ Update list from URL… (U)                    │              │
-│              └─────────────────────────────────────── 1 / 7 ┘              │
+│              └─────────────────────────────────────── 1 / 8 ┘              │
 │                                    ││UDP       — (never run)               │
 │                                    ││Keywords  —                           │
 │                                    ││Node id   —                           │

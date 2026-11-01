@@ -1,16 +1,16 @@
-┌ Shared Files · 2 files · — ─────────────────────────────────────────────────────────────────────── s sort  S reverse ┐
-│  File ▲                       State               Size  Uploading        Requests        Accepted         Transferred│
-│▸ film.mkv                     shared          700.0 MB          1 123456 (654321) 111222 (333444) 500.0 GB (999.0 GB)│
-│  0202020202…                  shared                 —          0           0 (0)           0 (0)           0 B (0 B)│
+┌ Shared Files · 2 files · — ─────────────────────────────────────────────────────────────── s sort  S reverse  z zoom ┐
+│  File ▲                         State               Size Uploading        Requests       Accepted         Transferred│
+│▸ film.mkv                       shared          700.0 MB         1 123456 (654321)         111222 500.0 GB (999.0 GB)│
+│  0202020202…                    shared                 —         0           0 (0)          0 (0)           0 B (0 B)│
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
 │                                                                                                                      │
-│                                                                                                                      │
+│Off-screen: Accepted 111222 (333444)                                                                                  │
 └─────────────────────────────────────────────────────────────────────────────────────────────────────────────── 1 / 2 ┘
-┌ Uploads · active only ──────────────────────────────────────────────────────────────────────────── s sort  S reverse ┐
+┌ Uploads · active only ──────────────────────────────────────────────────────────────────── s sort  S reverse  z zoom ┐
 │  Peer ▲                Software     State             Speed File                                                     │
 │▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — film.mkv                                                 │
 │                                                                                                                      │

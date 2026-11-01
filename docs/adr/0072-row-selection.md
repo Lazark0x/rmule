@@ -29,9 +29,9 @@ Every scrollable list owns one **Viewport** beside its Row Selection
 showed whole, and of how many. The draw writes it, and the list's scroll bar and count
 are drawn from it; no view keeps a scroll offset or a count of its own.
 
-- An item is what the list scrolls by: a row in a table, a menu or a strip, however many
-  lines it wraps to; a line in the log, the help, the file details modal and the
-  Settings form.
+- An item is what the list scrolls by: a row in a table or a strip, one line each
+  (ADR-0119); an entry in a menu, however many lines it wraps to; a line in the log, the
+  help, the file details modal and the Settings form.
 - A list with a cursor follows it: the first item moves no further than keeps the cursor
   wholly on screen. A list without one scrolls by the same keys — `j` / `k` a line, `g` /
   `G` the ends, the help's page keys a page — and stays where it was put while items
@@ -57,9 +57,9 @@ are drawn from it; no view keeps a scroll offset or a count of its own.
   part-cell edge shows where the thumb ends by its colour alone.
 - The column is the bar's only while the list overflows: a list that fits keeps every
   column for its items, so a table at the widths it was laid out for loses no cell to a
-  bar it does not draw. A list with more items than lines surely overflows; a shorter one
-  is laid out at its full width first and, when its wrapped rows overflow there, one
-  column narrower. An overlay sized to its content — a menu, the details modal, the
+  bar it does not draw. A table overflows when it has more rows than its lines at its
+  full width, and is then laid out one column narrower; the log, which wraps, is laid out
+  at its full width first. An overlay sized to its content — a menu, the details modal, the
   help — grows by the column instead when the frame has it.
 - The bottom border carries the count at its right end: the cursor's row over the rows in
   a list with one, whether or not it overflows — Settings counts its rows, not its lines

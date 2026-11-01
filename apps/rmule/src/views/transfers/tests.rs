@@ -13,7 +13,7 @@ fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
     let state = three_downloads();
     // A first key selects row 0 (clamp seeds it) and G jumps to the last.
     view.handle_key(press(KeyCode::Char('G')), &state);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
 
     // Data shrinks to a single row: the next key clamps the stale index.
     let mut small = UiState {
@@ -25,7 +25,7 @@ fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
         download_row(DownloadStatus::Waiting, 0x11, 1),
     );
     view.handle_key(press(KeyCode::Char('j')), &small);
-    assert_eq!(view.table_state.selected(), Some(0));
+    assert_eq!(view.selected, Some(0));
 }
 
 #[test]
@@ -33,14 +33,14 @@ fn up_and_down_walk_the_rows_within_bounds() {
     let mut view = TransfersView::new();
     let state = three_downloads();
     view.handle_key(press(KeyCode::Down), &state);
-    assert_eq!(view.table_state.selected(), Some(1));
+    assert_eq!(view.selected, Some(1));
     view.handle_key(press(KeyCode::Char('j')), &state);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     // Past the bottom stays put.
     view.handle_key(press(KeyCode::Char('j')), &state);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     view.handle_key(press(KeyCode::Char('k')), &state);
-    assert_eq!(view.table_state.selected(), Some(1));
+    assert_eq!(view.selected, Some(1));
 }
 
 #[test]
@@ -63,16 +63,8 @@ fn focus_on_sources_moves_the_source_selection_not_the_table() {
     let state = three_downloads();
     view.handle_key(press(KeyCode::Tab), &state); // focus sources
     view.handle_key(press(KeyCode::Char('j')), &state);
-    assert_eq!(
-        view.sources_state.selected(),
-        Some(1),
-        "second of two workers"
-    );
-    assert_eq!(
-        view.table_state.selected(),
-        Some(0),
-        "table selection unmoved"
-    );
+    assert_eq!(view.source_selected, Some(1), "second of two workers");
+    assert_eq!(view.selected, Some(0), "table selection unmoved");
 }
 
 #[test]
@@ -162,7 +154,7 @@ fn a_click_on_a_table_row_selects_it_and_focuses_the_pane() {
         ViewOutcome::Redraw
     ));
     assert_eq!(view.focus, Pane::Table);
-    assert_eq!(view.table_state.selected(), Some(1));
+    assert_eq!(view.selected, Some(1));
     // A click past both panes is nobody's.
     assert!(matches!(
         view.handle_click(5, 60, &state),

@@ -13,6 +13,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
@@ -27,6 +28,9 @@ use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
 use crate::words::labels;
 use crate::wrap::{clamp_u16, display_width, labeled_lines, wrap_text, wrapped_lines};
+
+/// The details modal's width, room for a sentence on a line or two.
+const DETAILS_W: u16 = 64;
 
 /// A row-menu entry. `disabled` carries the greyed reason tag (
 /// visible deferral, never silent absence); `None` means enabled.
@@ -68,6 +72,8 @@ pub(super) enum MenuAction {
     /// machine is one level deep, and a three-valued enum reads better as
     /// "Normal → High" on one line than as a nested menu of three.
     CyclePriority,
+    /// What the server grants, its UDP flags, health and shares.
+    Details,
     AddServer,
     UpdateFromUrl,
 }
@@ -166,6 +172,35 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
     );
 }
 
+/// The selected server's details: every sentence the table has no room for,
+/// wrapped, scrolled when the frame is too short for them.
+pub(super) fn draw_details(
+    frame: &mut Frame,
+    area: Rect,
+    row: &ServerDiagnostics,
+    state: &UiState,
+    viewport: &Cell<Viewport>,
+    theme: &Theme,
+) {
+    let sentences = super::servers::detail_sentences(row, state);
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(2).max(1);
+        sentences
+            .iter()
+            .flat_map(|sentence| wrapped_lines(sentence, text_w, Style::new().fg(theme.fg)))
+            .collect::<Vec<_>>()
+    };
+    let title = format!(" {} ", super::servers::row_name(row));
+    Modal::new(title, theme).draw_scrolled(
+        frame,
+        area,
+        DETAILS_W.min(area.width),
+        theme,
+        viewport,
+        lines,
+    );
+}
+
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let width = FORM_W.min(area.width);
     let lines = |width: u16| {
@@ -204,6 +239,28 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
 }
 
 impl NetworksView {
+    /// Open the selected server's details; with no row there is nothing to
+    /// open.
+    pub(super) fn open_details(&mut self, state: &UiState) -> ViewOutcome {
+        if self.selected(state).is_none() {
+            return ViewOutcome::Ignored;
+        }
+        self.details = Some(Cell::default());
+        ViewOutcome::Redraw
+    }
+
+    pub(super) fn handle_details_key(&mut self, key: KeyEvent) -> ViewOutcome {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'd') => self.details = None,
+            code => {
+                if let Some(viewport) = self.details.as_mut() {
+                    scroll_key(viewport, code);
+                }
+            }
+        }
+        ViewOutcome::Redraw
+    }
+
     /// Build the row menu against the selected row's actual facts, so every
     /// label states what activating it will do and every greyed item states
     /// why it will not.
@@ -273,6 +330,7 @@ impl NetworksView {
             MenuItem::enabled(labels::REMOVE, MenuAction::Remove),
             MenuItem::enabled(static_label, MenuAction::ToggleStatic),
             MenuItem::enabled(priority_label, MenuAction::CyclePriority),
+            MenuItem::enabled(labels::DETAILS, MenuAction::Details),
         ];
         items.extend(list_items);
         let sel = items
@@ -362,6 +420,7 @@ impl NetworksView {
                     priority: next_priority(row.server.priority),
                 }),
             )),
+            MenuAction::Details => self.open_details(state),
             // Handled above, before the row lookup.
             MenuAction::AddServer | MenuAction::UpdateFromUrl => ViewOutcome::Redraw,
         }

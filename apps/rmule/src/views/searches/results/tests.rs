@@ -95,7 +95,7 @@ fn result_rows_are_tinted_by_their_source_count() {
                 for x in (area.left() + 1)..(area.right() - 1) {
                     let cell = buffer.cell((x, y))?;
                     let symbol = cell.symbol();
-                    if symbol != " " && symbol != "│" {
+                    if symbol != " " && symbol != "│" && symbol != "▸" {
                         return cell.style().fg;
                     }
                 }
@@ -144,35 +144,42 @@ fn golden_wrap_overlong_result_name() {
     let theme = Theme::default_dark();
     let mut view = SearchesView::new().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
-    assert_golden("searches_wrap_long_name", 80, 24, |frame| {
+    assert_golden("searches_cut_long_name", 80, 24, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
 }
 
+/// One line for a 200-character name, and a list of 426 results all at one
+/// line each: the rows the report counted at 80x24.
 #[test]
-fn an_overlong_result_name_wraps_whole_instead_of_being_cut() {
+fn an_overlong_result_name_is_cut_and_every_row_keeps_one_line() {
     let name = long_name();
-    assert_eq!(name.chars().count(), 200);
-    let state = state_with(
-        vec![server_result(0x44, &name, 1_073_741_824, 250, 12)],
-        SearchStatus::Completed { total: 1 },
-    );
+    let results = (0..40)
+        .map(|n| server_result(0x44 + n, &name, 1_073_741_824, 250, 12))
+        .collect();
+    let state = state_with(results, SearchStatus::Completed { total: 40 });
     let mut view = SearchesView::new();
     let rows = screen_lines(&draw_searches(&mut view, &state, 80, 24));
-    // The name's tail reaches the screen, and no line carries a
-    // truncation ellipsis.
+    let cut = rows.iter().filter(|row| row.contains('…')).count();
     assert!(
-        rows.iter().any(|row| row.contains("END-OF-NAME.iso")),
-        "the 200-char name was cut:\n{}",
+        cut >= 10,
+        "ten rows at least at 80x24:\n{}",
         rows.join("\n")
     );
     assert!(
-        !rows.iter().any(|row| row.contains('…')),
-        "an ellipsis crept back in"
+        rows.iter()
+            .any(|row| row.contains('…') && row.contains(".iso")),
+        "the extension stays:\n{}",
+        rows.join("\n")
     );
-    // Its 200 characters occupy several rows of the one result row.
-    let name_rows = rows.iter().filter(|row| row.contains("long-long")).count();
-    assert!(name_rows >= 4, "the name wrapped over {name_rows} rows");
+    let said: String = rows
+        .iter()
+        .map(|row| row.trim_matches(|c| c == '│' || c == ' '))
+        .collect();
+    assert!(
+        said.contains("END-OF-NAME.iso"),
+        "the full name rides the Off-screen line"
+    );
 }
 
 /// A search held back by the search spacing says so on its status

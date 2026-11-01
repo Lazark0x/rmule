@@ -222,7 +222,10 @@ fn clicks_select_rows_in_either_pane() {
     view.focus = Pane::Peers;
     // The second row starts where it was drawn: a row whose all-time
     // figures wrap is two lines tall.
-    let second = view.file_rows.line_of(1).expect("the second row is drawn");
+    let second = view
+        .drawn_files
+        .line_of(1)
+        .expect("the second row is drawn");
     assert!(matches!(
         view.handle_click(3, second, &state),
         ViewOutcome::Redraw

@@ -53,17 +53,18 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Paragraph, TableState};
+use ratatui::widgets::{Block, Paragraph};
 use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
 use crate::action::Action;
-use crate::row_selection::viewport::{BAR_W, Viewport};
+use crate::row_selection::viewport::Viewport;
 use crate::state::{DownloadStatus, UiState};
+use crate::table::Drawn;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, ViewOutcome};
-use crate::wrap::{TableColumns, clamp_u16, greedy_widths, wrapped_lines};
+use crate::views::ViewOutcome;
+use crate::wrap::{clamp_u16, wrapped_lines};
 use menu::{MenuAction, pause_toggle_action};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
@@ -78,11 +79,6 @@ mod link;
 mod menu;
 mod sort;
 mod sources;
-
-/// Inter-column spacing shared by both tables, and the width of the selection
-/// symbol they render in the gutter.
-const COL_SPACING: u16 = 1;
-const SYMBOL_W: u16 = 2;
 
 /// Which pane holds selection focus; the focused pane wears the accent border
 /// (every pane's focus cue). Row actions always target the selected *download*, whichever
@@ -133,22 +129,20 @@ pub struct TransfersView {
     sort: TableSort<DownloadsTable>,
     /// The table's lines under that sort.
     lines_memo: Memo<(u64, TableSort<DownloadsTable>), sort::DownloadLine>,
-    /// The selected download, by id; `table_state`'s index is its position
-    /// in the current order, re-placed before every key and draw.
+    /// The selected download, by id.
     cursor: RowCursor<DownloadId>,
-    /// Download-row selection (the downloads table); its offset is the
-    /// Viewport's.
-    table_state: TableState,
+    /// That download's position in the current order, re-placed before every
+    /// key and draw.
+    selected: Option<usize>,
     /// What part of the downloads table is on screen.
     viewport: Viewport,
     /// The sources pane's order, one for every download's sources.
     source_sort: TableSort<SourcesTable>,
-    /// The selected source, by its peer; `sources_state`'s index is its
-    /// position in the current order, re-placed before every key and draw.
+    /// The selected source, by its peer.
     source_cursor: RowCursor<SourceKey>,
-    /// Source-row selection (the sources pane); its offset is the
-    /// Viewport's.
-    sources_state: TableState,
+    /// That source's position in the current order, re-placed before every
+    /// key and draw.
+    source_selected: Option<usize>,
     /// What part of the sources pane is on screen.
     source_viewport: Viewport,
     /// What part of the row menu is on screen, in a frame too short for it.
@@ -169,35 +163,13 @@ pub struct TransfersView {
     /// Pane areas cached at draw time for click hit-testing.
     table_area: Rect,
     sources_area: Rect,
-    /// The downloads header as last drawn, and its column widths: a click
-    /// there sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
-    /// The sources header as last drawn, and its column widths.
-    source_header_area: Rect,
-    source_header_cols: Vec<usize>,
-    /// Both tables' rows as last drawn, for row clicks.
-    rows: DrawnRows,
-    source_rows: DrawnRows,
+    /// Both tables as last drawn, for clicks.
+    drawn: Drawn,
+    source_drawn: Drawn,
 }
 
-fn selected_id(ids: &[DownloadId], table_state: &TableState) -> Option<DownloadId> {
-    ids.get(table_state.selected()?).copied()
-}
-
-/// Column widths for a bordered table drawn at `area`: the flex column takes
-/// what the fixed ones leave over, after the border pair, the selection
-/// symbol, the Viewport's bar column while it has a `bar`, and the
-/// inter-column spacing.
-fn table_widths(area: Rect, bar: bool, table: &TableColumns<'_>) -> Vec<usize> {
-    let bar = if bar { BAR_W } else { 0 };
-    let total = usize::from(
-        area.width
-            .saturating_sub(2)
-            .saturating_sub(SYMBOL_W)
-            .saturating_sub(bar),
-    );
-    greedy_widths(total, table, usize::from(COL_SPACING))
+fn selected_id(ids: &[DownloadId], selected: Option<usize>) -> Option<DownloadId> {
+    ids.get(selected?).copied()
 }
 
 fn pane_block(
@@ -266,7 +238,7 @@ impl TransfersView {
     }
 
     fn handle_base(&mut self, key: KeyEvent, state: &UiState, ids: &[DownloadId]) -> ViewOutcome {
-        let sources = self.source_keys(state, selected_id(ids, &self.table_state));
+        let sources = self.source_keys(state, selected_id(ids, self.selected));
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, ids, &sources);
         }
@@ -333,7 +305,7 @@ impl TransfersView {
             }
             Pane::Sources => {
                 self.source_cursor.apply(sources, movement);
-                self.sources_state.select(self.source_cursor.place(sources));
+                self.source_selected = self.source_cursor.place(sources);
             }
         }
         ViewOutcome::Redraw
@@ -343,10 +315,10 @@ impl TransfersView {
     /// start a newly selected download's sources list at its top.
     fn table_selected(&mut self, before: Option<usize>, ids: &[DownloadId]) {
         let after = self.cursor.place(ids);
-        self.table_state.select(after);
+        self.selected = after;
         if after != before {
             self.source_cursor.reset();
-            self.sources_state.select(Some(0));
+            self.source_selected = Some(0);
         }
     }
 
@@ -354,10 +326,9 @@ impl TransfersView {
     /// the table's on its download and the sources pane's on its source,
     /// wherever the orders put them.
     fn clamp(&mut self, ids: &[DownloadId], state: &UiState) {
-        self.table_state.select(self.cursor.place(ids));
-        let sources = self.source_keys(state, selected_id(ids, &self.table_state));
-        self.sources_state
-            .select(self.source_cursor.place(&sources));
+        self.selected = self.cursor.place(ids);
+        let sources = self.source_keys(state, selected_id(ids, self.selected));
+        self.source_selected = self.source_cursor.place(&sources);
     }
 
     fn selected_diag<'a>(
@@ -365,7 +336,7 @@ impl TransfersView {
         state: &'a UiState,
         ids: &[DownloadId],
     ) -> Option<&'a DownloadDiagnostics> {
-        let id = selected_id(ids, &self.table_state)?;
+        let id = selected_id(ids, self.selected)?;
         state.diagnostics.downloads.get(&id)
     }
 
@@ -374,7 +345,7 @@ impl TransfersView {
         state: &UiState,
         ids: &[DownloadId],
     ) -> Option<(DownloadId, DownloadStatus)> {
-        let id = selected_id(ids, &self.table_state)?;
+        let id = selected_id(ids, self.selected)?;
         Some((id, state.downloads.get(&id)?.status))
     }
 
@@ -393,20 +364,19 @@ impl TransfersView {
             self.focus = Pane::Sources;
             return outcome;
         }
-        if let Some(index) = self.rows.hit(column, row) {
+        if let Some(index) = self.drawn.hit(column, row) {
             self.focus = Pane::Table;
             let before = self.cursor.place(&ids);
             self.cursor.select(&ids, index);
             self.table_selected(before, &ids);
             return ViewOutcome::Redraw;
         }
-        if let Some(index) = self.source_rows.hit(column, row) {
+        if let Some(index) = self.source_drawn.hit(column, row) {
             self.focus = Pane::Sources;
-            let sources = self.source_keys(state, selected_id(&ids, &self.table_state));
+            let sources = self.source_keys(state, selected_id(&ids, self.selected));
             if index < sources.len() {
                 self.source_cursor.select(&sources, index);
-                self.sources_state
-                    .select(self.source_cursor.place(&sources));
+                self.source_selected = self.source_cursor.place(&sources);
             }
             return ViewOutcome::Redraw;
         }
@@ -465,7 +435,7 @@ impl TransfersView {
     fn select_row(&mut self, state: &UiState, index: usize) {
         let ids = self.download_ids(state);
         self.cursor.select(&ids, index);
-        self.table_state.select(self.cursor.place(&ids));
+        self.selected = self.cursor.place(&ids);
     }
 }
 

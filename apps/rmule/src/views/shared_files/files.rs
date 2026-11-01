@@ -11,143 +11,48 @@
 //! (`amule-kno/src/SharedFilesCtrl.cpp:158-160`) — show this run's serve
 //! counter, then in brackets the all-time one core keeps beside the registry
 //! row — `3 (12)`, the way aMule's Shared Files list writes session and
-//! all-time in one cell. Each column's floor holds the pair at its realistic
-//! widest on one line; when the pane is too narrow for every floor,
-//! the widest-floored pair columns give way first — each drops its all-time
-//! figure rather than wrapping, since a figure is never split across lines.
-//! The selected row's dropped figures are never lost: they reprint in full,
-//! wrapped like any other text, on an `Off-screen:` note under the header.
+//! all-time in one cell. A column asks for the pair at its realistic widest;
+//! one too narrow for it drops the all-time figure, and the selected row's
+//! dropped figures ride the Off-screen line in full.
 //!
 //! The table scrolls: the selected row is always drawn.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Block;
 
-use super::sort::{SharedColumn, SharedLine, SharedTable};
-use super::{GUTTER_W, Pane, SharedView, num_style, pane_border, render_empty, table_widths};
-use crate::row_selection::viewport;
-use crate::row_selection::{gutter, mark_row};
+use super::sort::SharedLine;
+use super::{Pane, SharedView, num_style, pane_border, render_empty};
 use crate::state::{UiState, withheld_words};
-use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, header_widths};
+use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, day, human_size, say_gave_way};
+use crate::views::{day, human_size};
 use crate::words::serve::PARTIAL;
-use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, display_width, gave_way};
 
-/// Fixed widths of the files table's non-name columns: State · Size ·
-/// Uploading · Requests · Accepted · Transferred — State fits `folder
-/// missing` and wraps `since` and its day under it; Size fits `1023.9 MB`.
-/// Requests, Accepted and Transferred hold the run-and-all-time pair at its
-/// realistic widest on one line: `999999 (999999)` (15) for a
-/// count, `999.9 GB (999.9 GB)` (19) for a byte figure — a pair that cannot
-/// fit its assigned width drops the all-time figure instead of wrapping.
-/// `File` is greedy — it takes whatever they leave over, and its
-/// content wraps rather than clipping.
-const FILE_COLS: [usize; 7] = [12, 14, 9, 10, 15, 15, 19];
+/// Floors of the files table's columns: File · State · Size · Uploading ·
+/// Requests · Accepted · Transferred. State fits `folder missing`, Size fits
+/// `1023.9 MB`, a counter its run figure. `File` is greedy: its entry is the
+/// room it keeps before other columns give way to it.
+const FILE_COLS: [usize; 7] = [30, 14, 9, 9, 8, 8, 11];
 
-/// The order the files table's columns give way in when the pane cannot hold
-/// every header: Accepted, Requests, Transferred — the counters, whose
-/// selected-row figures the `Off-screen:` note then reprints in full — then
-/// Uploading, Size and State. File never gives way.
+/// What the counters ask for: the run-and-all-time pair at its realistic
+/// widest, `999999 (999999)` and `999.9 GB (999.9 GB)`.
+const FILE_WANTS: [usize; 7] = [0, 0, 0, 0, 15, 15, 19];
+
+/// The order the files table's columns give way in: Accepted, Requests,
+/// Transferred — the counters, whose selected-row figures the Off-screen line
+/// says in full — then Uploading, Size and State. File never gives way.
 const FILE_GIVE_WAY: [usize; 6] = [5, 4, 6, 3, 2, 1];
 
-/// The header, the sort's arrow on the column holding it. The column holding
-/// it is floored wide enough for the arrow ([`arrow_floors`]), so the header
-/// is one line.
-fn files_header(
-    widths: &[usize],
-    sort: &TableSort<SharedTable>,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let style = theme.dim_text().add_modifier(Modifier::BOLD);
-    let labels: Vec<Column> = SharedTable::COLUMNS
-        .iter()
-        .map(|column| {
-            let label = header_label(column.label, sort.arrow(column.column));
-            if matches!(column.column, SharedColumn::File | SharedColumn::State) {
-                Column::left(label, style)
-            } else {
-                Column::right(label, style)
-            }
-        })
-        .collect();
-    column_lines(&labels, widths, 1, &Span::styled("  ", style))
+/// A run-and-all-time pair, falling back to the run figure in a cell too
+/// narrow for both.
+fn paired(run: u64, total: u64, text: fn(u64) -> String, style: Style) -> Cell {
+    Cell::new(format!("{} ({})", text(run), text(total)), style).or_short(text(run))
 }
 
-/// A run-and-all-time pair, and whether it had to drop the all-time
-/// figure to hold `width`: `text(run)` is always shorter than the pair, so
-/// dropping to it is the one thing guaranteed to stop the wrap.
-fn paired_text(run: u64, total: u64, text: fn(u64) -> String, width: usize) -> (String, bool) {
-    // NBSP glues a figure's number to its unit so the hard-break in
-    // `wrap_text` cannot land inside one (`999.9 GB`, never `999.9` then `GB`).
-    let glued = |n| text(n).replace(' ', "\u{a0}");
-    let full = format!("{} ({})", glued(run), glued(total));
-    if display_width(&full) <= width {
-        (full, false)
-    } else {
-        (glued(run), true)
-    }
-}
-
-/// The selected row's Requests/Accepted/Transferred figures shortened or
-/// hidden for space: reprinted in full, so cutting the cell
-/// loses nothing. Widths are indexed by [`SharedTable::COLUMNS`]'s order
-/// (Requests, Accepted, Transferred at 4, 5, 6).
-fn selected_detail(line: &SharedLine, widths: &[usize]) -> Vec<String> {
-    let all_time = line.all_time.unwrap_or_default();
-    let mut parts = Vec::new();
-    if let Some(run) = line.requests
-        && paired_text(run, all_time.requests, |n| n.to_string(), widths[4]).1
-    {
-        parts.push(format!("Requests {run} ({})", all_time.requests));
-    }
-    if let Some(run) = line.accepted
-        && paired_text(run, all_time.accepted, |n| n.to_string(), widths[5]).1
-    {
-        parts.push(format!("Accepted {run} ({})", all_time.accepted));
-    }
-    if let Some(run) = line.transferred
-        && paired_text(run, all_time.transferred, human_size, widths[6]).1
-    {
-        parts.push(format!(
-            "Transferred {} ({})",
-            human_size(run),
-            human_size(all_time.transferred)
-        ));
-    }
-    parts
-}
-
-/// The columns before the counters, whose hidden values
-/// [`crate::views::off_screen::hidden`] says; the counters say their own.
-const LEADING_COLUMNS: usize = 4;
-
-/// One file's row. The selected row is marked whichever pane holds the focus.
-fn files_row(
-    line: &SharedLine,
-    widths: &[usize],
-    selected: bool,
-    focused: bool,
-    theme: &Theme,
-) -> Vec<Line<'static>> {
-    let mut row = column_lines(
-        &file_columns(line, widths, theme),
-        widths,
-        1,
-        &gutter(selected, focused, theme),
-    );
-    if selected {
-        mark_row(&mut row, focused, theme);
-    }
-    row
-}
-
-/// One shared file's cells, in [`SharedTable::COLUMNS`]' order: what its row
-/// draws, and what the `Off-screen:` line says of a column that gave way.
-fn file_columns(line: &SharedLine, widths: &[usize], theme: &Theme) -> Vec<Column> {
+/// One shared file's cells, in [`SharedTable::COLUMNS`]' order.
+fn file_cells(line: &SharedLine, theme: &Theme) -> Vec<Cell> {
     let dim = theme.dim_text();
     let plain = Style::new().fg(theme.fg);
     // A withheld row is offered to nobody: its name is dimmed and its State
@@ -158,62 +63,35 @@ fn file_columns(line: &SharedLine, widths: &[usize], theme: &Theme) -> Vec<Colum
         None => (crate::words::units::short_hash(line.file_hash), dim),
     };
     let state = line.withheld.map_or_else(
-        || Column::left(if line.partial { PARTIAL } else { "shared" }, dim),
+        || Cell::new(if line.partial { PARTIAL } else { "shared" }, dim),
         |held| {
-            Column::left(
-                format!("{} since {}", withheld_words(held.reason), day(held.since)),
+            let why = withheld_words(held.reason);
+            Cell::new(
+                format!("{why} since {}", day(held.since)),
                 Style::new().fg(theme.warn),
             )
+            .or_short(why)
         },
     );
     let size = line.size.map_or_else(
-        || Column::right("—", dim),
-        |size| Column::right(human_size(size), plain),
+        || Cell::new("—", dim),
+        |size| Cell::new(human_size(size), plain),
     );
-    let count = |value: Option<u64>| {
-        value.map_or_else(
-            || Column::right("—", dim),
-            |value| Column::right(value.to_string(), num_style(value, theme)),
-        )
-    };
     let all_time = line.all_time.unwrap_or_default();
-    let with_all_time = |run: Option<u64>, total: u64, text: fn(u64) -> String, width: usize| {
+    let with_all_time = |run: Option<u64>, total: u64, text: fn(u64) -> String| {
         run.map_or_else(
-            || Column::right("—", dim),
-            |run| {
-                Column::right(
-                    paired_text(run, total, text, width).0,
-                    num_style(total, theme),
-                )
-            },
+            || Cell::new("—", dim),
+            |run| paired(run, total, text, num_style(total, theme)),
         )
     };
-    let requests = with_all_time(
-        line.requests,
-        all_time.requests,
-        |n| n.to_string(),
-        widths[4],
-    );
-    let accepted = with_all_time(
-        line.accepted,
-        all_time.accepted,
-        |n| n.to_string(),
-        widths[5],
-    );
-    let transferred = with_all_time(
-        line.transferred,
-        all_time.transferred,
-        human_size,
-        widths[6],
-    );
     vec![
-        Column::left(name, name_style),
+        Cell::new(name, name_style),
         state,
         size,
-        count(Some(line.uploading)),
-        requests,
-        accepted,
-        transferred,
+        Cell::new(line.uploading.to_string(), num_style(line.uploading, theme)),
+        with_all_time(line.requests, all_time.requests, |n| n.to_string()),
+        with_all_time(line.accepted, all_time.accepted, |n| n.to_string()),
+        with_all_time(line.transferred, all_time.transferred, human_size),
     ]
 }
 
@@ -231,30 +109,9 @@ impl SharedView {
         theme: &Theme,
     ) {
         // Nothing to click until a table is drawn.
-        self.header_area = Rect::default();
-        self.file_rows = DrawnRows::default();
+        self.drawn_files = table::Drawn::default();
         let focused = self.focus == Pane::Files;
         let lines_in_order = self.sorted_lines(state);
-
-        // Column widths, off the border alone: a title never changes a
-        // bordered block's interior, so this can be decided before the
-        // title is — the detail notice below needs to know it first.
-        let bare_inner = Block::bordered().inner(area);
-        let floors = arrow_floors(&self.sort, &FILE_COLS, 0);
-        let headers = header_widths(&self.sort);
-        let widths_at = |bar: bool| {
-            table_widths(
-                bare_inner,
-                bar,
-                &TableColumns {
-                    floors: &floors,
-                    headers: &headers,
-                    flex: 0,
-                    wants: &[],
-                    give_way: &FILE_GIVE_WAY,
-                },
-            )
-        };
 
         // Header line (spec §3.5): file count + total size.
         let total = total_size(&lines_in_order).map_or_else(|| "—".to_string(), human_size);
@@ -265,7 +122,7 @@ impl SharedView {
         let hint = if lines_in_order.is_empty() {
             ""
         } else {
-            " s sort  S reverse "
+            " s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(pane_border(theme, focused)),
@@ -288,100 +145,23 @@ impl SharedView {
             render_empty(frame, inner, &empty, theme);
             return;
         }
-        // The selected row's values that gave way, in full: a hidden
-        // column's value, and a counter shortened to fit —
-        // the drop loses nothing, it moves off the row onto this line.
-        let selected = lines_in_order.get(self.files_selected);
-        let off_screen_at = |widths: &[usize]| {
-            selected.map_or_else(Vec::new, |line| {
-                let values: Vec<String> = file_columns(line, widths, theme)
-                    .into_iter()
-                    .map(|column| column.text)
-                    .collect();
-                let mut parts = crate::views::off_screen::hidden(
-                    SharedTable::COLUMNS
-                        .iter()
-                        .take(LEADING_COLUMNS)
-                        .map(|c| c.label),
-                    &values,
-                    widths,
-                );
-                parts.extend(selected_detail(line, widths));
-                parts
-            })
+        let cells = |index: usize, _: &[usize]| file_cells(&lines_in_order[index], theme);
+        let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
+        let table =
+            Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style).wants(&FILE_WANTS);
+        let rows = Rows {
+            count: lines_in_order.len(),
+            selected: Some(self.files_selected),
+            focused,
+            cells: &cells,
+            marker: None,
         };
-        // A row's height at some widths is all the viewport needs of the rows
-        // off screen, so they are laid out once and only the rows in view are
-        // drawn.
-        let key = self.lines_key(state);
-        let heights_at = |widths: &[usize]| {
-            self.heights_memo.get((key.clone(), widths.to_vec()), || {
-                lines_in_order
-                    .iter()
-                    .map(|line| clamp_u16(files_row(line, widths, false, focused, theme).len()))
-                    .collect()
-            })
-        };
-        let bar = viewport::needs_bar(lines_in_order.len(), inner.height.saturating_sub(1), || {
-            let widths = widths_at(false);
-            let room = inner
-                .height
-                .saturating_sub(crate::views::off_screen::height(
-                    inner,
-                    &off_screen_at(&widths),
-                ))
-                .saturating_sub(clamp_u16(files_header(&widths, &self.sort, theme).len()));
-            heights_at(&widths)
-                .iter()
-                .map(|h| usize::from(*h))
-                .sum::<usize>()
-                > usize::from(room)
-        });
-        let widths = widths_at(bar);
-        let heights = heights_at(&widths);
-        let inner = crate::views::off_screen::draw(frame, inner, &off_screen_at(&widths), theme);
-        let (list, bar) = viewport::split(inner, bar);
-
-        let mut lines = files_header(&widths, &self.sort, theme);
-        let header_h = clamp_u16(lines.len()).min(list.height);
-        self.header_area = Rect::new(
-            list.x.saturating_add(clamp_u16(GUTTER_W)),
-            list.y,
-            list.width.saturating_sub(clamp_u16(GUTTER_W)),
-            header_h,
-        );
-        self.header_cols.clone_from(&widths);
-
-        let room = list.height.saturating_sub(header_h);
-        let selected_row = self.files_selected;
-        let first = self
-            .files_viewport
-            .follow(selected_row, heights.len(), room, |index| heights[index]);
-        let mut last = first;
-        let mut filled = 0u16;
-        while last < heights.len() && filled < room {
-            let line = &lines_in_order[last];
-            lines.extend(files_row(
-                line,
-                &widths,
-                last == selected_row,
-                focused,
-                theme,
-            ));
-            filled = filled.saturating_add(heights[last]);
-            last += 1;
-        }
-        self.file_rows = DrawnRows::new(
-            Rect::new(list.x, list.y + header_h, list.width, room),
-            first,
-            heights[first..last].to_vec(),
-        );
-        frame.render_widget(Paragraph::new(lines), list);
-        let foot = self.files_viewport.draw(frame, area, bar, theme);
-        say_gave_way(
+        self.drawn_files = table::draw(
             frame,
-            foot,
-            &gave_way(SharedTable::COLUMNS.iter().map(|c| c.label), &widths),
+            (area, inner),
+            &table,
+            &rows,
+            &mut self.files_viewport,
             theme,
         );
     }

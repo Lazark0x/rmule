@@ -34,9 +34,10 @@ use rmule_primitives::ServerEndpoint;
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
+use crate::table::Drawn;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{DrawnRows, ViewOutcome, connect_toggle};
+use crate::views::{ViewOutcome, connect_toggle};
 use form::{ServerForm, draw_form};
 use kad::draw_kad;
 use menu::{Confirm, Menu, draw_confirm, draw_menu};
@@ -91,15 +92,10 @@ pub struct NetworksView {
     /// The selected server's position in the current order — `cursor`
     /// re-placed before every key and draw.
     server_sel: usize,
-    /// What part of the server table is on screen. It scrolls by *entry*,
-    /// because a wrapped row must not be split across the pane edge.
+    /// What part of the server table is on screen.
     viewport: Viewport,
-    /// The server rows as last drawn: the map a row click needs once rows
-    /// can be more than one line tall.
-    server_rows: DrawnRows,
-    /// The header as last drawn, and its column widths: a click there sorts.
-    header_area: Rect,
-    header_cols: Vec<usize>,
+    /// The table as last drawn, for clicks.
+    drawn: Drawn,
     /// What part of the log is on screen, in *wrapped* lines, not entries:
     /// it opens on the newest line and keeps it in view until scrolled back.
     log_viewport: Viewport,
@@ -111,6 +107,9 @@ pub struct NetworksView {
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
+    /// The selected server's details modal (`d`), while it is up; what part
+    /// of it is on screen in a frame too short for it.
+    details: Option<std::cell::Cell<Viewport>>,
     /// Pane areas cached at draw time for click hit-testing.
     servers_area: Rect,
     log_area: Rect,
@@ -124,14 +123,13 @@ impl Default for NetworksView {
             cursor: RowCursor::default(),
             server_sel: 0,
             viewport: Viewport::default(),
-            server_rows: DrawnRows::default(),
-            header_area: Rect::default(),
-            header_cols: Vec::new(),
+            drawn: Drawn::default(),
             log_viewport: Viewport::at_end(),
             wall_now: None,
             menu: None,
             confirm: None,
             form: None,
+            details: None,
             servers_area: Rect::default(),
             log_area: Rect::default(),
         }
@@ -208,6 +206,9 @@ impl NetworksView {
         if self.menu.is_some() {
             return self.handle_menu_key(key, state);
         }
+        if self.details.is_some() {
+            return self.handle_details_key(key);
+        }
 
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, state);
@@ -223,6 +224,7 @@ impl NetworksView {
                 self.cursor.pin(&self.server_ids(state));
                 self.open_menu(state)
             }
+            KeyCode::Char('d') if self.focus == Pane::Servers => self.open_details(state),
             KeyCode::Char('s') if self.focus == Pane::Servers && !servers(state).is_empty() => {
                 self.sort.key(true)
             }
@@ -276,14 +278,18 @@ impl NetworksView {
     /// log pane focuses (its rows scroll, they don't select). The Kad panel
     /// is display-only. Modals stay keyboard-only in v1.
     pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
-        if self.menu.is_some() || self.confirm.is_some() || self.form.is_some() {
+        if self.menu.is_some()
+            || self.confirm.is_some()
+            || self.form.is_some()
+            || self.details.is_some()
+        {
             return ViewOutcome::Ignored;
         }
         if let Some(outcome) = self.header_click(column, row) {
             self.focus = Pane::Servers;
             return outcome;
         }
-        if let Some(index) = self.server_rows.hit(column, row) {
+        if let Some(index) = self.drawn.hit(column, row) {
             self.focus = Pane::Servers;
             self.select_server(state, index);
             return ViewOutcome::Redraw;
@@ -323,6 +329,9 @@ impl NetworksView {
         draw_kad(frame, kad_area, state, theme);
         self.draw_log(frame, log_area, state, theme, now);
 
+        if let (Some(viewport), Some(row)) = (self.details.as_ref(), self.selected(state)) {
+            menu::draw_details(frame, area, row, state, viewport, theme);
+        }
         if let Some(menu) = self.menu.as_ref() {
             draw_menu(frame, area, menu, theme);
         }
@@ -450,7 +459,7 @@ mod tests {
         view.focus = Pane::Log;
         // The second listed row's first display line, whatever height the
         // rows above it wrapped to.
-        let row1 = view.server_rows.line_of(1).expect("row 1 on screen");
+        let row1 = view.drawn.line_of(1).expect("row 1 on screen");
         assert!(
             matches!(view.handle_click(3, row1, &state), ViewOutcome::Redraw),
             "servers pane"

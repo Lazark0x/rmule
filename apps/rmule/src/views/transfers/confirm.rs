@@ -22,7 +22,7 @@ impl TransfersView {
         match confirm_key(key.code) {
             Some(true) => {
                 self.overlay = Overlay::None;
-                match selected_id(ids, &self.table_state) {
+                match selected_id(ids, self.selected) {
                     Some(id) => ViewOutcome::Emit(Action::Command(CoreCommand::Download(
                         DownloadCommand::CancelDownload { download_id: id },
                     ))),
@@ -48,7 +48,7 @@ impl TransfersView {
         theme: &Theme,
         ids: &[DownloadId],
     ) {
-        let short = selected_id(ids, &self.table_state).map_or_else(
+        let short = selected_id(ids, self.selected).map_or_else(
             || "—".to_string(),
             |id| short_hash_or_dash(state.downloads.get(&id).and_then(|r| r.file_hash)),
         );

@@ -1,13 +1,13 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ──────┐
-│   Name ▲  Address    Port  Ping   Age   ▲│
-│▸● eDonkey 10.0.0.1   4661  42ms   12s   █│
-│   Prime                                 ▼│
-│Off-screen: Desc Main hub, no fakes ·     │
-│Users 1M · Files 24M · Prio Norm · Fail 0 │
-│Grants at login (14m ago): compression,   │
-│new tags, unicode, related search, large  │
-│files, obfuscation · UDP (12s ago): get   │
-└ 6 columns not shown ────────────── 1 / 4 ┘
+│   Name ▲                 Address        ▲│
+│▸● eDonkey Prime          10.0.0.1       █│
+│   Flaky Mirror           172.16.9.9     ▄│
+│   Static Pin             10.0.0.2       ▼│
+│Off-screen: Port 4661 · Desc Main hub, no │
+│fakes · Ping 42ms · Users 1M · Files 24M ·│
+│Age 12s · Prio Norm · Fail 0 · Static no  │
+│Health: answering — its last… came 12s ago│
+└ 9 columns not shown ────────────── 1 / 4 ┘
 ┌──┐┌ Kad ──────────────────────── K start ┐
 │no││● Kad: off                            │
 │  ││Joined    — (node not started)        │

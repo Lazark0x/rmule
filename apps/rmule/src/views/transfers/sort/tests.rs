@@ -249,7 +249,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
     state.downloads.insert(download_id(4), early);
     state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // The row above it leaves.
@@ -262,7 +262,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
     // has a share, so the Tie Chain puts the named 4 first.
     sort_to(&mut view, &state, DownloadColumn::Done);
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
-    assert_eq!(view.table_state.selected(), Some(2));
+    assert_eq!(view.selected, Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // Its own departure leaves the cursor as low as the table now goes.
@@ -275,7 +275,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
 #[test]
 fn a_header_click_sorts_by_its_column_and_again_reverses_at_two_widths() {
     let state = three_downloads();
-    for (width, height) in [(GOLDEN_W, GOLDEN_H), (62, 18)] {
+    for (width, height) in [(GOLDEN_W, GOLDEN_H), (120, 18)] {
         let mut view = TransfersView::new();
         let lines = draw(&mut view, &state, width, height);
         let (x, y) = cell_of(&lines, "Size");
@@ -308,24 +308,10 @@ fn the_header_is_one_line_whichever_column_holds_the_sort() {
         sort_to(&mut view, &state, column.column);
         for _ in 0..2 {
             draw(&mut view, &state, 80, GOLDEN_H);
-            assert_eq!(view.header_area.height, 1, "{column:?}");
+            assert_eq!(view.drawn.header_height(), 1, "{column:?}");
             view.handle_key(press(KeyCode::Char('S')), &state);
         }
     }
-}
-
-#[test]
-fn a_click_on_any_line_of_a_wrapped_row_selects_that_row() {
-    let state = three_downloads();
-    let mut view = TransfersView::new();
-    // At 62 columns every row wraps onto a second line.
-    let lines = draw(&mut view, &state, 62, 18);
-    let (x, y) = cell_of(&lines, "5C5C5C5C");
-    view.handle_click(x, y, &state);
-    assert_eq!(selected(&mut view, &state), Some(download_id(3)));
-    let (x, y) = cell_of(&lines, "ABABABAB");
-    view.handle_click(x, y + 1, &state);
-    assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 }
 
 #[test]

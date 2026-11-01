@@ -1,21 +1,21 @@
-┌ Shared Files · 4 files · — ───────────────────────────── s sort  S reverse ┐
-│  File ▲     State       Size Uploading   Requests   Accepted   Transferred▲│
-│▸ alpha.film shared     100 B         0      9 (0)      6 (0)     0 B (0 B)█│
-│  .name.mkv                                                                █│
-│  bravo.song folder     200 B         2      0 (0)      0 (0)    50 B (0 B)█│
-│  .name.mp3  missing                                                       █│
-│             since                                                          │
-│             2026-09-2                                                      │
-│             1                                                              │
-│  charlie.im shared     300 B         2      5 (0)      2 (0)  1000 B (0 B) │
-│  age.name.i                                                               ▼│
-└───────────────────────────────────────────────────────────────────── 1 / 4 ┘
-┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
-│  Peer ▲                Software     State             Speed File          ▲│
-│▸ 10.0.0.20:4662        —            Uploading             — bravo.song.nam█│
-│                                                             e.mp3         █│
-│  10.0.0.21:4662        —            Uploading             — bravo.song.nam█│
-│                                                             e.mp3         ▂│
-│  10.0.0.30:4662        —            Uploading             — charlie.image. │
-│                                                             name.iso      ▼│
+┌ Shared Files · 4 files · — ───────────────────── s sort  S reverse  z zoom ┐
+│  File ▲                                  State               Size Uploading│
+│▸ alpha.film.name.mkv                     shared             100 B         0│
+│  bravo.song.name.mp3                     folder missing     200 B         2│
+│  charlie.image.name.iso                  shared             300 B         2│
+│  0404040404…                             shared                 —         0│
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│Off-screen: Requests 9 (0) · Accepted 6 (0) · Transferred 0 B (0 B)         │
+└ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 4 ┘
+┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+│  Peer ▲                Software     State             Speed File           │
+│▸ 10.0.0.20:4662        —            Uploading             — bravo.song….mp3│
+│  10.0.0.21:4662        —            Uploading             — bravo.song….mp3│
+│  10.0.0.30:4662        —            Uploading             — charlie.im….iso│
+│  10.0.0.31:4662        —            Uploading             — charlie.im….iso│
+│                                                                            │
+│Off-screen: File bravo.song.name.mp3                                        │
 └───────────────────────────────────────────────────────────────────── 1 / 4 ┘
