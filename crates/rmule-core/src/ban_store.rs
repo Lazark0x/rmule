@@ -1,5 +1,5 @@
 //! The core-owned **BanStore** (ADR-0064): where every ban and every **Hush**
-//! lands, whoever raised it, for two hours by address.
+//! lands, whoever raised it, for two hours by accounting key.
 //!
 //! What an offence earns follows what proved the sender. A finished connection
 //! or a datagram with a valid receiver key earns the ban; a datagram that
@@ -23,6 +23,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rmule_primitives::AccountingKey;
 use tokio::sync::Mutex;
 
 /// The core-owned BanStore, shared between what raises a ban and the surfaces
@@ -44,19 +45,21 @@ pub(crate) enum DatagramStanding {
     Banned,
 }
 
-/// One table of address -> until, checked-then-evicted exactly like aMule's
-/// `CClientList` ban list (`ClientList.cpp#L739`): a query past its deadline
-/// evicts the entry as it reads it, rather than waiting for a sweep. Keys are
-/// stored and looked up in their [`IpAddr::to_canonical`] form,
-/// so a mapped IPv4-in-IPv6 claim cannot dodge a row placed on its plain IPv4.
+/// One table of accounting key -> until, checked-then-evicted exactly like
+/// aMule's `CClientList` ban list (`ClientList.cpp#L739`): a query past its
+/// deadline evicts the entry as it reads it, rather than waiting for a sweep.
+/// An [`AccountingKey`] is an IPv4 address or an IPv6 `/64`, as the flood
+/// buckets and the wait list key a sender: a host delegated a `/64` would walk
+/// past a row on one address. It unmaps first, so a mapped IPv4-in-IPv6 claim
+/// cannot dodge a row placed on its plain IPv4.
 #[derive(Debug, Default)]
 struct Deadlines {
-    until: HashMap<IpAddr, Instant>,
+    until: HashMap<AccountingKey, Instant>,
 }
 
 impl Deadlines {
     fn set(&mut self, ip: IpAddr, until: Instant, now: Instant) {
-        self.until.insert(ip.to_canonical(), until);
+        self.until.insert(AccountingKey::of(ip), until);
         if self.until.len() > BAN_ROWS {
             self.shed(now);
         }
@@ -83,11 +86,11 @@ impl Deadlines {
     }
 
     fn holds(&mut self, ip: IpAddr, now: Instant) -> bool {
-        let ip = ip.to_canonical();
-        match self.until.get(&ip) {
+        let key = AccountingKey::of(ip);
+        match self.until.get(&key) {
             Some(&until) if until > now => true,
             Some(_) => {
-                self.until.remove(&ip);
+                self.until.remove(&key);
                 false
             }
             None => false,
@@ -115,11 +118,6 @@ impl BanStore {
     ///
     /// Only a caller holding proof of the sender may ban (ADR-0064): anything a
     /// lone datagram raised goes to [`hush`](Self::hush).
-    ///
-    /// `ip` is unmapped first: the Kad flood report this is fed
-    /// from is always IPv4 today, so this is a no-op in practice, but keying
-    /// on the canonical form is what keeps a later mapped-form report from
-    /// opening a second, unbanned key for the same host.
     pub(crate) fn ban(&mut self, ip: IpAddr, now: Instant) {
         self.banned.set(ip, now + Self::CLIENTBANTIME, now);
     }
@@ -135,10 +133,9 @@ impl BanStore {
     /// `ClientList.cpp#L739`): an expired entry is removed as this reads it.
     /// A row nobody queries goes when the table sheds.
     ///
-    /// `ip` is unmapped first: the peer-TCP dial site queries
-    /// this with a candidate source's *claimed* address, and nothing stops a
-    /// banned host from reappearing as `::ffff:`-its-own-IPv4 — without the
-    /// unmap that claim would look up a key the ban was never stored under.
+    /// The peer-TCP dial site queries this with a candidate source's *claimed*
+    /// address, and nothing stops a banned host from reappearing as
+    /// `::ffff:`-its-own-IPv4; the accounting key unmaps that claim.
     pub(crate) fn is_banned(&mut self, ip: IpAddr, now: Instant) -> bool {
         self.banned.holds(ip, now)
     }
@@ -164,7 +161,7 @@ mod tests {
     }
 
     fn row(n: usize) -> IpAddr {
-        IpAddr::V6(std::net::Ipv6Addr::from(n as u128 + 1))
+        IpAddr::V6(std::net::Ipv6Addr::from((n as u128 + 1) << 64))
     }
 
     #[test]
@@ -193,7 +190,12 @@ mod tests {
         assert!(store.banned.until.len() <= BAN_ROWS);
         let latest = t0 + Duration::from_millis(BAN_ROWS as u64 * 2);
         assert!(store.is_banned(row(BAN_ROWS * 2 - 1), latest));
-        assert!(!store.banned.until.contains_key(&row(0)));
+        assert!(
+            !store
+                .banned
+                .until
+                .contains_key(&AccountingKey::of(row(0)))
+        );
     }
 
     #[test]
@@ -244,6 +246,24 @@ mod tests {
 
         let different_mapped: IpAddr = "::ffff:203.0.113.2".parse().unwrap();
         assert!(!store.is_banned(different_mapped, t0));
+    }
+
+    /// A sender delegated a `/64` mints an address per connection, so a ban on
+    /// one of them is a ban on all, and on nobody past the prefix.
+    #[test]
+    fn a_ban_and_a_hush_cover_the_whole_64() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        let at = |text: &str| text.parse::<IpAddr>().unwrap();
+        store.ban(at("2001:db8:1:2::1"), t0);
+        store.hush(at("2001:db8:7:2::1"), t0);
+
+        assert!(store.is_banned(at("2001:db8:1:2:ffff::9"), t0));
+        assert!(!store.is_banned(at("2001:db8:1:3::1"), t0));
+        assert_eq!(
+            store.datagram_standing(at("2001:db8:7:2:ffff::9"), t0),
+            DatagramStanding::Hushed
+        );
     }
 
     /// A forger's row closes no door a proven connection uses.
