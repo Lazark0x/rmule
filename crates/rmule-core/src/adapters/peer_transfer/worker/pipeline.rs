@@ -214,6 +214,14 @@ impl Pipeline {
         true
     }
 
+    /// Whether a block is still arriving across `offset`: bytes up to it left
+    /// a block asked and not whole.
+    pub(super) fn arriving(&self, offset: u64) -> bool {
+        self.asked
+            .iter()
+            .any(|asked| asked.start < offset && offset <= asked.end)
+    }
+
     /// The block asked at `offset` will never arrive whole: the session could
     /// not inflate it, or refused it. It stops counting against the depth;
     /// answers its range, for core to free (ADR-0029 "A lost block is freed").

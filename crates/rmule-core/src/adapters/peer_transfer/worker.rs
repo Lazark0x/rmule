@@ -12,7 +12,7 @@ use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
     PartBitmap, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
 };
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, PeerEndpoint};
+use rmule_primitives::{Ed2kFileLink, FileHash, PeerEndpoint};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
@@ -26,6 +26,7 @@ use crate::adapters::peer_transfer::{PeerWorkerCommand, PeerWorkerEvent, WorkerO
 use crate::adapters::serve_runtime::{ServeConnection, ServeInput};
 use crate::service::DialEnd;
 
+use self::gathered::Gathered;
 use self::pipeline::{Pipeline, RANGES_PER_REQUEST};
 use self::wait::{
     Ended, Idled, SlotNews, await_probe, forward_shared, forward_slot_news, idle_wait, next_event,
@@ -350,7 +351,7 @@ async fn work_the_link(
                     let streamed =
                         stream_blocks(&mut link, &mut pipeline, file, slot_wait_timeout).await;
                     match streamed {
-                        Streamed::Next | Streamed::Handed => {
+                        Streamed::Next | Streamed::Handed | Streamed::GatherDue => {
                             slot_deadline = tokio::time::Instant::now() + slot_wait_timeout;
                         }
                         Streamed::WindDown => break,
@@ -479,8 +480,8 @@ async fn wait_for_peer_identified(
 /// Ask the blocks `pipeline` was handed and forward their bytes, in
 /// `<= EMBLOCKSIZE` steps up to the Request Depth, refilled at every arrival
 /// (ADR-0029 "Request pipeline"). Core (not the worker) owns assembly and
-/// completion (ADR-0117): the worker forwards each block's bytes as they
-/// arrive, tells core the room it has once everything handed is asked
+/// completion (ADR-0117): the worker gathers each block's bytes as they
+/// arrive ([`Gathered`]) and hands them over, tells core the room it has once everything handed is asked
 /// (`BlocksWanted`), and serves blocks handed meanwhile behind the rest. A
 /// block the session could not inflate is reported lost and freed; the slot is
 /// kept. The stream ends when the pipeline has drained, its last
@@ -500,6 +501,7 @@ async fn stream_blocks(
     let (cmd_tx, event_tx) = (link.cmd_tx, link.event_tx);
     let file_hash = file.file_hash;
     let mut progress_deadline = tokio::time::Instant::now() + slot_wait_timeout;
+    let mut gathered = Gathered::default();
 
     loop {
         while let Some(blocks) = pipeline.next_request(Instant::now().into_std()) {
@@ -515,6 +517,7 @@ async fn stream_blocks(
                 .await
                 .is_err()
             {
+                let _ = hand_over(event_tx, &mut gathered).await;
                 let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;
                 return Streamed::WindDown;
             }
@@ -522,6 +525,10 @@ async fn stream_blocks(
         if let Some((room, drained)) = pipeline.want() {
             let room = u32::try_from(room).unwrap_or(u32::MAX);
             let handout = pipeline.handout();
+            // A drain speaks for every byte asked; a room reading for none.
+            if drained && hand_over(event_tx, &mut gathered).await.is_err() {
+                return Streamed::WindDown;
+            }
             if event_tx
                 .send(PeerWorkerEvent::BlocksWanted {
                     room,
@@ -541,15 +548,30 @@ async fn stream_blocks(
         // Bound every wait by the no-progress budget: a peer that grants can
         // stall sending nothing. The deadline resets whenever a block arrives
         // (below), so a healthy transfer is never cut off.
-        let event = match next_event(link, file_hash, progress_deadline).await {
+        let event = match next_event(link, file_hash, progress_deadline, gathered.due()).await {
             Ok(event) => event,
             // Blocks handed meanwhile queue behind the rest.
             Err(Streamed::Handed) => {
                 hand_deferred(link, pipeline);
                 continue;
             }
-            Err(end) => return end,
+            Err(Streamed::GatherDue) => {
+                if hand_over(event_tx, &mut gathered).await.is_err() {
+                    return Streamed::WindDown;
+                }
+                continue;
+            }
+            Err(end) => {
+                let _ = hand_over(event_tx, &mut gathered).await;
+                return end;
+            }
         };
+        // Whatever else the peer said follows the bytes that came before it.
+        if !is_block_of(file_hash, event.as_ref())
+            && hand_over(event_tx, &mut gathered).await.is_err()
+        {
+            return Streamed::WindDown;
+        }
         let event = match forward_shared(event_tx, file_hash, event).await {
             Ok(Some(event)) => event,
             Ok(None) => continue,
@@ -574,23 +596,20 @@ async fn stream_blocks(
                 bytes,
             }) if received == file_hash => {
                 // New bytes of an asked block are the progress: they extend
-                // the no-progress budget and go on to core, which merges them
-                // into the part's Arrived Ranges.
+                // the no-progress budget and gather on their way to core,
+                // which merges them into the part's Arrived Ranges.
                 let now = Instant::now();
+                let end = offset + bytes.len() as u64;
                 if !pipeline.arrived(now.into_std(), offset, bytes.len() as u64) {
                     continue;
                 }
                 progress_deadline = now + slot_wait_timeout;
-                let part_index = u32::try_from(offset / ED2K_PART_SIZE).unwrap_or(u32::MAX);
-                if event_tx
-                    .send(PeerWorkerEvent::BlockReceived {
-                        part_index,
-                        offset,
-                        bytes,
-                    })
-                    .await
-                    .is_err()
+                if let Some(earlier) = gathered.add(now, offset, &bytes)
+                    && event_tx.send(earlier).await.is_err()
                 {
+                    return Streamed::WindDown;
+                }
+                if !pipeline.arriving(end) && hand_over(event_tx, &mut gathered).await.is_err() {
                     return Streamed::WindDown;
                 }
             }
@@ -613,6 +632,27 @@ async fn stream_blocks(
             }
             _ => {}
         }
+    }
+}
+
+/// Whether `event` is bytes of the file, the one event that may wait in
+/// [`Gathered`].
+fn is_block_of(file_hash: FileHash, event: Option<&PeerEvent>) -> bool {
+    matches!(
+        event,
+        Some(PeerEvent::Requester(RequesterEvent::PartReceived { file_hash: received, .. }))
+            if *received == file_hash
+    )
+}
+
+/// Send core the run in `gathered`, if it holds one. `Err` when core is gone.
+async fn hand_over(
+    event_tx: &mpsc::Sender<PeerWorkerEvent>,
+    gathered: &mut Gathered,
+) -> Result<(), Ended> {
+    match gathered.take() {
+        Some(run) => event_tx.send(run).await.map_err(|_| Ended),
+        None => Ok(()),
     }
 }
 
@@ -685,9 +725,12 @@ enum Streamed {
     /// The download handed this worker blocks while it waited: they wait in
     /// `deferred` until the stream takes them.
     Handed,
+    /// Gathered bytes reached the end of their wait.
+    GatherDue,
 }
 
 mod aich;
+mod gathered;
 mod pipeline;
 #[cfg(test)]
 mod tests;

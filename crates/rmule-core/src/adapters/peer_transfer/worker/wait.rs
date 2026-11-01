@@ -32,10 +32,10 @@ pub(super) async fn await_probe(
     let event_tx = link.event_tx;
     let deadline = tokio::time::Instant::now() + timeout;
     let status = loop {
-        let event = match next_event(link, file_hash, deadline).await {
+        let event = match next_event(link, file_hash, deadline, None).await {
             Ok(event) => event,
             // Never sent before the probe answers; served after it if it were.
-            Err(Streamed::Handed) => continue,
+            Err(Streamed::Handed | Streamed::GatherDue) => continue,
             Err(end) => return end,
         };
         match forward_shared(event_tx, file_hash, event).await {
@@ -75,11 +75,12 @@ pub(super) async fn await_probe(
 /// when it arrives; blocks handed meanwhile wait in
 /// `deferred` and end the wait as `Handed`; anything else waits in
 /// `deferred`. No event by `deadline` reports `SlotTimeout` and ends the
-/// wait as `Stalled`.
+/// wait as `Stalled`; `gather_due` ends it as `GatherDue`.
 pub(super) async fn next_event(
     link: &mut WorkerLink<'_>,
     file_hash: FileHash,
     deadline: tokio::time::Instant,
+    gather_due: Option<tokio::time::Instant>,
 ) -> Result<Option<PeerEvent>, Streamed> {
     loop {
         let aich_due = link.aich_due();
@@ -120,6 +121,9 @@ pub(super) async fn next_event(
                 if !link.give_up_aich(file_hash).await {
                     return Err(Streamed::WindDown);
                 }
+            }
+            () = tokio::time::sleep_until(gather_due.unwrap_or(deadline)), if gather_due.is_some() => {
+                return Err(Streamed::GatherDue);
             }
             waited = tokio::time::timeout_at(deadline, link.events.recv()) => {
                 return match waited {

@@ -164,9 +164,10 @@ pub enum PeerWorkerEvent {
     /// The worker waited the configured slot budget without a grant and
     /// gave up. Terminal for this worker's current part.
     SlotTimeout,
-    /// One block of `part_index` arrived at absolute file `offset`. Core
-    /// merges it into the part's **Arrived Ranges** (ADR-0117); the worker
-    /// neither accumulates bytes nor decides completion.
+    /// Bytes of `part_index` arrived at absolute file `offset`: a whole asked
+    /// block, or what arrived of it within the worker's gather wait. Core
+    /// merges them into the part's **Arrived Ranges** (ADR-0117); the worker
+    /// decides no completion.
     BlockReceived {
         /// The zero-based part the block belongs to.
         part_index: u32,

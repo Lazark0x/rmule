@@ -18,9 +18,12 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   ranges that have arrived — and their bytes, the set of contributing peers, and the
   writers of each `EMBLOCKSIZE` cell (ADR-0117).
 - Workers are block askers. `PeerWorkerCommand::RequestBlocks` hands a worker the
-  blocks to ask (ADR-0117), and the worker reports each arrival as
-  `PeerWorkerEvent::BlockReceived { part_index, offset, bytes }`. It neither keeps
-  bytes nor decides completion.
+  blocks to ask (ADR-0117), and the worker reports what arrives as
+  `PeerWorkerEvent::BlockReceived { part_index, offset, bytes }`. It decides no
+  completion. A stock uploader frames a block in 10,240-byte packets
+  (`UploadClient.cpp:290`) and a brain's turn per packet tops a download out, so the
+  worker gathers a block's packets: core hears the run when the block is whole, when a
+  packet does not extend it, before anything else the worker says, and within 100 ms.
 - Core merges each arrival into the part's Arrived Ranges, writing only the bytes not
   yet arrived: a later copy of an arrived byte, a duplicate's or a drained block's, is
   dropped. When the ranges cover the part, core verifies the MD4 part hash, persists
