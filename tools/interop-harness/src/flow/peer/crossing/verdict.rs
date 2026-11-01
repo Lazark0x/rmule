@@ -91,7 +91,7 @@ impl Topology {
 }
 
 /// One TCP link between rmule and the raced aMule.
-#[derive(Clone, Debug, Serialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq)]
 struct Link {
     /// rmule's end and the aMule's end.
     rmule_end: String,

@@ -16,6 +16,10 @@ const OP_QUEUERANKING: u8 = 0x60;
 const SESSION_BYTES: u64 = 10_485_760;
 /// How close behind the `0x57` its rank must follow: one write in stock.
 const RANK_AFTER_KICK_SECS: f64 = 5.0;
+/// How far the waiter's grant may lead the `0x57` on the wire: the slot moves
+/// once, and each link drains its own lanes, so the holder's tail can finish
+/// after the waiter's accept left.
+const GRANT_LEADS_KICK_SECS: f64 = 1.0;
 
 /// rmule's frames to `holder`, in wire order.
 fn frames_to(capture: &TcpCapture, rmule: Ipv4Addr, holder: Ipv4Addr) -> Vec<Ed2kFrame> {
@@ -56,7 +60,7 @@ fn claims_over(frames: &[Ed2kFrame], links: &[Link]) -> Vec<Claim> {
     let rank_after = kick_at.zip(rank.map(|frame| frame.at)).map(|(k, r)| r - k);
     let granted = links
         .iter()
-        .filter(|link| kick_at.is_some_and(|at| link.first_grant >= at))
+        .filter(|link| kick_at.is_some_and(|at| link.first_grant >= at - GRANT_LEADS_KICK_SECS))
         .min_by(|a, b| a.first_grant.total_cmp(&b.first_grant));
     vec![
         Claim::about(
@@ -76,7 +80,7 @@ fn claims_over(frames: &[Ed2kFrame], links: &[Link]) -> Vec<Claim> {
             granted.is_some(),
             Evidence::Captured,
             format!(
-                "first OP_ACCEPTUPLOADREQ to W past the kick: {:?}",
+                "first OP_ACCEPTUPLOADREQ to W at the kick: {:?}",
                 granted.map(|link| link.first_grant)
             ),
         ),
@@ -141,5 +145,26 @@ mod tests {
         );
         assert!(passed(&claims, "the-holder-was-told-past-ten-mib"));
         assert!(!passed(&claims, "a-rank-followed-on-that-link"));
+    }
+
+    /// The holder's tail drains on its own link, so the waiter's accept can
+    /// leave first: the slot still moved at the kick. A grant long before it
+    /// is another turn.
+    #[test]
+    fn a_grant_leading_the_holders_kick_on_the_wire_is_the_slot_moving() {
+        let frames = [
+            frame(1.0, OP_SENDINGPART, 10_485_761),
+            frame(2.0, OP_OUTOFPARTREQS, 0),
+        ];
+        let granted = |first_grant| Link {
+            first_grant,
+            parts_from_rmule: 180,
+            ..Link::default()
+        };
+        let led = claims_over(&frames, &[granted(1.96)]);
+        assert!(passed(&led, "the-waiter-took-the-slot"));
+        assert!(passed(&led, "the-waiter-took-parts-on-it"));
+        let earlier = claims_over(&frames, &[granted(0.5)]);
+        assert!(!passed(&earlier, "the-waiter-took-the-slot"));
     }
 }
