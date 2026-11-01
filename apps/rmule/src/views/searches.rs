@@ -26,7 +26,6 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::widgets::TableState;
 
 use rmule_core::{CoreCommand, SearchCommand};
 use rmule_primitives::{Ed2kText, KeywordQuery};
@@ -146,6 +145,7 @@ impl SearchesView {
         if self.held.is_empty() && self.menu.is_none() && !self.filters_open {
             self.arrived = self.query.is_empty();
             self.input_focused = true;
+            self.zoomed = false;
         }
     }
 
