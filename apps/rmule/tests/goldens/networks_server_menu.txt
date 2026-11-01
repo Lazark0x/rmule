@@ -9,7 +9,7 @@
 │answer yet — i│ Copy server link                             │              │
 └ too narrow to│ Remove…                                      │─────── 2 / 4 ┘
 ┌ Log (0) ─────│ Pin as static                                │───── K start ┐
-│no core events│ Priority: Low → Norm                         │              │
+│nothing has ha│ Priority: Low → Norm                         │              │
 │              │ Add server… (a)                              │arted)        │
 │              │ Update list from URL… (U)                    │              │
 │              └─────────────────────────────────────── 1 / 7 ┘              │

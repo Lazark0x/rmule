@@ -225,7 +225,7 @@ pub fn serving_failed(reason: ServeStartFailure) -> Sentence {
             )
         }
         ServeStartFailure::Adapter => {
-            "not serving: the serving task ended earlier; restart rmule to serve again".to_string()
+            "not serving: an internal fault ended it earlier; restart rmule to serve again".to_string()
         }
     })
 }
@@ -237,7 +237,7 @@ pub const fn serving_stopped(reason: ServeStopReason) -> Sentence {
         ServeStopReason::Requested => "serving stopped",
         ServeStopReason::ListenerClosed => "serving stopped: the listener closed on its own",
         ServeStopReason::TaskFailed => {
-            "serving stopped: the serving task failed; restart rmule to serve again"
+            "serving stopped: an internal fault ended it; restart rmule to serve again"
         }
     })
 }

@@ -196,7 +196,7 @@ pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: 
 fn session_title(theme: &Theme, state: &UiState) -> Line<'static> {
     let mut spans = vec![Span::styled(" Session ", Style::new().fg(theme.fg))];
     if !state.core_alive {
-        spans.push(Span::styled("· core stopped ", Style::new().fg(theme.bad)));
+        spans.push(Span::styled("· engine stopped ", Style::new().fg(theme.bad)));
     }
     Line::from(spans)
 }

@@ -57,7 +57,7 @@ impl NetworksView {
         if state.log.is_empty() {
             self.log_viewport.show(0, inner.height);
             frame.render_widget(
-                Paragraph::new(Line::styled("no core events yet", theme.dim_text())),
+                Paragraph::new(Line::styled("nothing has happened yet", theme.dim_text())),
                 inner,
             );
             return;

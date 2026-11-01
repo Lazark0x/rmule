@@ -61,16 +61,25 @@ pub(super) struct MenuItem {
     action: MenuAction,
 }
 
-/// The files-table menu (spec §3.5). Copy is greyed because an eD2k link needs
-/// the name+size the UI does not have; *Search related* sits directly under
+/// The eD2k link of a shared file, once its name and size are known.
+fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
+    let row = state.shared.get(&file_hash)?;
+    let name = rmule_primitives::Ed2kText::from_utf8(row.name()?);
+    Some(crate::views::ed2k_file_link(&name, row.file_size?, file_hash))
+}
+
+/// The files-table menu (spec §3.5). Copy is greyed until the file's name and
+/// size are read; *Search related* sits directly under
 /// it, as in every row menu, dimmed while the connected server cannot answer
 /// it (read from `state` on every call, so a server switch shows at once);
 /// Comments is a standing non-goal.
-fn file_menu(state: &UiState) -> [MenuItem; 4] {
+fn file_menu(state: &UiState, file_hash: FileHash) -> [MenuItem; 4] {
     [
         MenuItem {
             label: "Copy eD2k link",
-            greyed: Some("core exposes no name/size yet"),
+            greyed: shared_link(state, file_hash)
+                .is_none()
+                .then_some("its name and size are not read yet"),
             action: MenuAction::CopyLink,
         },
         MenuItem {
@@ -162,8 +171,8 @@ fn menu_item_lines(
 }
 
 /// First selectable (non-greyed) menu index — where a fresh menu lands.
-fn first_enabled_menu_index(state: &UiState) -> usize {
-    file_menu(state)
+fn first_enabled_menu_index(state: &UiState, file_hash: FileHash) -> usize {
+    file_menu(state, file_hash)
         .iter()
         .position(|item| item.greyed.is_none())
         .unwrap_or(0)
@@ -171,8 +180,8 @@ fn first_enabled_menu_index(state: &UiState) -> usize {
 
 /// Step menu selection to the nearest selectable item in `delta`'s direction,
 /// skipping greyed items and staying put when there is none that way.
-fn step_menu(current: usize, delta: isize, state: &UiState) -> usize {
-    let items = file_menu(state);
+fn step_menu(current: usize, delta: isize, state: &UiState, file_hash: FileHash) -> usize {
+    let items = file_menu(state, file_hash);
     let len = items.len() as isize;
     let mut cursor = current as isize;
     loop {
@@ -217,13 +226,13 @@ impl SharedView {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.selected = step_menu(menu.selected, 1, state);
+                    menu.selected = step_menu(menu.selected, 1, state, menu.file_hash);
                 }
                 ViewOutcome::Redraw
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(menu) = self.menu.as_mut() {
-                    menu.selected = step_menu(menu.selected, -1, state);
+                    menu.selected = step_menu(menu.selected, -1, state, menu.file_hash);
                 }
                 ViewOutcome::Redraw
             }
@@ -242,8 +251,8 @@ impl SharedView {
         let Some(menu) = self.menu.as_ref() else {
             return ViewOutcome::Ignored;
         };
-        let action = file_menu(state)[menu.selected].action;
         let file_hash = menu.file_hash;
+        let action = file_menu(state, file_hash)[menu.selected].action;
         match action {
             // Dimmed since the cursor rested here (a server switch under the
             // open menu): nothing is sent, and the menu stays.
@@ -265,9 +274,16 @@ impl SharedView {
                 self.menu = None;
                 ViewOutcome::Redraw
             }
+            MenuAction::CopyLink => match shared_link(state, file_hash) {
+                Some(link) => {
+                    self.menu = None;
+                    ViewOutcome::Emit(Action::CopyLink(link))
+                }
+                None => ViewOutcome::Redraw,
+            },
             // Greyed items are never landable (see `step_menu`), so activation
-            // cannot reach them; handled for match exhaustiveness only.
-            MenuAction::CopyLink | MenuAction::Comments => ViewOutcome::Redraw,
+            // cannot reach it; handled for match exhaustiveness only.
+            MenuAction::Comments => ViewOutcome::Redraw,
         }
     }
 
@@ -285,7 +301,7 @@ impl SharedView {
         };
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
-            selected: first_enabled_menu_index(state),
+            selected: first_enabled_menu_index(state, row.file_hash),
             viewport: Cell::default(),
         });
         ViewOutcome::Redraw
@@ -298,7 +314,7 @@ impl SharedView {
         let title = format!(" File · {} ", short_hash(menu.file_hash));
         // Greedy modal: as wide as the widest item, clamped to the frame; what
         // still overflows wraps under the gutter instead of clipping.
-        let items = file_menu(state);
+        let items = file_menu(state, menu.file_hash);
         let natural = items
             .iter()
             .map(menu_item_width)
@@ -448,6 +464,7 @@ mod tests {
         let state = with_history(connected_granting(served_files(), true));
         let mut view = SharedView::default();
         view.handle_key(press(KeyCode::Char('m')), &state);
+        view.handle_key(press(KeyCode::Char('j')), &state);
         assert_eq!(view.menu.as_ref().unwrap().selected, 1);
         match view.handle_key(press(KeyCode::Enter), &state) {
             ViewOutcome::Emit(Action::SearchRelated(query)) => {
@@ -455,6 +472,21 @@ mod tests {
                 assert_eq!(query.file_name().to_display_string(), "debian.iso");
             }
             other => panic!("expected SearchRelated, got {other:?}"),
+        }
+        assert!(view.menu.is_none());
+    }
+
+    /// The name and size were on the row all along: Copy works.
+    #[test]
+    fn a_file_with_a_known_name_copies_its_link() {
+        let state = with_history(served_files());
+        let mut view = SharedView::default();
+        view.handle_key(press(KeyCode::Char('m')), &state);
+        match view.handle_key(press(KeyCode::Enter), &state) {
+            ViewOutcome::Emit(Action::CopyLink(link)) => {
+                assert!(link.starts_with("ed2k://|file|debian.iso|"), "{link}");
+            }
+            other => panic!("expected CopyLink, got {other:?}"),
         }
         assert!(view.menu.is_none());
     }

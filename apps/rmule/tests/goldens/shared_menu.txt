@@ -5,12 +5,12 @@
 │  0202020202 shared          —         0      0 (0)      0 (0)     0 B (0 B)│
 │  …                                                                         │
 │                                                                            │
-│           ┌ File · 0101010101… ───────────────────────────────┐            │
-│           │   Copy eD2k link  (core exposes no name/size yet) │            │
-│           │   Search related  (not connected)                 │            │
-│Off-screen:│ ▸ Unshare…                                        │            │
-└───────────│   Comments  (non-goal, ADR-0068)                  │───── 1 / 2 ┘
-┌ Uploads · └──────────────────────────────────────────── 3 / 4 ┘  S reverse ┐
+│         ┌ File · 0101010101… ────────────────────────────────────┐         │
+│         │   Copy eD2k link  (its name and size are not read yet) │         │
+│         │   Search related  (not connected)                      │         │
+│Off-scree│ ▸ Unshare…                                             │         │
+└─────────│   Comments  (non-goal, ADR-0068)                       │── 1 / 2 ┘
+┌ Uploads └───────────────────────────────────────────────── 3 / 4 ┘ reverse ┐
 │  Peer ▲                Software     State             Speed File           │
 │▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — 0101010101…    │
 │                                                                            │

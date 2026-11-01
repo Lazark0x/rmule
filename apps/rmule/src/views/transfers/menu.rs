@@ -126,16 +126,6 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             },
             reason: related_reason,
         },
-        MenuItem {
-            label: "Priority ▸".to_string(),
-            action: MenuAction::Inert,
-            reason: Some("needs core priority model"),
-        },
-        MenuItem {
-            label: "Category ▸".to_string(),
-            action: MenuAction::Inert,
-            reason: Some("needs core categories"),
-        },
     ]);
     items
 }

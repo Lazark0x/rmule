@@ -128,7 +128,7 @@ pub const fn stopped(reason: KadStopReason) -> Sentence {
     Sentence::fixed(match reason {
         KadStopReason::Ended => "Kad stopped",
         KadStopReason::Stopped => "Kad stopped: you stopped it; K in Networks starts it again",
-        KadStopReason::TaskFailed => "Kad stopped: its task failed; restart rmule to rejoin",
+        KadStopReason::TaskFailed => "Kad stopped: an internal fault ended it; restart rmule to rejoin",
     })
 }
 

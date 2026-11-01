@@ -9,7 +9,7 @@
 │unicode, │ Address      10.0.0.300▮                               │on       │
 └ too narr│ Port         1–65535                                   │── 1 / 4 ┘
 ┌ Log (0) │                                                        │ K start ┐
-│no core e│ ✗ '10.0.0.300' is not a valid IPv4 address             │         │
+│nothing h│ ✗ '10.0.0.300' is not a valid IPv4 address             │         │
 │         │                                                        │)        │
 │         │ Tab field    Enter add    Esc cancel                   │         │
 │         └────────────────────────────────────────────────────────┘         │

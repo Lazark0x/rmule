@@ -9,7 +9,7 @@
 │unicode, get sources 2, large files, UDP obfuscation, TCP obfuscation       │
 └ too narrow to show: Desc ─────────────────────────────────────────── 1 / 4 ┘
 ┌ Log (0) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
-│no core events yet                  ││● Kad: off                            │
+│nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │
 │                                    ││Firewall  — (never run)               │

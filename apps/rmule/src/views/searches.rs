@@ -204,6 +204,9 @@ impl SearchesView {
                     self.query.pop();
                     ViewOutcome::Redraw
                 }
+                // Arriving here focuses the query, so the `/` that focuses it
+                // from the results must not become its first letter.
+                KeyCode::Char('/') if self.query.is_empty() => ViewOutcome::Redraw,
                 KeyCode::Char(c) => {
                     self.query.push(c);
                     ViewOutcome::Redraw

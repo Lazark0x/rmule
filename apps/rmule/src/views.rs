@@ -39,6 +39,25 @@ use crate::rates::format_rate;
 use crate::state::UiState;
 use crate::theme::Theme;
 
+/// The canonical eD2k link for a file, through [`rmule_primitives::Ed2kLink`]'s
+/// `Display`, so names with spaces or `|` come out escaped.
+pub(crate) fn ed2k_file_link(
+    name: &rmule_primitives::Ed2kText,
+    size: u64,
+    file_hash: rmule_primitives::FileHash,
+) -> String {
+    rmule_primitives::Ed2kLink::File(rmule_primitives::Ed2kFileLink {
+        name: name.clone(),
+        size,
+        file_hash,
+        part_hash_set: None,
+        aich_root: None,
+        ipv6_sources: Vec::new(),
+        sources: Default::default(),
+    })
+    .to_string()
+}
+
 /// The one way anything in this crate asks core to connect to a server
 /// (ADR-0080 amendment).
 ///

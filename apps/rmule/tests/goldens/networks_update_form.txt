@@ -9,7 +9,7 @@
 │unicode,┌ Update server list from URL ─────────────────────────────┐n       │
 └ too nar│ URL          http://upd.emule-security.org/server.met▮   │─ 1 / 4 ┘
 ┌ Log (0)│                                                          │K start ┐
-│no core │ Tab field    Enter fetch    Esc cancel                   │        │
+│nothing │ Tab field    Enter fetch    Esc cancel                   │        │
 │        └──────────────────────────────────────────────────────────┘        │
 │                                    ││Contacts  —                           │
 │                                    ││Firewall  — (never run)               │

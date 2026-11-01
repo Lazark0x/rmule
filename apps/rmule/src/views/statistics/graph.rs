@@ -23,7 +23,7 @@ use crate::wrap::{display_width, wrapped_lines};
 
 /// The graph body before the first data tick. It names *why* the pane is
 /// empty, so a UI-only run does not read as a broken graph.
-pub(super) const NO_SAMPLES: &str = "no samples yet — one lands per core data tick";
+pub(super) const NO_SAMPLES: &str = "no samples yet — one lands each second";
 
 /// Which meter a graph plots. Both series ride the *same* [`RateSample`], so
 /// the two graphs share an x-axis by construction — they cannot drift apart.
@@ -282,7 +282,7 @@ mod tests {
             "the axis marks the freeze:\n{rendered}"
         );
         assert!(
-            rendered.contains("core stopped"),
+            rendered.contains("engine stopped"),
             "the session pane says why"
         );
     }

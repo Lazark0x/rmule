@@ -1,5 +1,5 @@
 ┌ Log┌ Add server ─────────────────────────────────────────────┐tart ┐
-│no c│ Name                                                   ▲│     │
+│noth│ Name                                                   ▲│     │
 │    │ Address      IPv4 or hostname▮                         █│     │
 │    │ Port         1–65535                                   ▃│     │
 │    │                                                        ▼│     │

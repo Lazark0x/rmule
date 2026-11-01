@@ -20,6 +20,7 @@ use crate::row_selection::viewport::{self, Viewport};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::centered;
+use crate::words::help::{Binding, TABLES};
 use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// Where the help overlay is scrolled to, as the last draw laid it out: its
@@ -85,50 +86,7 @@ pub(super) fn draw_help(
         area.width,
         area.height.saturating_sub(2),
     );
-    let rows: &[(&str, &str)] = &[
-        ("1–6", "switch view directly"),
-        ("h / l", "previous / next view"),
-        (
-            "[ / ]",
-            "Searches: previous / next held search / Shared: filter by directory",
-        ),
-        ("j/k  ↑/↓", "select row in focused pane"),
-        ("g / G", "top / bottom"),
-        ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
-        ("m / Enter", "row action menu"),
-        ("/", "Searches: focus query input"),
-        ("o", "Searches: type/size/sources/extension filters"),
-        (
-            "x / n",
-            "Searches: stop or close a search / server's next page",
-        ),
-        ("s / S", "sort the focused table by next column / reverse"),
-        ("a", "Shared: filter / Networks: add server"),
-        ("U", "Networks: update server list from URL"),
-        ("5 / 6", "Statistics (display-only) / Settings"),
-        ("Enter  ← / →", "Settings: edit a field / step a selector"),
-        ("x", "Settings: stop sharing the selected directory"),
-        (
-            "c",
-            "Networks: connect to the selected server, or disconnect from the one you are on",
-        ),
-        ("K", "Networks: start or stop Kad"),
-        (
-            "p / C",
-            "pause/resume selected download / clear all completed",
-        ),
-        ("L", "Transfers: add a download from a pasted eD2k link"),
-        (
-            "v",
-            "Transfers: preview the selected download in the player set in Settings",
-        ),
-        ("?", "this help; j/k, PgUp/PgDn scroll it when it is long"),
-        ("q / Esc", "quit (top level) / dismiss (modal)"),
-        (
-            "mouse",
-            "click tab/row selects, header sorts, wheel scrolls",
-        ),
-    ];
+    let rows: Vec<Binding> = TABLES.concat();
     // Greedy width: the overlay takes whatever it needs to show every
     // binding whole, and only wraps the description column when the frame is
     // narrower than that.
@@ -308,15 +266,15 @@ mod tests {
             })
         };
         let top = draw(&chrome);
-        assert!(top.contains("5 / 6"), "{top}");
-        assert!(!top.contains("mouse"), "{top}");
+        assert!(top.contains("1–6"), "{top}");
+        assert!(!top.contains("stop sharing"), "{top}");
         assert!(chrome.update(&Action::ScrollHelp(i16::MAX), now()));
         assert_golden("chrome_help_scrolled", 80, 24, |frame| {
             draw_frame(frame, &UiState::default(), &chrome, &theme, now());
             draw_overlays(frame, &UiState::default(), &chrome, &theme);
         });
         let end = draw(&chrome);
-        assert!(end.contains("mouse"), "{end}");
+        assert!(end.contains("stop sharing"), "{end}");
         let rows: Vec<&str> = end.lines().collect();
         assert!(rows[0].starts_with("┌ 1 Networks"), "{}", rows[0]);
         assert!(rows[23].starts_with("└ —"), "{}", rows[23]);

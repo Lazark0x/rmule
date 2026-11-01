@@ -22,7 +22,7 @@
 │Shares: announced at its next login, as to every server                       │
 └ too narrow to show: Desc ───────────────────────────────────────────── 4 / 4 ┘
 ┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
-│no core events yet                    ││● Kad: off                            │
+│nothing has happened yet              ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │
 │                                      ││Contacts  —                           │
 │                                      ││Firewall  — (never run)               │

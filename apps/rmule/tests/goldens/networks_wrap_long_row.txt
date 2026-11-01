@@ -9,7 +9,7 @@
 │answer yet — the status ping has not asked it this run                      │
 └ too narrow to show: Desc ─────────────────────────────────────────── 1 / 2 ┘
 ┌ Log (0) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
-│no core events yet                  ││● Kad: off                            │
+│nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │
 │                                    ││Firewall  — (never run)               │

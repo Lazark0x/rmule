@@ -4,21 +4,21 @@
 │                                                                             █│
 │ 1–6             switch view directly                                        █│
 │ h / l           previous / next view                                        █│
-│ [ / ]           Searches: previous / next held search / Shared: filter by   █│
-│                 directory                                                   █│
 │ j/k  ↑/↓        select row in focused pane                                  █│
 │ g / G           top / bottom                                                █│
 │ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
 │ m / Enter       row action menu                                             █│
-│ /               Searches: focus query input                                 █│
-│ o               Searches: type/size/sources/extension filters               █│
-│ x / n           Searches: stop or close a search / server's next page       █│
-│ s / S           sort the focused table by next column / reverse             ▅│
-│ a               Shared: filter / Networks: add server                        │
+│ s / S           sort the focused table by next column / reverse             █│
+│ ?               this help; j/k, PgUp/PgDn scroll it when it is long         █│
+│ q               quit; asks first while a download runs                      █│
+│ Ctrl-C          quit, from anywhere                                         █│
+│ Esc             close a menu, a form or a question; leave the query         ▆│
+│ mouse           click tab/row selects, header sorts, wheel scrolls           │
+│ a               Networks: add server                                         │
 │ U               Networks: update server list from URL                        │
-│ 5 / 6           Statistics (display-only) / Settings                         │
-│ Enter  ← / →    Settings: edit a field / step a selector                     │
-│ x               Settings: stop sharing the selected directory                │
-│ c               Networks: connect to the selected server, or disconnect from▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 20 / 29 ┘
+│ c               Networks: connect to the selected server, or disconnect from │
+│                 the one you are on                                           │
+│ K               Networks: start or stop Kad                                  │
+│ /               Searches: focus query input                                 ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 32 ┘
 └ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘

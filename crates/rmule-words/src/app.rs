@@ -102,8 +102,9 @@ pub const fn quit_step(step: QuitStep) -> Sentence {
 }
 
 /// Quit's grace ran out before core confirmed its flush.
-pub const SHUTDOWN_GRACE_ELAPSED: Sentence =
-    Sentence::fixed("Shutdown grace period elapsed — flush unconfirmed");
+pub const SHUTDOWN_GRACE_ELAPSED: Sentence = Sentence::fixed(
+    "Quit ran out of time: recent credits may be lost and router mappings may stay",
+);
 
 /// The core's event stream ended.
 pub const CORE_STOPPED: Sentence =
@@ -147,7 +148,9 @@ pub fn command_rejected(reason: &CoreCommandRejectReason) -> Sentence {
                 super::scan::download_dir_refusal(guard)
             ));
         }
-        R::DownloadStoreFailed => "download refused: the download store failed (see the run log)",
+        R::DownloadStoreFailed => {
+            "download refused: writing to the data directory failed (see the run log)"
+        }
         R::DownloadAlreadyActive => "resume refused: that download is already running",
         R::DownloadCompleting => {
             "refused: the finished file is already in place, and the download completes on its own"

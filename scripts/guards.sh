@@ -2,7 +2,7 @@
 # Machine-checkable subset of the repository's code and docs conventions.
 #
 # Walks crates/ apps/ tools/ docs/ (and, for the two text checks, every public
-# tracked file) and reports every violation of the fifteen
+# tracked file) and reports every violation of the sixteen
 # guards below. A violation is suppressed when its exact `<check>:<path>` line appears
 # in scripts/guards-allow.txt (the ratchet — debt drained over time, never
 # grown without justification in the PR).
@@ -40,6 +40,8 @@
 #              private tree, in any public tracked file
 #   sentence   a `Sentence` made outside a words module: rmule-words, or the
 #              TUI's own words (apps/rmule/src/words.rs and words/)
+#   readme     a parity figure README states that docs/protocol/parity/count.py
+#              does not count
 #   refconst   a constant declared under an eMule symbol name whose value the
 #              Reference Source gives otherwise (scripts/audit-reference-
 #              constants.py); run only when the pinned tree is present, which
@@ -791,6 +793,31 @@ EOF
     fi
 else
     echo "refconst: not run here — no Reference Source at $REF_TREE (CI's reference-constants job runs it)"
+fi
+
+# 16. readme — the parity figures README states are the ones the tables count.
+counted="$(python3 docs/protocol/parity/count.py 2>/dev/null | awk '$1 == "Total"')"
+if [ -z "$counted" ]; then
+    report readme docs/protocol/parity/count.py "the count did not run"
+else
+    set -- $counted
+    rows=$2 parity=$3 partial=$4 missing=$5 exempt=$6 proven=${10}
+    readme_flat="$(tr -s ' \n' ' ' <README.md)"
+    for said in \
+        "Across $rows wire behaviours on six surfaces" \
+        "rmule matches amuled 2.3.3 on $parity, partly on $partial and differs by design on $exempt" \
+        "$proven of the $parity are proven" \
+        "row by row: $rows rows across"; do
+        case "$readme_flat" in
+        *"$said"*) ;;
+        *) report readme README.md "the tables count: $said" ;;
+        esac
+    done
+    if [ "$missing" -ne 0 ]; then
+        case "$readme_flat" in
+        *"with none missing"*) report readme README.md "the tables count $missing missing" ;;
+        esac
+    fi
 fi
 
 echo

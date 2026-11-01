@@ -4,7 +4,7 @@
 //! stays greyed *with the reason* while any of them is genuinely absent,
 //! rather than offering a link that would be wrong.
 
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, Ed2kText, FileHash};
+use rmule_primitives::{Ed2kText, FileHash};
 
 use crate::state::DownloadRow;
 
@@ -39,16 +39,7 @@ pub(super) fn copy_link_reason(row: Option<&DownloadRow>) -> Option<&'static str
 /// view's link-copy uses, so names with spaces or `|` come out escaped.
 pub(super) fn copy_link_for(row: Option<&DownloadRow>) -> Option<String> {
     let (name, size, file_hash) = copy_link_facts(row)?;
-    let link = Ed2kFileLink {
-        name: name.clone(),
-        size,
-        file_hash,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
-    Some(Ed2kLink::File(link).to_string())
+    Some(crate::views::ed2k_file_link(name, size, file_hash))
 }
 
 #[cfg(test)]

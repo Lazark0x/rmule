@@ -411,7 +411,7 @@ mod tests {
             !at80.contains("Users:"),
             "users segment drops first: {at80:?}"
         );
-        assert!(at80.contains("KB/s") && at80.contains("eD2k"), "{at80:?}");
+        assert!(at80.contains("eD2k") && at80.contains("? help"), "{at80:?}");
         // Very narrow: the info label outranks every fixed segment.
         let at40 = status_bar(&state, &chrome, &theme, t0, 40)
             .border

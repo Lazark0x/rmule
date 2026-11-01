@@ -6,8 +6,8 @@ finds sources, downloads from many peers at once, uploads to others, and runs
 a full Kad node. It is library-first: the protocol lives in crates that own no
 sockets and no screens, and the two programs are thin front-ends over one core.
 
-Across 143 wire behaviours on six surfaces, rmule matches amuled 2.3.3 on 121,
-partly on 10 and differs by design on 12, with none missing; 79 of the 121 are
+Across 145 wire behaviours on six surfaces, rmule matches amuled 2.3.3 on 127,
+partly on 4 and differs by design on 14, with none missing; 83 of the 127 are
 proven against bytes captured from pinned counterparties. The
 [parity tables](docs/protocol/parity/) list every one, and
 [Compatibility with aMule](#compatibility-with-amule) says how they are scored.
@@ -113,8 +113,7 @@ eD2k server until you say so.
    in Networks. If rmule knows no Kad contacts yet, it fetches `nodes.dat` from
    `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)
    and an off switch (*Fetch seeds*).
-5. **Search and download.** Press `2`, then `/`, type a query and press
-   `Enter`. One search goes to the connected server, to other servers over
+5. **Search and download.** Press `2`, type a query and press `Enter`. One search goes to the connected server, to other servers over
    UDP and to Kad, and the results merge. Press `Enter` or `m` on a result and
    choose *Download*. Or press `L` on Transfers to paste an `ed2k://` link.
 
@@ -148,6 +147,7 @@ What it holds:
 | File | Contents |
 | --- | --- |
 | `rmule.redb` | identity, preferences, the server list, downloads, the shared-file registry |
+| `Temp/` | the part files of unfinished downloads, unless Settings › *Temp dir* says elsewhere |
 | `rmule.log`, `rmule.log.1` | the Run Log; at 16 MiB it moves aside to `rmule.log.1` |
 | `clients.met` | the credit other clients have earned with you |
 | `nodes.dat` | Kad contacts, kept for the next start |
@@ -199,15 +199,20 @@ port.
 | `Tab` / `Shift-Tab` | move between panes |
 | `m` / `Enter` | the selected row's actions |
 | `s` / `S` | sort by the next column / reverse the sort |
-| `p` / `C` | pause or resume a download / clear finished downloads |
-| `L` | Transfers: add a download from an `ed2k://` link |
-| `/`, `o` | Searches: type a query / filter by type, size, sources, extension |
+| `p` / `C` | Transfers: pause or resume a download / clear finished downloads |
+| `L` | Transfers: add a download from an `ed2k://` link; paste several, one a line |
+| `v` | Transfers: preview a download in the player set in Settings |
+| `/`, `o` | Searches: back to the query / filter by type, size, sources, extension |
 | `x` / `n` | Searches: stop or close a search / ask the server for more results |
 | `a`, `U` | Networks: add a server / update the list from a URL |
 | `c`, `K` | Networks: connect or disconnect the server / start or stop Kad |
+| `a` | Shared Files: active files only, or every file |
 | `Enter`, `←` / `→` | Settings: edit a field / step a choice |
+| `x` | Settings: stop sharing the selected directory |
 | `?` | every key, with the version |
-| `q` | quit |
+| `q` | quit; asks first while a download runs |
+| `Ctrl-C` | quit, from anywhere |
+| `Esc` | close a menu, a form or a question; leave the query |
 
 A click selects a tab or a row, a click on a header sorts, and the wheel
 scrolls. Settings marks the choices that take effect on restart.
@@ -242,7 +247,8 @@ they exist.
 reports on the node, for 30 minutes unless `--duration <seconds>` says
 otherwise. It is a diagnostic, not a way to run Kad.
 
-`RMULE_LOG` sets the log filter (default `info`); the log goes to stderr.
+Each run writes its Run Log to `rmule.log` in the data directory. `--verbose`
+also prints it to stderr, filtered by `RMULE_LOG` (default `info`).
 
 ## Known limitations
 
@@ -256,8 +262,6 @@ otherwise. It is a diagnostic, not a way to run Kad.
 
 On Windows:
 
-- Part files are not sparse on NTFS: a part file takes disk space up to the
-  furthest part written, not only for the parts it holds.
 - The `.exe` carries no long-path manifest, so Windows' 260-character path
   limit may apply to deep download or shared paths.
 - A part file deleted while rmule holds it open is not noticed until the
@@ -268,7 +272,7 @@ On Windows:
 
 aMule 2.3.3 is the reference for how rmule behaves on the wire. The matrices
 in [`docs/protocol/parity/`](docs/protocol/parity/) list aMule's wire behaviour
-row by row: 143 rows across server TCP, server UDP, peer TCP, peer UDP, Kad UDP
+row by row: 145 rows across server TCP, server UDP, peer TCP, peer UDP, Kad UDP
 and the server-list and Kad bootstrap. Each row cites the aMule source it was
 read from, states the target (`full`, `graceful`, or `n-a` with its reason),
 and gives rmule's status (`at parity`, `partial`, `missing` or `exempt`), the
@@ -286,8 +290,8 @@ counterparty is proven defective.
 
 - [`docs/architecture/top-level.md`](docs/architecture/top-level.md): the crate
   map, the layers, and where to start reading the code.
-- [`docs/adr/README.md`](docs/adr/README.md): the 110 architecture decisions in
-  force, numbered 0001 to 0110.
+- [`docs/adr/README.md`](docs/adr/README.md): the architecture decisions in
+  force.
 - [`docs/protocol/`](docs/protocol/): protocol notes, the fixture conventions,
   the map of reference sources and the parity matrices.
 - [`docs/reference/`](docs/reference/): pinned external protocol references.

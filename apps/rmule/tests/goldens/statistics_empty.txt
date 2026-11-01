@@ -1,12 +1,12 @@
 ┌ ▼ Download ────────────────────────────────────────────────────────────────┐
-│no samples yet — one lands per core data tick                               │
+│no samples yet — one lands each second                                      │
 │                                                                            │
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 
 ┌ ▲ Upload ──────────────────────────────────────────────────────────────────┐
-│no samples yet — one lands per core data tick                               │
+│no samples yet — one lands each second                                      │
 │                                                                            │
 │                                                                            │
 │                                                                            │

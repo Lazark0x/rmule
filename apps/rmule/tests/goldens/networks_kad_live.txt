@@ -9,7 +9,7 @@
 │unicode, get sources 2, large files, UDP obfuscation, TCP obfuscation       │
 └ too narrow to show: Desc ─────────────────────────────────────────── 1 / 4 ┘
 ┌ Log (0) ───────────────────────────┐┌ Kad ───────────────────────── K stop ┐
-│no core events yet                  ││● Kad: running                        │
+│nothing has happened yet            ││● Kad: running                        │
 │                                    ││Joined    yes                         │
 │                                    ││Contacts  54                          │
 │                                    ││Firewall  firewalled · not checked yet│
