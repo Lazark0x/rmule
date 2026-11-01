@@ -15,30 +15,71 @@ use crate::multipacket::{
 use crate::wire_status::WireStatus;
 use crate::{NoticeEvent, RequesterEvent, ServerEvent};
 
-/// Accumulates the standalone-shaped serve answers a bundled
-/// `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request is owed, so they can compose
-/// into one `OP_MULTIPACKETANSWER` instead of separate packets (ADR-0054).
-/// `wants_*` records which sub-items the *request* carried; the
-/// `Option` fields fill in as core's existing `Answer*` commands arrive, in
-/// whatever order.
-///
-/// `wants_name`/`wants_status` are the hard completion gate — real requests
-/// always carry `Name`, so this is the trigger that actually fires in
-/// practice. `wants_aich` is deliberately never part of that gate: core may
+/// Which answers a bundled request flushes on. `Name` and `Status` are the hard
+/// gate: real requests always carry `Name`, so this is the trigger that actually
+/// fires in practice. AICH is deliberately never part of that gate: core may
 /// answer an AICH-root request long after, or never (the hashset is still being
 /// built, ADR-0038), and ADR-0054 calls for silent omission in that case rather
-/// than an answer the rest of the bundle waits for. When `wants_name` and `wants_status` are both
-/// false, AICH becomes the sole trigger (see
-/// [`PeerSession::try_flush_multipacket_answer`]); a bundle that asked for
-/// none of the three (Source subs only) never opens an entry at all.
-#[derive(Debug, Default)]
+/// than an answer the rest of the bundle waits for. Only a bundle that asked for
+/// neither flushes on AICH alone; one that asked for none of the three (Source
+/// subs only) opens no entry at all.
+#[derive(Clone, Copy, Debug)]
+enum FlushGate {
+    Name,
+    Status,
+    NameAndStatus,
+    AichAlone,
+}
+
+impl FlushGate {
+    /// The gate a request's sub-items set, or `None` when no answer composes.
+    fn for_items(items: &[RequestItem]) -> Option<Self> {
+        let asked = |item: fn(&RequestItem) -> bool| items.iter().any(item);
+        let name = asked(|i| matches!(i, RequestItem::Name { .. }));
+        let status = asked(|i| matches!(i, RequestItem::SetReqId));
+        match (name, status) {
+            (true, true) => Some(Self::NameAndStatus),
+            (true, false) => Some(Self::Name),
+            (false, true) => Some(Self::Status),
+            (false, false) => {
+                asked(|i| matches!(i, RequestItem::AichRoot)).then_some(Self::AichAlone)
+            }
+        }
+    }
+}
+
+/// Accumulates the standalone-shaped serve answers a bundled
+/// `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request is owed, so they can compose
+/// into one `OP_MULTIPACKETANSWER` instead of separate packets (ADR-0054). The
+/// `Option` fields fill in as core's existing `Answer*` commands arrive, in
+/// whatever order.
+#[derive(Debug)]
 pub(super) struct PendingMultipacketAnswer {
-    pub(super) wants_name: bool,
-    pub(super) wants_status: bool,
-    pub(super) wants_aich: bool,
+    gate: FlushGate,
     pub(super) name: Option<Ed2kText>,
     pub(super) status: Option<WireStatus>,
     pub(super) aich: Option<AichRootHash>,
+}
+
+impl PendingMultipacketAnswer {
+    const fn opened(gate: FlushGate) -> Self {
+        Self {
+            gate,
+            name: None,
+            status: None,
+            aich: None,
+        }
+    }
+
+    /// Whether every answer the gate names has arrived.
+    const fn ready(&self) -> bool {
+        match self.gate {
+            FlushGate::Name => self.name.is_some(),
+            FlushGate::Status => self.status.is_some(),
+            FlushGate::NameAndStatus => self.name.is_some() && self.status.is_some(),
+            FlushGate::AichAlone => self.aich.is_some(),
+        }
+    }
 }
 
 impl PeerSession {
@@ -52,22 +93,9 @@ impl PeerSession {
     /// answer is a *separate*, throttled `0x82` / `0x84` (aMule answers
     /// source subs out-of-band as well, ADR-0055).
     pub(super) fn on_multipacket_request(&mut self, req: MultiPacketRequest) {
-        let wants_name = req
-            .items
-            .iter()
-            .any(|i| matches!(i, RequestItem::Name { .. }));
-        let wants_status = req.items.iter().any(|i| matches!(i, RequestItem::SetReqId));
-        let wants_aich = req.items.iter().any(|i| matches!(i, RequestItem::AichRoot));
-        if wants_name || wants_status || wants_aich {
-            self.served_multipacket.insert(
-                req.file_hash,
-                PendingMultipacketAnswer {
-                    wants_name,
-                    wants_status,
-                    wants_aich,
-                    ..Default::default()
-                },
-            );
+        if let Some(gate) = FlushGate::for_items(&req.items) {
+            self.served_multipacket
+                .insert(req.file_hash, PendingMultipacketAnswer::opened(gate));
         }
         let mut asks = Vec::with_capacity(req.items.len());
         for item in &req.items {
@@ -142,24 +170,15 @@ impl PeerSession {
 
     /// Compose and send the pending `OP_MULTIPACKETANSWER` for `file_hash` once
     /// every sub-item its request hard-requires has answered (ADR-0054). See
-    /// [`PendingMultipacketAnswer`] for the completion rule; a no-op while the
+    /// [`FlushGate`] for the completion rule; a no-op while the
     /// gate isn't met yet, and idempotent once already flushed (the entry is
     /// gone).
     pub(super) fn try_flush_multipacket_answer(&mut self, file_hash: FileHash) {
-        let Some(pending) = self.served_multipacket.get(&file_hash) else {
-            return;
-        };
-        let hard_required = pending.wants_name || pending.wants_status;
-        let ready = if hard_required {
-            (!pending.wants_name || pending.name.is_some())
-                && (!pending.wants_status || pending.status.is_some())
-        } else {
-            // Nothing hard-required: AICH is the sole trigger.
-            // `on_multipacket_request` never opens an entry that wants none
-            // of the three, so `wants_aich` is true whenever this arm runs.
-            pending.wants_aich && pending.aich.is_some()
-        };
-        if !ready {
+        if !self
+            .served_multipacket
+            .get(&file_hash)
+            .is_some_and(PendingMultipacketAnswer::ready)
+        {
             return;
         }
         let pending = self
