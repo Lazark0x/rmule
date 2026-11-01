@@ -108,8 +108,8 @@ tie:
   **Arrived Ranges** (ADR-0117), and its unclaimed blocks are handed whenever it is next
   chosen.
 - Every download is filtered and ranked. Outside Streaming Priority the band and window are
-  empty and the tuple is `(very rare, frequency, i)`; when every worker advertises every part,
-  that is today's lowest-index order.
+  empty and the tuple is `(very rare, frequency, −arrived, i)`; when every worker advertises every
+  part, that is the parts holding bytes first, then the lowest index.
 - Such a download now writes parts out of order; every write past the end punches the gap it
   leaves (ADR-0111).
 
