@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::StorageIntegrityFaultV4;
 use super::row_enums::{DownloadLifecycleV5, DownloadMetadataOriginV1, VerificationAuthorityV1};
-use crate::store::download::row::{DOWNLOADS, DownloadRow, PartPathSlot};
+use crate::store::download::row::{DOWNLOADS, DownloadRow, HomePath, PartPathSlot};
 use crate::{DownloadFailure, StorageIntegrityFault};
 
 /// The row as record version 5 wrote it, before it kept the Download Name.
@@ -120,7 +120,7 @@ pub(crate) fn grow_from_v14(txn: &WriteTransaction) -> Result<(), StoreError> {
             file_size: row.file_size,
             canonical_link: row.canonical_link,
             source_hint: row.source_hint,
-            final_path: row.final_path,
+            final_path: HomePath::from_stored(row.final_path),
             part_path: PartPathSlot::from_stored(row.part_path),
             lifecycle: row.lifecycle.grown(),
             verification_authority: row

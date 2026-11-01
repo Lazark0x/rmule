@@ -92,9 +92,10 @@ in filesystem files, not in the store.
   decode fails per row; an engine failure still fails the read. The core reports the row it
   could not read and goes on with the rest. A rung still refuses a row it cannot read, and
   the copy above holds what it refused.
-- **A part path inside the Data Directory is stored relative to it** (store version 17), so
-  moving the directory carries every download; a path outside it stays absolute, because a
-  Temp Directory the operator set keeps the downloads placed in it (ADR-0115).
+- **A part or final path inside the Data Directory is stored relative to it** (store version
+  17), so moving the directory carries every download, to the very place it finishes; a path
+  outside it stays absolute, because a directory the operator set keeps the downloads placed
+  in it (ADR-0115). The Download Directory setting is never inside it (ADR-0101).
 - **Every live record's bytes are pinned by a test.** postcard is positional and the engine
   compares only the tag, so a shape edit with no bump passes everything but a byte pin. This
   is a file format.

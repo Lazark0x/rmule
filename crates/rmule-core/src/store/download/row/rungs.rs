@@ -13,7 +13,7 @@ use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, UpgradeStep, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::{DOWNLOADS, PartPathSlot};
+use super::{DOWNLOADS, HomePath, PartPathSlot};
 use crate::PartFault;
 
 mod row_enums;
@@ -22,8 +22,9 @@ mod row_v5;
 use row_enums::{DownloadLifecycleV1, DownloadMetadataOriginV1, VerificationAuthorityV1};
 pub(crate) use row_v5::grow_from_v14;
 
-/// Store version 16 → 17 (ADR-0083): a part path inside the Data Directory
-/// becomes relative to it, so a move of that directory carries the download.
+/// Store version 16 → 17 (ADR-0083): a part or final path inside the Data
+/// Directory becomes relative to it, so a move of that directory carries the
+/// download.
 /// The row's shape does not change; what its text means does, so a version-16
 /// build refuses the store rather than read a relative path against its own
 /// working directory.
@@ -34,12 +35,12 @@ pub(crate) const UPGRADE_FROM_V16: UpgradeStep = UpgradeStep {
             return Ok(());
         };
         for (key, mut row) in DOWNLOADS.iter(txn)? {
-            let Some(path) = row.part_path.held_path(None) else {
-                continue;
-            };
-            let rooted = PartPathSlot::held(&path, Some(&home));
-            if rooted != row.part_path {
-                row.part_path = rooted;
+            let before = row.clone();
+            if let Some(path) = row.part_path.held_path(None) {
+                row.part_path = PartPathSlot::held(&path, Some(&home));
+            }
+            row.final_path = HomePath::new(&row.final_path.path(None), Some(&home));
+            if row != before {
                 DOWNLOADS.update(txn, &key, &row)?;
             }
         }

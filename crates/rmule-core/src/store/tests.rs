@@ -225,28 +225,59 @@ fn a_moved_data_directory_carries_its_part_paths() {
         new.join("Temp/film.part")
     );
     assert_eq!(
+        repo.load_download(id).unwrap().paths().final_path(),
+        new.join("Temp/film.bin")
+    );
+    assert_eq!(
         repo.part_files().unwrap(),
         vec![(new.join("Temp/film.part"), true)]
     );
 }
 
+/// The destination a completion stored is the directory's too: a move while
+/// the row is `Completing` lands the file, and lists it, at the new place.
 #[test]
-fn a_part_path_outside_the_data_directory_stays_where_it_was_placed() {
+fn a_moved_data_directory_carries_a_stored_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let (old, new) = (dir.path().join("old"), dir.path().join("new"));
+    let store = open_durable_store(&old).unwrap();
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let id = a_download(&repo, &old.join("Temp/film.part"));
+    repo.set_lifecycle(id, DownloadLifecycle::Active).unwrap();
+    repo.set_completing(id, &old.join("Incoming/film (1).bin"))
+        .unwrap();
+    drop((repo, store));
+
+    std::fs::rename(&old, &new).unwrap();
+    let repo = DurableDownloadRepository::new(open_durable_store(&new).unwrap());
+    let destination = new.join("Incoming/film (1).bin");
+    assert_eq!(
+        repo.load_download(id).unwrap().paths().final_path(),
+        destination
+    );
+    assert!(repo.part_files().unwrap().contains(&(destination, true)));
+}
+
+#[test]
+fn a_path_outside_the_data_directory_stays_where_it_was_placed() {
     let dir = tempfile::tempdir().unwrap();
     let elsewhere = dir.path().join("elsewhere/film.part");
     let repo =
         DurableDownloadRepository::new(open_durable_store(&dir.path().join("data")).unwrap());
     let id = a_download(&repo, &elsewhere);
+    let record = repo.load_download(id).unwrap();
+    assert_eq!(record.paths().part_path(), elsewhere);
     assert_eq!(
-        repo.load_download(id).unwrap().paths().part_path(),
-        elsewhere
+        record.paths().final_path(),
+        dir.path().join("elsewhere/film.bin")
     );
 }
 
-/// A row version 16 wrote names its part file absolutely; the climb makes it
-/// relative, so the first move after the upgrade already carries it.
+/// A row version 16 wrote names its files absolutely; the climb makes them
+/// relative, so the first move after the upgrade already carries them, and
+/// one outside the directory stays where it was placed.
 #[test]
-fn the_climb_to_seventeen_roots_a_stored_absolute_part_path() {
+fn the_climb_to_seventeen_roots_stored_absolute_paths() {
     let dir = tempfile::tempdir().unwrap();
     let (seeded, home, moved) = (
         dir.path().join("seeded"),
@@ -264,6 +295,17 @@ fn the_climb_to_seventeen_roots_a_stored_absolute_part_path() {
     .unwrap();
     let repo = DurableDownloadRepository::new(Arc::new(store));
     let id = a_download(&repo, &home.join("Temp/film.part"));
+    let link = rmule_testkit::file_link("outside.bin", &[0x4F; 64]);
+    let outside = dir.path().join("outside/film.bin");
+    let outside = repo
+        .create_download(
+            &link,
+            None,
+            &DownloadPaths::new(outside, home.join("Temp/outside.part")),
+            None,
+        )
+        .unwrap()
+        .id();
     drop(repo);
 
     std::fs::rename(&seeded, &home).unwrap();
@@ -278,6 +320,16 @@ fn the_climb_to_seventeen_roots_a_stored_absolute_part_path() {
         repo.load_download(id).unwrap().paths().part_path(),
         moved.join("Temp/film.part")
     );
+    assert_eq!(
+        repo.load_download(id).unwrap().paths().final_path(),
+        moved.join("Temp/film.bin")
+    );
+    let outside = repo.load_download(outside).unwrap();
+    assert_eq!(
+        outside.paths().final_path(),
+        dir.path().join("outside/film.bin")
+    );
+    assert_eq!(outside.paths().part_path(), moved.join("Temp/outside.part"));
 }
 
 #[test]

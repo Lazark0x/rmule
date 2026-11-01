@@ -40,8 +40,8 @@ use crate::{
     DurableDownloadRecord, KadAichRoot, PartFault, VerificationAuthority, VerifiedPartRecord,
 };
 use row::{
-    DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, IDENTITY, PART_PATH,
-    PROVISIONAL_HASHES, ProvisionalPartHashRow, VERIFIED_PARTS, VerifiedPartRow,
+    DISTRUSTED_PEERS, DOWNLOAD_IDS, DOWNLOADS, DistrustedPeerRow, DownloadRow, HomePath, IDENTITY,
+    PART_PATH, PROVISIONAL_HASHES, ProvisionalPartHashRow, VERIFIED_PARTS, VerifiedPartRow,
 };
 
 /// The tables this seam owns, for the store-wide [`Schema`] core assembles
@@ -76,7 +76,7 @@ pub struct DurableDownloadRepository {
 }
 
 impl DurableDownloadRepository {
-    /// The Data Directory a relative part path is read against.
+    /// The Data Directory a relative path is read against.
     fn home(&self) -> Option<&Path> {
         self.store.file().and_then(Path::parent)
     }
@@ -219,7 +219,7 @@ impl DurableDownloadRepository {
                     let live = row.is_live();
                     let part = row.part_path.held_path(home).map(|path| (path, live));
                     let destination = (row.lifecycle == DownloadLifecycle::Completing)
-                        .then(|| (PathBuf::from(&row.final_path), true));
+                        .then(|| (row.final_path.path(home), true));
                     part.into_iter().chain(destination)
                 })
                 .collect())
@@ -371,7 +371,7 @@ impl DurableDownloadRepository {
             }
             row.lifecycle = DownloadLifecycle::Completing;
             row.failure = None;
-            row.final_path = destination.to_string_lossy().into_owned();
+            row.final_path = HomePath::new(destination, self.home());
             Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
         })
     }

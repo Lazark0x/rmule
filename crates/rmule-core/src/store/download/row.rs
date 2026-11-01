@@ -10,9 +10,11 @@
 //! shape and must bump the row's [`Record::VERSION`] like any other field change
 //! (ADR-0083), which is what makes the engine refuse the older table.
 
+mod home_path;
 mod part_path;
 mod rungs;
 
+pub(super) use home_path::HomePath;
 pub(super) use part_path::PartPathSlot;
 pub(crate) use rungs::{
     UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, UPGRADE_FROM_V16, grow_from_v8,
@@ -36,8 +38,8 @@ use crate::{
 };
 
 /// One download as the store holds it, keyed by its [`DownloadId`]'s `u64`.
-/// Paths are kept as text because the part path is also a unique index value;
-/// a path that is not valid UTF-8 is stored lossily.
+/// Paths are kept as text, [`HomePath`]s, because the part path is also a
+/// unique index value.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DownloadRow {
     pub file_hash: FileHash,
@@ -46,7 +48,7 @@ pub(super) struct DownloadRow {
     /// The server the link was found on, `None` for a Kad-only start:
     /// a hint, never dialed.
     pub source_hint: Option<ServerEndpoint>,
-    pub final_path: String,
+    pub final_path: HomePath,
     pub part_path: PartPathSlot,
     pub lifecycle: DownloadLifecycle,
     pub verification_authority: Option<VerificationAuthority>,
@@ -161,7 +163,7 @@ impl DownloadRow {
             file_size: metadata.size,
             canonical_link: Ed2kLink::File(file.clone()).to_string(),
             source_hint: source_hint.cloned(),
-            final_path: paths.final_path().to_string_lossy().into_owned(),
+            final_path: HomePath::new(paths.final_path(), home),
             part_path: PartPathSlot::held(paths.part_path(), home),
             lifecycle: DownloadLifecycle::Queued,
             verification_authority: file
@@ -208,14 +210,14 @@ impl DownloadRow {
 
     /// Where this download's bytes live: the two paths it was created with,
     /// the final one a completion move's destination once it has one, and
-    /// its Download Name. `home` is the Data Directory a relative part path
-    /// is read against.
+    /// its Download Name. `home` is the Data Directory a relative path is
+    /// read against.
     pub(super) fn paths(&self, home: Option<&Path>) -> DownloadPaths {
         let part_path = self
             .part_path
             .held_path(home)
             .unwrap_or_else(|| self.part_path.index_text().into());
-        DownloadPaths::new(self.final_path.clone().into(), part_path).named(self.name.clone())
+        DownloadPaths::new(self.final_path.path(home), part_path).named(self.name.clone())
     }
 
     /// The domain record this row stands for, under the id it is keyed by.
