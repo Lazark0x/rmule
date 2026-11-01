@@ -59,9 +59,9 @@ const MAX_INFLATED_LEN: usize = 16 * 1024 * 1024;
 
 /// The most rows one server.met is read for. The header's count is a
 /// stranger's word and a plain-`http` mirror's to name: 16 MiB of ten-byte rows
-/// is about 1.6 million, every one of them kept for good. The public network
-/// never listed more than a few hundred servers, so a file past this is
-/// adversarial; its first rows are kept, and it reads as truncated.
+/// is about 1.6 million, every one of them kept for good. A judgement rather
+/// than a protocol limit, and aMule has none (`ServerList.cpp:123`): the first
+/// rows of a longer file are kept, and it reads as truncated.
 const MAX_SERVER_MET_ROWS: u32 = 4096;
 
 /// Whole-file rejection reasons for a server.met download. There is no

@@ -66,8 +66,8 @@ kernel probes every quiet server link (a minute idle, every 15 s, four unanswere
 The actor compares the monotonic clock with the wall every 30 s, and a gap past two minutes on
 either is a suspend: the mapper races again, and the session is hung up, for the intent to re-make
 as after any lost session (ADR-0096). A re-login rather than a ping: aMule's own ping is an empty
-`OP_OFFERFILES` with no answer (`ServerConnect.cpp:595-609`), which proves nothing, and a write on
-a dead link waits on the kernel's retransmission, far longer than keepalive would.
+`OP_OFFERFILES` it waits on no answer to (`ServerConnect.cpp:595-609`), so it proves nothing by
+itself, and a write on a dead link waits on the kernel's retransmission rather than on keepalive.
 
 ## Consequences
 
