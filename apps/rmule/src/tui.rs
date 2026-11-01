@@ -436,7 +436,9 @@ impl Surface for Tui {
 
 #[cfg(test)]
 mod tests {
-    use super::{TITLE_POP, TITLE_PUSH, enter_bytes, mouse_bytes, release_title, take_title};
+    use super::{TITLE_POP, TITLE_PUSH, release_title, take_title};
+    #[cfg(unix)]
+    use super::{enter_bytes, mouse_bytes};
 
     fn holds(bytes: &[u8], sequence: &str) -> bool {
         bytes
