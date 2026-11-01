@@ -35,11 +35,11 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 
 use crate::state::{RateWindow, UiState};
 use crate::theme::Theme;
-use crate::views::ViewOutcome;
+use crate::views::{View, ViewOutcome};
 use facts::draw_facts;
 use graph::{Series, draw_graph};
 
@@ -56,9 +56,11 @@ pub struct StatisticsView {
     window: RateWindow,
 }
 
-impl StatisticsView {
+impl StatisticsView {}
+
+impl View for StatisticsView {
     /// `w` walks the window; every other key bubbles to the app loop.
-    pub fn handle_key(&mut self, key: KeyEvent) -> ViewOutcome {
+    fn handle_key(&mut self, key: KeyEvent, _state: &UiState) -> ViewOutcome {
         if key.code == KeyCode::Char('w') {
             self.window = self.window.next();
             return ViewOutcome::Redraw;
@@ -67,14 +69,14 @@ impl StatisticsView {
     }
 
     /// Draw the whole view: the download graph, the upload graph, the facts strip.
-    pub fn draw(
-        &self,
+    fn draw(
+        &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         let [graphs, facts] =
             Layout::vertical([Constraint::Min(4), Constraint::Length(FACTS_H)]).areas(area);
         // Both graphs get the same height, so neither draws a bar-row fewer; an
@@ -93,5 +95,6 @@ impl StatisticsView {
         draw_graph(frame, down, state, theme, now, (Series::Down, self.window));
         draw_graph(frame, up, state, theme, now, (Series::Up, self.window));
         draw_facts(frame, facts, state, theme, now);
+        None
     }
 }

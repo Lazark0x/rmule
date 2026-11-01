@@ -390,7 +390,7 @@ impl App {
         let mut too_small = false;
         chrome_state
             .text_open
-            .set(views.text_open(chrome_state.active, state));
+            .set(views.view(chrome_state.active).text_open(state));
         let title = chrome::terminal_title(state);
         let new_title = (title != self.shown_title).then_some(title);
         let mouse = state.preferences.mouse;
@@ -402,7 +402,9 @@ impl App {
                 None
             } else {
                 let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
-                views.draw(chrome_state.active, frame, content, state, theme, now)
+                views
+                    .view_mut(chrome_state.active)
+                    .draw(frame, content, state, theme, now)
             };
             let overlay_caret = chrome::draw_overlays(frame, state, chrome_state, theme);
             // The terminal's own cursor, where an input method composes.
@@ -587,14 +589,9 @@ mod tests {
             let now = Instant::now();
             crate::golden::render_to_lines(80, 24, |frame| {
                 let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
-                app.views.draw(
-                    app.chrome.active,
-                    frame,
-                    content,
-                    &app.state,
-                    &app.theme,
-                    now,
-                );
+                app.views
+                    .view_mut(app.chrome.active)
+                    .draw(frame, content, &app.state, &app.theme, now);
                 chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
             })
         };
@@ -611,14 +608,9 @@ mod tests {
         let now = Instant::now();
         crate::golden::assert_golden("app_full_frame", 80, 24, |frame| {
             let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
-            app.views.draw(
-                app.chrome.active,
-                frame,
-                content,
-                &app.state,
-                &app.theme,
-                now,
-            );
+            app.views
+                .view_mut(app.chrome.active)
+                .draw(frame, content, &app.state, &app.theme, now);
             chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
@@ -639,14 +631,9 @@ mod tests {
         app.reduce(key_action(KeyCode::Char('6')), now);
         crate::golden::assert_golden("app_settings_frame", 80, 24, |frame| {
             let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
-            app.views.draw(
-                app.chrome.active,
-                frame,
-                content,
-                &app.state,
-                &app.theme,
-                now,
-            );
+            app.views
+                .view_mut(app.chrome.active)
+                .draw(frame, content, &app.state, &app.theme, now);
             chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
@@ -668,14 +655,9 @@ mod tests {
         let now = base + std::time::Duration::from_secs(90);
         crate::golden::assert_golden("app_statistics_frame", 80, 24, |frame| {
             let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
-            app.views.draw(
-                app.chrome.active,
-                frame,
-                content,
-                &app.state,
-                &app.theme,
-                now,
-            );
+            app.views
+                .view_mut(app.chrome.active)
+                .draw(frame, content, &app.state, &app.theme, now);
             chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }
@@ -695,14 +677,9 @@ mod tests {
         );
         crate::golden::assert_golden("app_shutdown_frame", 80, 24, |frame| {
             let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
-            app.views.draw(
-                app.chrome.active,
-                frame,
-                content,
-                &app.state,
-                &app.theme,
-                now,
-            );
+            app.views
+                .view_mut(app.chrome.active)
+                .draw(frame, content, &app.state, &app.theme, now);
             chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
         });
     }

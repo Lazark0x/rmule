@@ -6,6 +6,7 @@ use ratatui::crossterm::event::KeyCode;
 use rmule_primitives::{Ed2kText, FileHash, SearchResult};
 
 use crate::state::{SearchPane, SearchStatus, SessionConfig, UiState};
+use crate::views::View;
 use crate::views::searches::SearchesView;
 
 use super::{endpoint, press, search_id};

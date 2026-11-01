@@ -357,7 +357,7 @@ impl SearchesView {
     /// Focus is on the results, not the query input or a modal.
     #[cfg(test)]
     pub(crate) fn results_focused(&self) -> bool {
-        !self.text_open() && self.menu.is_none() && self.readd.is_none()
+        !self.typing() && self.menu.is_none() && self.readd.is_none()
     }
 
     /// Act on the current entry's cursor; with no entry there is none to move.

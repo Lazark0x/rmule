@@ -66,8 +66,8 @@ use crate::state::{DownloadStatus, UiState};
 use crate::table::Drawn;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::ViewOutcome;
 use crate::views::panes::{self, Zoomed};
+use crate::views::{View, ViewOutcome};
 use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
@@ -221,25 +221,6 @@ impl TransfersView {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Handle one key the globals did not claim. Returns [`ViewOutcome`]:
-    /// `Emit` to hand the app a command/flash, `Redraw` when view state
-    /// changed (or an open modal swallowed the key), `Ignored` to bubble on.
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        if self.add_link.is_some() {
-            return self.handle_add_link_key(key, state);
-        }
-        let ids = self.download_ids(state);
-        self.clamp(&ids, state);
-
-        match self.overlay.clone() {
-            Overlay::None => self.handle_base(key, state, &ids),
-            Overlay::Menu { cursor } => self.handle_menu(key, state, &ids, cursor),
-            Overlay::ConfirmCancel { targets } => self.handle_confirm(key, &targets),
-            Overlay::Details => self.handle_details(key),
-            Overlay::ConfirmClearCompleted { counted } => self.handle_confirm_clear(key, &counted),
-        }
     }
 
     fn handle_base(&mut self, key: KeyEvent, state: &UiState, ids: &[DownloadId]) -> ViewOutcome {
@@ -411,10 +392,64 @@ impl TransfersView {
         Some((id, state.downloads.get(&id)?.status))
     }
 
+    fn focused_filter(&self) -> &RowFilter {
+        match self.focus {
+            Pane::Table => &self.filter,
+            Pane::Sources => &self.source_filter,
+        }
+    }
+}
+
+#[cfg(test)]
+impl TransfersView {
+    /// The selected row's place, as the last key left it.
+    pub(crate) const fn selected_row(&self) -> Option<usize> {
+        self.selected
+    }
+
+    /// A view sorted by name, the order most tests state their rows in.
+    pub(crate) fn by_name() -> Self {
+        let mut view = Self::new();
+        view.sort.click(sort::DownloadColumn::File);
+        view
+    }
+
+    /// Put the cursor on display row `index`, as the operator would.
+    fn select_row(&mut self, state: &UiState, index: usize) {
+        let ids = self.download_ids(state);
+        self.cursor.select(&ids, index);
+        self.selected = self.cursor.place(&ids);
+    }
+}
+
+impl View for TransfersView {
+    fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+        self.paste(text, state)
+    }
+
+    /// Handle one key the globals did not claim. Returns [`ViewOutcome`]:
+    /// `Emit` to hand the app a command/flash, `Redraw` when view state
+    /// changed (or an open modal swallowed the key), `Ignored` to bubble on.
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+        if self.add_link.is_some() {
+            return self.handle_add_link_key(key, state);
+        }
+        let ids = self.download_ids(state);
+        self.clamp(&ids, state);
+
+        match self.overlay.clone() {
+            Overlay::None => self.handle_base(key, state, &ids),
+            Overlay::Menu { cursor } => self.handle_menu(key, state, &ids, cursor),
+            Overlay::ConfirmCancel { targets } => self.handle_confirm(key, &targets),
+            Overlay::Details => self.handle_details(key),
+            Overlay::ConfirmClearCompleted { counted } => self.handle_confirm_clear(key, &counted),
+        }
+    }
+
     /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
     /// pointer; the focus stays where it is. A modal or a field takes it as a
     /// key.
-    pub fn handle_wheel(
+    fn handle_wheel(
         &mut self,
         (column, row): (u16, u16),
         key: KeyEvent,
@@ -441,7 +476,7 @@ impl TransfersView {
     /// Row-click select (ADR-0072, Row Selection), against the pane areas cached
     /// by the last draw. The row menu takes its clicks; other modals keep to
     /// the keyboard.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
         let ids = self.download_ids(state);
         if self.add_link.is_none() && matches!(self.overlay, Overlay::Menu { .. }) {
             return self.click_menu((column, row), state, &ids);
@@ -485,7 +520,7 @@ impl TransfersView {
     }
 
     /// Render one frame of the view into `area` (spec §3.2).
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -538,38 +573,9 @@ impl TransfersView {
     }
 
     /// Whether the Add-link form or a Row Filter holds the keyboard.
-    pub(crate) fn text_open(&self) -> bool {
+    fn text_open(&self, _state: &UiState) -> bool {
         self.add_link.is_some()
             || (matches!(self.overlay, Overlay::None) && self.focused_filter().typing())
-    }
-
-    fn focused_filter(&self) -> &RowFilter {
-        match self.focus {
-            Pane::Table => &self.filter,
-            Pane::Sources => &self.source_filter,
-        }
-    }
-}
-
-#[cfg(test)]
-impl TransfersView {
-    /// The selected row's place, as the last key left it.
-    pub(crate) const fn selected_row(&self) -> Option<usize> {
-        self.selected
-    }
-
-    /// A view sorted by name, the order most tests state their rows in.
-    pub(crate) fn by_name() -> Self {
-        let mut view = Self::new();
-        view.sort.click(sort::DownloadColumn::File);
-        view
-    }
-
-    /// Put the cursor on display row `index`, as the operator would.
-    fn select_row(&mut self, state: &UiState, index: usize) {
-        let ids = self.download_ids(state);
-        self.cursor.select(&ids, index);
-        self.selected = self.cursor.place(&ids);
     }
 }
 

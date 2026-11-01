@@ -11,6 +11,7 @@ use rmule_primitives::{ClientId, Ed2kText, ServerEndpoint};
 
 use crate::action::Action;
 use crate::state::{Ed2kConnection, UiState};
+use crate::views::View;
 use crate::views::networks::NetworksView;
 
 use super::{download_id, press, session};

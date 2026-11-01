@@ -14,6 +14,7 @@ use crate::fixture::{
 };
 use crate::state::{SearchStatus, UiState};
 use crate::theme::Theme;
+use crate::views::View;
 use crate::views::networks::NetworksView;
 use crate::views::searches::SearchesView;
 use crate::views::shared_files::SharedView;

@@ -195,7 +195,7 @@ impl NetworksView {
     }
 
     /// A paste into an open form; nothing else on this tab takes text.
-    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+    pub(super) fn paste(&mut self, text: &str) -> ViewOutcome {
         let filter = match self.focus {
             super::Pane::Servers => &mut self.filter,
             super::Pane::Log => &mut self.log_filter,

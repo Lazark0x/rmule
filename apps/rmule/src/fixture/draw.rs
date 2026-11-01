@@ -8,6 +8,7 @@ use ratatui::buffer::Buffer;
 
 use super::{GOLDEN_H, GOLDEN_W, theme};
 use crate::state::UiState;
+use crate::views::View;
 use crate::views::searches::SearchesView;
 
 /// Draw `view` over a `width`×`height` terminal and return what is on screen.

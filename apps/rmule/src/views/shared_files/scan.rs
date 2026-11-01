@@ -93,6 +93,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::press;
+    use crate::views::View;
     use crate::views::shared_files::SharedView;
 
     fn asked(dir: &str) -> UiState {

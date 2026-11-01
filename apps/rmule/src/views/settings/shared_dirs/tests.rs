@@ -19,6 +19,7 @@ use crate::fixture::press;
 use crate::golden::assert_golden;
 use crate::state::{SharedRow, UiState};
 use crate::theme::Theme;
+use crate::views::View;
 use crate::views::ViewOutcome;
 
 const FILM: FileHash = FileHash::from_bytes([

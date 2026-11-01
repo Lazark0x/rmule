@@ -61,7 +61,7 @@ use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::views::ViewOutcome;
+use crate::views::{View, ViewOutcome};
 use crate::words::Sentence;
 use crate::words::app as words;
 use crate::words::front_door;
@@ -543,16 +543,84 @@ impl SettingsView {
         Ok(Some(edit))
     }
 
+    /// Validate the focused field and hand the app the edit — or keep the form
+    /// up with the reason under it and the typing intact.
+    fn emit(&mut self, prefs: &Preferences) -> ViewOutcome {
+        match self.commit(prefs) {
+            // Everything under a download directory is offered to the network
+            // (ADR-0101): the first `Enter` has the app ask the share guards,
+            // which warn through [`Self::warn_share`] when they pass; the
+            // second commits.
+            Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
+                ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
+            }
+            // A Temp dir that does not exist is made at the set: said first,
+            // since the path may be a typo.
+            Ok(Some(PrefEdit::TempDir(Some(dir))))
+                if !dir.exists() && self.warned_dir.as_ref() != Some(&dir) =>
+            {
+                self.form.error = Some(words::temp_dir_missing(&dir));
+                self.warned_dir = Some(dir);
+                ViewOutcome::Redraw
+            }
+            Ok(Some(edit)) => ViewOutcome::Emit(Action::SettingsEdit(edit)),
+            Ok(None) => ViewOutcome::Redraw,
+            Err(reason) => {
+                self.form.error = Some(reason);
+                ViewOutcome::Redraw
+            }
+        }
+    }
+
+    /// The store took the value: the field closes.
+    pub(crate) fn saved(&mut self) {
+        self.editing = false;
+        self.warned_dir = None;
+        self.form.error = None;
+    }
+
+    /// The value was not taken: `why` under the field, the typing kept.
+    pub(crate) fn refused(&mut self, why: Sentence) {
+        self.warned_dir = None;
+        self.form.error = Some(why);
+    }
+
+    /// The share guards pass `dir`: say that everything under it will be
+    /// offered, and that it will be made if it is not there, and let the next
+    /// `Enter` commit it.
+    pub fn warn_share(&mut self, dir: std::path::PathBuf) {
+        self.form.error = Some(if dir.exists() {
+            words::share_warning(&dir)
+        } else {
+            words::share_warning_missing(&dir)
+        });
+        self.warned_dir = Some(dir);
+    }
+
+    /// The download directory whose share warning waits for its confirm.
+    #[cfg(test)]
+    pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
+        self.warned_dir.as_deref()
+    }
+
+    /// What stands under the open field.
+    #[cfg(test)]
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        self.form.error.as_deref()
+    }
+}
+
+impl View for SettingsView {
     /// Whether an open field holds the keyboard. A question over it reads
     /// key codes alone, so no chord may reach it as its letter.
-    pub(crate) fn text_open(&self, state: &UiState) -> bool {
+    fn text_open(&self, state: &UiState) -> bool {
         (self.editing || self.filter.typing())
             && self.removing.is_none()
             && crate::views::shared_files::scan::open_consent(state, &self.answered, true).is_none()
     }
 
     /// A paste into the field open for editing, whole.
-    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
         if let Some(outcome) = self.filter.paste(text) {
             self.narrow();
             return outcome;
@@ -567,7 +635,7 @@ impl SettingsView {
     /// Offer one key the globals did not claim. While a field is
     /// open every printable is text; otherwise the row cursor moves and
     /// unclaimed keys bubble out as [`ViewOutcome::Ignored`].
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.sync(state);
         if let Some(consent) =
             crate::views::shared_files::scan::open_consent(state, &self.answered, true)
@@ -644,75 +712,9 @@ impl SettingsView {
         }
     }
 
-    /// Validate the focused field and hand the app the edit — or keep the form
-    /// up with the reason under it and the typing intact.
-    fn emit(&mut self, prefs: &Preferences) -> ViewOutcome {
-        match self.commit(prefs) {
-            // Everything under a download directory is offered to the network
-            // (ADR-0101): the first `Enter` has the app ask the share guards,
-            // which warn through [`Self::warn_share`] when they pass; the
-            // second commits.
-            Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
-                ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
-            }
-            // A Temp dir that does not exist is made at the set: said first,
-            // since the path may be a typo.
-            Ok(Some(PrefEdit::TempDir(Some(dir))))
-                if !dir.exists() && self.warned_dir.as_ref() != Some(&dir) =>
-            {
-                self.form.error = Some(words::temp_dir_missing(&dir));
-                self.warned_dir = Some(dir);
-                ViewOutcome::Redraw
-            }
-            Ok(Some(edit)) => ViewOutcome::Emit(Action::SettingsEdit(edit)),
-            Ok(None) => ViewOutcome::Redraw,
-            Err(reason) => {
-                self.form.error = Some(reason);
-                ViewOutcome::Redraw
-            }
-        }
-    }
-
-    /// The store took the value: the field closes.
-    pub(crate) fn saved(&mut self) {
-        self.editing = false;
-        self.warned_dir = None;
-        self.form.error = None;
-    }
-
-    /// The value was not taken: `why` under the field, the typing kept.
-    pub(crate) fn refused(&mut self, why: Sentence) {
-        self.warned_dir = None;
-        self.form.error = Some(why);
-    }
-
-    /// The share guards pass `dir`: say that everything under it will be
-    /// offered, and that it will be made if it is not there, and let the next
-    /// `Enter` commit it.
-    pub fn warn_share(&mut self, dir: std::path::PathBuf) {
-        self.form.error = Some(if dir.exists() {
-            words::share_warning(&dir)
-        } else {
-            words::share_warning_missing(&dir)
-        });
-        self.warned_dir = Some(dir);
-    }
-
-    /// The download directory whose share warning waits for its confirm.
-    #[cfg(test)]
-    pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
-        self.warned_dir.as_deref()
-    }
-
-    /// What stands under the open field.
-    #[cfg(test)]
-    pub(crate) fn refusal(&self) -> Option<&str> {
-        self.form.error.as_deref()
-    }
-
     /// A click selects the field it landed on. Editing stays keyboard-only,
     /// like every other form in this crate.
-    pub fn handle_click(&mut self, column: u16, row: u16, _state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, _state: &UiState) -> ViewOutcome {
         if self.editing || !crate::views::pane_hit(self.body, column, row) {
             return ViewOutcome::Ignored;
         }
@@ -729,7 +731,7 @@ impl SettingsView {
     /// stored preferences first, except while a field is open — an edit in
     /// progress outranks the snapshot underneath it. Returns where the caret
     /// of an open field is.
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,

@@ -13,6 +13,7 @@ use crate::action::Action;
 use crate::fixture::{GOLDEN_H, GOLDEN_W, file_hash, press, theme};
 use crate::golden::{assert_golden, render_to_lines};
 use crate::state::SharedRow;
+use crate::views::View;
 
 fn screen(view: &mut SharedView, state: &UiState, width: u16, height: u16) -> String {
     render_to_lines(width, height, |frame| {

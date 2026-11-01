@@ -2,21 +2,8 @@
 //! scroll, menu/modal machines), its key handling, and its rendering; the
 //! app loop offers the active view each input first and dispatches drawing.
 //!
-//! Contract every view implements (uniform, so integration is mechanical):
-//!
-//! ```ignore
-//! pub struct <Name>View { /* view state only — data lives in UiState */ }
-//! impl <Name>View {
-//!     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome;
-//!     pub fn draw(&mut self, frame: &mut Frame, area: Rect, state: &UiState,
-//!                 theme: &Theme, now: Instant) -> Option<Position>;
-//!     pub(crate) fn text_open(&self) -> bool;
-//! }
-//! ```
-//!
-//! `draw` returns where the caret of an open text field is, and the app puts
-//! the terminal's cursor there; `text_open` says a field holds the keyboard,
-//! so the Key Gate passes it the chords a line editor binds.
+//! Every view answers the one [`View`] contract; `draw` returns where the caret
+//! of an open text field is, and the app puts the terminal's cursor there.
 
 pub(crate) mod menu;
 pub(crate) mod modal;
@@ -39,6 +26,8 @@ pub mod transfers;
 
 use std::ops::Range;
 
+use ratatui::Frame;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
@@ -242,6 +231,49 @@ pub(crate) fn centered(area: Rect, width: u16, height: u16) -> Rect {
         width,
         height,
     )
+}
+
+/// What the app loop asks of the active view: its view state lives on the
+/// implementor, every datum in [`UiState`]. A tab with no use for an input keeps
+/// the default, which leaves the input to the globals.
+pub trait View {
+    /// Offer one key.
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome;
+
+    /// Draw into `area`; where the caret of an open text field is.
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &UiState,
+        theme: &Theme,
+        now: std::time::Instant,
+    ) -> Option<Position>;
+
+    /// A wheel notch at `at`, read as `key` on the pane under the pointer.
+    fn handle_wheel(&mut self, at: (u16, u16), key: KeyEvent, state: &UiState) -> ViewOutcome {
+        let _ = at;
+        self.handle_key(key, state)
+    }
+
+    /// A click at (`column`, `row`).
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let _ = (column, row, state);
+        ViewOutcome::Ignored
+    }
+
+    /// A bracketed paste, whole, to the text field that holds the keyboard.
+    fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+        let _ = (text, state);
+        ViewOutcome::Ignored
+    }
+
+    /// Whether a text field holds the keyboard, so the Key Gate passes it the
+    /// chords a line editor binds.
+    fn text_open(&self, state: &UiState) -> bool {
+        let _ = state;
+        false
+    }
 }
 
 /// What a view did with an input it was offered.

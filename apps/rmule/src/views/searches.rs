@@ -30,7 +30,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use rmule_core::{CoreCommand, SearchCommand};
 use rmule_primitives::{Ed2kText, KeywordQuery};
 
-use super::ViewOutcome;
+use super::{View, ViewOutcome};
 use crate::action::Action;
 use crate::line_edit::LineEdit;
 use crate::row_selection::viewport::Viewport;
@@ -111,41 +111,6 @@ impl SearchesView {
         Self::default()
     }
 
-    /// A paste: into the options editor while it is up, else into the focused
-    /// query, whole. A pasted line break does not send the search.
-    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
-        if self.menu.is_some() || self.readd.is_some() {
-            return ViewOutcome::Ignored;
-        }
-        if self.filters_open {
-            self.filters.form.paste(text);
-            return ViewOutcome::Redraw;
-        }
-        if !self.input_focused {
-            return self
-                .held
-                .current_mut()
-                .and_then(|entry| entry.filter.paste(text))
-                .unwrap_or(ViewOutcome::Ignored);
-        }
-        self.arrived = false;
-        self.refusal = None;
-        self.query.paste(text);
-        ViewOutcome::Redraw
-    }
-
-    /// Whether the query, the options editor or the results' Row Filter
-    /// holds the keyboard.
-    pub(crate) fn text_open(&self) -> bool {
-        let filtering = self
-            .held
-            .current()
-            .is_some_and(|entry| entry.filter.typing());
-        self.menu.is_none()
-            && self.readd.is_none()
-            && (self.input_focused || self.filters_open || filtering)
-    }
-
     /// The operator came to the tab. With no search held the one thing to do
     /// here is type, and a typed letter must not reach the globals, where `q`
     /// quits. The digits, `?` and `Esc` stay the app's until something is
@@ -168,97 +133,6 @@ impl SearchesView {
     /// Take up the results' sort as the durable preferences kept it.
     pub fn restore_sort(&mut self, sorts: &TableSorts) {
         self.sort = TableSort::restore(sorts);
-    }
-
-    /// Handle one key. Returns [`ViewOutcome::Ignored`] for keys that are not
-    /// the view's, so the app loop can fall through to the global bindings —
-    /// except while the query input is focused, where every printable is text
-    /// and only non-text control keys bubble (a focused input's keys never
-    /// reach the globals, so `h`/`l`/`q`/`1`–`6` are characters here), the one
-    /// exception being an input the tab focused with nothing typed yet.
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        self.held.bind(state);
-        // 0. The re-add confirm is modal over everything.
-        if self.readd.is_some() {
-            return self.handle_readd_key(key, state);
-        }
-        // 1. The row-action menu is modal: it captures every key until closed.
-        if let Some(cursor) = self.menu {
-            return self.menu_key(cursor, key.code, state);
-        }
-
-        // 2. The expanded filter editor is modal in the same sense the query
-        //    input is: printables are text, so binding letters never leak.
-        if self.filters_open {
-            return self.handle_filter_key(key, state);
-        }
-
-        // 3. Focused query input: every printable is text.
-        if self.input_focused {
-            return self.handle_query_key(key, state);
-        }
-
-        // 4. Results pane (input unfocused): navigation, the strip, row menu,
-        //    stop and close.
-        let has_results = self
-            .held
-            .current_pane(state)
-            .is_some_and(|pane| !pane.results.is_empty());
-        if let Some(entry) = self.held.current_mut()
-            && let Some(outcome) = entry.filter.key(&key, has_results)
-        {
-            return outcome;
-        }
-        if has_results && let Some(movement) = RowMove::of(key.code) {
-            let ids = self.result_ids(state);
-            let page = self.viewport.page();
-            return self.with_cursor(|cursor| cursor.apply(&ids, movement, page));
-        }
-        if has_results {
-            let ids = self.result_ids(state);
-            if let Some(entry) = self.held.current_mut()
-                && let Some(outcome) = entry.tags.key(key.code, &ids, &mut entry.cursor)
-            {
-                return outcome;
-            }
-        }
-        match key.code {
-            KeyCode::Char('z') => {
-                self.zoomed = !self.zoomed;
-                ViewOutcome::Redraw
-            }
-            // Two panes (input, results): `i`, Tab and Shift-Tab cross to the
-            // input, and so does `/` while there is no result for it to filter.
-            KeyCode::Char('/' | 'i') | KeyCode::Tab | KeyCode::BackTab => {
-                self.input_focused = true;
-                self.zoomed = false;
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('o') => {
-                self.zoomed = false;
-                self.filters.form.error = None;
-                self.filters.form.focus_first();
-                self.filters_open = true;
-                ViewOutcome::Redraw
-            }
-            // `[` / `]` move between the Held Searches and mean nothing else,
-            // anywhere (ADR-0073): with none held they do nothing.
-            KeyCode::Char('[') if !self.held.is_empty() => self.step_held(-1),
-            KeyCode::Char(']') if !self.held.is_empty() => self.step_held(1),
-            KeyCode::Char('s') if has_results => self.sort.key(true),
-            KeyCode::Char('S') if has_results => self.sort.key(false),
-            KeyCode::Char('m') | KeyCode::Enter if has_results => {
-                self.open_menu(state);
-                ViewOutcome::Redraw
-            }
-            // `n`: the next page from the entry's server (ADR-0036).
-            KeyCode::Char('n') if !self.held.is_empty() => self.ask_more(state),
-            KeyCode::Char('x') => self.stop_or_close(state),
-            KeyCode::Char('u') if self.held.can_reopen() => self.reopen(),
-            // Everything else (h/l/1–6/c/p/?/q) is a global binding; `[`/`]`
-            // with no search held bubble to globals that do not bind them.
-            _ => ViewOutcome::Ignored,
-        }
     }
 
     /// One key in the focused query.
@@ -344,11 +218,155 @@ impl SearchesView {
         self.input_focused = true;
         ViewOutcome::Redraw
     }
+}
+
+#[cfg(test)]
+impl SearchesView {
+    /// A view sorted by name, the order most tests state their rows in.
+    pub(crate) fn by_name() -> Self {
+        let mut view = Self::new();
+        view.sort.click(sort::ResultColumn::Name);
+        view
+    }
+}
+
+impl SearchesView {
+    /// Whether the query, the options editor or the results' Row Filter
+    /// holds the keyboard.
+    pub(crate) fn typing(&self) -> bool {
+        let filtering = self
+            .held
+            .current()
+            .is_some_and(|entry| entry.filter.typing());
+        self.menu.is_none()
+            && self.readd.is_none()
+            && (self.input_focused || self.filters_open || filtering)
+    }
+}
+
+impl View for SearchesView {
+    /// A paste: into the options editor while it is up, else into the focused
+    /// query, whole. A pasted line break does not send the search.
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
+        if self.menu.is_some() || self.readd.is_some() {
+            return ViewOutcome::Ignored;
+        }
+        if self.filters_open {
+            self.filters.form.paste(text);
+            return ViewOutcome::Redraw;
+        }
+        if !self.input_focused {
+            return self
+                .held
+                .current_mut()
+                .and_then(|entry| entry.filter.paste(text))
+                .unwrap_or(ViewOutcome::Ignored);
+        }
+        self.arrived = false;
+        self.refusal = None;
+        self.query.paste(text);
+        ViewOutcome::Redraw
+    }
+
+    fn text_open(&self, _state: &UiState) -> bool {
+        self.typing()
+    }
+
+    /// Handle one key. Returns [`ViewOutcome::Ignored`] for keys that are not
+    /// the view's, so the app loop can fall through to the global bindings —
+    /// except while the query input is focused, where every printable is text
+    /// and only non-text control keys bubble (a focused input's keys never
+    /// reach the globals, so `h`/`l`/`q`/`1`–`6` are characters here), the one
+    /// exception being an input the tab focused with nothing typed yet.
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+        self.held.bind(state);
+        // 0. The re-add confirm is modal over everything.
+        if self.readd.is_some() {
+            return self.handle_readd_key(key, state);
+        }
+        // 1. The row-action menu is modal: it captures every key until closed.
+        if let Some(cursor) = self.menu {
+            return self.menu_key(cursor, key.code, state);
+        }
+
+        // 2. The expanded filter editor is modal in the same sense the query
+        //    input is: printables are text, so binding letters never leak.
+        if self.filters_open {
+            return self.handle_filter_key(key, state);
+        }
+
+        // 3. Focused query input: every printable is text.
+        if self.input_focused {
+            return self.handle_query_key(key, state);
+        }
+
+        // 4. Results pane (input unfocused): navigation, the strip, row menu,
+        //    stop and close.
+        let has_results = self
+            .held
+            .current_pane(state)
+            .is_some_and(|pane| !pane.results.is_empty());
+        if let Some(entry) = self.held.current_mut()
+            && let Some(outcome) = entry.filter.key(&key, has_results)
+        {
+            return outcome;
+        }
+        if has_results && let Some(movement) = RowMove::of(key.code) {
+            let ids = self.result_ids(state);
+            let page = self.viewport.page();
+            return self.with_cursor(|cursor| cursor.apply(&ids, movement, page));
+        }
+        if has_results {
+            let ids = self.result_ids(state);
+            if let Some(entry) = self.held.current_mut()
+                && let Some(outcome) = entry.tags.key(key.code, &ids, &mut entry.cursor)
+            {
+                return outcome;
+            }
+        }
+        match key.code {
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                ViewOutcome::Redraw
+            }
+            // Two panes (input, results): `i`, Tab and Shift-Tab cross to the
+            // input, and so does `/` while there is no result for it to filter.
+            KeyCode::Char('/' | 'i') | KeyCode::Tab | KeyCode::BackTab => {
+                self.input_focused = true;
+                self.zoomed = false;
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('o') => {
+                self.zoomed = false;
+                self.filters.form.error = None;
+                self.filters.form.focus_first();
+                self.filters_open = true;
+                ViewOutcome::Redraw
+            }
+            // `[` / `]` move between the Held Searches and mean nothing else,
+            // anywhere (ADR-0073): with none held they do nothing.
+            KeyCode::Char('[') if !self.held.is_empty() => self.step_held(-1),
+            KeyCode::Char(']') if !self.held.is_empty() => self.step_held(1),
+            KeyCode::Char('s') if has_results => self.sort.key(true),
+            KeyCode::Char('S') if has_results => self.sort.key(false),
+            KeyCode::Char('m') | KeyCode::Enter if has_results => {
+                self.open_menu(state);
+                ViewOutcome::Redraw
+            }
+            // `n`: the next page from the entry's server (ADR-0036).
+            KeyCode::Char('n') if !self.held.is_empty() => self.ask_more(state),
+            KeyCode::Char('x') => self.stop_or_close(state),
+            KeyCode::Char('u') if self.held.can_reopen() => self.reopen(),
+            // Everything else (h/l/1–6/c/p/?/q) is a global binding; `[`/`]`
+            // with no search held bubble to globals that do not bind them.
+            _ => ViewOutcome::Ignored,
+        }
+    }
 
     /// Click routing (ADR-0072, Row Selection): the query line focuses the input,
     /// a results header sorts by its column, a results row selects it (both
     /// unfocus the input). The row menu takes its clicks.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
         self.held.bind(state);
         // The filter editor and the re-add confirm hold the keyboard; a click
         // must not yank it out from under either.
@@ -384,7 +402,7 @@ impl SearchesView {
 
     /// Render the view into `area` (spec §3.3). Returns where the caret is
     /// while a text field holds the keyboard.
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -419,17 +437,7 @@ impl SearchesView {
             self.draw_menu(frame, area, cursor, state, theme);
         }
         self.draw_readd(frame, area, theme);
-        caret.or(self.drawn.caret).filter(|_| self.text_open())
-    }
-}
-
-#[cfg(test)]
-impl SearchesView {
-    /// A view sorted by name, the order most tests state their rows in.
-    pub(crate) fn by_name() -> Self {
-        let mut view = Self::new();
-        view.sort.click(sort::ResultColumn::Name);
-        view
+        caret.or(self.drawn.caret).filter(|_| self.typing())
     }
 }
 

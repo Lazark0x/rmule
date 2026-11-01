@@ -251,7 +251,8 @@ fn the_fifth_tab_reaches_a_view_that_claims_no_keys() {
     // A click inside the view is nobody's, so it is not swallowed either.
     assert!(matches!(
         app.views
-            .handle_click(ViewId::Statistics, 10, 5, &app.state),
+            .view_mut(ViewId::Statistics)
+            .handle_click(10, 5, &app.state),
         ViewOutcome::Ignored
     ));
 }
@@ -677,14 +678,14 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     let header = |app: &mut App, view: ViewId| {
         let screen = crate::golden::render_to_lines(78, 21, |frame| {
             app.views
-                .draw(view, frame, frame.area(), &app.state, &app.theme, now);
+                .view_mut(view)
+                .draw(frame, frame.area(), &app.state, &app.theme, now);
         });
         screen.lines().nth(1).unwrap_or_default().to_string()
     };
     assert!(header(&mut restarted, ViewId::Transfers).contains("Speed ▼"));
     let screen = crate::golden::render_to_lines(78, 21, |frame| {
-        restarted.views.draw(
-            ViewId::Transfers,
+        restarted.views.view_mut(ViewId::Transfers).draw(
             frame,
             frame.area(),
             &restarted.state,
@@ -918,7 +919,7 @@ fn c_outside_networks_is_unbound() {
         app.chrome.active = view;
         assert!(
             matches!(
-                app.views.handle_key(view, key, &app.state),
+                app.views.view_mut(view).handle_key(key, &app.state),
                 ViewOutcome::Ignored
             ),
             "{view:?} claims `c`"

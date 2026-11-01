@@ -1,18 +1,10 @@
-//! The six views the app loop owns, and the dispatch that offers an input to
-//! the active one.
+//! The six views the app loop owns, and which one is active.
 //!
-//! Every view implements the same small contract, so routing a key or a click
-//! is one match rather than six special cases.
+//! Each view keeps its own state across frames and view switches, and they all
+//! answer the one [`View`] contract, so routing an input is picking the view.
 
-use std::time::Instant;
-
-use ratatui::Frame;
-use ratatui::layout::{Position, Rect};
-
-use crate::state::UiState;
-use crate::theme::Theme;
 use crate::view::ViewId;
-use crate::views::ViewOutcome;
+use crate::views::View;
 use crate::views::networks::NetworksView;
 use crate::views::searches::SearchesView;
 use crate::views::settings::SettingsView;
@@ -20,10 +12,7 @@ use crate::views::shared_files::SharedView;
 use crate::views::statistics::StatisticsView;
 use crate::views::transfers::TransfersView;
 
-/// The persistent view components (selection/scroll/menu state survives across
-/// frames and view switches). Dispatch is a match — the views share a
-/// signature by convention (views/mod.rs contract), not a trait.
-///
+/// The persistent view components.
 #[derive(Default)]
 pub(super) struct Views {
     pub(super) transfers: TransfersView,
@@ -35,108 +24,56 @@ pub(super) struct Views {
 }
 
 impl Views {
-    pub(super) fn handle_key(
-        &mut self,
-        active: ViewId,
-        key: ratatui::crossterm::event::KeyEvent,
-        state: &UiState,
-    ) -> ViewOutcome {
+    /// The view `active` names.
+    pub(super) fn view(&self, active: ViewId) -> &dyn View {
         match active {
-            ViewId::Transfers => self.transfers.handle_key(key, state),
-            ViewId::Searches => self.searches.handle_key(key, state),
-            ViewId::Networks => self.networks.handle_key(key, state),
-            ViewId::SharedFiles => self.shared.handle_key(key, state),
-            ViewId::Statistics => self.statistics.handle_key(key),
-            ViewId::Settings => self.settings.handle_key(key, state),
+            ViewId::Transfers => &self.transfers,
+            ViewId::Searches => &self.searches,
+            ViewId::Networks => &self.networks,
+            ViewId::SharedFiles => &self.shared,
+            ViewId::Statistics => &self.statistics,
+            ViewId::Settings => &self.settings,
         }
     }
 
-    /// A wheel notch at `at`, read as `key` on the pane under the pointer.
-    pub(super) fn handle_wheel(
-        &mut self,
-        active: ViewId,
-        at: (u16, u16),
-        key: ratatui::crossterm::event::KeyEvent,
-        state: &UiState,
-    ) -> ViewOutcome {
+    /// The view `active` names, to offer it an input.
+    pub(super) fn view_mut(&mut self, active: ViewId) -> &mut dyn View {
         match active {
-            ViewId::Transfers => self.transfers.handle_wheel(at, key, state),
-            ViewId::Networks => self.networks.handle_wheel(at, key, state),
-            ViewId::SharedFiles => self.shared.handle_wheel(at, key, state),
-            _ => self.handle_key(active, key, state),
+            ViewId::Transfers => &mut self.transfers,
+            ViewId::Searches => &mut self.searches,
+            ViewId::Networks => &mut self.networks,
+            ViewId::SharedFiles => &mut self.shared,
+            ViewId::Statistics => &mut self.statistics,
+            ViewId::Settings => &mut self.settings,
         }
     }
+}
 
-    /// A bracketed paste, whole, to the surface that holds a text field. The
-    /// other surfaces have nowhere to put it, and it acts on nothing.
-    pub(super) fn handle_paste(
-        &mut self,
-        active: ViewId,
-        text: &str,
-        state: &UiState,
-    ) -> ViewOutcome {
-        match active {
-            ViewId::Transfers => self.transfers.handle_paste(text, state),
-            ViewId::Searches => self.searches.handle_paste(text),
-            ViewId::Networks => self.networks.handle_paste(text),
-            ViewId::SharedFiles => self.shared.handle_paste(text),
-            ViewId::Settings => self.settings.handle_paste(text),
-            ViewId::Statistics => ViewOutcome::Ignored,
-        }
-    }
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
 
-    /// Whether a text field on the active view holds the keyboard.
-    pub(super) fn text_open(&self, active: ViewId, state: &UiState) -> bool {
-        match active {
-            ViewId::Transfers => self.transfers.text_open(),
-            ViewId::Searches => self.searches.text_open(),
-            ViewId::Networks => self.networks.text_open(),
-            ViewId::SharedFiles => self.shared.text_open(state),
-            ViewId::Settings => self.settings.text_open(state),
-            ViewId::Statistics => false,
-        }
-    }
+    use ratatui::crossterm::event::KeyCode;
 
-    /// Draw the active view; where the caret of its open text field is.
-    pub(super) fn draw(
-        &mut self,
-        active: ViewId,
-        frame: &mut Frame,
-        area: Rect,
-        state: &UiState,
-        theme: &Theme,
-        now: Instant,
-    ) -> Option<Position> {
-        match active {
-            ViewId::Transfers => self.transfers.draw(frame, area, state, theme, now),
-            ViewId::Searches => self.searches.draw(frame, area, state, theme, now),
-            ViewId::Networks => self.networks.draw(frame, area, state, theme, now),
-            ViewId::SharedFiles => {
-                self.shared.draw(frame, area, state, theme, now);
-                None
-            }
-            ViewId::Statistics => {
-                self.statistics.draw(frame, area, state, theme, now);
-                None
-            }
-            ViewId::Settings => self.settings.draw(frame, area, state, theme, now),
-        }
-    }
+    use super::*;
+    use crate::fixture::{golden_area, press, served_files, theme};
 
-    pub(super) fn handle_click(
-        &mut self,
-        active: ViewId,
-        column: u16,
-        row: u16,
-        state: &UiState,
-    ) -> ViewOutcome {
-        match active {
-            ViewId::Transfers => self.transfers.handle_click(column, row, state),
-            ViewId::Searches => self.searches.handle_click(column, row, state),
-            ViewId::Networks => self.networks.handle_click(column, row, state),
-            ViewId::SharedFiles => self.shared.handle_click(column, row, state),
-            ViewId::Statistics => ViewOutcome::Ignored,
-            ViewId::Settings => self.settings.handle_click(column, row, state),
-        }
+    #[test]
+    fn a_filter_being_typed_keeps_the_terminals_cursor() {
+        let state = served_files();
+        let mut views = Views::default();
+        let shared = ViewId::SharedFiles;
+        views
+            .view_mut(shared)
+            .handle_key(press(KeyCode::Char('/')), &state);
+
+        let mut caret = None;
+        crate::golden::render_to_lines(golden_area().width, golden_area().height, |frame| {
+            let now = Instant::now();
+            caret = views
+                .view_mut(shared)
+                .draw(frame, golden_area(), &state, &theme(), now);
+        });
+        assert!(caret.is_some());
     }
 }

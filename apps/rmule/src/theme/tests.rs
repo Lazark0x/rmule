@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use super::contrast::{Rgb, ratio};
 use super::*;
 use crate::glyphs::GlyphTier;
+use crate::views::View;
 
 /// WCAG 1.4.3 for text.
 const MINIMUM: f64 = 4.5;

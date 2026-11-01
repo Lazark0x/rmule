@@ -9,6 +9,7 @@
 //! a fixture — it stays in that module's own test block.
 
 mod draw;
+pub(crate) use crate::views::View;
 pub(crate) use draw::{draw_golden, draw_searches, screen_lines};
 
 mod networks;

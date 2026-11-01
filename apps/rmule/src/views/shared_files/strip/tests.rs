@@ -8,6 +8,7 @@ use ratatui::crossterm::event::KeyCode;
 
 use crate::fixture::{golden_area, press, shared_directories, theme};
 use crate::golden::assert_golden;
+use crate::views::View;
 use crate::views::ViewOutcome;
 use crate::views::shared_files::SharedView;
 

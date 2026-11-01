@@ -97,6 +97,7 @@ mod tests {
     use crate::fixture::part_map;
 
     use super::*;
+    use crate::views::View;
 
     /// The glyphs a bar of `width` draws for `parts`, concatenated.
     fn bar_text(parts: &[PartState], width: usize, theme: &Theme) -> String {

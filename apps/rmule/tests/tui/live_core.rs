@@ -266,6 +266,7 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
 async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
     use rmule::state::SessionConfig;
+    use rmule::views::View;
     use rmule::views::ViewOutcome;
     use rmule::views::searches::SearchesView;
     use rmule_core::{SearchCommand, SearchEvent};

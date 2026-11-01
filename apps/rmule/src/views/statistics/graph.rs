@@ -210,6 +210,7 @@ mod tests {
 
     use super::*;
     use crate::fixture::*;
+    use crate::views::View;
 
     /// The distinction the whole graph rests on: a column the tick metered at
     /// zero is a baseline, a column with no sample is blank.
@@ -254,18 +255,18 @@ mod tests {
         );
         let now = base + Duration::from_secs(3 * 86_400);
         let mut view = StatisticsView::default();
-        let drawn = |view: &StatisticsView| {
+        let drawn = |view: &mut StatisticsView| {
             render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
                 view.draw(frame, frame.area(), &state, &Theme::default_dark(), now);
             })
         };
-        let seconds = drawn(&view);
+        let seconds = drawn(&mut view);
         assert!(seconds.contains("1 s a column"), "{seconds}");
-        view.handle_key(press(KeyCode::Char('w')));
-        let hours = drawn(&view);
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        let hours = drawn(&mut view);
         assert!(hours.contains("1 min a column"), "{hours}");
-        view.handle_key(press(KeyCode::Char('w')));
-        let days = drawn(&view);
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        let days = drawn(&mut view);
         assert!(
             days.contains("1 h a column") && days.contains(" 3d ago "),
             "{days}"
@@ -274,8 +275,8 @@ mod tests {
             days.contains("busiest hour") && days.contains("· up 3d 0h"),
             "{days}"
         );
-        view.handle_key(press(KeyCode::Char('w')));
-        assert_eq!(drawn(&view), seconds);
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
+        assert_eq!(drawn(&mut view), seconds);
     }
 
     /// The distinction a coarse window adds: a span no tick landed in is blank
@@ -288,7 +289,7 @@ mod tests {
             state.apply_snapshot(snapshot_at(base), base + Duration::from_secs(secs));
         }
         let mut view = StatisticsView::default();
-        view.handle_key(press(KeyCode::Char('w')));
+        view.handle_key(press(KeyCode::Char('w')), &UiState::default());
         let rendered = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
             view.draw(
                 frame,

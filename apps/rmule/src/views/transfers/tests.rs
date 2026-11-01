@@ -6,6 +6,7 @@ use crate::golden::assert_golden;
 
 use super::*;
 use crate::fixture::*;
+use crate::views::View;
 
 #[test]
 fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
@@ -218,7 +219,7 @@ fn slash_filters_the_downloads_as_typed_and_esc_clears() {
     let mut view = TransfersView::by_name();
     let every = view.download_ids(&state).len();
     typed(&mut view, &state, "bunny");
-    assert!(view.text_open());
+    assert!(view.text_open(&state));
     assert_eq!(view.download_ids(&state).len(), 1);
     let shown = crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
         let area = frame.area();
@@ -228,7 +229,7 @@ fn slash_filters_the_downloads_as_typed_and_esc_clears() {
     assert!(shown.contains(&format!("1 of {every}")), "{shown}");
     view.handle_key(press(KeyCode::Esc), &state);
     assert_eq!(view.download_ids(&state).len(), every);
-    assert!(!view.text_open());
+    assert!(!view.text_open(&state));
 }
 
 /// A filter that keeps nothing still shows its line, so the way out is seen.

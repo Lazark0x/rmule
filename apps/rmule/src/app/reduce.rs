@@ -31,7 +31,8 @@ impl App {
                     Event::Key(key) => {
                         let overlay = self.chrome.help_open || self.chrome.quit_open;
                         let text_open = self.chrome.help_open
-                            || (!overlay && self.views.text_open(self.chrome.active, &self.state));
+                            || (!overlay
+                                && self.views.view(self.chrome.active).text_open(&self.state));
                         let key = match input::gate(&key, text_open) {
                             input::KeyGate::Pass => key,
                             input::KeyGate::Page(code) => key_of(code),
@@ -63,7 +64,11 @@ impl App {
                         if overlay {
                             input::map_key(&self.chrome, key)
                         } else {
-                            match self.views.handle_key(self.chrome.active, key, &self.state) {
+                            match self
+                                .views
+                                .view_mut(self.chrome.active)
+                                .handle_key(key, &self.state)
+                            {
                                 ViewOutcome::Redraw => {
                                     self.dirty = true;
                                     None
@@ -92,8 +97,7 @@ impl App {
                             if !self.chrome.quit_open {
                                 let at = (mouse.column, mouse.row);
                                 let key = key_of(code);
-                                match self.views.handle_wheel(
-                                    self.chrome.active,
+                                match self.views.view_mut(self.chrome.active).handle_wheel(
                                     at,
                                     key,
                                     &self.state,
@@ -113,8 +117,7 @@ impl App {
                             if mouse.row == 0 || self.chrome.help_open || self.chrome.quit_open {
                                 input::map_mouse(&self.chrome, mouse)
                             } else {
-                                match self.views.handle_click(
-                                    self.chrome.active,
+                                match self.views.view_mut(self.chrome.active).handle_click(
                                     mouse.column,
                                     mouse.row,
                                     &self.state,
@@ -135,7 +138,8 @@ impl App {
                         }
                         match self
                             .views
-                            .handle_paste(self.chrome.active, &text, &self.state)
+                            .view_mut(self.chrome.active)
+                            .handle_paste(&text, &self.state)
                         {
                             ViewOutcome::Redraw => self.dirty = true,
                             ViewOutcome::Emit(action) => return self.reduce(action, now),

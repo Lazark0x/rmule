@@ -247,6 +247,7 @@ mod tests {
     use super::*;
     use crate::fixture::{GOLDEN_H, GOLDEN_W, file_hash, peer_endpoint, press, theme};
     use crate::golden::render_to_lines;
+    use crate::views::View;
 
     /// More waiters than the pane has lines: the selection stays drawn as it
     /// moves down the queue, and each waiter names the file it waits for.

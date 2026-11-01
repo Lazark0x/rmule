@@ -132,7 +132,7 @@ impl TransfersView {
     /// A paste into the form: one link goes in the field. Several, one a line,
     /// are each asked for at once, as Enter on each would; those refused come
     /// up in the field in turn with their refusals, so none is lost.
-    pub(crate) fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+    pub(super) fn paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
         let filter = match self.focus {
             super::Pane::Table => &mut self.filter,
             super::Pane::Sources => &mut self.source_filter,

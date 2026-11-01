@@ -31,7 +31,7 @@ use ratatui::widgets::Paragraph;
 
 use rmule_primitives::FileHash;
 
-use super::{ViewOutcome, rate_cell};
+use super::{View, ViewOutcome, rate_cell};
 use crate::row_filter::RowFilter;
 use crate::row_selection::tags::Tags;
 use crate::row_selection::viewport::Viewport;
@@ -172,25 +172,6 @@ fn render_empty(frame: &mut Frame, area: Rect, text: &str, theme: &Theme) {
 }
 
 impl SharedView {
-    /// Offer one key to the view. Modals capture first; otherwise
-    /// the focused pane navigates. Anything unclaimed bubbles to the globals.
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        if let Some(consent) = scan::open_consent(state, &self.answered, false) {
-            return scan::consent_key(
-                key,
-                consent,
-                (&mut self.answered, &mut self.consent_viewport),
-            );
-        }
-        if self.confirm.is_some() {
-            return self.handle_confirm_key(key);
-        }
-        if self.menu.is_some() {
-            return self.handle_menu_key(key, state);
-        }
-        self.handle_pane_key(key, state)
-    }
-
     fn handle_pane_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.clamp_selection(state);
         let files = self.focus == Pane::Files && !state.shared.is_empty();
@@ -271,28 +252,6 @@ impl SharedView {
             .targets(self.selected_row(state).map(|row| row.file_hash))
     }
 
-    /// A paste into the Row Filter that holds the keyboard.
-    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
-        let filter = match self.focus {
-            Pane::Files => &mut self.filter,
-            Pane::Peers => &mut self.peer_filter,
-        };
-        filter.paste(text).unwrap_or(ViewOutcome::Ignored)
-    }
-
-    /// Whether a Row Filter holds the keyboard: a question over it reads key
-    /// codes alone, so no chord may reach it as its letter.
-    pub(crate) fn text_open(&self, state: &UiState) -> bool {
-        let filter = match self.focus {
-            Pane::Files => &self.filter,
-            Pane::Peers => &self.peer_filter,
-        };
-        self.menu.is_none()
-            && self.confirm.is_none()
-            && self.pending_consent(state).is_none()
-            && filter.typing()
-    }
-
     /// Move the focused pane's cursor.
     fn move_selection(&mut self, state: &UiState, movement: RowMove) {
         match self.focus {
@@ -316,9 +275,60 @@ impl SharedView {
         self.peers_selected = self.peer_cursor.place(&self.peer_ids(state)).unwrap_or(0);
     }
 
+    /// The oldest disclosure question this view has not answered.
+    pub(crate) fn pending_consent<'a>(
+        &self,
+        state: &'a UiState,
+    ) -> Option<&'a crate::state::ScanConsent> {
+        scan::open_consent(state, &self.answered, false)
+    }
+}
+
+impl View for SharedView {
+    /// Offer one key to the view. Modals capture first; otherwise
+    /// the focused pane navigates. Anything unclaimed bubbles to the globals.
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+        if let Some(consent) = scan::open_consent(state, &self.answered, false) {
+            return scan::consent_key(
+                key,
+                consent,
+                (&mut self.answered, &mut self.consent_viewport),
+            );
+        }
+        if self.confirm.is_some() {
+            return self.handle_confirm_key(key);
+        }
+        if self.menu.is_some() {
+            return self.handle_menu_key(key, state);
+        }
+        self.handle_pane_key(key, state)
+    }
+
+    /// A paste into the Row Filter that holds the keyboard.
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
+        let filter = match self.focus {
+            Pane::Files => &mut self.filter,
+            Pane::Peers => &mut self.peer_filter,
+        };
+        filter.paste(text).unwrap_or(ViewOutcome::Ignored)
+    }
+
+    /// Whether a Row Filter holds the keyboard: a question over it reads key
+    /// codes alone, so no chord may reach it as its letter.
+    fn text_open(&self, state: &UiState) -> bool {
+        let filter = match self.focus {
+            Pane::Files => &self.filter,
+            Pane::Peers => &self.peer_filter,
+        };
+        self.menu.is_none()
+            && self.confirm.is_none()
+            && self.pending_consent(state).is_none()
+            && filter.typing()
+    }
+
     /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
     /// pointer; the focus stays where it is. A modal takes it as a key.
-    pub fn handle_wheel(
+    fn handle_wheel(
         &mut self,
         (column, row): (u16, u16),
         key: KeyEvent,
@@ -346,7 +356,7 @@ impl SharedView {
     /// with the row menu / confirm modal on top when open.
     /// Click routing (ADR-0072, Row Selection): rows select + focus in either
     /// pane. The row menu takes its clicks; a confirm keeps to the keyboard.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
         if self.confirm.is_none() && self.menu.is_some() {
             return self.click_menu(column, row, state);
         }
@@ -386,7 +396,7 @@ impl SharedView {
 
     /// Render one frame into `area` (spec §3.5): shared files over upload
     /// peers. Caches both pane rects for click hit-testing.
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -426,14 +436,6 @@ impl SharedView {
             Pane::Files => self.drawn_files.caret,
             Pane::Peers => self.drawn_peers.caret,
         }
-    }
-
-    /// The oldest disclosure question this view has not answered.
-    pub(crate) fn pending_consent<'a>(
-        &self,
-        state: &'a UiState,
-    ) -> Option<&'a crate::state::ScanConsent> {
-        scan::open_consent(state, &self.answered, false)
     }
 }
 

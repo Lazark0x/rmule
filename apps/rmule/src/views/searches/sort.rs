@@ -421,14 +421,14 @@ mod tests {
         let state = tiers();
         let mut view = SearchesView::by_name().having_sent("ubuntu");
         view.handle_key(press(KeyCode::Char('/')), &state);
-        assert!(view.text_open());
+        assert!(view.typing());
         assert!(!view.input_focused, "the query stands");
         for letter in "song".chars() {
             view.handle_key(press(KeyCode::Char(letter)), &state);
         }
         assert_eq!(view.result_ids(&state).len(), 1);
         view.handle_key(press(KeyCode::Enter), &state);
-        assert!(!view.text_open());
+        assert!(!view.typing());
         view.handle_key(press(KeyCode::Esc), &state);
         assert_eq!(view.result_ids(&state).len(), 3);
         view.handle_key(press(KeyCode::Char('i')), &state);

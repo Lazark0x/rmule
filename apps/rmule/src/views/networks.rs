@@ -39,7 +39,7 @@ use crate::state::UiState;
 use crate::table::Drawn;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{ViewOutcome, connect_toggle, say_gave_way};
+use crate::views::{View, ViewOutcome, connect_toggle, say_gave_way};
 use crate::words::severity::Severity;
 use form::{ServerForm, draw_form};
 use kad::draw_kad;
@@ -210,10 +210,41 @@ impl NetworksView {
         }
     }
 
+    fn move_selection(&mut self, movement: RowMove, state: &UiState) -> ViewOutcome {
+        match self.focus {
+            Pane::Servers => {
+                let before = self.server_sel;
+                let page = self.viewport.page();
+                self.cursor.apply(&self.server_ids(state), movement, page);
+                self.clamp_selection(state);
+                if self.server_sel == before {
+                    ViewOutcome::Ignored
+                } else {
+                    ViewOutcome::Redraw
+                }
+            }
+            // The log scrolls rather than selects: down is toward newer, and
+            // the ends are the oldest and the newest line.
+            Pane::Log => {
+                if self.log_viewport.scroll(movement) {
+                    ViewOutcome::Redraw
+                } else {
+                    ViewOutcome::Ignored
+                }
+            }
+        }
+    }
+}
+
+impl View for NetworksView {
+    fn handle_paste(&mut self, text: &str, _state: &UiState) -> ViewOutcome {
+        self.paste(text)
+    }
+
     /// Offer one key the globals did not claim. A modal captures
     /// first; otherwise the focused pane navigates, and anything unclaimed
     /// bubbles back out as [`ViewOutcome::Ignored`].
-    pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+    fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.clamp_selection(state);
 
         // Modals capture input (globals must not fire underneath them), in
@@ -292,34 +323,9 @@ impl NetworksView {
         }
     }
 
-    fn move_selection(&mut self, movement: RowMove, state: &UiState) -> ViewOutcome {
-        match self.focus {
-            Pane::Servers => {
-                let before = self.server_sel;
-                let page = self.viewport.page();
-                self.cursor.apply(&self.server_ids(state), movement, page);
-                self.clamp_selection(state);
-                if self.server_sel == before {
-                    ViewOutcome::Ignored
-                } else {
-                    ViewOutcome::Redraw
-                }
-            }
-            // The log scrolls rather than selects: down is toward newer, and
-            // the ends are the oldest and the newest line.
-            Pane::Log => {
-                if self.log_viewport.scroll(movement) {
-                    ViewOutcome::Redraw
-                } else {
-                    ViewOutcome::Ignored
-                }
-            }
-        }
-    }
-
     /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
     /// pointer; the focus stays where it is. A modal takes it as a key.
-    pub fn handle_wheel(
+    fn handle_wheel(
         &mut self,
         (column, row): (u16, u16),
         key: KeyEvent,
@@ -351,7 +357,7 @@ impl NetworksView {
     /// log pane focuses (its rows scroll, they don't select). The Kad panel
     /// is display-only. The row menu takes its clicks; other modals keep to
     /// the keyboard.
-    pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+    fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
         if self.confirm.is_none() && self.form.is_none() && self.menu.is_some() {
             return self.click_menu(column, row, state);
         }
@@ -381,7 +387,7 @@ impl NetworksView {
     /// Render one frame into `area` (spec §3.4): the server table over the
     /// log and Kad panes. Caches each pane's rect for click hit-testing, so a
     /// click can only ever land on the layout actually drawn.
-    pub fn draw(
+    fn draw(
         &mut self,
         frame: &mut Frame,
         area: Rect,
@@ -443,7 +449,7 @@ impl NetworksView {
     }
 
     /// Whether a form or a Row Filter holds the keyboard.
-    pub(crate) fn text_open(&self) -> bool {
+    fn text_open(&self, _state: &UiState) -> bool {
         let filter = match self.focus {
             Pane::Servers => &self.filter,
             Pane::Log => &self.log_filter,
