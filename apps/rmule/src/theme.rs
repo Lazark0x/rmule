@@ -4,9 +4,20 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-#[derive(Clone, Copy, Debug)]
-/// One resolved palette for the run. The three constructors below differ only
+/// What the environment says about colour.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Colours<'a> {
+    /// `COLORTERM`.
+    pub colorterm: Option<&'a str>,
+    /// `TERM`.
+    pub term: Option<&'a str>,
+    /// `NO_COLOR` is set and not empty.
+    pub no_color: bool,
+}
+
+/// One resolved palette for the run. The constructors below differ only
 /// in the values; no call site may reach past a role to a literal color.
+#[derive(Clone, Copy, Debug)]
 pub struct Theme {
     /// Behind the whole frame.
     pub bg: Color,
@@ -126,24 +137,61 @@ impl Theme {
         }
     }
 
-    /// Pure theme selection from environment facts (spec §5 degrade story):
-    /// an explicit `RMULE_THEME` override (`dark`/`light`/`256`) wins;
-    /// otherwise the `COLORTERM=truecolor|24bit` convention decides between
-    /// the truecolor dark default and the 256-safe fallback. Detection stays
-    /// in the caller; this function never reads the environment itself.
+    /// No colour at all: the terminal's own, for `NO_COLOR` and for a console
+    /// that cannot be trusted with an indexed palette. The words, the `▸` and
+    /// bold carry everything; every role is the terminal's default.
     #[must_use]
-    pub fn select(override_name: Option<&str>, colorterm: Option<&str>) -> Self {
+    pub const fn mono() -> Self {
+        let none = Color::Reset;
+        Self {
+            bg: none,
+            panel: none,
+            fg: none,
+            dim: none,
+            accent: none,
+            highlight: none,
+            good: none,
+            warn: none,
+            bad: none,
+            selection: none,
+            scroll_track: none,
+            mark_downloading: none,
+            mark_failed: none,
+            mark_have: none,
+            mark_withheld: none,
+            mark_had: none,
+            mark_cancelled: none,
+        }
+    }
+
+    /// Pure theme selection from environment facts (spec §5 degrade story):
+    /// an explicit `RMULE_THEME` override (`dark`/`light`/`256`/`mono`) wins;
+    /// then `NO_COLOR`; then `COLORTERM=truecolor|24bit` for the truecolor
+    /// dark default; a console with sixteen colours or none takes no colour,
+    /// and every other terminal the 256-safe fallback. Detection stays in the
+    /// caller; this function never reads the environment itself.
+    #[must_use]
+    pub fn select(override_name: Option<&str>, colours: Colours<'_>) -> Self {
         match override_name {
             Some("light") => return Self::light(),
             Some("256") => return Self::fallback_256(),
             Some("dark") => return Self::default_dark(),
+            Some("mono") => return Self::mono(),
             _ => {}
         }
-        let truecolor = colorterm.is_some_and(|v| v == "truecolor" || v == "24bit");
-        if truecolor {
-            Self::default_dark()
-        } else {
-            Self::fallback_256()
+        if colours.no_color {
+            return Self::mono();
+        }
+        if colours
+            .colorterm
+            .is_some_and(|v| v == "truecolor" || v == "24bit")
+        {
+            return Self::default_dark();
+        }
+        match colours.term {
+            Some("linux" | "dumb" | "ansi" | "cons25") => Self::mono(),
+            Some(term) if term.starts_with("vt") => Self::mono(),
+            _ => Self::fallback_256(),
         }
     }
 
@@ -220,27 +268,95 @@ mod tests {
 
     #[test]
     fn selection_prefers_the_explicit_override() {
-        let light = Theme::select(Some("light"), Some("truecolor"));
+        let colours = truecolor();
+        let light = Theme::select(Some("light"), colours);
         assert_eq!(light.bg, Theme::light().bg);
-        let forced_256 = Theme::select(Some("256"), Some("truecolor"));
+        let forced_256 = Theme::select(Some("256"), colours);
         assert_eq!(forced_256.bg, Theme::fallback_256().bg);
     }
 
     #[test]
     fn truecolor_detection_gates_the_dark_default() {
         assert_eq!(
-            Theme::select(None, Some("truecolor")).bg,
+            Theme::select(None, truecolor()).bg,
+            Theme::default_dark().bg
+        );
+        let colorterm = |value| Colours {
+            colorterm: Some(value),
+            ..Colours::default()
+        };
+        assert_eq!(
+            Theme::select(None, colorterm("24bit")).bg,
             Theme::default_dark().bg
         );
         assert_eq!(
-            Theme::select(None, Some("24bit")).bg,
-            Theme::default_dark().bg
-        );
-        assert_eq!(Theme::select(None, None).bg, Theme::fallback_256().bg);
-        assert_eq!(
-            Theme::select(None, Some("yes")).bg,
+            Theme::select(None, Colours::default()).bg,
             Theme::fallback_256().bg
         );
+        assert_eq!(
+            Theme::select(None, colorterm("yes")).bg,
+            Theme::fallback_256().bg
+        );
+    }
+
+    fn truecolor() -> Colours<'static> {
+        Colours {
+            colorterm: Some("truecolor"),
+            ..Colours::default()
+        }
+    }
+
+    /// `NO_COLOR` beats what the terminal claims, and a word on the command
+    /// line beats `NO_COLOR`; a console of sixteen colours takes none.
+    #[test]
+    fn no_color_and_a_plain_console_take_no_colour() {
+        let no_color = Colours {
+            no_color: true,
+            ..truecolor()
+        };
+        assert_eq!(Theme::select(None, no_color).bg, Color::Reset);
+        assert_eq!(
+            Theme::select(Some("dark"), no_color).bg,
+            Theme::default_dark().bg
+        );
+        for term in ["linux", "vt100", "dumb"] {
+            let console = Colours {
+                term: Some(term),
+                ..Colours::default()
+            };
+            assert_eq!(Theme::select(None, console).bg, Color::Reset, "{term}");
+        }
+        let xterm = Colours {
+            term: Some("xterm-256color"),
+            ..Colours::default()
+        };
+        assert_eq!(Theme::select(None, xterm).bg, Theme::fallback_256().bg);
+    }
+
+    /// What a no-colour user asked for is no colour escape in any cell, with
+    /// the words and the marker still there to read.
+    #[test]
+    fn a_mono_frame_paints_no_colour_and_keeps_the_marker() {
+        let theme = Theme::mono();
+        let state = crate::fixture::three_downloads();
+        let mut view = crate::views::transfers::TransfersView::new();
+        let backend = ratatui::backend::TestBackend::new(78, 21);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                view.draw(frame, area, &state, &theme, crate::fixture::now());
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset)
+        );
+        let glyphs: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(glyphs.contains('▸'), "{glyphs}");
     }
 
     /// ADR-0100: a marked row trades its source tint for the mark's colour,

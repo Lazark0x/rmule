@@ -299,6 +299,7 @@ mod tests {
     #[test]
     fn a_refused_store_is_told_by_its_cause() {
         let words = |refusal| attach_failure_words(AttachFailure::OpenStore(refusal));
+        use rmule_core::OpenRefusal;
         assert!(words(OpenRefusal::Busy).contains("another rmule"));
         let newer = words(OpenRefusal::Newer {
             found: 17,

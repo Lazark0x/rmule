@@ -202,7 +202,7 @@ impl SharedConfig {
 ///
 /// [`Auto`](Self::Auto) *is* the environment reading — `RMULE_THEME`, then the
 /// `COLORTERM` truecolor convention (spec §5) — so a stored choice and the
-/// escape hatch are one setting with four values instead of two mechanisms
+/// escape hatch are one setting with five values instead of two mechanisms
 /// arguing over which wins.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeChoice {
@@ -215,11 +215,19 @@ pub enum ThemeChoice {
     Light,
     /// The hand-tuned 256-color palette, for terminals that mangle RGB.
     Fallback256,
+    /// No colour: the terminal's own, whatever it reports.
+    Mono,
 }
 
 impl ThemeChoice {
     /// Every choice, in the order the Settings field cycles them.
-    pub const ALL: [Self; 4] = [Self::Auto, Self::Dark, Self::Light, Self::Fallback256];
+    pub const ALL: [Self; 5] = [
+        Self::Auto,
+        Self::Dark,
+        Self::Light,
+        Self::Fallback256,
+        Self::Mono,
+    ];
 
     /// The stored spelling, and what [`parse`](Self::parse) reads back.
     #[must_use]
@@ -229,6 +237,7 @@ impl ThemeChoice {
             Self::Dark => "dark",
             Self::Light => "light",
             Self::Fallback256 => "256",
+            Self::Mono => "mono",
         }
     }
 
@@ -249,6 +258,7 @@ impl ThemeChoice {
             Self::Dark => Theme::default_dark(),
             Self::Light => Theme::light(),
             Self::Fallback256 => Theme::fallback_256(),
+            Self::Mono => Theme::mono(),
         }
     }
 }

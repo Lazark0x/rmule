@@ -32,7 +32,7 @@ use rmule::args::{self, BUILD, Invocation, MissingTerminal, RunArgs};
 use rmule::attach::{Attachment, Live, attach};
 use rmule::bridge::{self, BridgeConfig};
 use rmule::input::spawn_input_pump;
-use rmule::theme::Theme;
+use rmule::theme::{Colours, Theme};
 use rmule::tui::Tui;
 use rmule::words::front_door;
 use rmule_core::run_log::{self, Level, RunLog, RunLogFailure};
@@ -100,13 +100,18 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     let (actions_tx, actions_rx) = tokio::sync::mpsc::channel(256);
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    // Theme detection (spec §5): RMULE_THEME override beats the COLORTERM
-    // truecolor convention; no truecolor ⇒ the hand-tuned 256-safe fallback.
-    // This is what the Settings tab's `auto` choice means; a stored
-    // choice of dark/light/256 replaces it in `App::with_config`.
+    // Theme detection (spec §5, `Theme::select`). This is what the Settings
+    // tab's `auto` choice means; a stored choice replaces it in
+    // `App::with_config`.
+    let colorterm = std::env::var("COLORTERM").ok();
+    let term = std::env::var("TERM").ok();
     let theme = Theme::select(
         std::env::var("RMULE_THEME").ok().as_deref(),
-        std::env::var("COLORTERM").ok().as_deref(),
+        Colours {
+            colorterm: colorterm.as_deref(),
+            term: term.as_deref(),
+            no_color: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+        },
     );
 
     // Attach the core before entering the alternate screen, so a run with no

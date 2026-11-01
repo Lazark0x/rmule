@@ -221,8 +221,8 @@ scrolls. Settings marks the choices that take effect on restart.
 
 `rmule --data-dir <path>` picks the data directory and
 `rmule --log-level detailed` adds peer addresses, file names, paths and hashes
-to the Run Log for one run. `RMULE_THEME` (`dark`, `light` or `256`) picks the
-colours. rmule needs a terminal on both its input and its output.
+to the Run Log for one run. `RMULE_THEME` (`dark`, `light`, `256` or `mono`)
+picks the colours, and `NO_COLOR` turns them off. rmule needs a terminal on both its input and its output.
 
 ## Using `rmule-cli`
 
