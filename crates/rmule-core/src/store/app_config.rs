@@ -14,7 +14,7 @@
 
 mod servers;
 
-pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13, grow_from_v14};
+pub(crate) use servers::{grow_from_v13, grow_from_v14};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -170,8 +170,8 @@ pub(crate) fn schema() -> Schema {
         .merge(servers::schema())
 }
 
-/// The seam's tables as store versions 12 and 13 declared them: today's, the
-/// server list in its shape before the aux-ports list.
+/// The seam's tables as store version 13 declared them: today's, the server
+/// list in its shape before the aux-ports list.
 #[cfg(test)]
 pub(crate) fn schema_v13() -> Schema {
     Schema::new()
@@ -182,31 +182,18 @@ pub(crate) fn schema_v13() -> Schema {
         .merge(servers::schema_v13())
 }
 
-/// The seam's tables as store versions 1 to 8 declared them, the server list
-/// in its old shape with its endpoint index, for a test that builds an older
-/// store.
-#[cfg(test)]
-pub(crate) fn schema_v1() -> Schema {
-    Schema::new()
-        .indexed(&CLIENT_IDENTITY)
-        .indexed(&KAD_IDENTITY)
-        .indexed(&SECURE_IDENT_KEY)
-        .table(PREFERENCES)
-        .merge(servers::schema_v1())
-}
-
 /// Add a static server named `name` at `endpoint`, failed twice, to the
-/// list as a store of versions 1 to 8 kept it.
+/// list as a store of version 13 kept it.
 ///
 /// # Errors
 /// The store's.
 #[cfg(test)]
-pub(crate) fn add_server_v1(
+pub(crate) fn add_server_v13(
     txn: &rmule_store::WriteTransaction,
     endpoint: &rmule_primitives::ServerEndpoint,
     name: &str,
 ) -> Result<(), StoreError> {
-    servers::add_v1(txn, endpoint, name)
+    servers::add_v13(txn, endpoint, name)
 }
 
 /// The durable owner of the app's Client Identity, Secure User Identification

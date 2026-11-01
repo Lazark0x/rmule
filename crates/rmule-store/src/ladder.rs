@@ -1,9 +1,9 @@
 //! The store-wide version and the steps that carry a file forward: each
 //! [`UpgradeStep`] rewrites one version's tables into the next inside one
 //! durable write and the store stamps the new version before the next step
-//! runs. A file newer than the build is refused, a rung with no step is
-//! refused, a fresh file is stamped at the current version. The stamp lives
-//! in a meta table of the store's own.
+//! runs. A file newer than the build or under its floor is refused, a rung
+//! with no step is refused, a fresh file is stamped at the current version.
+//! The stamp lives in a meta table of the store's own.
 
 use std::path::{Path, PathBuf};
 
@@ -42,16 +42,40 @@ pub struct UpgradeStep {
 pub struct Ladder {
     /// The version this build writes and expects.
     pub current: u32,
-    /// The steps, one per version below `current` that a file may still be
-    /// at. Order in the slice does not matter; `from` does.
+    /// The oldest version this build climbs from: the oldest a published
+    /// build wrote. A file under it is refused before anything is written.
+    pub floor: u32,
+    /// The steps, one per version from `floor` up to `current`. Order in the
+    /// slice does not matter; `from` does.
     pub steps: &'static [UpgradeStep],
 }
 
 impl Ladder {
-    /// A ladder topping out at `current` with the given steps.
+    /// A ladder from `floor` to `current` with the given steps.
     #[must_use]
-    pub const fn new(current: u32, steps: &'static [UpgradeStep]) -> Self {
-        Self { current, steps }
+    pub const fn new(current: u32, floor: u32, steps: &'static [UpgradeStep]) -> Self {
+        Self {
+            current,
+            floor,
+            steps,
+        }
+    }
+
+    /// Whether a file stamped `found` may open on this build.
+    pub(crate) const fn admit(&self, found: u32) -> Result<(), StoreError> {
+        if found > self.current {
+            return Err(StoreError::FutureVersion {
+                found,
+                current: self.current,
+            });
+        }
+        if found < self.floor {
+            return Err(StoreError::TooOld {
+                found,
+                floor: self.floor,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn step_from(&self, from: u32) -> Result<&UpgradeStep, StoreError> {

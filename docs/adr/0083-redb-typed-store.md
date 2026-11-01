@@ -57,7 +57,12 @@ in filesystem files, not in the store.
   rewrites it into the new one and drops the old, in one write transaction. A record
   change bumps `Record::VERSION` and lands a step, and so does a new table whose absence an
   older build would write past, because the operator's store holds downloads a reset would
-  lose. A step's old types are compiled only while the step exists.
+  lose. A step's old types are compiled only while the step exists. The ladder has a floor,
+  the oldest version a published build wrote: 13, which v0.1.0 shipped. A file under it is
+  refused with its version and the floor, and so is one newer than the build, on a read-only
+  handle before the writing open touches a byte, so the build that can read the file finds
+  it as it was. A file its last run left open has to be repaired to be read at all, which
+  keeps every row; its refusal comes behind the repair.
 - **Nothing climbs without a way back.** Before the first rung of a climb the store copies
   the file to `rmule.redb.v<found>` beside it, written whole under another name and renamed
   into place. A copy that fails refuses the climb and leaves the file as it was; a copy of

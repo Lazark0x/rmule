@@ -37,5 +37,5 @@ The set of tables one store owns, assembled by the domain crates that declare th
 _Avoid_: migration (that is the ladder), DDL
 
 **Version ladder / Upgrade step**:
-The store-wide version and the ordered steps that carry a file from one version to the next. Each step rewrites the tables of one version into the next inside a single durable write and stamps the new version before the next step runs; a file newer than the running build is refused, a rung with no step is refused, and a fresh file is stamped at the current version with no steps run. Old record shapes exist only as long as the step that reads them.
+The store-wide version and the ordered steps that carry a file from one version to the next. Each step rewrites the tables of one version into the next inside a single durable write and stamps the new version before the next step runs; a file newer than the running build is refused, a file under the ladder's **floor** — the oldest version a published build wrote — is refused, both before anything writes to the file, a rung with no step is refused, and a fresh file is stamped at the current version with no steps run. Old record shapes exist only as long as the step that reads them.
 _Avoid_: schema migration (SQL vocabulary), user_version, data patch

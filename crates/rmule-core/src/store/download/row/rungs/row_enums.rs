@@ -1,40 +1,14 @@
-//! The frozen copies of the live enums every download row shape from record
-//! version 1 to 5 embeds: the lifecycle, the verification authority and the
-//! metadata origin. Those shapes' bytes decode by variant position, so each
-//! copy keeps the declaration order the versions wrote, and grows into its
-//! live type only at the rung onto today's row.
+//! The frozen copies of the live enums the download row of record version 5
+//! embeds: the lifecycle, the verification authority and the metadata origin.
+//! Its bytes decode by variant position, so each copy keeps the declaration
+//! order that version wrote, and grows into its live type only at the rung
+//! onto today's row.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{DownloadLifecycle, DownloadMetadataOrigin, VerificationAuthority};
 
-/// [`DownloadLifecycle`] as record versions 1 to 4 encoded it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) enum DownloadLifecycleV1 {
-    Queued,
-    Active,
-    Paused,
-    Failed,
-    Completed,
-    Cancelled,
-}
-
-impl DownloadLifecycleV1 {
-    /// The lifecycle as record version 5 keeps it: every state the same.
-    pub(super) const fn grown(self) -> DownloadLifecycleV5 {
-        match self {
-            Self::Queued => DownloadLifecycleV5::Queued,
-            Self::Active => DownloadLifecycleV5::Active,
-            Self::Paused => DownloadLifecycleV5::Paused,
-            Self::Failed => DownloadLifecycleV5::Failed,
-            Self::Completed => DownloadLifecycleV5::Completed,
-            Self::Cancelled => DownloadLifecycleV5::Cancelled,
-        }
-    }
-}
-
-/// [`DownloadLifecycle`] as record version 5 encoded it: version 1's states
-/// with `Completing` appended.
+/// [`DownloadLifecycle`] as record version 5 encoded it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum DownloadLifecycleV5 {
     Queued,
@@ -60,7 +34,7 @@ impl DownloadLifecycleV5 {
     }
 }
 
-/// [`VerificationAuthority`] as record versions 1 to 5 encoded it.
+/// [`VerificationAuthority`] as record version 5 encoded it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum VerificationAuthorityV1 {
     LinkPartHashSet,
@@ -78,7 +52,7 @@ impl VerificationAuthorityV1 {
     }
 }
 
-/// [`DownloadMetadataOrigin`] as record versions 1 to 5 encoded it.
+/// [`DownloadMetadataOrigin`] as record version 5 encoded it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum DownloadMetadataOriginV1 {
     Link,

@@ -29,26 +29,16 @@ use crate::CoreError;
 /// The file name of the Durable Store inside a data directory.
 pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 
-/// The store-wide version ladder (ADR-0083): the current version and the
-/// steps up to it. Published builds wrote versions 13 and 14, and the
+/// The store-wide version ladder (ADR-0083): the current version, the floor
+/// and the steps from it. Published builds wrote versions 13 and 14, nothing
+/// published wrote an older one, and the
 /// operator's store holds downloads a reset would lose, so a record change
 /// takes a rung (ADR-0102), and so does a new table whose absence an older
 /// build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
     18,
+    13,
     &[
-        registry::UPGRADE_FROM_V1,
-        had_set::UPGRADE_FROM_V2,
-        share_totals::UPGRADE_FROM_V3,
-        registry::UPGRADE_FROM_V4,
-        download::UPGRADE_FROM_V5,
-        download::UPGRADE_FROM_V6,
-        download::UPGRADE_FROM_V7,
-        UPGRADE_FROM_V8,
-        UPGRADE_FROM_V9,
-        registry::UPGRADE_FROM_V10,
-        UPGRADE_FROM_V11,
-        download::UPGRADE_FROM_V12,
         UPGRADE_FROM_V13,
         UPGRADE_FROM_V14,
         credit::UPGRADE_FROM_V15,
@@ -56,35 +46,6 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         app_config::UPGRADE_FROM_V17,
     ],
 );
-
-/// Store version 8 → 9, one rung for two seams: every managed
-/// server row gains its figures (none yet — a row rmule kept none for reads
-/// as never answered), and every download row's server becomes an optional
-/// source hint, keeping the server it named. A version-8 build refuses the
-/// store: it could not read either row.
-pub(crate) const UPGRADE_FROM_V8: UpgradeStep = UpgradeStep {
-    from: 8,
-    run: |txn| {
-        app_config::grow_from_v8(txn)?;
-        download::grow_from_v8(txn)
-    },
-};
-
-/// Store version 9 → 10 (ADR-0080):
-/// every managed server row gains no grants report and its figures no UDP
-/// flags. A version-9 build refuses the store: it could not read the row.
-pub(crate) const UPGRADE_FROM_V9: UpgradeStep = UpgradeStep {
-    from: 9,
-    run: app_config::grow_from_v9,
-};
-
-/// Store version 11 → 12 (ADR-0052, "a server's UDP crypt facts are
-/// durable"): every managed server row gains no UDP crypt facts. A
-/// version-11 build refuses the store: it could not read the row.
-pub(crate) const UPGRADE_FROM_V11: UpgradeStep = UpgradeStep {
-    from: 11,
-    run: app_config::grow_from_v11,
-};
 
 /// Store version 13 → 14 (ADR-0080, "Aux ports"): every managed server row
 /// gains no aux-ports list. A version-13 build refuses the store: it could
@@ -149,13 +110,14 @@ pub(crate) fn durable_schema() -> Schema {
         .merge(app_config::schema())
 }
 
-/// Every table store version 12 held: today's less the download seeds, with
-/// the server list as it was before the aux-ports list and the credit row as
-/// it was before it kept when it was last seen.
+/// Every table store version 13 held, as it declared them: today's, with the
+/// download row and the server list as they were before the aux-ports list
+/// and the Download Name, and the credit row as it was before it kept when it
+/// was last seen.
 #[cfg(test)]
-pub(crate) fn durable_schema_v12() -> Schema {
+pub(crate) fn durable_schema_v13() -> Schema {
     credit::schema_v1()
-        .merge(download::schema_v12())
+        .merge(download::schema_v13())
         .merge(registry::schema())
         .merge(had_set::schema())
         .merge(share_totals::schema())

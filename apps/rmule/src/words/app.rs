@@ -446,12 +446,20 @@ mod tests {
             current: 16,
         });
         assert!(newer.contains("17") && newer.contains("16"), "{newer}");
+        let old = words(OpenRefusal::TooOld {
+            found: 12,
+            floor: 13,
+        });
+        assert!(old.contains("12") && old.contains("13"), "{old}");
         for refusal in [
             OpenRefusal::Newer {
                 found: 17,
                 current: 16,
             },
-            OpenRefusal::TooOld { found: 1 },
+            OpenRefusal::TooOld {
+                found: 12,
+                floor: 13,
+            },
             OpenRefusal::Damaged,
             OpenRefusal::Disk {
                 kind: ErrorKind::StorageFull,

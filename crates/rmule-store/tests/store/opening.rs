@@ -20,7 +20,7 @@ static V2_STEPS: [UpgradeStep; 1] = [UpgradeStep {
     from: 1,
     run: |_| Ok(()),
 }];
-const V2: Ladder = Ladder::new(2, &V2_STEPS);
+const V2: Ladder = Ladder::new(2, 1, &V2_STEPS);
 
 fn store_at_v1(dir: &Path) -> PathBuf {
     let file = dir.join("state.redb");
@@ -92,6 +92,34 @@ fn a_copy_already_there_is_the_older_and_is_kept() {
     std::fs::write(copy_at(&file, 1), b"kept").unwrap();
     drop(Store::open(&file, &schema_v1(), &V2).unwrap());
     assert_eq!(std::fs::read(copy_at(&file, 1)).unwrap(), b"kept");
+}
+
+/// A refusal the operator can act on with an older or a newer build leaves
+/// that build the very file: nothing of the open, nothing of a copy.
+#[test]
+fn a_refused_version_leaves_the_file_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = store_at_v1(dir.path());
+    let found = std::fs::read(&file).unwrap();
+
+    let floored = Ladder::new(3, 2, &[]);
+    let under = Store::open(&file, &schema_v1(), &floored).unwrap_err();
+    assert_eq!(
+        under.open_refusal(),
+        OpenRefusal::TooOld { found: 1, floor: 2 }
+    );
+    assert!(std::fs::read(&file).unwrap() == found, "the file moved");
+
+    let older_build = Ladder::new(0, 0, &[]);
+    assert!(matches!(
+        Store::open(&file, &schema_v1(), &older_build).unwrap_err(),
+        StoreError::FutureVersion {
+            found: 1,
+            current: 0
+        }
+    ));
+    assert!(std::fs::read(&file).unwrap() == found, "the file moved");
+    assert!(!copy_at(&file, 1).exists());
 }
 
 #[test]

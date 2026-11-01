@@ -87,6 +87,14 @@ pub enum StoreError {
         /// The version this build's ladder tops out at.
         current: u32,
     },
+    /// The file is older than any version this build climbs from.
+    #[error("store is version {found}, under this build's floor {floor}")]
+    TooOld {
+        /// The version stamped in the file.
+        found: u32,
+        /// The oldest version this build's ladder climbs from.
+        floor: u32,
+    },
     /// The ladder has no step starting at a version the file is at.
     #[error("upgrade ladder has no step from version {from}")]
     MissingStep {
@@ -121,10 +129,12 @@ pub enum OpenRefusal {
         /// The version this build's ladder tops out at.
         current: u32,
     },
-    /// The file is older than any rung this build carries.
+    /// The file is older than any version this build climbs from.
     TooOld {
         /// The version stamped in the file.
         found: u32,
+        /// The oldest version this build's ladder climbs from.
+        floor: u32,
     },
     /// The file, or a record in it, is not what a store holds.
     Damaged,
@@ -162,7 +172,10 @@ impl StoreError {
                 found: *found,
                 current: *current,
             },
-            Self::MissingStep { from } => OpenRefusal::TooOld { found: *from },
+            Self::TooOld { found, floor } => OpenRefusal::TooOld {
+                found: *found,
+                floor: *floor,
+            },
             Self::NotCopied { source, .. } => OpenRefusal::NotCopied {
                 os_code: source.raw_os_error(),
             },

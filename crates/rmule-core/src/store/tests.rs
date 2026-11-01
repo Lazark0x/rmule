@@ -1,7 +1,8 @@
-//! The whole ladder from the store an operator's disk holds: every seam's
-//! tables as store version 1 declared them — indexes included — a row in
-//! each table a rung touches, climbed to today's version in one open, then
-//! read back through the seams, their indexes and their counters.
+//! The whole ladder from the oldest store an operator's disk can hold: every
+//! seam's tables as store version 13 declared them — indexes included — a row
+//! in each table a rung touches, climbed to today's version in one open, then
+//! read back through the seams, their indexes and their counters. A store
+//! under that floor is refused and left as it was.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -26,16 +27,8 @@ use crate::{
     VerifiedPartRecord,
 };
 
-/// Every table the version-1 store declared, as it declared it.
-fn schema_v1() -> Schema {
-    super::credit::schema_v1()
-        .merge(super::download::schema_v1())
-        .merge(super::registry::schema_v1())
-        .merge(super::app_config::schema_v1())
-}
-
 #[test]
-fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
+fn a_version_thirteen_store_with_every_index_climbs_to_today_and_reads_back_whole() {
     let dir = tempfile::tempdir().unwrap();
     let downloads = dir.path().join("downloads");
     let file = rmule_testkit::file_link("kept.bin", &[0x6D; 64]);
@@ -60,28 +53,32 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
         modified: None,
     };
     let key = {
-        let v1 = DurableStore::open(
+        let v13 = DurableStore::open(
             dir.path().join(DURABLE_STORE_FILE),
-            &schema_v1(),
-            &Ladder::new(1, &[]),
+            &super::durable_schema_v13(),
+            &Ladder::new(13, 13, &[]),
         )
         .unwrap();
-        v1.write(|txn| {
-            let key = super::download::seed_v1(
-                txn,
-                &file,
-                &server,
-                &paths,
-                part,
-                &peer_hashes,
-                distrusted,
-            )?;
-            super::registry::share_v1(txn, &shared)?;
-            super::credit::row_v1(txn, credited, 5_000_000)?;
-            super::app_config::add_server_v1(txn, &server, "kept server")?;
-            Ok::<_, rmule_store::StoreError>(key)
-        })
-        .unwrap()
+        let store = Arc::new(v13);
+        DurableSharedFileRegistry::new(Arc::clone(&store))
+            .share(shared.clone())
+            .unwrap();
+        store
+            .write(|txn| {
+                let key = super::download::seed_running_v5(
+                    txn,
+                    &file,
+                    &server,
+                    &paths,
+                    part,
+                    &peer_hashes,
+                    distrusted,
+                )?;
+                super::credit::row_v1(txn, credited, 5_000_000)?;
+                super::app_config::add_server_v13(txn, &server, "kept server")?;
+                Ok::<_, rmule_store::StoreError>(key)
+            })
+            .unwrap()
     };
 
     let store = open_durable_store(dir.path()).unwrap();
@@ -157,6 +154,34 @@ fn a_version_one_store_with_every_index_climbs_to_today_and_reads_back_whole() {
     assert_eq!(list.servers().unwrap().len(), 1);
     assert!(list.remove_server(&server).unwrap());
     assert!(list.servers().unwrap().is_empty());
+}
+
+/// A store under the floor keeps its bytes and gets no copy: the build that
+/// can climb it needs the file as it was.
+#[test]
+fn a_version_twelve_store_is_refused_and_left_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join(DURABLE_STORE_FILE);
+    drop(Store::open(&file, &Schema::new(), &Ladder::new(12, 12, &[])).unwrap());
+    let found = std::fs::read(&file).unwrap();
+
+    let error = open_durable_store(dir.path()).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            CoreError::StoreRefused {
+                refusal: OpenRefusal::TooOld {
+                    found: 12,
+                    floor: 13
+                },
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(std::fs::read(&file).unwrap() == found, "the file moved");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 /// The refusal is typed through to the front end: only a held file asks
@@ -309,7 +334,7 @@ fn the_climb_to_seventeen_roots_stored_absolute_paths() {
     let store = Store::open(
         seeded.join(DURABLE_STORE_FILE),
         &super::durable_schema(),
-        &Ladder::new(16, &[]),
+        &Ladder::new(16, 16, &[]),
     )
     .unwrap();
     let repo = DurableDownloadRepository::new(Arc::new(store));
@@ -368,7 +393,7 @@ fn the_climb_to_eighteen_roots_a_stored_temp_directory() {
         let store = Store::open(
             seeded.join(DURABLE_STORE_FILE),
             &super::durable_schema(),
-            &Ladder::new(17, &[]),
+            &Ladder::new(17, 17, &[]),
         )
         .unwrap();
         let set = if inside {
@@ -461,7 +486,7 @@ fn a_store_the_published_build_wrote_climbs_and_keeps_everything() {
         dir.path()
             .join(format!("{DURABLE_STORE_FILE}.v{PUBLISHED_VERSION}")),
         &Schema::new(),
-        &Ladder::new(PUBLISHED_VERSION, &[]),
+        &Ladder::new(PUBLISHED_VERSION, PUBLISHED_VERSION, &[]),
     )
     .unwrap();
     assert_eq!(copy.version().unwrap(), PUBLISHED_VERSION);

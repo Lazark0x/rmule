@@ -52,11 +52,6 @@ pub(crate) fn schema() -> Schema {
     Schema::new().indexed(&SPARES)
 }
 
-/// Store version 4 → 5, the table's half: it appears, empty.
-pub(super) fn create(txn: &WriteTransaction) -> Result<(), StoreError> {
-    SPARES.create(txn)
-}
-
 /// Record `spare`, replacing whatever was recorded at its path. A path that is
 /// not valid UTF-8 is not recorded; the file is hashed again at each start.
 pub(super) fn record(txn: &WriteTransaction, spare: &SpareCopy) -> Result<(), StoreError> {
@@ -114,12 +109,11 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use rmule_primitives::FileHash;
-    use rmule_store::{Ladder, Schema};
 
     use crate::directory_scan::{FileIdentity, FileStamp, SpareCopy};
     use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
-    use crate::store::registry::{DurableSharedFileRegistry, SHARED_FILES_V2, SharedFileV2};
-    use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
+    use crate::store::open_durable_store;
+    use crate::store::registry::DurableSharedFileRegistry;
 
     const CONTENT: FileHash = FileHash::from_bytes([7; FileHash::BYTE_LEN]);
 
@@ -230,43 +224,6 @@ mod tests {
             registry.identities().unwrap().get(&CONTENT),
             spare("/dl/copy.bin").identity.as_ref()
         );
-    }
-
-    #[test]
-    fn a_version_four_row_climbs_to_an_unknown_identity_and_no_spare() {
-        let dir = tempfile::tempdir().unwrap();
-        {
-            let v4 = DurableStore::open(
-                dir.path().join(DURABLE_STORE_FILE),
-                &Schema::new().indexed(&SHARED_FILES_V2),
-                &Ladder::new(4, &[]),
-            )
-            .unwrap();
-            v4.write(|txn| {
-                SHARED_FILES_V2.insert(
-                    txn,
-                    CONTENT.as_bytes(),
-                    &SharedFileV2 {
-                        file_size: 9,
-                        path: "/dl/film.bin".into(),
-                        name: "film.bin".into(),
-                        source: ShareSource::Explicit,
-                        modified: Some(at(1)),
-                    },
-                )
-            })
-            .unwrap();
-        }
-        let registry = open(dir.path());
-        let rows = registry.list().unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            rows[0].modified,
-            Some(at(1)),
-            "the stamp survives the climb"
-        );
-        assert!(registry.identities().unwrap().is_empty());
-        assert!(registry.spares().unwrap().is_empty());
     }
 
     #[test]

@@ -20,7 +20,10 @@ fn a_table_written_under_one_record_version_refuses_the_next() {
         drop(store);
 
         let error = backend
-            .open(&Schema::new().indexed(&DOWNLOADS_V2), &Ladder::new(1, &[]))
+            .open(
+                &Schema::new().indexed(&DOWNLOADS_V2),
+                &Ladder::new(1, 1, &[]),
+            )
             .expect_err("v2 schema must be refused on a v1 table");
         match error {
             StoreError::TableTypeMismatch {

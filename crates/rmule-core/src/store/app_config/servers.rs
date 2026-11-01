@@ -29,8 +29,8 @@ use super::DurableAppConfig;
 mod rung;
 
 #[cfg(test)]
-pub(super) use rung::{add_v1, schema_v1, schema_v13};
-pub(crate) use rung::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13, grow_from_v14};
+pub(super) use rung::{add_v13, schema_v13};
+pub(crate) use rung::{grow_from_v13, grow_from_v14};
 
 /// One managed-server row. The priority is stored as aMule's raw
 /// `ST_PREFERENCE` word — the same mapping the wire uses, which

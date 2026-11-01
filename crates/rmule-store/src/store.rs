@@ -12,7 +12,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use redb::backends::InMemoryBackend;
-use redb::{Database, Durability, ReadableDatabase, RepairSession, StorageBackend};
+use redb::{
+    Database, Durability, ReadOnlyDatabase, ReadableDatabase, RepairSession, StorageBackend,
+};
 
 use crate::ladder::{read_version, stamp, stamp_home};
 use crate::sequence::SEQUENCES;
@@ -56,6 +58,7 @@ impl Store {
     ///
     /// # Errors
     /// [`StoreError::FutureVersion`] when the file is newer than `ladder`,
+    /// [`StoreError::TooOld`] when it is under the ladder's floor,
     /// [`StoreError::MissingStep`] when a rung has no step,
     /// [`StoreError::NotCopied`] when a climb could not keep its copy,
     /// [`StoreError::TableTypeMismatch`] when a schema table exists under
@@ -81,6 +84,7 @@ impl Store {
         watch: &OpeningWatch,
     ) -> Result<Self, StoreError> {
         let path = path.as_ref();
+        refuse_unwritten(path, ladder)?;
         let mut store = Self::on_file(path, watch)?;
         let found = store.stamp_when_new(ladder)?;
         if let Some(found) = found.filter(|found| *found < ladder.current) {
@@ -154,8 +158,8 @@ impl Store {
     /// The version the file was found at, `None` on a new one. The stamp is
     /// read on a write transaction, which creates the meta table when the
     /// file is new; a file nobody has stamped is this version by definition,
-    /// and says so before anything else is written. A newer file is refused
-    /// here, before anything is copied.
+    /// and says so before anything else is written. A file this build cannot
+    /// open is refused here, before anything is copied.
     fn stamp_when_new(&self, ladder: &Ladder) -> Result<Option<u32>, StoreError> {
         let found = self.write(|txn| {
             let found = read_version(txn)?;
@@ -164,11 +168,8 @@ impl Store {
             }
             Ok::<_, StoreError>(found)
         })?;
-        if let Some(found) = found.filter(|found| *found > ladder.current) {
-            return Err(StoreError::FutureVersion {
-                found,
-                current: ladder.current,
-            });
+        if let Some(found) = found {
+            ladder.admit(found)?;
         }
         Ok(found)
     }
@@ -288,6 +289,23 @@ impl Store {
     pub fn version(&self) -> Result<u32, StoreError> {
         read_version(&self.begin_read()?)?.ok_or(StoreError::Unversioned)
     }
+}
+
+/// Refuse a file this build cannot open on a handle that cannot write: the
+/// writing handle marks the file as it opens, so a refusal behind it would
+/// hand the build that can read the file a different one. Whatever this look
+/// cannot judge is the writing open's to answer: a file absent, held or no
+/// store at all, and a file its last run left open, which only the engine's
+/// repair can read. That repair keeps every row, and the stamp refuses the
+/// file behind it.
+fn refuse_unwritten(path: &Path, ladder: &Ladder) -> Result<(), StoreError> {
+    let Ok(db) = ReadOnlyDatabase::open(path) else {
+        return Ok(());
+    };
+    if let Ok(Some(found)) = read_version(&db.begin_read()?) {
+        ladder.admit(found)?;
+    }
+    Ok(())
 }
 
 /// The name a climb from `found` keeps the file under: `<file>.v<found>`.

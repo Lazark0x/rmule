@@ -24,9 +24,9 @@ pub fn open_refusal(refusal: rmule_core::OpenRefusal, data_dir: &Path) -> String
             "{file} is store version {found}, and this build reads up to {current}: \
              run the newer rmule, and keep the file"
         ),
-        OpenRefusal::TooOld { found } => format!(
-            "{file} is store version {found}, older than this build can upgrade: \
-             keep the file and open it with an older rmule first"
+        OpenRefusal::TooOld { found, floor } => format!(
+            "{file} is store version {found}, and this build upgrades only from {floor}: \
+             keep the file and open it once with rmule 0.2.0, which upgrades it"
         ),
         OpenRefusal::Damaged => format!(
             "{file} is damaged: keep it, and any rmule.redb.v file beside it, since they hold \

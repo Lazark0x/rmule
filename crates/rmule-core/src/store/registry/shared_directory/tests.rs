@@ -1,17 +1,16 @@
 //! The list and the set-aside rows against a real store: the add and the
-//! remove as the operator's two steps, and the climb from version 10.
+//! remove as the operator's two steps.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::{FileHash, PartHash};
-use rmule_store::Ladder;
 
 use super::SetAsideRuling;
 use crate::directory_scan::{FileIdentity, FileStamp, SpareCopy};
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
+use crate::store::open_durable_store;
 use crate::store::registry::DurableSharedFileRegistry;
-use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
 
 const FILM: FileHash = FileHash::from_bytes([
     0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F,
@@ -186,23 +185,4 @@ fn a_remove_keeps_the_rows_under_a_directory_it_covered() {
         .unwrap();
     assert_eq!(rulings, Some(Vec::new()));
     assert!(registry.get(FILM).unwrap().is_some());
-}
-
-#[test]
-fn upgrade_from_a_version_ten_store_gives_an_empty_list_and_keeps_every_row() {
-    let dir = tempfile::tempdir().unwrap();
-    {
-        let v10 = DurableStore::open(
-            dir.path().join(DURABLE_STORE_FILE),
-            &crate::store::registry::schema_v10(),
-            &Ladder::new(10, &[]),
-        )
-        .unwrap();
-        v10.write(|txn| crate::store::registry::share_v10(txn, &row(FILM, "/dl/film.mkv")))
-            .unwrap();
-    }
-    let registry = open(dir.path());
-    assert!(registry.shared_directories().unwrap().is_empty());
-    assert!(registry.set_asides().unwrap().is_empty());
-    assert_eq!(registry.list().unwrap(), [row(FILM, "/dl/film.mkv")]);
 }

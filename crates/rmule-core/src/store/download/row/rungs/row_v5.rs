@@ -5,15 +5,14 @@
 
 use std::path::Path;
 
-use rmule_primitives::{Ed2kText, FileHash, ServerEndpoint};
+use rmule_primitives::{Ed2kText, FileHash, PartHash, ServerEndpoint};
 use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
-use super::StorageIntegrityFaultV4;
 use super::row_enums::{DownloadLifecycleV5, DownloadMetadataOriginV1, VerificationAuthorityV1};
 use crate::store::download::row::{DOWNLOADS, DownloadRow, HomePath, PartPathSlot};
-use crate::{DownloadFailure, StorageIntegrityFault};
+use crate::{DownloadFailure, PartFault, StorageIntegrityFault};
 
 /// The row as record version 5 wrote it, before it kept the Download Name.
 /// Its part path is the slot's stored text. Compiled only for the rungs.
@@ -42,7 +41,7 @@ impl Record for DownloadRowV5 {
 pub(super) static DOWNLOADS_V5: Indexed<u64, DownloadRowV5> = Indexed::new("download", &[]);
 
 /// [`DownloadFailure`] as record version 5 encoded it, by declaration order:
-/// version 4's codes with the completion move's appended.
+/// the older codes with the completion move's appended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum DownloadFailureV5 {
     NoUsableSources,
@@ -98,6 +97,54 @@ impl DownloadFailureV5 {
             Self::CompletionCopyFailed { os_code } => {
                 DownloadFailure::CompletionCopyFailed { os_code }
             }
+        }
+    }
+}
+
+/// [`StorageIntegrityFault`](crate::StorageIntegrityFault) as store versions 13 and 14 encoded it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum StorageIntegrityFaultV4 {
+    PartFileMissing,
+    PartFileUnreadable { os_code: Option<i32> },
+    NoPartHolds { recorded: u32, first: PartFaultV3 },
+}
+
+/// [`PartFault`] as store versions 13 and 14 encoded it, by declaration order.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum PartFaultV3 {
+    Short {
+        part_index: u32,
+        expected_end: u64,
+        found_len: u64,
+    },
+    HashMismatch {
+        part_index: u32,
+        expected: PartHash,
+        found: PartHash,
+    },
+}
+
+impl PartFaultV3 {
+    const fn grown(self) -> PartFault {
+        match self {
+            Self::Short {
+                part_index,
+                expected_end,
+                found_len,
+            } => PartFault::Short {
+                part_index,
+                expected_end,
+                found_len,
+            },
+            Self::HashMismatch {
+                part_index,
+                expected,
+                found,
+            } => PartFault::HashMismatch {
+                part_index,
+                expected,
+                found,
+            },
         }
     }
 }

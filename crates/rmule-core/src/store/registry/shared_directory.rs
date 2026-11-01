@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use rmule_primitives::{FileHash, PartHash};
-use rmule_store::{Indexed, Readable, Record, StoreError, UpgradeStep, WriteTransaction};
+use rmule_store::{Indexed, Readable, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use super::{DurableSharedFileRegistry, PART_HASHES, SHARED_FILES, part_hashes_of};
@@ -59,18 +59,6 @@ pub(super) fn schema() -> Schema {
         .indexed(&SHARED_DIRECTORIES)
         .indexed(&SET_ASIDE)
 }
-
-/// Store version 10 → 11 (ADR-0101, "Shared Directories"): the list and the
-/// set-aside rows appear, empty. A version-10 build refuses the store: it
-/// would share a path without deleting that path's set-aside row, and it
-/// would not scan the listed directories.
-pub(crate) const UPGRADE_FROM_V10: UpgradeStep = UpgradeStep {
-    from: 10,
-    run: |txn| {
-        SHARED_DIRECTORIES.create(txn)?;
-        SET_ASIDE.create(txn)
-    },
-};
 
 /// A share at `path` takes the set-aside row there: the path holds a row now.
 pub(super) fn forget_set_aside_at(txn: &WriteTransaction, path: &Path) -> Result<(), StoreError> {

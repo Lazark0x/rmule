@@ -15,12 +15,9 @@ mod rungs;
 
 pub(super) use crate::store::home_path::HomePath;
 pub(super) use part_path::PartPathSlot;
-pub(crate) use rungs::{
-    UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, UPGRADE_FROM_V16, grow_from_v8,
-    grow_from_v14,
-};
+pub(crate) use rungs::{UPGRADE_FROM_V16, grow_from_v14};
 #[cfg(test)]
-pub(crate) use rungs::{schema_v1, schema_v5_rows, seed_v1, seed_v5};
+pub(crate) use rungs::{schema_v5_rows, seed_running_v5};
 
 use rmule_primitives::{
     AichRootHash, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash, ServerEndpoint, UserHash,

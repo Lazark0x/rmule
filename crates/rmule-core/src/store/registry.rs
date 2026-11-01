@@ -15,10 +15,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmule_primitives::{FileHash, PartHash};
-use rmule_store::{
-    Children, Indexed, Packed, Readable, Record, Store, StoreError, TableDefinition, UpgradeStep,
-    WriteTransaction,
-};
+use rmule_store::{Children, Indexed, Readable, Record, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -30,7 +27,7 @@ use crate::store::spare_copy;
 
 mod shared_directory;
 
-pub(crate) use shared_directory::{SetAsideRuling, UPGRADE_FROM_V10};
+pub(crate) use shared_directory::SetAsideRuling;
 
 /// A shared file's key: its ED2K File Hash's bytes. Content identity is the
 /// seam's key (ADR-0031), so sharing the same file twice upserts one row.
@@ -58,101 +55,6 @@ struct SharedFile {
 impl Record for SharedFile {
     const NAME: &'static str = "shared_file";
     const VERSION: u32 = 3;
-}
-
-/// The row as store versions 2 to 4 wrote it, before it carried the file's
-/// identity. Compiled only for the upgrades that pass through it.
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct SharedFileV2 {
-    pub(super) file_size: u64,
-    pub(super) path: PathBuf,
-    pub(super) name: String,
-    pub(super) source: ShareSource,
-    pub(super) modified: Option<SystemTime>,
-}
-
-impl Record for SharedFileV2 {
-    const NAME: &'static str = "shared_file";
-    const VERSION: u32 = 2;
-}
-
-pub(super) static SHARED_FILES_V2: Indexed<FileKey, SharedFileV2> =
-    Indexed::new("shared_file", &[]);
-
-/// The row as store version 1 wrote it, before the Hash Trust Rule needed the
-/// modification time (ADR-0102). Compiled only for [`UPGRADE_FROM_V1`].
-#[derive(Debug, Serialize, Deserialize)]
-struct SharedFileV1 {
-    file_size: u64,
-    path: PathBuf,
-    name: String,
-    source: ShareSource,
-}
-
-impl Record for SharedFileV1 {
-    const NAME: &'static str = "shared_file";
-    const VERSION: u32 = 1;
-}
-
-static SHARED_FILES_V1: Indexed<FileKey, SharedFileV1> = Indexed::new("shared_file", &[]);
-
-/// Store version 1 → 2: every shared row gains an unknown modification time.
-/// `None` never satisfies the Hash Trust Rule, so the first scan re-hashes
-/// such a file once and stamps it (ADR-0102).
-pub(crate) const UPGRADE_FROM_V1: UpgradeStep = UpgradeStep {
-    from: 1,
-    run: stamp_unknown_modified_time,
-};
-
-fn stamp_unknown_modified_time(txn: &WriteTransaction) -> Result<(), StoreError> {
-    let old = SHARED_FILES_V1.iter(txn)?;
-    // The old primary goes by its definition; the wrapper never exposes it.
-    txn.delete_table(TableDefinition::<FileKey, Packed<SharedFileV1>>::new(
-        "shared_file",
-    ))?;
-    // Written in version 2's shape, so the rung from version 4 finds what it
-    // reads whichever version a store climbs from.
-    SHARED_FILES_V2.create(txn)?;
-    for (key, row) in old {
-        let grown = SharedFileV2 {
-            file_size: row.file_size,
-            path: row.path,
-            name: row.name,
-            source: row.source,
-            modified: None,
-        };
-        SHARED_FILES_V2.insert(txn, &key, &grown)?;
-    }
-    Ok(())
-}
-
-/// Store version 4 → 5 (ADR-0104): every shared
-/// row gains an unknown identity, which carries nothing until the scan reads
-/// one, and the spare-copy table appears, empty. A version-4 build refuses the
-/// store: its shares would not delete a spare recorded at the shared path.
-pub(crate) const UPGRADE_FROM_V4: UpgradeStep = UpgradeStep {
-    from: 4,
-    run: identify_nothing_and_record_no_spare,
-};
-
-fn identify_nothing_and_record_no_spare(txn: &WriteTransaction) -> Result<(), StoreError> {
-    let old = SHARED_FILES_V2.iter(txn)?;
-    txn.delete_table(TableDefinition::<FileKey, Packed<SharedFileV2>>::new(
-        "shared_file",
-    ))?;
-    SHARED_FILES.create(txn)?;
-    for (key, row) in old {
-        let grown = SharedFile {
-            file_size: row.file_size,
-            path: row.path,
-            name: row.name,
-            source: row.source,
-            modified: row.modified,
-            identity: None,
-        };
-        SHARED_FILES.insert(txn, &key, &grown)?;
-    }
-    spare_copy::create(txn)
 }
 
 /// The operator's answer to the disclosure guard, one per directory ever
@@ -202,100 +104,6 @@ pub(crate) fn schema() -> Schema {
         .children(&PART_HASHES)
         .indexed(&DIRECTORY_ANSWERS)
         .merge(shared_directory::schema())
-}
-
-/// The registry's tables as store version 1 declared them, for a test that
-/// builds an older store.
-#[cfg(test)]
-pub(crate) fn schema_v1() -> Schema {
-    Schema::new()
-        .indexed(&SHARED_FILES_V1)
-        .children(&PART_HASHES)
-}
-
-/// Share `entry` as a store of version 1 would have, on `txn`.
-///
-/// # Errors
-/// The store's.
-#[cfg(test)]
-pub(crate) fn share_v1(txn: &WriteTransaction, entry: &SharedFileEntry) -> Result<(), StoreError> {
-    let key = *entry.file_hash.as_bytes();
-    SHARED_FILES_V1.put(
-        txn,
-        &key,
-        &SharedFileV1 {
-            file_size: entry.file_size,
-            path: entry.path.clone(),
-            name: entry.name.clone(),
-            source: entry.source,
-        },
-    )?;
-    PART_HASHES.replace(
-        txn,
-        key,
-        entry.part_hashes.iter().map(SharedFilePartHash::of),
-    )
-}
-
-/// The registry's tables as store versions 2 to 4 declared them, for a test
-/// that builds an older store.
-#[cfg(test)]
-pub(crate) fn schema_v2() -> Schema {
-    Schema::new()
-        .indexed(&SHARED_FILES_V2)
-        .children(&PART_HASHES)
-        .indexed(&DIRECTORY_ANSWERS)
-}
-
-/// Share `entry` as a store of versions 2 to 4 would have, on `txn`.
-///
-/// # Errors
-/// The store's.
-#[cfg(test)]
-pub(crate) fn share_v2(txn: &WriteTransaction, entry: &SharedFileEntry) -> Result<(), StoreError> {
-    let key = *entry.file_hash.as_bytes();
-    SHARED_FILES_V2.put(
-        txn,
-        &key,
-        &SharedFileV2 {
-            file_size: entry.file_size,
-            path: entry.path.clone(),
-            name: entry.name.clone(),
-            source: entry.source,
-            modified: entry.modified,
-        },
-    )?;
-    PART_HASHES.replace(
-        txn,
-        key,
-        entry.part_hashes.iter().map(SharedFilePartHash::of),
-    )
-}
-
-/// The registry's tables as store version 10 declared them, before the
-/// Shared Directory List, for a test that builds an older store.
-#[cfg(test)]
-pub(crate) fn schema_v10() -> Schema {
-    Schema::new()
-        .indexed(&SHARED_FILES)
-        .children(&PART_HASHES)
-        .indexed(&DIRECTORY_ANSWERS)
-        .merge(spare_copy::schema())
-}
-
-/// Share `entry` as a store of version 10 would have, on `txn`.
-///
-/// # Errors
-/// The store's.
-#[cfg(test)]
-pub(crate) fn share_v10(txn: &WriteTransaction, entry: &SharedFileEntry) -> Result<(), StoreError> {
-    let key = *entry.file_hash.as_bytes();
-    SHARED_FILES.put(txn, &key, &SharedFile::of(entry))?;
-    PART_HASHES.replace(
-        txn,
-        key,
-        entry.part_hashes.iter().map(SharedFilePartHash::of),
-    )
 }
 
 /// The durable [`SharedFileRegistry`] (ADR-0083): the share set in the
@@ -642,6 +450,3 @@ mod pinned {
         );
     }
 }
-
-#[cfg(test)]
-mod tests;

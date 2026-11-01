@@ -11,7 +11,7 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, SourceCryptOptions, UserHash};
-use rmule_store::{Children, Record, StoreError, UpgradeStep, WriteTransaction};
+use rmule_store::{Children, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use super::{DurableDownloadRepository, read_row};
@@ -40,14 +40,6 @@ impl Record for SourceSeedRow {
 
 pub(super) static SOURCE_SEEDS: Children<u64, SourceSeedRow> =
     Children::new("download.source_seed");
-
-/// Store version 12 → 13: the seeds table appears, empty. A version-12 build
-/// must refuse the file afterwards: a cancel there would leave a download's
-/// seeds behind.
-pub(crate) const UPGRADE_FROM_V12: UpgradeStep = UpgradeStep {
-    from: 12,
-    run: |txn| SOURCE_SEEDS.table().create(txn),
-};
 
 /// Drop `key`'s seeds — the cascade a row's completion, cancel or clear owes.
 pub(super) fn forget(txn: &WriteTransaction, key: u64) -> Result<(), StoreError> {

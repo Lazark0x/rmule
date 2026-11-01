@@ -3,16 +3,20 @@
 //! Download Name.
 
 use rmule_primitives::{Ed2kLink, Ed2kText, FileHash};
-use rmule_store::Ladder;
+use rmule_store::{Ladder, Schema};
 
-use super::super::row_enums::{DownloadLifecycleV5, DownloadMetadataOriginV1};
-use super::super::{PartFaultV3, StorageIntegrityFaultV4, declared_v5};
-use super::{DownloadFailureV5, DownloadRowV5};
+use super::super::declared_v5;
+use super::super::row_enums::{
+    DownloadLifecycleV5, DownloadMetadataOriginV1, VerificationAuthorityV1,
+};
+use super::{DOWNLOADS_V5, DownloadFailureV5, DownloadRowV5, PartFaultV3, StorageIntegrityFaultV4};
 use crate::storage::DownloadRepository;
 use crate::store::download::DurableDownloadRepository;
 use crate::store::download::row::tests::{HELD_ROW_V5, RELEASED_ROW_V5, hex};
 use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
-use crate::{DownloadId, DownloadLifecycle, DownloadPaths};
+use crate::{
+    DownloadFailure, DownloadId, DownloadLifecycle, DownloadPaths, PartFault, StorageIntegrityFault,
+};
 
 fn row_v5(part_path: &str) -> DownloadRowV5 {
     let file = rmule_primitives::Ed2kFileLink::new(
@@ -134,7 +138,7 @@ fn a_version_fourteen_row_climbs_with_the_name_it_was_placed_under() {
         let v14 = DurableStore::open(
             dir.path().join(DURABLE_STORE_FILE),
             &declared_v5::schema_v5_rows(),
-            &Ladder::new(14, &[]),
+            &Ladder::new(14, 14, &[]),
         )
         .unwrap();
         v14.write(|txn| {
@@ -163,4 +167,79 @@ fn a_version_fourteen_row_climbs_with_the_name_it_was_placed_under() {
         2,
         "both rows still hold their part files"
     );
+}
+
+/// A row failed with a part fault climbs to the live reason it stood for.
+#[test]
+fn a_version_fourteen_part_fault_climbs_to_the_live_fault() {
+    let (expected, found) = ([0x11; 16], [0x22; 16]);
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let v14 = DurableStore::open(
+            dir.path().join(DURABLE_STORE_FILE),
+            &Schema::new().indexed(&DOWNLOADS_V5),
+            &Ladder::new(14, 14, &[]),
+        )
+        .unwrap();
+        let mut row = row_v5("/dl/a.bin.part");
+        row.lifecycle = DownloadLifecycleV5::Failed;
+        row.failure = Some(DownloadFailureV5::StorageIntegrityFailed(
+            StorageIntegrityFaultV4::NoPartHolds {
+                recorded: 1,
+                first: PartFaultV3::HashMismatch {
+                    part_index: 1,
+                    expected: rmule_primitives::PartHash::from_bytes(expected),
+                    found: rmule_primitives::PartHash::from_bytes(found),
+                },
+            },
+        ));
+        v14.write(|txn| DOWNLOADS_V5.insert(txn, &3, &row)).unwrap();
+    }
+    let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
+    assert_eq!(
+        repo.load_download(DownloadId::from_u64(3))
+            .unwrap()
+            .failure(),
+        Some(&DownloadFailure::StorageIntegrityFailed(
+            StorageIntegrityFault::NoPartHolds {
+                recorded: 1,
+                first: PartFault::HashMismatch {
+                    part_index: 1,
+                    expected: rmule_primitives::PartHash::from_bytes(expected),
+                    found: rmule_primitives::PartHash::from_bytes(found),
+                },
+            }
+        ))
+    );
+}
+
+/// The authority and origin of a version-5 row are read by variant position:
+/// every variant of each frozen copy encodes to the byte those stores hold.
+#[test]
+fn every_frozen_authority_and_origin_encodes_as_written() {
+    let authorities = [
+        (Some(VerificationAuthorityV1::LinkPartHashSet), vec![1, 0]),
+        (Some(VerificationAuthorityV1::PeerHashSet), vec![1, 1]),
+        (Some(VerificationAuthorityV1::FileHashOnly), vec![1, 2]),
+        (None, vec![0]),
+    ];
+    for (authority, encoded) in authorities {
+        assert_eq!(postcard::to_allocvec(&authority).unwrap(), encoded);
+        assert_eq!(
+            postcard::from_bytes::<Option<VerificationAuthorityV1>>(&encoded).unwrap(),
+            authority
+        );
+    }
+    let origins = [
+        (DownloadMetadataOriginV1::Link, 0),
+        (DownloadMetadataOriginV1::RecoveredLink, 1),
+        (DownloadMetadataOriginV1::Unknown, 2),
+    ];
+    for (origin, byte) in origins {
+        assert_eq!(postcard::to_allocvec(&origin).unwrap(), [byte]);
+        assert_eq!(
+            postcard::from_bytes::<DownloadMetadataOriginV1>(&[byte]).unwrap(),
+            origin
+        );
+    }
 }

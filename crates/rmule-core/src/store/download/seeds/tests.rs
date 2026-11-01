@@ -5,14 +5,10 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::{CryptStance, Ipv4Endpoint, PeerEndpoint, UserHash};
-use rmule_store::Ladder;
 
 use super::*;
 use crate::storage::DownloadRepository;
-use crate::store::{
-    DURABLE_STORE_FILE, DurableStore, durable_schema_v12, open_durable_store,
-    open_durable_store_in_memory,
-};
+use crate::store::open_durable_store_in_memory;
 use crate::{DownloadLifecycle, DownloadPaths};
 
 fn seed(last: u8, rank: SeedRank) -> SourceSeed {
@@ -114,35 +110,6 @@ fn completion_cancel_and_clear_each_leave_no_seeds_and_refuse_later_writes() {
     repo.set_lifecycle(paused, DownloadLifecycle::Paused)
         .unwrap();
     assert_eq!(repo.source_seeds(paused).unwrap().len(), 1);
-}
-
-#[test]
-fn upgrade_from_a_version_twelve_store_gives_no_seeds_and_keeps_every_download() {
-    let dir = tempfile::tempdir().unwrap();
-    let id = {
-        let v12 = DurableStore::open(
-            dir.path().join(DURABLE_STORE_FILE),
-            &durable_schema_v12(),
-            &Ladder::new(12, &[]),
-        )
-        .unwrap();
-        let file = rmule_testkit::file_link("carried.bin", b"carried.bin");
-        let paths = DownloadPaths::from_final_path(dir.path().join("carried.bin"));
-        let key = v12
-            .write(|txn| crate::store::download::seed_v5(txn, &file, &paths))
-            .unwrap();
-        DownloadId::from_u64(key)
-    };
-    let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
-    assert_eq!(
-        repo.load_download(id).unwrap().lifecycle(),
-        DownloadLifecycle::Queued
-    );
-    assert!(repo.source_seeds(id).unwrap().is_empty());
-    assert!(
-        repo.write_source_seeds(id, &[seed(6, SeedRank::Received)], SystemTime::now())
-            .unwrap()
-    );
 }
 
 #[test]
