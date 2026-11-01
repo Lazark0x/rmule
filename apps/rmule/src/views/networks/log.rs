@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_log_line_wraps_under_the_age_gutter_instead_of_being_cut() {
+    fn a_long_log_line_wraps_under_the_gutter_instead_of_being_cut() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
