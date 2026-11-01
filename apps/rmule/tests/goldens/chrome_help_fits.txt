@@ -37,4 +37,4 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────────────────────────┘
+└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help───────────────────┘

@@ -48,6 +48,8 @@ use crate::wrap::{
 /// a four-cell word (ADR-0080); Name is greedy and wins it back from any
 /// slack.
 const SERVER_COLS: [usize; 11] = [7, 15, 5, 4, 5, 5, 5, 4, 4, 4, 6];
+/// The narrowest Description worth a row's height.
+const SERVER_DESC_MIN: usize = 16;
 /// The greedy pair's indices in [`SERVER_COLS`].
 const SERVER_NAME_COL: usize = 0;
 const SERVER_DESC_COL: usize = 3;
@@ -89,6 +91,22 @@ fn server_widths(pane_width: usize, floors: &[usize], headers: &[usize]) -> Vec<
         .min(slack);
     widths[SERVER_NAME_COL] -= to_description;
     widths[SERVER_DESC_COL] += to_description;
+    // A description in a sliver wraps a row to four lines and pushes the rest
+    // of a first-run list off the screen. It gives way to Name instead, and
+    // the selected row's Off-screen line still reads it.
+    if widths[SERVER_DESC_COL] < SERVER_DESC_MIN {
+        let (mut floors, mut headers) = (floors.to_vec(), headers.to_vec());
+        floors[SERVER_DESC_COL] = 0;
+        headers[SERVER_DESC_COL] = 0;
+        let table = TableColumns {
+            floors: &floors,
+            headers: &headers,
+            ..table
+        };
+        widths = greedy_widths(total, &table, 1);
+        widths[SERVER_NAME_COL] += widths[SERVER_DESC_COL];
+        widths[SERVER_DESC_COL] = 0;
+    }
     widths
 }
 

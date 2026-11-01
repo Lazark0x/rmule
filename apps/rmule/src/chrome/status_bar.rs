@@ -33,8 +33,8 @@ pub(super) struct StatusBar {
 /// # No-truncation adaptation
 ///
 /// The bar sits on a single border row, so it cannot simply grow. Instead the
-/// segments are *priority-ordered* — info (1) > connection (4) > rates (3) >
-/// users (2) — and whole low-priority segments are dropped until the line
+/// segments are *priority-ordered* — info (1) > the way to help > connection
+/// (4) > rates (3) > users (2) — and whole low-priority segments are dropped until the line
 /// fits. Dropping a whole segment is visible absence (the same discipline the
 /// menus use); clipping a string is a silent lie. If the info text alone still
 /// overflows, it leaves the border entirely and wraps onto the rows above it
@@ -157,8 +157,13 @@ pub(super) fn render(
 
     let budget = usize::from(width.saturating_sub(2));
     // Rendered left→right after the info label, dropped front-first (users,
-    // then rates, then the connection dots) as the line runs out.
-    let tail = [users, rates, connection];
+    // then rates, then the connection dots, the way to help last) as the line
+    // runs out.
+    let help = vec![
+        Span::styled(crate::words::app::HELP_KEY, Style::new().fg(theme.accent)),
+        Span::styled(crate::words::app::HELP_HINT, theme.dim_text()),
+    ];
+    let tail = [users, rates, connection, help];
     let tail_w = tail.each_ref().map(|segment| spans_width(segment));
     let info_w = display_width(&info_text) + 1; // the leading space
 
@@ -413,8 +418,8 @@ mod tests {
             .to_string();
         assert_eq!(
             at40.trim(),
-            "download completed",
-            "info is last to go: {at40:?}"
+            "download completed │ ? help",
+            "info and the way to help are last to go: {at40:?}"
         );
 
         // …unless the info cannot fit at all — then it wraps above the border

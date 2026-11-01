@@ -21,4 +21,4 @@
 ││ List URLs    none set  server.met addresses, space between  (on restart)   ││
 ││                                                                           ▼││
 │└──────────────────────────────────────────────────────────────────── 1 / 21 ┘│
-└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘
+└ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘

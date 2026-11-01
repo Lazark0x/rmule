@@ -21,4 +21,4 @@
 │ x               Settings: stop sharing the selected directory                │
 │ c               Networks: connect to the selected server, or disconnect from▼│
 └─────────────────────────────────────────────────────────────── j/k ─ 20 / 29 ┘
-└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off ────────┘
+└ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘

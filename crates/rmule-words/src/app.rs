@@ -15,6 +15,12 @@ use super::os::refusal_words;
 /// first step.
 pub const SHUTTING_DOWN: Sentence = Sentence::fixed("Shutting down…");
 
+/// The status bar's key to the help overlay.
+pub const HELP_KEY: &str = "?";
+
+/// Beside the status bar's [`HELP_KEY`].
+pub const HELP_HINT: &str = " help";
+
 /// The quit confirm's title.
 pub const QUIT_TITLE: &str = " Quit rmule? ";
 
