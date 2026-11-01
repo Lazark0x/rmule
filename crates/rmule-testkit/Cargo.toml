@@ -8,21 +8,28 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+# `runtime` is every fixture that stands up a core or a socket. The fuzz package
+# turns it off: a target needs only the session fixtures, and building core under
+# a sanitizer multiplies the job's first build.
+[features]
+default = ["runtime"]
+runtime = ["dep:rmule-core", "dep:rmule-net", "dep:tempfile", "dep:tokio", "dep:tracing-subscriber"]
+
 [dependencies]
 parking_lot.workspace = true
 ed2k.workspace = true
 # The compressed-part fixtures deflate their own payloads.
 flate2.workspace = true
-rmule-core = { path = "../rmule-core" }
+rmule-core = { path = "../rmule-core", optional = true }
 rmule-ed2k = { path = "../rmule-ed2k" }
 rmule-kad = { path = "../rmule-kad" }
-rmule-net = { path = "../rmule-net" }
+rmule-net = { path = "../rmule-net", optional = true }
 rmule-peer = { path = "../rmule-peer" }
 rmule-primitives = { path = "../rmule-primitives" }
-tempfile.workspace = true
-tokio.workspace = true
+tempfile = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 
 [lints]
 workspace = true

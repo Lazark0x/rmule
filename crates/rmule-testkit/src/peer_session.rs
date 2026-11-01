@@ -19,6 +19,16 @@ use rmule_primitives::{
     PacketProtocol, PartHash, PeerEndpoint, Tag, TagName, TagValue, UserHash,
 };
 
+/// A `ClientIdentity` for tests: `seed` fills the user hash, `name` the nick.
+pub fn test_identity(seed: u8, name: &str, tcp_port: u16) -> ClientIdentity {
+    ClientIdentity::new(
+        UserHash::from_bytes([seed; UserHash::BYTE_LEN]),
+        Ed2kText::from_utf8(name),
+        tcp_port,
+        60,
+    )
+}
+
 /// The peer this suite dials: `203.0.113.1:4662`, TEST-NET-3 and never routable.
 pub fn peer() -> PeerEndpoint {
     peer_at(1)

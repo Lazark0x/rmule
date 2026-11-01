@@ -2,6 +2,8 @@
 # own, outside the workspace, because cargo-fuzz builds with a nightly and its
 # own sanitizer flags. From the repository root, one bounded pass of a target:
 #   cargo +nightly fuzz run <target> -- -max_total_time=60
+# CI runs every target for a time box (`.github/workflows/fuzz.yml`, through
+# `scripts/fuzz-pass.sh`).
 [package]
 name = "rmule-fuzz"
 version = "0.0.0"
@@ -18,7 +20,7 @@ rmule-ed2k = { path = "../crates/rmule-ed2k" }
 rmule-kad = { path = "../crates/rmule-kad" }
 rmule-peer = { path = "../crates/rmule-peer" }
 rmule-primitives = { path = "../crates/rmule-primitives" }
-rmule-testkit = { path = "../crates/rmule-testkit" }
+rmule-testkit = { path = "../crates/rmule-testkit", default-features = false }
 
 [workspace]
 

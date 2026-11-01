@@ -36,8 +36,8 @@ split across the existing crates with no crate of its own:
 - **`rmule-peer` and `rmule-ed2k`** hold the two sans-I/O handshake state machines,
   `PeerObfuscation` and `ServerObfuscation`. Each owns its `Rc4` pair.
 - **`rmule-net`** holds `CryptStream<S, H: ObfuscationTransport>`: sniff byte 0, buffer,
-  drive `H` through the handshake, then apply `H`'s per-chunk transform. It never names
-  RC4 or a protocol, so it plugs into the `spawn<S: AsyncRead + AsyncWrite>` seam and the
+  drive `H` through the handshake, then apply the keyed stream the finished handshake hands
+  over, so an established link holds keys by type. It never names RC4 or a protocol, so it plugs into the `spawn<S: AsyncRead + AsyncWrite>` seam and the
   session above it sees only decrypted bytes. `PeerObfuscationTransport` and
   `ServerObfuscationTransport` adapt the two state machines to the trait and draw
   per-connection entropy (marker, random key, padding) from the OS CSPRNG, so the

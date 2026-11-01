@@ -32,8 +32,10 @@ is a free-text field the full level admits alone.
 state to reach: no task outlives a broken invariant, and no lock is ever seen poisoned. What
 stands behind that is the Durable Store: a restart resumes every download from its transaction
 and loses at most the credit minute (ADR-0083). The price is taken knowingly: a panic a peer
-could reach would end the node rather than one session. The fuzz targets guard that door, and a
-node that restarts is an honest failure where a node that limps is not.
+could reach would end the node rather than one session. The fuzz targets guard that door: the
+`Fuzz` workflow runs every target for a time box on a pull request that touches their code and for
+a longer one each night, over a kept corpus, and a crash fails the run. A node that restarts is an
+honest failure where a node that limps is not.
 
 ### Builds that unwind
 

@@ -66,6 +66,9 @@ that keeps the writer alive for the test's lifetime. One install per test, so
 a failing test's own trace is what gets printed.
 _Avoid_: logger, log setup
 
+**Runtime Fixtures**:
+Every fixture that stands up a core or a socket, behind the default `runtime` feature. Without it the crate is the session and wire fixtures alone, which is what the fuzz package builds, since core under a sanitizer multiplies the job's first build.
+
 ## Relationships
 
 - Every crate that needs a counterparty declares `rmule-testkit` under

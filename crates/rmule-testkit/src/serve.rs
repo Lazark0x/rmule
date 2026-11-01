@@ -46,20 +46,10 @@ impl PeerTransferService for RefusingPeerTransfer {
     }
 }
 
-/// A `ClientIdentity` for tests: `seed` fills the user hash, `name` the nick.
-pub fn test_identity(seed: u8, name: &str, tcp_port: u16) -> ClientIdentity {
-    ClientIdentity::new(
-        UserHash::from_bytes([seed; UserHash::BYTE_LEN]),
-        Ed2kText::from_utf8(name),
-        tcp_port,
-        60,
-    )
-}
-
 /// A `PeerHandshakeContext` for tests, High-ID, no connected server.
 pub fn test_handshake_ctx(seed: u8, name: &str) -> PeerHandshakeContext {
     PeerHandshakeContext {
-        identity: test_identity(seed, name, 4662),
+        identity: crate::test_identity(seed, name, 4662),
         client_id: ClientId::from_u32(0x0100_007F),
         ed2k_client_id: ClientId::from_u32(0x0100_007F),
         public_ip: None,
