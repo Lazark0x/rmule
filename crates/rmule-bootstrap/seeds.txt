@@ -1,0 +1,11 @@
+# The seed list a release carries: the root of trust of a cold start
+# (ADR-0120). Each release refreshes it from servers and Kad nodes seen to
+# answer. A list is never fetched into this file by a build.
+#
+# One entry per line, a blank line and anything after `#` ignored:
+#
+#   server <address>:<tcp port>
+#   kad <ipv4 address>:<udp port>
+#
+# An IPv6 address is written in brackets. An empty list is a legal build: it has
+# no root of trust, and a cold start says so.

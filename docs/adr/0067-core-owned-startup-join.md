@@ -33,9 +33,10 @@ bytes and the handoff join a live bench.
 start it runs, in order:
 
 1. **Load persisted state** — the managed server list from rmule's store.
-2. **First-run server.met fetch** (ADR-0065) — only when the list is empty, eD2k is
-   being joined, and the operator switch is on. A failed fetch is one-shot and
-   non-fatal: the joins still proceed and eD2k idles on an empty list. Then the
+2. **Seeds, then the first-run server.met fetch** (ADR-0120, ADR-0065) — when the list is
+   empty and eD2k is being joined the seeds are listed, and the fetch runs behind them
+   when the operator switch is on too. A failed fetch is one-shot and non-fatal: the
+   joins still proceed, eD2k on the seeds, or idle where there are none. Then the
    **server.met auto-update walk** (ADR-0065), only when its switch is on, over the
    list as the first run left it, as aMule's `CServerList::Init` runs `AutoUpdate`
    after loading the list (`ServerList.cpp:77-78`). A URL that fails is reported and
@@ -45,7 +46,8 @@ start it runs, in order:
    both apply, so one walk runs.
 3. **Kad seed resolution** (`acquire_kad_seeds`) — read the persisted `nodes.dat`
    the running node writes and merge its contacts straight into the routing table;
-   only if nothing seeded it, run the one-shot `nodes.dat` acquisition, gated by
+   only if nothing seeded it, take the configured seeds (ADR-0120) and run behind them the
+   one-shot `nodes.dat` acquisition, whose addresses dial and never merge, gated by
    `should_auto_fetch_nodes_dat` over `BootstrapConfig::auto_fetch_nodes_dat`, which
    defaults **off** (aMule's `UpdateNotesDat` is user-triggered only).
 4. **Parallel independent joins** — eD2k and Kad (`CoreCommand::EnableKad`), each
@@ -119,7 +121,8 @@ through the actor and the Kad leg itself:
   the list as the store holds it, and the operator's `auto_fetch_server_met` (Settings,
   *Fetch list*, default on). When it says fetch, the TUI sends
   `ServerListCommand::UpdateServerList` with the configured mirror: the same acquisition,
-  run by the list's one writer, and what Networks' `U` sends. It dials no server.
+  run by the list's one writer, and what Networks' `U` sends. It dials no server. The
+  seeds of its deployment go first, down the same lane, as `AddServer` commands.
 - **Kad** runs through `acquire_kad_seeds`, the same seed policy. Connecting is the
   operator's act (ADR-0095), and Kad follows it, as below.
 

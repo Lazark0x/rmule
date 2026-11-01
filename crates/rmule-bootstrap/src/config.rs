@@ -8,12 +8,14 @@
 
 use std::time::Duration;
 
+use crate::seeds::Seeds;
+
 /// aMule's default eD2k server-list URL
 /// ([`Preferences.cpp`](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/Preferences.cpp#L1249)).
-/// Plain `http` is aMule's own default (its wxHTTP client cannot do TLS); a
-/// [`ReqwestFetcher`](crate::ReqwestFetcher) transparently upgrades to `https`
-/// when an operator points `server_met_url` at a TLS mirror — same GET, same
-/// payload, hardened transport (ADR-0065, "Dependency").
+/// Plain `http` is aMule's own default (its wxHTTP client cannot do TLS). It
+/// stays until the mirror is seen to serve the file over `https`; what bounds
+/// the path until then is [`Seeds`] (ADR-0120). An operator can point
+/// `server_met_url` at a TLS mirror: same GET, same payload.
 pub const DEFAULT_SERVER_MET_URL: &str = "http://upd.emule-security.org/server.met";
 
 /// aMule's default Kad nodes.dat bootstrap URL (`Preferences.cpp`'s
@@ -116,6 +118,11 @@ pub struct BootstrapConfig {
     /// Consumed by
     /// [`should_auto_fetch_nodes_dat`](crate::should_auto_fetch_nodes_dat).
     pub auto_fetch_nodes_dat: bool,
+
+    /// The seeds a cold start begins from (ADR-0120) — **default none**, so a
+    /// default configuration names no public host. A deployment that means
+    /// to joins the networks sets [`Seeds::embedded`].
+    pub seeds: Seeds,
 }
 
 impl Default for BootstrapConfig {
@@ -131,6 +138,7 @@ impl Default for BootstrapConfig {
             nodes_dat_url: DEFAULT_NODES_DAT_URL.to_owned(),
             max_nodes_dat_bytes: DEFAULT_MAX_NODES_DAT_BYTES,
             auto_fetch_nodes_dat: false,
+            seeds: Seeds::default(),
         }
     }
 }

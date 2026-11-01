@@ -22,6 +22,10 @@
 //! reads eD2k as on. The fetch dials no server, and it is one-shot like
 //! amuled's: a failure waits for the operator.
 //!
+//! The seed servers the deployment carries go in ahead of it (ADR-0120), the
+//! same way, through the actor: a cold start's list is the seeds, and what the
+//! fetch gives lands beside them or, when it fails, not at all.
+//!
 //! The server.met auto-update walk (ADR-0065), when the operator turned it
 //! on, goes the same way as the `AutoUpdateServerList` command. Both share
 //! the actor's one update slot, so when a first run is due too its mirror
@@ -31,12 +35,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rmule_bootstrap::{
-    BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, should_auto_fetch_server_met,
+    BootstrapConfig, FetchError, Fetcher, ReqwestFetcher, Seeds, should_auto_fetch_server_met,
+    should_seed_server_list,
 };
 use rmule_core::{
     AppConfigStore, Core, CoreCommand, CoreConfig, CoreError, DurableAppConfig, KadEnableConfig,
-    MappingBackend, OpenRefusal, Opening, OpeningWatch, ServerListCommand, ServerListStore,
-    open_durable_store_watched,
+    ManagedServer, MappingBackend, OpenRefusal, Opening, OpeningWatch, ServerListCommand,
+    ServerListStore, open_durable_store_watched,
 };
 
 use crate::args::DataDir;
@@ -45,11 +50,12 @@ use crate::connect::AtStart;
 use crate::state::{AttachFailure, SessionConfig};
 
 /// What attaching hands core from past this process: the HTTP fetch the
-/// server-list update and the Kad seed acquisition share, the backends port
-/// mapping talks to the router through, and the operator's home directory the
-/// share guards refuse. Given rather than built inside, because talking to a
-/// mirror or a router, and whose machine this is, are deployment facts: the
-/// app takes [`Live`], a test a canned fetch, no backends and a scratch home.
+/// server-list update and the Kad seed acquisition share, the seeds a cold
+/// start begins from, the backends port mapping talks to the router through,
+/// and the operator's home directory the share guards refuse. Given rather than
+/// built inside, because talking to a mirror or a router, naming public hosts,
+/// and whose machine this is, are deployment facts: the app takes [`Live`], a
+/// test a canned fetch, no public seed, no backends and a scratch home.
 pub trait Deployment {
     /// The fetch this deployment makes.
     type Fetcher: Fetcher + Clone + Send + Sync + 'static;
@@ -61,6 +67,9 @@ pub trait Deployment {
     /// When the HTTP client cannot be built.
     fn fetcher(&self, bootstrap: &BootstrapConfig) -> Result<Self::Fetcher, FetchError>;
 
+    /// The seeds a cold start begins from (ADR-0120).
+    fn seeds(&self) -> Seeds;
+
     /// The Mapping Backends (ADR-0086), keyed by the install's PCP nonce
     /// secret. Empty maps nothing.
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>>;
@@ -70,8 +79,8 @@ pub trait Deployment {
     fn home(&self) -> Option<std::path::PathBuf>;
 }
 
-/// The shipped app's deployment: `reqwest` for the mirrors, and PCP, NAT-PMP
-/// and UPnP-IGD for the router.
+/// The shipped app's deployment: `reqwest` for the mirrors, the seed list
+/// compiled in, and PCP, NAT-PMP and UPnP-IGD for the router.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Live;
 
@@ -80,6 +89,10 @@ impl Deployment for Live {
 
     fn fetcher(&self, bootstrap: &BootstrapConfig) -> Result<ReqwestFetcher, FetchError> {
         ReqwestFetcher::from_config(bootstrap)
+    }
+
+    fn seeds(&self) -> Seeds {
+        Seeds::embedded()
     }
 
     fn mapping_backends(&self, port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
@@ -111,6 +124,9 @@ pub struct Attachment<F> {
     /// The Connection Ceiling the open-descriptor limit lowered at attach,
     /// for the operator to read why (ADR-0116).
     pub ceiling_lowered: Option<rmule_core::CeilingLowered>,
+    /// This run is a cold start in a build with no seed list (ADR-0120): the
+    /// first list rests on the mirror alone, and the operator is told.
+    pub no_seeds: bool,
 }
 
 /// Everything the Kad join needs once the app arms it. Assembled during
@@ -223,6 +239,7 @@ pub async fn attach<D: Deployment>(
         auto_fetch_nodes_dat: preferences.auto_fetch_nodes_dat,
         server_met_url: preferences.server_met_url.clone(),
         nodes_dat_url: preferences.nodes_dat_url.clone(),
+        seeds: deployment.seeds(),
         ..BootstrapConfig::default()
     };
     let fetcher = deployment
@@ -279,11 +296,26 @@ pub async fn attach<D: Deployment>(
     // live key is taken up at once (ADR-0069).
     let config = SharedConfig::new(core.settings(), store.clone());
 
-    // ADR-0065's first-run fetch and auto-update walk, through the actor
-    // (see the module docs).
+    // The seeds, then ADR-0065's first-run fetch and auto-update walk, through
+    // the actor and in this order (see the module docs). A core that cannot
+    // take a command is gone; the bridge reports the closed core, so the run
+    // still opens.
+    let cold = should_seed_server_list(true, listed.is_empty());
+    if cold {
+        for server in bootstrap.seeds.servers().iter().cloned() {
+            let add = ServerListCommand::AddServer {
+                server: ManagedServer::seed(server),
+            };
+            if let Err(error) = core.send(CoreCommand::ServerList(add)).await {
+                tracing::warn!(%error, "a seed server could not be sent");
+            }
+        }
+    }
+    let no_seeds = cold && bootstrap.seeds.is_empty();
+    if no_seeds {
+        tracing::warn!("this build carries no seed list");
+    }
     if let Some(acquisition) = list_acquisition_at_start(&bootstrap, listed.is_empty()) {
-        // A core that cannot take its first command is gone; the bridge
-        // reports the closed core, so the run still opens.
         if let Err(error) = core.send(CoreCommand::ServerList(acquisition)).await {
             tracing::warn!(%error, "the server list acquisition at start could not be sent");
         }
@@ -313,6 +345,7 @@ pub async fn attach<D: Deployment>(
         kad,
         at_start,
         ceiling_lowered,
+        no_seeds,
     })
 }
 

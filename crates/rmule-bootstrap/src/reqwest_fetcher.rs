@@ -9,7 +9,9 @@
 //!
 //! The redirect, timeout, and size caps together bound a hostile mirror: a
 //! redirect loop, a hung connection, and an unbounded body each fail closed
-//! rather than tying up or exhausting the client.
+//! rather than tying up or exhausting the client. A redirect from `https` to
+//! `http` is refused (ADR-0120): following it gives back what the first hop
+//! gained.
 
 use std::time::Duration;
 
@@ -37,7 +39,17 @@ impl ReqwestFetcher {
     /// cannot be constructed (e.g. no usable rustls backend).
     pub fn new(max_redirects: usize, request_timeout: Duration) -> Result<Self, FetchError> {
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(max_redirects))
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                let hops = attempt.previous().len();
+                if hops > max_redirects {
+                    return attempt.error(RedirectRefused::TooMany);
+                }
+                let from = attempt.previous().last().map(reqwest::Url::scheme);
+                if is_downgrade(from, attempt.url().scheme()) {
+                    return attempt.error(RedirectRefused::Downgrade);
+                }
+                attempt.follow()
+            }))
             .timeout(request_timeout)
             .build()
             .map_err(|error| FetchError::Transport {
@@ -54,6 +66,20 @@ impl ReqwestFetcher {
     pub fn from_config(config: &BootstrapConfig) -> Result<Self, FetchError> {
         Self::new(config.max_redirects, config.request_timeout)
     }
+}
+
+/// Why a redirect was not followed.
+#[derive(Debug, thiserror::Error)]
+enum RedirectRefused {
+    #[error("too many redirects")]
+    TooMany,
+    #[error("a redirect from https to http")]
+    Downgrade,
+}
+
+/// Whether a hop from scheme `from` to scheme `to` gives up TLS.
+fn is_downgrade(from: Option<&str>, to: &str) -> bool {
+    from == Some("https") && to != "https"
 }
 
 /// Map a `reqwest` error onto the seam's HTTP-type-free vocabulary.
@@ -105,5 +131,18 @@ impl Fetcher for ReqwestFetcher {
             }
             Ok(body)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_hop_out_of_https_gives_up_tls() {
+        assert!(is_downgrade(Some("https"), "http"));
+        assert!(!is_downgrade(Some("https"), "https"));
+        assert!(!is_downgrade(Some("http"), "https"));
+        assert!(!is_downgrade(Some("http"), "http"));
     }
 }

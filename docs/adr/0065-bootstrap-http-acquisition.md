@@ -30,15 +30,15 @@ A bootstrap payload is trust-critical: a poisoned server.met is an eclipse-attac
 **A crate of its own, `rmule-bootstrap`, owns URL acquisition.** Its pipelines are
 deterministic and return a plan, never an applied effect, behind one I/O seam:
 
-- **`Fetcher`**, `get(url) → bounded bytes`, is the only I/O seam. `ReqwestFetcher`
+- **`Fetcher`**, `get(url) → bounded bytes` as a boxed future, is the only I/O seam. `ReqwestFetcher`
   (feature `reqwest-fetcher`, on by default) is the production implementation: `reqwest`
   with rustls, no native TLS, `default-features = false`, with redirect, size and timeout
   caps. Core depends on the crate without the feature and receives the fetcher injected,
   so no HTTP client links into core or any protocol crate.
 - **server.met** (`fetch_server_met`): a bounded GET, then parse in memory before any
   install through the `rmule_ed2k::ServerMet` decoder (ADR-0066), so a payload that fails
-  to parse leaves the existing list untouched; then aMule's add-new / update-known merge
-  into a `ServerMetInstall` plan. Core installs the plan into the Managed Server List
+  to parse, or of an odd shape (ADR-0120), leaves the existing list untouched; then aMule's
+  add-new / update-known merge into a `ServerMetInstall` plan. Core installs the plan into the Managed Server List
   (ADR-0080) in a separate step, so a caller sharing the store with a live actor does not
   hold it across the fetch. Connecting is the Join Sequence's step (ADR-0067).
 - **Auto-update** (`fetch_server_met_auto_update`): the `addresses.dat` role as a
@@ -56,15 +56,15 @@ deterministic and return a plan, never an applied effect, behind one I/O seam:
   next start: `auto_update_server_met` and `server_met_auto_update_urls`, kept one URL
   per line as `addresses.dat` holds them.
 - **nodes.dat** (`fetch_nodes_dat`, `decode_nodes_dat`): a bounded GET, the normal reader
-  with a fallback to the v3 bootstrap-edition reader (ADR-0066), then a `NodesDatInstall`
-  plan whose contacts become the Kad node's seeds (ADR-0067). There is no file swap and no
-  Kad restart.
+  with a fallback to the v3 bootstrap-edition reader (ADR-0066), then addresses for the
+  Kad node's Bootstrap Dial List (ADR-0067, ADR-0120). There is no file swap and no Kad
+  restart.
 
 **Defaults and first run.**
 
 - **Default URLs** are aMule's exact values (`DEFAULT_SERVER_MET_URL`,
-  `DEFAULT_NODES_DAT_URL`), overridable in config. The repository bundles no server list or
-  contact list; these are URLs fetched at run time.
+  `DEFAULT_NODES_DAT_URL`), overridable in config. What the repository bundles is the seed
+  list of ADR-0120, which a fetched list adds to.
 - **First-run server.met fetch:** when eD2k is enabled, the managed server list is empty at
   session start and `auto_fetch_server_met` is on (the default),
   `should_auto_fetch_server_met` says fetch. Default behaviour matches amuled's cold start;
@@ -75,7 +75,7 @@ deterministic and return a plan, never an applied effect, behind one I/O seam:
   `should_auto_fetch_nodes_dat` fetches only when Kad is enabled, there are no seeds and a
   front end has opted in. The `rmule` TUI opts in (ADR-0067).
 - **Hardening** that legitimate mirrors never notice: a response size cap, a redirect cap
-  and a request timeout.
+  and a request timeout, with an `https` start refusing a redirect to `http` (ADR-0120).
 
 ## Consequences
 
@@ -103,7 +103,7 @@ deterministic and return a plan, never an applied effect, behind one I/O seam:
 - **An unconditional first-run fetch, exactly as amuled.** Rejected: default behaviour is
   identical, and a headless daemon that contacts a third party with no off-switch is a
   shape rmule need not copy to be a good citizen.
-- **Upgrading the default URLs to https automatically.** Rejected as invented behaviour;
-  parity defaults with an operator override instead.
+- **Upgrading the default URLs to https automatically.** Rejected as invented behaviour:
+  a default changes when the mirror is seen to serve the file there (ADR-0120).
 - **A nodes.dat fetch on every cold start.** Rejected as the default: aMule never fetches
   one unattended.

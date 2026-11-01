@@ -423,6 +423,7 @@ pub(super) fn list_update_failure(record: Record, reason: ServerListUpdateFailur
             record.code("reason", "too_large").count("cap", cap)
         }
         ServerListUpdateFailure::NotServerMet => record.code("reason", "not_server_met"),
+        ServerListUpdateFailure::OddList => record.code("reason", "odd_list"),
         ServerListUpdateFailure::StoreFailed => record.code("reason", "store_failed"),
     }
 }

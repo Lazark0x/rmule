@@ -102,18 +102,22 @@ eD2k server until you say so.
    confirms. Finished files land there, and that directory is shared. Add
    more shared directories in the *Shared directories* section of the same
    tab.
-2. **Get a server list.** The list starts empty, so rmule fetches a
-   `server.met` at start from aMule's default mirror,
-   `http://upd.emule-security.org/server.met`. It does so only while the list
-   is empty, and Settings › *Fetch list* turns it off. In Networks (`1`), `U`
-   fetches a list from any URL and `a` adds one server as `host:port`.
+2. **Get a server list.** On a first start the list holds the seed servers
+   this release carries, marked High, and rmule fetches a `server.met` to add
+   to them from aMule's default mirror,
+   `http://upd.emule-security.org/server.met`. That mirror is plain HTTP, so
+   the seeds stay whatever it answers, and a list that looks wrong is refused.
+   It does so only while the list is empty, and Settings › *Fetch list* turns
+   it off. In Networks (`1`), `U` fetches a list from any URL and `a` adds one
+   server as `host:port`.
 3. **Connect.** Connecting is yours: select a server in Networks and press
    `c`. Each later start connects to that server again; *Autoconnect* in
    Settings turns this off.
 4. **Kad** starts after the first server login, or at once when you press `K`
-   in Networks. If rmule knows no Kad contacts yet, it fetches `nodes.dat` from
+   in Networks. If rmule knows no Kad contacts yet, it dials the seed nodes
+   this release carries, then what it fetches in `nodes.dat` from
    `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)
-   and an off switch (*Fetch seeds*).
+   and an off switch for the fetch (*Fetch seeds*).
 5. **Search and download.** Press `2`, type a query and press `Enter`. One
    search goes to the connected server, to other servers over UDP and to Kad,
    and the results merge. Press `Enter` or `m` on a result and choose

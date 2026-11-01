@@ -12,14 +12,13 @@
 //! plan and reconnecting an idle session are the caller's effects, made by the
 //! Join Sequence in `rmule_core::join` (ADR-0067).
 
-mod list_host;
-
 use rmule_ed2k::{ServerMet, ServerMetEntry, ServerMetError};
 use rmule_primitives::ServerEndpoint;
 use thiserror::Error;
 
-use self::list_host::ListHost;
 use crate::fetcher::{FetchError, Fetcher};
+use crate::list_host::ListHost;
+use crate::odd_list::{self, ListOddity};
 
 /// Why a server.met acquisition produced no install plan.
 ///
@@ -38,6 +37,11 @@ pub enum ServerMetPipelineError {
     /// list is untouched").
     #[error("server.met parse rejected the payload; the existing list is untouched: {0}")]
     Decode(#[from] ServerMetError),
+
+    /// The payload parsed but has a shape no mirror serves (ADR-0120); it is
+    /// refused whole and the existing list stands.
+    #[error("server.met refused: {0}")]
+    Odd(#[from] ListOddity),
 }
 
 /// The reconciled outcome of one server.met acquisition — a *plan* the caller
@@ -142,9 +146,9 @@ impl ServerMetInstall {
 /// `installed` with the freshly parsed rows and is the caller's cue to persist
 /// and reconnect if idle.
 ///
-/// The fresh rows are the word of `url`'s host, and a row whose address no
-/// server can be at as that host's word is dropped before the merge
-/// (ADR-0085).
+/// The fresh rows are the word of `url`'s host: a row whose address no server
+/// can be at as that host's word is dropped before the merge (ADR-0085), and
+/// a list that leaves an odd shape behind is refused whole (ADR-0120).
 pub async fn fetch_server_met(
     fetcher: &dyn Fetcher,
     url: &str,
@@ -154,11 +158,24 @@ pub async fn fetch_server_met(
     let bytes = fetcher.get(url, max_bytes).await?;
     let fresh = ServerMet::decode(&bytes)?;
     let host = ListHost::of(url);
-    let fresh = fresh
-        .into_entries()
+    let rows = fresh.into_entries();
+    let total = rows.len();
+    let mut usable = Vec::with_capacity(total);
+    let fresh: Vec<_> = rows
         .into_iter()
-        .filter(|entry| host.admits(entry))
+        .filter(|entry| match entry.dialable_address() {
+            // A row that names no address at all is the projection's to drop.
+            None => true,
+            Some(ip) => {
+                let admitted = host.admits(ip);
+                if admitted {
+                    usable.push(ip);
+                }
+                admitted
+            }
+        })
         .collect();
+    odd_list::judge(total, &usable)?;
     let install = merge_installed(installed, fresh);
     tracing::debug!(
         added = install.added,
@@ -359,17 +376,63 @@ mod tests {
         );
     }
 
+    /// Valid header, zero declared rows: nothing to install, and nothing that
+    /// reads as a success on a cold start.
     #[tokio::test]
-    async fn empty_but_valid_server_met_installs_nothing() {
-        // Valid header, zero declared rows — a mirror with an empty list.
+    async fn an_empty_server_met_is_odd() {
         let fetcher = FakeFetcher::serving(met_bytes(&[]));
 
-        let install = fetch_server_met(&fetcher, "http://mirror/server.met", CAP, Vec::new())
-            .await
-            .expect("valid empty list");
+        let outcome = fetch_server_met(&fetcher, "http://mirror/server.met", CAP, Vec::new()).await;
 
-        assert_eq!(install.added(), 0);
-        assert!(install.servers().is_empty());
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::NoUsableRow))
+        );
+    }
+
+    /// One party listing itself many times is refused whole: the installed
+    /// list is what the caller keeps, and none of the rows reach it.
+    #[tokio::test]
+    async fn a_forged_list_in_one_network_is_refused_whole() {
+        let rows: Vec<_> = (1..=9)
+            .map(|host| RowSpec::new(Ipv4Addr::new(203, 0, 113, host), 4661))
+            .collect();
+        let fetcher = FakeFetcher::serving(met_bytes(&rows));
+        let seed = installed_from(&[RowSpec::new(Ipv4Addr::new(192, 0, 2, 1), 4661).name("Seed")]);
+
+        let outcome =
+            fetch_server_met(&fetcher, "http://mirror/server.met", CAP, seed.clone()).await;
+
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::OneNetwork {
+                in_network: 9,
+                usable: 9
+            }))
+        );
+        assert_eq!(name_of(&seed[0]), "Seed");
+    }
+
+    /// A list the host check leaves mostly empty is refused, not installed
+    /// short.
+    #[tokio::test]
+    async fn a_list_mostly_of_reserved_rows_is_refused_from_a_remote_host() {
+        let rows = [
+            RowSpec::new(Ipv4Addr::LOCALHOST, 4661),
+            RowSpec::new(Ipv4Addr::BROADCAST, 4661),
+            RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661),
+        ];
+        let fetcher = FakeFetcher::serving(met_bytes(&rows));
+
+        let outcome = fetch_server_met(&fetcher, "http://mirror.example/x", CAP, Vec::new()).await;
+
+        assert_eq!(
+            outcome,
+            Err(ServerMetPipelineError::Odd(ListOddity::MostlyUnusable {
+                dropped: 2,
+                rows: 3
+            }))
+        );
     }
 
     /// A fetched list's rows are its URL host's word (ADR-0085): from a
@@ -384,9 +447,11 @@ mod tests {
             RowSpec::new(Ipv4Addr::new(0, 0, 0, 5), 4661).name("This network"),
             RowSpec::new(Ipv4Addr::new(192, 168, 1, 10), 4661).name("Lan"),
             RowSpec::new(Ipv4Addr::new(45, 55, 200, 1), 4661).name("Public"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 201, 1), 4661).name("Second"),
+            RowSpec::new(Ipv4Addr::new(45, 55, 202, 1), 4661).name("Third"),
         ];
-        let remote = vec!["Lan", "Public"];
-        let on_this_host = vec!["Loopback", "Lan", "Public"];
+        let remote = vec!["Lan", "Public", "Second", "Third"];
+        let on_this_host = vec!["Loopback", "Lan", "Public", "Second", "Third"];
         for (url, expected) in [
             ("http://mirror.example/server.met", &remote),
             ("http://198.51.100.7:8080/server.met", &remote),

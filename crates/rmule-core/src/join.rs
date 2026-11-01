@@ -12,14 +12,16 @@
 //!
 //! 1. **Load persisted state** — the managed server list from rmule's own store
 //!    ([`ServerListStore::servers`]).
-//! 2. **First-run server.met fetch** — iff the list is empty *and* eD2k is being
-//!    joined *and* the operator switch is on ([`should_auto_fetch_server_met`]),
+//! 2. **Seeds, then the first-run server.met fetch** — iff the list is empty
+//!    *and* eD2k is being joined ([`should_seed_server_list`]), list the seed
+//!    servers the configuration carries (ADR-0120). Then, iff the switch is on
+//!    too ([`should_auto_fetch_server_met`]),
 //!    run the server.met pipeline ([`fetch_server_met`](rmule_bootstrap::fetch_server_met)) through the injected
 //!    [`Fetcher`], persist the reconciled endpoints, and reload. A returning
-//!    user with a persisted list is not a cold start, so the fetch is skipped.
+//!    user with a persisted list is not a cold start, so neither runs.
 //!    A *failed* fetch does not abort or retry (amuled is one-shot: a failed
 //!    cold-start fetch waits for the user) — the joins still proceed, the eD2k
-//!    side simply idle with an empty list. Then, iff its switch is on, the
+//!    side on the seeds, or idle with an empty list where there are none. Then, iff its switch is on, the
 //!    **server.met auto-update walk** (ADR-0065): every configured URL in
 //!    order over the list as loaded, one failure not stopping it, installed
 //!    once, and each URL's outcome reported — aMule's `CServerList::Init`
@@ -27,9 +29,9 @@
 //! 3. **Kad seed resolution** ([`acquire_kad_seeds`]) — the same shape on the
 //!    Kad side, gated only on the Kad switch: read the persisted routing table
 //!    (`nodes.dat`, the file the running node writes), and only if *nothing*
-//!    seeded it, run the opt-in one-shot acquisition. The switch is OFF by
-//!    default, so this is aMule's "log and wait" by default (ADR-0067) and an
-//!    acquisition only where a front-end asked for one.
+//!    seeded it, take the seeds the configuration carries and run the opt-in
+//!    one-shot acquisition behind them. With no seeds and the switch at its OFF
+//!    default, this is aMule's "log and wait" (ADR-0067).
 //! 4. **Parallel independent joins** — the eD2k join (hand core the resolved
 //!    rows through the list's one writer, one [`ServerListCommand::AddServer`]
 //!    each, so its Managed Server List — and the swept list the global sweeps
@@ -76,6 +78,7 @@ use std::future::Future;
 
 use rmule_bootstrap::{
     BootstrapConfig, Fetcher, ServerMetPipelineError, should_auto_fetch_server_met,
+    should_seed_server_list,
 };
 use rmule_primitives::ServerEndpoint;
 
@@ -83,7 +86,7 @@ use crate::adapters::KadEnableConfig;
 use crate::error::CoreError;
 use crate::server_list::{
     AutoUpdateFetch, ServerListStore, acquire_server_met, acquire_server_met_walk,
-    install_server_met_plan,
+    install_seed_servers, install_server_met_plan,
 };
 use crate::service::{Core, CoreCommand, ServerListCommand};
 
@@ -118,14 +121,15 @@ pub enum FirstRunFetch {
     /// The gate said no: a persisted list already existed, eD2k was not being
     /// joined, or the operator switch was off. No fetch was attempted.
     Skipped,
-    /// The fetch ran and installed `added` fresh servers into the empty list.
+    /// The fetch ran and installed `added` fresh servers into the list.
     Installed {
         /// How many servers the fetched list added to the empty one.
         added: usize,
     },
-    /// The fetch ran but failed. The list stays empty and the joins proceed;
-    /// amuled is one-shot — a failed cold-start fetch waits for the user, it
-    /// does not loop or abort the join (ADR-0065 / ADR-0067).
+    /// The fetch ran but failed. The list stays as it was, the seeds or
+    /// empty, and the joins proceed; amuled is one-shot — a failed cold-start
+    /// fetch waits for the user, it does not loop or abort the join (ADR-0065
+    /// / ADR-0067).
     Failed(ServerMetPipelineError),
 }
 
@@ -153,8 +157,8 @@ pub struct JoinOutcome {
     /// What the server.met auto-update walk did (step 2's second half).
     pub auto_update: AutoUpdateOutcome,
     /// The managed server list after the first-run hook and the walk — the
-    /// exact rows the eD2k join handed core (empty when a fetch was skipped
-    /// or failed on a cold start).
+    /// exact rows the eD2k join handed core (only the seeds, if any, when a
+    /// fetch was skipped or failed on a cold start).
     pub servers: Vec<ServerEndpoint>,
     /// Where the Kad join's seeds came from (step 3).
     pub kad_seed: KadSeedOutcome,
@@ -209,40 +213,42 @@ where
     // 1. Load persisted state.
     let mut listed = store.servers()?;
 
-    // 2. First-run hook: fetch a server list iff this is a genuine cold start
-    //    for a network we are joining (empty list ∧ eD2k on ∧ switch on).
-    let first_run = if should_auto_fetch_server_met(
-        join.connect_ed2k,
-        listed.is_empty(),
-        bootstrap.auto_fetch_server_met,
-    ) {
-        // The same two-step acquisition an on-demand update runs (ADR-0080):
-        // the list is empty here, so the merge just parses and installs the
-        // fresh rows — with their names, descriptions and priorities, so a
-        // cold start never lands a nameless endpoint. One-shot: a failure is
-        // reported, not retried.
-        match acquire_server_met(
-            fetcher,
-            &bootstrap.server_met_url,
-            bootstrap.max_server_met_bytes,
-            &listed,
-        )
-        .await
-        {
-            Ok(plan) => {
-                let update = install_server_met_plan(store, &plan)?;
-                // Reload so the joined list is the store's persisted, deduped
-                // view (the caller's source of truth), not the raw fetch order.
-                listed = store.servers()?;
-                FirstRunFetch::Installed {
-                    added: update.added,
+    // 2. First-run hook: seeds on a genuine cold start for a network we are
+    //    joining, and a fetch behind them when the switch is on too. Read
+    //    before the seeds land: listing them does not end the cold start.
+    let cold = listed.is_empty();
+    if should_seed_server_list(join.connect_ed2k, cold) {
+        install_seed_servers(store, &bootstrap.seeds)?;
+        listed = store.servers()?;
+    }
+    let first_run =
+        if should_auto_fetch_server_met(join.connect_ed2k, cold, bootstrap.auto_fetch_server_met) {
+            // The same two-step acquisition an on-demand update runs (ADR-0080):
+            // the fresh rows land beside any seed, with their names, descriptions
+            // and priorities, so a cold start never lands a nameless endpoint.
+            // One-shot: a failure is reported, not retried.
+            match acquire_server_met(
+                fetcher,
+                &bootstrap.server_met_url,
+                bootstrap.max_server_met_bytes,
+                &listed,
+            )
+            .await
+            {
+                Ok(plan) => {
+                    let update = install_server_met_plan(store, &plan)?;
+                    // Reload so the joined list is the store's persisted, deduped
+                    // view (the caller's source of truth), not the raw fetch order.
+                    listed = store.servers()?;
+                    FirstRunFetch::Installed {
+                        added: update.added,
+                    }
                 }
+                Err(error) => FirstRunFetch::Failed(error),
             }
-            Err(error) => FirstRunFetch::Failed(error),
-        }
-    } else {
-        FirstRunFetch::Skipped
-    };
+        } else {
+            FirstRunFetch::Skipped
+        };
 
     // 2b. The auto-update walk, behind its own switch (off by default), over
     //     the list as the first run left it. A URL that fails is reported and

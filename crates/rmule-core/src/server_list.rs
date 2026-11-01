@@ -43,7 +43,7 @@ pub(crate) use acquisition::acquire_server_met_walk;
 pub use acquisition::{
     AutoUpdateFetch, ServerListUpdate, ServerListUpdateError, ServerListUpdateFailure,
 };
-pub(crate) use acquisition::{acquire_server_met, install_server_met_plan};
+pub(crate) use acquisition::{acquire_server_met, install_seed_servers, install_server_met_plan};
 pub use aux_ports::ServerAuxPorts;
 pub(crate) use facts::{ServerFacts, mutate_and_publish};
 #[cfg(test)]
@@ -130,6 +130,17 @@ impl ManagedServer {
             udp_crypt: None,
             aux_ports: None,
             listed_udp_flags: None,
+        }
+    }
+
+    /// A row for a seed the binary carries (ADR-0120): `High`, which a
+    /// downloaded list never changes, and otherwise an ordinary row the
+    /// operator can remove.
+    #[must_use]
+    pub fn seed(endpoint: ServerEndpoint) -> Self {
+        Self {
+            priority: ServerPriority::High,
+            ..Self::listed(endpoint)
         }
     }
 

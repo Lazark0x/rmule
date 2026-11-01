@@ -9,7 +9,7 @@
 //! # Shape
 //!
 //! - [`Fetcher`] is the crate's **only I/O seam**: `get(url) → bounded bytes`.
-//!   The pipelines are generic over it, so no unit test opens a socket.
+//!   The pipelines run over a `&dyn Fetcher`, so no unit test opens a socket.
 //! - [`fetch_server_met`] is the server.met pipeline: bounded GET →
 //!   parse-before-install (through the [`rmule_ed2k::ServerMet`] decoder) →
 //!   aMule add-new / update-known merge → a [`ServerMetInstall`] plan.
@@ -18,7 +18,8 @@
 //! - [`fetch_nodes_dat`] / [`decode_nodes_dat`] are the nodes.dat pipeline:
 //!   bounded GET → try the normal reader, fall back to the v3
 //!   bootstrap-edition reader on `NodesDatError::BootstrapEdition` → a
-//!   [`NodesDatInstall`] plan.
+//!   [`NodesDatInstall`] plan, and a fetched file's rows only ever as addresses
+//!   to dial.
 //! - [`should_auto_fetch_server_met`] and [`should_auto_fetch_nodes_dat`] are
 //!   the cold-start trigger decisions, called by the Join Sequence in
 //!   `rmule_core::join`. Their defaults are opposite, and the asymmetry is
@@ -31,6 +32,10 @@
 //!   client; disabling the feature leaves the pure seam, pipelines and
 //!   decisions, so a consumer can depend on the machinery without pulling
 //!   reqwest or a TLS stack into its tree.
+//!
+//! - [`Seeds`] is the list the binary carries, the root of trust of a cold
+//!   start (ADR-0120): a fetched list adds to it and never replaces it, and a
+//!   list of an odd shape ([`ListOddity`]) is refused whole.
 //!
 //! Every pipeline returns a *plan*, never an applied effect: nothing here
 //! writes a store or reconnects a session, which is what keeps the merge and
@@ -60,7 +65,10 @@ mod auto_update_walk;
 mod config;
 mod fetcher;
 mod first_run;
+mod list_host;
 mod nodes_dat;
+mod odd_list;
+mod seeds;
 mod server_met;
 
 #[cfg(test)]
@@ -76,8 +84,12 @@ pub use config::{
     DEFAULT_SERVER_MET_URL,
 };
 pub use fetcher::{FetchError, FetchFuture, Fetcher};
-pub use first_run::{should_auto_fetch_nodes_dat, should_auto_fetch_server_met};
+pub use first_run::{
+    should_auto_fetch_nodes_dat, should_auto_fetch_server_met, should_seed_server_list,
+};
 pub use nodes_dat::{NodesDatInstall, NodesDatPipelineError, decode_nodes_dat, fetch_nodes_dat};
+pub use odd_list::ListOddity;
+pub use seeds::{SeedFileError, Seeds};
 pub use server_met::{ServerMetInstall, ServerMetPipelineError, fetch_server_met};
 
 #[cfg(feature = "reqwest-fetcher")]

@@ -68,6 +68,7 @@ struct Scratch {
     fetch: CannedFetch,
     backends: Vec<Arc<dyn MappingBackend>>,
     home: Option<PathBuf>,
+    seeds: rmule_bootstrap::Seeds,
 }
 
 impl Deployment for Scratch {
@@ -75,6 +76,10 @@ impl Deployment for Scratch {
 
     fn fetcher(&self, _bootstrap: &BootstrapConfig) -> Result<CannedFetch, FetchError> {
         Ok(self.fetch.clone())
+    }
+
+    fn seeds(&self) -> rmule_bootstrap::Seeds {
+        self.seeds.clone()
     }
 
     fn mapping_backends(&self, _port_map_secret: u32) -> Vec<Arc<dyn MappingBackend>> {
@@ -177,6 +182,62 @@ async fn a_fresh_data_dir_fetches_its_server_list_once_at_attach() {
         [rmule_bootstrap::DEFAULT_SERVER_MET_URL],
         "one fetch, from the default mirror"
     );
+}
+
+/// ADR-0120 at the app's own door: the mirror answers nothing, and the seeds
+/// are what the operator finds listed, ahead of the fetch's failure.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_run_with_the_mirror_gone_lists_the_seeds() {
+    let dir = data_dir(|_, _| {});
+    let deployment = Scratch {
+        seeds: rmule_bootstrap::Seeds::parse("server 192.0.2.1:4661\nserver 192.0.2.2:4661\n")
+            .expect("documentation seeds"),
+        ..Scratch::default()
+    };
+
+    let Attachment {
+        mut core, no_seeds, ..
+    } = attach_in(&dir, &deployment).await;
+    assert!(!no_seeds, "this run carries seeds");
+    let listed = tokio::time::timeout(HANG_GUARD, async {
+        let mut listed = Vec::new();
+        loop {
+            match core.next_event().await.expect("core alive") {
+                CoreEvent::ServerList(ServerListEvent::ServerAdded { server }) => {
+                    listed.push(server.host().to_owned());
+                }
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdateFailed { .. }) => {
+                    return listed;
+                }
+                CoreEvent::ServerList(ServerListEvent::ServerListUpdated { .. }) => {
+                    panic!("the canned mirror answers nothing")
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("the first-run fetch fails");
+
+    assert_eq!(listed, ["192.0.2.1", "192.0.2.2"]);
+}
+
+/// A build with no seed list says so, and only on a cold start.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_build_without_seeds_says_so_only_on_a_first_run() {
+    let cold = data_dir(|_, _| {});
+    let Attachment { no_seeds, .. } = attach_in(&cold, &Scratch::default()).await;
+    assert!(no_seeds);
+
+    let warm = data_dir(|store, _| {
+        store
+            .merge_server(ManagedServer::listed(
+                ServerEndpoint::new("192.0.2.7", 4661).expect("endpoint"),
+            ))
+            .expect("a row");
+    });
+    let Attachment { no_seeds, .. } = attach_in(&warm, &Scratch::default()).await;
+    assert!(!no_seeds);
 }
 
 /// The Settings tab edits through the attached core's own Core Settings

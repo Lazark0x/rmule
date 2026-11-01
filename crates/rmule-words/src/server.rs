@@ -45,6 +45,9 @@ pub(super) const fn id_class(client_id: ClientId) -> &'static str {
 
 /// A server joined the list.
 pub const ADDED: Sentence = Sentence::fixed("server added");
+/// A first run in a build that carries no seed list (ADR-0120).
+pub const NO_SEEDS: Sentence =
+    Sentence::fixed("this build carries no seed list: a first list rests on the mirror alone");
 /// A listed server folded a fresh record.
 pub const UPDATED: Sentence = Sentence::fixed("server updated");
 /// A server left the list.
@@ -96,6 +99,9 @@ pub fn list_update_failure_words(reason: ServerListUpdateFailure) -> String {
             human_size(cap as u64)
         ),
         ServerListUpdateFailure::NotServerMet => "what came back is not a server.met".to_string(),
+        ServerListUpdateFailure::OddList => {
+            "the list does not look real, so none of it was taken".to_string()
+        }
         ServerListUpdateFailure::StoreFailed => {
             "the list could not be saved (see the run log)".to_string()
         }

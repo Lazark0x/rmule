@@ -3,7 +3,7 @@
 //! worst is the one left on the bar.
 
 use crate::words::severity::Severity;
-use crate::words::{Sentence, app, download, kad};
+use crate::words::{Sentence, app, download, kad, server};
 
 /// What this start found worth saying.
 #[derive(Debug, Default)]
@@ -17,6 +17,8 @@ pub struct StartFacts {
     pub job_control_refused: bool,
     /// The Connection Ceiling the OS held the run under.
     pub ceiling_lowered: Option<Sentence>,
+    /// A cold start in a build with no seed list (ADR-0120).
+    pub no_seeds: bool,
     /// Why the connect at start found nothing to connect to.
     pub cannot_connect: Option<Sentence>,
     /// A download has somewhere to land.
@@ -30,6 +32,7 @@ pub struct StartFacts {
 pub fn start_notes(facts: StartFacts) -> Vec<(Severity, Sentence)> {
     let warnings = [
         facts.legacy_charset.then_some(app::LEGACY_CHARSET),
+        facts.no_seeds.then_some(server::NO_SEEDS),
         (!facts.download_dir_set).then_some(download::NO_DOWNLOAD_DIR),
         facts.cannot_connect,
         facts.ceiling_lowered,

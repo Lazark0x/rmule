@@ -1,26 +1,25 @@
-//! Whose word a fetched server.met is: the host its URL names (ADR-0085). A
-//! row is a server only when its address lies in no Reserved Range that host
-//! cannot vouch for, as aMule runs `IsGoodIP` on every server it adds
+//! Whose word a fetched list is: the host its URL names (ADR-0085). A row is
+//! usable only when its address lies in no Reserved Range that host cannot
+//! vouch for, as aMule runs `IsGoodIP` on every server it adds
 //! (`ServerList.cpp:206`) — LAN rows included, which aMule's `FilterLanIPs`
 //! drops and rmule keeps.
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use rmule_ed2k::ServerMetEntry;
 use rmule_primitives::{Informant, is_reserved_address};
 
-/// The party a server.met fetched from one URL is the word of.
+/// The party a list fetched from one URL is the word of.
 ///
 /// An address literal is that party, and `localhost` is this host, the name
 /// RFC 6761 §6.3 fixes to the loopback address. Any other name is a remote
 /// party: the fetch resolves it but never surfaces the address it reached, and
 /// that address would be a proxy's when one is configured.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct ListHost(Option<Informant>);
+pub(crate) struct ListHost(Option<Informant>);
 
 impl ListHost {
     /// The host `url` names.
-    pub(super) fn of(url: &str) -> Self {
+    pub(crate) fn of(url: &str) -> Self {
         let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
         let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
         let host = authority
@@ -38,22 +37,14 @@ impl ListHost {
         Self(informant)
     }
 
-    /// Whether `entry` can be a server as this host's word. A row that names
-    /// no address at all is left to the projection that drops it.
-    pub(super) fn admits(self, entry: &ServerMetEntry) -> bool {
-        let Some(ip) = entry.dialable_address() else {
-            return true;
-        };
+    /// Whether a row at `ip` can be usable as this host's word.
+    pub(crate) fn admits(self, ip: IpAddr) -> bool {
         let admitted = match self.0 {
             Some(informant) => informant.admits(ip),
             None => !is_reserved_address(ip),
         };
         if !admitted {
-            tracing::warn!(
-                %ip,
-                port = entry.endpoint().port,
-                "dropping a server.met row whose address no server can be at"
-            );
+            tracing::warn!(%ip, "dropping a fetched row whose address no party can be at");
         }
         admitted
     }

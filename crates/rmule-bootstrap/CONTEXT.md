@@ -9,15 +9,23 @@ The crate's bounded context: turning a URL into a reconciled, ready-to-install p
 _Avoid_: bootstrap service, downloader, updater, server-list manager
 
 **Fetcher Seam**:
-The crate's sole I/O seam — `get(url, max_bytes) -> Result<Vec<u8>, FetchError>`, an `-> impl Future + Send` (RPITIT, not `async_trait`). Every pipeline is generic over it, so the fetch is the only corner that ever touches a socket and no unit test opens one. `FetchError` is deliberately HTTP-client-agnostic (`Transport` / `Status` / `TooLarge` / `Timeout`) so no `reqwest` type leaks past the seam.
+The crate's sole I/O seam — `get(url, max_bytes) -> Result<Vec<u8>, FetchError>` as a boxed future (`FetchFuture`), so `dyn Fetcher` exists and core's actor holds an `Arc<dyn Fetcher>`. Every pipeline runs over a `&dyn Fetcher`, so the fetch is the only corner that ever touches a socket and no unit test opens one. `FetchError` is deliberately HTTP-client-agnostic (`Transport` / `Status` / `TooLarge` / `Timeout`) so no `reqwest` type leaks past the seam.
 _Avoid_: HTTP client, downloader trait, transport layer, reqwest wrapper
 
 **ReqwestFetcher**:
-The sole production `Fetcher`: reqwest over rustls (never native-tls), with redirect / timeout caps baked into the client and the body cap enforced while streaming. Confined behind the optional, default-on `reqwest-fetcher` feature — the crate's only corner that links an HTTP client or TLS stack. Disable the feature and the crate is the pure seam + pipelines + decision, so a consumer that only needs the machinery (`rmule-core`'s Join Sequence, `rmule_core::join`) never pulls reqwest/rustls into its tree.
+The sole production `Fetcher`: reqwest over rustls (never native-tls), with redirect / timeout caps baked into the client and the body cap enforced while streaming. A redirect from `https` to `http` is refused. Confined behind the optional, default-on `reqwest-fetcher` feature — the crate's only corner that links an HTTP client or TLS stack. Disable the feature and the crate is the pure seam + pipelines + decision, so a consumer that only needs the machinery (`rmule-core`'s Join Sequence, `rmule_core::join`) never pulls reqwest/rustls into its tree.
 _Avoid_: the Fetcher (it is one impl of it), TLS layer, HTTP client config
 
+**Seeds**:
+The servers and Kad nodes a cold start begins from, the root of trust of acquisition (ADR-0120): one checked-in file, `seeds.txt`, refreshed by each release and compiled in, read as `Seeds`. `BootstrapConfig` starts with none, so only a deployment that means to name public hosts carries `Seeds::embedded`. A cold start lists them before any fetch, a fetched list adds beside them and never moves one, and a warm start reads none. An empty file is a legal build with no root of trust, and a cold start says so.
+_Avoid_: bootstrap list, default servers, fallback list (they come first, not after a failure)
+
+**Odd List**:
+A fetched list of a shape no mirror serves, refused whole (`ListOddity`): past the row ceiling, no usable row, most rows dropped by the check of its host, or most of eight or more usable rows in one `/24` or `/48`. A cheap filter, not proof of origin: what bounds a careful forgery is that the **Seeds** stay. Runs on fetched lists only, never on a persisted file or the seeds.
+_Avoid_: forged list (a forgery need not be odd), invalid list (it parsed), untrusted list (every fetched list is)
+
 **server.met Pipeline**:
-`fetch_server_met`: one bounded GET → **Parse-Before-Install** → **Add-New / Update-Known Merge** against the installed list → a `ServerMetInstall` plan. One-shot, no retry (a failed cold-start fetch waits for the user, aMule parity), so exactly one `Fetcher::get` call and the first failure returned as-is.
+`fetch_server_met`: one bounded GET → **Parse-Before-Install** → the **Odd List** check → **Add-New / Update-Known Merge** against the installed list → a `ServerMetInstall` plan. One-shot, no retry (a failed cold-start fetch waits for the user, aMule parity), so exactly one `Fetcher::get` call and the first failure returned as-is.
 _Avoid_: server-list sync, refresh loop, retrying fetch
 
 **Parse-Before-Install**:
@@ -41,7 +49,7 @@ _Avoid_: first-run hook, auto-fetch loop, cold-start trigger (that is the hook, 
 _Avoid_: mirror failover, retry list, parallel fetch
 
 **nodes.dat Pipeline**:
-`fetch_nodes_dat` / `decode_nodes_dat` — the Kad counterpart, **command-only**: aMule's `nodes.dat` fetch is user-/EC-triggered with no first-run auto-fetch, so no `should_auto_fetch_*` decision exists for it. Try-normal-then-fallback dispatch: the normal reader first, falling back on `BootstrapEdition` to the v3 bootstrap-edition reader over the identical bytes. Yields a `NodesDatInstall` plan — `Contacts` (merge straight into a running node) or `BootstrapCandidates` (dial only).
+`fetch_nodes_dat` / `decode_nodes_dat` — the Kad counterpart. Try-normal-then-fallback dispatch: the normal reader first, falling back on `BootstrapEdition` to the v3 bootstrap-edition reader over the identical bytes. `decode_nodes_dat` reads rmule's own persisted file into a `NodesDatInstall` plan — `Contacts` (merge straight into a running node) or `BootstrapCandidates` (dial only). `fetch_nodes_dat` is the mirror's word: at most 50 addresses to dial, each of which must answer before it enters a routing table, after the **Odd List** check.
 _Avoid_: Kad bootstrap service, auto-fetch nodes, routing-table writer
 
 **BootstrapDialList**:
@@ -49,15 +57,15 @@ An `rmule-kad`-owned dial list this crate *loads*, never owns: the v3 bootstrap-
 _Avoid_: routing table, contact list, bootstrap-crate type (it belongs to rmule-kad)
 
 **Cold-Start Arc**:
-The full amuled first-run path proven end-to-end in `tests/bootstrap/cold_start_e2e.rs`: empty list → real GET of a `server.met` naming a live fake server → parse/merge → the acquired endpoint logs in against the ADR-0040 `FakeEd2kServer`, in-process. The correctness-tier proof that the pipeline's plan actually joins a network.
+The full amuled first-run path proven end-to-end in `tests/bootstrap/cold_start_e2e.rs`: empty list → real GET of a `server.met` naming a live fake server → parse/merge → the acquired endpoint logs in against the ADR-0040 `FakeEd2kServer`, in-process, and the same login from a seed with the mirror gone. The correctness-tier proof that the pipeline's plan actually joins a network.
 _Avoid_: smoke test, unit fixture, capture golden
 
 ## Relationships
 
 - The wire decoders live elsewhere: `rmule-ed2k` owns `ServerMet` / `ServerMetEntry`, `rmule-kad` owns `NodesDat` / `BootstrapDialList`. This crate is **pipelines-over-a-seam** — fetch, parse through those decoders, reconcile — and adds no wire format of its own.
-- Every pipeline is generic over the **Fetcher Seam**; the only concrete I/O is **ReqwestFetcher**, confined behind the optional `reqwest-fetcher` feature so `rmule-core` can depend on the seam + pipelines + decision without linking an HTTP client or TLS stack.
+- Every pipeline runs over the **Fetcher Seam**; the only concrete I/O is **ReqwestFetcher**, confined behind the optional `reqwest-fetcher` feature so `rmule-core` can depend on the seam + pipelines + decision without linking an HTTP client or TLS stack.
 - Pipelines return **plans, never effects** (`ServerMetInstall`, `NodesDatInstall`): they touch no store and no socket beyond the fetch. Persisting a plan and reconnecting an idle session are the caller's effects — `rmule-core`'s Join Sequence (`rmule_core::join`).
-- The **First-Run Decision** is `server.met`-only. `nodes.dat` has no auto-fetch decision anywhere in this crate or in core, preserving aMule's own asymmetry (`UpdateNotesDat` is command-triggered only).
-- A `NodesDatInstall` plan is injected into a running `rmule_kad::KadNode`: `Contacts` via `KadCommand::MergeContacts`, `BootstrapCandidates` via `KadCommand::SeedBootstrapDialList`.
+- `nodes.dat` has its own decision, `should_auto_fetch_nodes_dat`, off by default, preserving aMule's own asymmetry (`UpdateNotesDat` is command-triggered only); the `rmule` app opts in.
+- A persisted file's `NodesDatInstall` plan is injected into a running `rmule_kad::KadNode`: `Contacts` via `KadCommand::MergeContacts`, `BootstrapCandidates` via `KadCommand::SeedBootstrapDialList`. A fetched file's addresses and the **Seeds** take the second door only.
 - The crate depends on `rmule-ed2k`, `rmule-kad`, and `rmule-primitives`, plus optionally `reqwest`; it does not depend on `rmule-core` (core depends on it). Its pipelines are `async` but bind no runtime — a driving runtime (tokio) enters only at `rmule-core`.
 - Unlike the sans-I/O protocol crates, `rmule-bootstrap` emits **Diagnostic Trace** (`tracing`): flow at `debug`, and a `warn` when a reconciled row is dropped for not forming a valid `ServerEndpoint`. Library-first — it installs no subscriber; a consumer does.

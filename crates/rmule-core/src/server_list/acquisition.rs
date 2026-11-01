@@ -17,7 +17,7 @@
 //! [`Fetcher`], which the actor holds as a trait object.
 
 use rmule_bootstrap::{
-    FetchError, Fetcher, ServerMetInstall, ServerMetPipelineError, UrlWalkOutcome,
+    FetchError, Fetcher, Seeds, ServerMetInstall, ServerMetPipelineError, UrlWalkOutcome,
 };
 use thiserror::Error;
 
@@ -64,6 +64,7 @@ impl ServerListUpdateError {
             Self::Acquisition(ServerMetPipelineError::Decode(_)) => {
                 ServerListUpdateFailure::NotServerMet
             }
+            Self::Acquisition(ServerMetPipelineError::Odd(_)) => ServerListUpdateFailure::OddList,
             Self::Store(_) => ServerListUpdateFailure::StoreFailed,
         }
     }
@@ -90,6 +91,9 @@ pub enum ServerListUpdateFailure {
     /// What came back is not a server.met rmule reads: empty, a bad header,
     /// corrupt, or a zip archive.
     NotServerMet,
+    /// It parsed, but has a shape no mirror serves, and was refused whole
+    /// (ADR-0120).
+    OddList,
     /// The list was good but the store would not take it.
     StoreFailed,
 }
@@ -153,6 +157,15 @@ pub(crate) async fn acquire_server_met_walk(
         fetched,
         plan: walk.merged,
     }
+}
+
+/// List the seed servers on a cold start (ADR-0120), before any fetch.
+pub(crate) fn install_seed_servers<S>(store: &S, seeds: &Seeds) -> Result<(), CoreError>
+where
+    S: ServerListStore + ?Sized,
+{
+    let rows = seeds.servers().iter().cloned();
+    store.merge_servers(rows.map(ManagedServer::seed).collect())
 }
 
 /// Step 1 of an update — **acquire**: run `rmule-bootstrap`'s server.met

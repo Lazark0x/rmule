@@ -225,6 +225,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         kad,
         at_start,
         ceiling_lowered,
+        no_seeds,
     } = attachment;
     // `--log-level` holds for this run and is never stored; the
     // Settings tab shows the level in force.
@@ -269,6 +270,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         stop_signals_refused,
         job_control_refused,
         ceiling_lowered: ceiling_lowered.map(rmule::words::download::ceiling_lowered),
+        no_seeds,
         cannot_connect,
         download_dir_set: session.download_dir.is_some(),
         legacy_charset: capability.glyphs == GlyphTier::Ascii,

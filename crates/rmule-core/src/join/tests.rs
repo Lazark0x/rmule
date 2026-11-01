@@ -4,6 +4,7 @@
 //! deterministic canned bytes, never an aMule capture.
 
 mod kad_seeds;
+mod seeds;
 
 use parking_lot::Mutex;
 use std::net::Ipv4Addr;

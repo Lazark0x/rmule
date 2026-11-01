@@ -37,20 +37,19 @@
 //!    node dialed the fetched seeds off the ADR-0067 dial list and a
 //!    counterparty datagram came back.
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
-use rmule_bootstrap::{BootstrapConfig, NodesDatInstall, ReqwestFetcher, fetch_nodes_dat};
+use rmule_bootstrap::{BootstrapConfig, ReqwestFetcher, fetch_nodes_dat};
 use rmule_core::run_log::Level;
 use rmule_core::{
     AutoUpdateOutcome, Core, CoreCommand, CoreConfig, CoreEvent, DurableAppConfig, FirstRunFetch,
     JoinConfig, KadEnableConfig, KadId, open_durable_store_in_memory, run_join_sequence,
 };
 use rmule_ed2k::Ed2kEvent;
-use rmule_kad::BootstrapDialList;
 use rmule_net::ed2k::{ConnectOptions, Connection};
 use rmule_primitives::{ClientIdentity, Ed2kText, ServerEndpoint, UserHash};
 
@@ -136,17 +135,14 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
 
     // Stage 1: nodes.dat fetch. The parsed contacts/candidates become the
     // front-end-supplied Kad bootstrap seeds.
-    let mut dial_list = BootstrapDialList::new();
-    let nodes_install = fetch_nodes_dat(
+    let seeds = fetch_nodes_dat(
         &fetcher,
         &args.nodes_dat_url,
         config.max_nodes_dat_bytes,
         kad_id,
-        &mut dial_list,
     )
     .await
     .with_context(|| format!("fetch nodes.dat from {}", args.nodes_dat_url))?;
-    let seeds = kad_seeds(&nodes_install);
     if seeds.is_empty() {
         bail!(
             "fetched nodes.dat yielded no dialable Kad contact — flow H needs the golden to carry \
@@ -154,9 +150,8 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
         );
     }
     println!(
-        "bootstrap-fetch nodes_dat url={} kind={} dialable={}",
+        "bootstrap-fetch nodes_dat url={} dialable={}",
         args.nodes_dat_url,
-        nodes_install_kind(&nodes_install),
         seeds.len()
     );
 
@@ -263,32 +258,6 @@ pub(crate) async fn run(args: BootstrapFetchArgs) -> Result<()> {
              HasHadContact)",
             args.max_seconds
         );
-    }
-}
-
-/// The fetched nodes.dat as ADR-0067 bootstrap-dial seeds: a normal-reader
-/// (v1/v2) file's contacts, or a v3 file's bootstrap-dial candidates — both
-/// enter the node's one Bootstrap Dial List through
-/// [`KadEnableConfig::bootstrap`], exactly where a file-loaded candidate would.
-fn kad_seeds(install: &NodesDatInstall) -> Vec<SocketAddrV4> {
-    let endpoints: Vec<_> = match install {
-        NodesDatInstall::Contacts(contacts) => {
-            contacts.iter().map(|contact| contact.endpoint()).collect()
-        }
-        NodesDatInstall::BootstrapCandidates(candidates) => {
-            candidates.iter().map(|node| node.endpoint()).collect()
-        }
-    };
-    endpoints
-        .into_iter()
-        .map(|endpoint| SocketAddrV4::new(endpoint.ip(), endpoint.udp_port()))
-        .collect()
-}
-
-const fn nodes_install_kind(install: &NodesDatInstall) -> &'static str {
-    match install {
-        NodesDatInstall::Contacts(_) => "contacts",
-        NodesDatInstall::BootstrapCandidates(_) => "v3-bootstrap-candidates",
     }
 }
 

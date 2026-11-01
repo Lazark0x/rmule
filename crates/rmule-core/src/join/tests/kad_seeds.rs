@@ -20,7 +20,7 @@ fn seed_contact(n: u8) -> rmule_kad::KadContact {
     )
 }
 
-fn nodes_dat_v2(count: u8) -> Vec<u8> {
+pub(super) fn nodes_dat_v2(count: u8) -> Vec<u8> {
     rmule_kad::NodesDat::encode_v2(&(1..=count).map(seed_contact).collect::<Vec<_>>())
 }
 
@@ -145,15 +145,9 @@ async fn the_opt_in_switch_acquires_contacts_for_a_cold_kad_start() {
     .await
     .unwrap();
 
-    assert_eq!(
-        outcome.kad_seed,
-        KadSeedOutcome::Acquired {
-            contacts: 2,
-            candidates: 0
-        }
-    );
+    assert_eq!(outcome.kad_seed, KadSeedOutcome::Acquired { candidates: 2 });
     assert_eq!(fetcher.calls(), 1, "one-shot");
-    assert_eq!(kad_join(&sink.commands()).contacts.len(), 2);
+    assert_eq!(kad_join(&sink.commands()).bootstrap.len(), 2);
 }
 
 /// A persisted file that will not decode is *named*, not swallowed — and
@@ -203,13 +197,7 @@ async fn an_unusable_persisted_file_is_named_and_falls_through() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        outcome.kad_seed,
-        KadSeedOutcome::Acquired {
-            contacts: 2,
-            candidates: 0
-        }
-    );
+    assert_eq!(outcome.kad_seed, KadSeedOutcome::Acquired { candidates: 2 });
 }
 
 /// A failed acquisition is one-shot and non-fatal, exactly like the

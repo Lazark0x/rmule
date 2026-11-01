@@ -31,6 +31,17 @@ pub const fn should_auto_fetch_server_met(
     ed2k_enabled && server_list_empty && auto_fetch_enabled
 }
 
+/// Should a cold start list the seed servers (ADR-0120)?
+///
+/// Iff eD2k participation is on and the managed server list is empty at
+/// session start. A persisted list is a warm start, so a seed the operator
+/// removed stays removed. The fetch switch does not enter into it: listing a
+/// seed talks to nobody, and the seeds are what a failed fetch leaves.
+#[must_use]
+pub const fn should_seed_server_list(ed2k_enabled: bool, server_list_empty: bool) -> bool {
+    ed2k_enabled && server_list_empty
+}
+
 /// Should rmule acquire a nodes.dat on this cold start?
 ///
 /// The mirror of [`should_auto_fetch_server_met`] with the **opposite
@@ -66,6 +77,15 @@ mod tests {
     #[test]
     fn cold_start_defaults_fetch() {
         assert!(should_auto_fetch_server_met(true, true, true));
+    }
+
+    /// The seeds wait for no switch: only a warm start or a disabled eD2k
+    /// stays their hand.
+    #[test]
+    fn the_seed_gate_is_a_cold_start_for_a_network_being_joined() {
+        assert!(should_seed_server_list(true, true));
+        assert!(!should_seed_server_list(true, false));
+        assert!(!should_seed_server_list(false, true));
     }
 
     /// The nodes.dat gate is three-way like the server.met one, but its switch

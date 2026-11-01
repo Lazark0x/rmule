@@ -40,10 +40,27 @@ pub fn seed_outcome_words(outcome: &KadSeedOutcome) -> Sentence {
         KadSeedOutcome::Stranded {
             read_error: Some(fault),
         } => format!("Kad: saved contacts unusable ({})", seed_read_words(*fault)),
-        KadSeedOutcome::Acquired {
-            contacts,
-            candidates,
-        } => format!("Kad: fetched {} contacts", contacts + candidates),
+        KadSeedOutcome::Embedded {
+            seeds,
+            fetched: 0,
+            fetch_failed: None,
+        } => format!("Kad: dialing {seeds} seeds"),
+        KadSeedOutcome::Embedded {
+            seeds,
+            fetched,
+            fetch_failed: None,
+        } => format!("Kad: dialing {seeds} seeds, then {fetched} fetched contacts"),
+        KadSeedOutcome::Embedded {
+            seeds,
+            fetch_failed: Some(error),
+            ..
+        } => format!(
+            "Kad: dialing {seeds} seeds, contact fetch failed ({})",
+            nodes_dat_words(error)
+        ),
+        KadSeedOutcome::Acquired { candidates } => {
+            format!("Kad: fetched {candidates} contacts")
+        }
         KadSeedOutcome::AcquireFailed(error) => {
             format!("Kad: contact fetch failed ({})", nodes_dat_words(error))
         }
@@ -68,6 +85,7 @@ fn nodes_dat_words(error: &NodesDatPipelineError) -> String {
         NodesDatPipelineError::BootstrapEdition(_) => {
             "the file is not a nodes.dat rmule reads".to_string()
         }
+        NodesDatPipelineError::Odd(_) => "the file does not look like a real list".to_string(),
     }
 }
 
