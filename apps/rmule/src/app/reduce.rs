@@ -279,6 +279,18 @@ impl App {
                 {
                     self.dirty |= self.chrome.update(&Action::Flash(text), now);
                 }
+                // The one edge the opt-in bell rings for: a restored completed
+                // row comes back as a recovery and stays silent.
+                if self.state.preferences.completion_bell
+                    && matches!(
+                        &action,
+                        Action::Core(rmule_core::CoreEvent::Download(
+                            rmule_core::DownloadEvent::DownloadCompleted { .. }
+                        ))
+                    )
+                {
+                    self.pending_bell = true;
+                }
                 if let Action::Core(rmule_core::CoreEvent::Quitting { step }) = &action {
                     let flash = Action::Flash(app_words::quit_step(*step));
                     self.dirty |= self.chrome.update(&flash, now);
@@ -319,6 +331,9 @@ impl App {
                 {
                     self.views.searches.arrive(&self.state);
                 }
+                if self.chrome.active != from {
+                    self.remember_tab(now);
+                }
                 Flow::Continue
             }
         }
@@ -336,25 +351,41 @@ impl App {
     }
 
     /// Record the server just reached as the one a connect at start dials.
-    /// The write is not an edit, so it says nothing when it lands; when the
-    /// store refuses it the operator is told once, since the next start will
-    /// dial the server before it.
+    /// When the store refuses it the operator is told once, since the next
+    /// start will dial the server before it.
     fn remember_server(&mut self, server: rmule_primitives::ServerEndpoint, now: Instant) {
         let edit = crate::config::PrefEdit::LastServer(server);
-        let Some(config) = &self.config else {
-            return;
-        };
-        if let Err(error) = config.commit(&edit) {
-            tracing::warn!(%error, "the last connected server could not be saved");
-            if !std::mem::replace(&mut self.last_server_unsaved_told, true) {
-                self.dirty |= self.state.apply(
-                    Action::Note(crate::words::store::LAST_SERVER_NOT_SAVED),
-                    now,
-                );
-            }
-            return;
+        if !self.remember(&edit) && !std::mem::replace(&mut self.last_server_unsaved_told, true) {
+            self.dirty |= self.state.apply(
+                Action::Note(crate::words::store::LAST_SERVER_NOT_SAVED),
+                now,
+            );
         }
-        self.state.preferences.apply(&edit);
+    }
+
+    /// Record the tab now up as the one the next run opens on, told once when
+    /// the store refuses it.
+    fn remember_tab(&mut self, now: Instant) {
+        let edit = crate::config::PrefEdit::LastTab(self.chrome.active);
+        if !self.remember(&edit) && !std::mem::replace(&mut self.last_tab_unsaved_told, true) {
+            self.dirty |= self
+                .state
+                .apply(Action::Note(crate::words::store::LAST_TAB_NOT_SAVED), now);
+        }
+    }
+
+    /// Write what the app keeps for itself. It is not an edit, so it says
+    /// nothing when it lands; false when the store refused it.
+    fn remember(&mut self, edit: &crate::config::PrefEdit) -> bool {
+        let Some(config) = &self.config else {
+            return true;
+        };
+        if let Err(error) = config.commit(edit) {
+            tracing::warn!(%error, "a remembered value could not be saved");
+            return false;
+        }
+        self.state.preferences.apply(edit);
+        true
     }
 
     /// Persist one Settings edit, apply what this app keeps itself, and

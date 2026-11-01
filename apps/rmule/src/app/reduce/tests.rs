@@ -735,6 +735,44 @@ fn a_refused_download_dir_is_said_before_the_share_warning() {
     assert_eq!(app.views.settings.warned_dir(), Some(elsewhere.path()));
 }
 
+/// The next run opens on the tab this one left up, however it got there.
+#[test]
+fn the_tab_left_up_is_the_tab_the_next_run_opens_on() {
+    use crate::config::SharedConfig;
+
+    let config = SharedConfig::open(rmule_testkit::memory_store());
+    let preferences = config.load(None).expect("load");
+    let mut app = App::new(Theme::default_dark()).with_config(config.clone(), preferences);
+    let now = Instant::now();
+    app.reduce(Action::SwitchView(ViewId::Transfers), now);
+    app.reduce(Action::CycleView(1), now);
+
+    let reopened = config.load(None).expect("load");
+    let app = App::new(Theme::default_dark()).with_config(config, reopened);
+    assert_eq!(app.chrome.active, ViewId::SharedFiles);
+}
+
+/// The bell is opt-in, and rings for the completing edge.
+#[test]
+fn a_finished_download_rings_only_when_the_operator_asked() {
+    let completed = || {
+        Action::Core(rmule_core::CoreEvent::Download(
+            rmule_core::DownloadEvent::DownloadCompleted {
+                download_id: crate::fixture::download_id(1),
+                final_path: crate::fixture::part_file(),
+            },
+        ))
+    };
+    let mut app = App::new(Theme::default_dark());
+    let now = Instant::now();
+    app.reduce(completed(), now);
+    assert!(!app.pending_bell, "off by default");
+
+    app.state.preferences.completion_bell = true;
+    app.reduce(completed(), now);
+    assert!(app.pending_bell);
+}
+
 /// The server a connect at start dials is kept on each login; when the store
 /// refuses the write the operator is told once, not on every login.
 #[test]

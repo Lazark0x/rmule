@@ -21,9 +21,9 @@
 //!   durable identity + data dir, resolve its seeds through the core's own
 //!   ADR-0067 policy, and send the one `EnableKad` the app owes core — armed
 //!   by the run's first eD2k login, never at startup.
-//! - [`connect`] — the connect at start (ADR-0095): off unless the operator
-//!   turned it on, and then the operator's own `ConnectToServer` to the
-//!   server they last connected to — nothing else in the app ever dials.
+//! - [`connect`] — the connect at start (ADR-0095): on unless the operator
+//!   turned it off, the operator's own `ConnectToServer` to the server they
+//!   last connected to — nothing else in the app ever dials.
 //! - [`player`] — the Player Command (ADR-0114): the operator's player as
 //!   words split by POSIX rules, never a shell line.
 //! - [`config`] — front-end-owned configuration (ADR-0069): the app-config

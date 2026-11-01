@@ -33,11 +33,23 @@ A render snapshot compared glyph-exactly against `tests/goldens/<name>.txt`, dra
 _Avoid_: snapshot test (too generic), screenshot, visual test
 
 **Chrome**:
-Everything around the views: the tab bar, the status bar and its width budget, the help overlay, and the flash. It owns no core data — it reads the same `UiState` the views do.
+Everything around the views: the tab bar, the status bar and its width budget, the help overlay, the flash, and the terminal's title and bell when the operator asks for them. It owns no core data — it reads the same `UiState` the views do.
 _Avoid_: layout, shell, frame — as names for the chrome. `Frame` stays ratatui's word for the surface being drawn into, so `draw_frame(frame: &mut Frame, …)` reads right.
 
+**Status bar**:
+The bottom border's one row, which answers "is everything fine?" at any width and takes no rows from the frame. The rates sit first, in fixed cells, and are never pushed off: nothing else claims the row before them, and below 29 columns they read in a short form. What is left goes by claim: a flash or a stopped core, the way to help, the connection, the **Tally**, the note, the server's users; a segment is dropped whole, except a flash and a note, which give up their middle. The connection reads off edges, as the Servers title and its `c` hint do, so they agree in every frame: a dial is `connecting…`, off is dim when chosen, red when lost.
+_Avoid_: footer, status line
+
+**Tally**:
+What the Transfers table adds up to: active, failed and done, each counted only when not zero, on the status bar and in the terminal's title. A count at the bar's right end moves nothing but itself.
+_Avoid_: summary, badge
+
+**Note**:
+The status bar's last notable fact, newest wins. It stands five minutes, saying its age once it is a minute old, and its line stays in the log. A pause, a resume and an added download each leave one naming the file, the receipt that replaces whatever was there.
+_Avoid_: status text, toast
+
 **Tab**:
-One of the six top-level surfaces the chrome switches between, named by `ViewId` and drawn in the tab bar. A tab is what the operator selects — a digit, `h`/`l`, or a click; the **view** is the component that draws it, and exactly one is active at a time. What the chrome hands that view is a content rect, never the whole frame.
+One of the six top-level surfaces the chrome switches between, named by `ViewId` and drawn in the tab bar. A tab is what the operator selects — a digit, `h`/`l`, or a click; the **view** is the component that draws it, and exactly one is active at a time. The tab left up is what the next run opens on. The bar names every tab down to 75 columns, two of them by a short title. What the chrome hands that view is a content rect, never the whole frame.
 _Avoid_: page, screen, window
 
 **Pane**:
@@ -73,7 +85,7 @@ A number on the UI state that moves whenever a fold changed something. A table's
 _Avoid_: generation, dirty flag
 
 **Flash**:
-A transient one-line message the app loop shows and expires — how a view reports something it could not do. Distinct from the status bar's info feed, which carries the last notable *core* fact and is folded into `UiState`. One caller is not a view: `App::graceful_quit` fires it directly and event-driven, never on a timer — the opening "Shutting down…" before any step starts, then one redraw per `CoreEvent::Quitting { step }` action naming the step actually running, and, if the bridge's `CORE_SHUTDOWN_GRACE` elapses before the core's flush confirms, one more naming that.
+A transient one-line message the app loop shows and expires — how a view reports something it could not do, in the accent, never the warning's amber. It takes the status bar's row beside the rates, gives up its middle when long, and its whole sentence goes to the log. Distinct from the **Note**, which carries the last notable *core* fact and is folded into `UiState`. One caller is not a view: `App::graceful_quit` fires it directly and event-driven, never on a timer — the opening "Shutting down…" before any step starts, then one redraw per `CoreEvent::Quitting { step }` action naming the step actually running, and, if the bridge's `CORE_SHUTDOWN_GRACE` elapses before the core's flush confirms, one more naming that.
 _Avoid_: toast, alert, error message
 
 **View outcome**:
@@ -81,7 +93,7 @@ What a view did with an input it was offered: ignored it (bubble on to the globa
 _Avoid_: event result, handled flag
 
 **Sentence**:
-What the Networks log, the status bar's note and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally, a preview's reasons and notes). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
+What the Networks log, the **Note** and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally, a preview's reasons and notes). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
@@ -134,7 +146,7 @@ _Avoid_: search tab (the Search tab holds them), search history, saved search, s
 
 
 **Autoconnect**:
-The Settings preference, off by default, under which the app sends at start the same `ConnectToServer` the `c` key sends, to the server last connected to (recorded on every `Connected` edge) — once, to that server alone (ADR-0095, "Connecting is the operator's act"). Nothing else in the app dials a server; with it off, a start connects to nothing and the Kad join waits for the operator's connect.
+The Settings preference, on by default, under which the app sends at start the same `ConnectToServer` the `c` key sends, to the server last connected to (recorded on every `Connected` edge) — once, to that server alone (ADR-0095, "Connecting is the operator's act"). A first run has no such server and dials nothing. An unset key reads on; a stored off stays off. Nothing else in the app dials a server; with it off, a start connects to nothing and the Kad join waits for the operator's connect.
 A session lost later is a different matter: core re-makes it while the operator's intent stands (**Server Intent**) — Autoconnect is only what dials at start.
 _Avoid_: auto-reconnect (that is the Server Intent, not this preference), connect on startup to any server (aMule walks the list; rmule does not)
 

@@ -40,6 +40,10 @@ fn os_code_clause(os_code: Option<i32>) -> String {
     os_code.map_or_else(String::new, |code| format!(" (system code {code})"))
 }
 
+/// The tab now up could not be kept for the next start.
+pub const LAST_TAB_NOT_SAVED: Sentence =
+    Sentence::fixed("could not remember this tab: the next start may open on another");
+
 /// The server just reached could not be kept for the next start.
 pub const LAST_SERVER_NOT_SAVED: Sentence = Sentence::fixed(
     "could not remember this server: connect at start may dial another (see the run log)",

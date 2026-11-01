@@ -13,9 +13,10 @@
 //! core gave reaches it; one opened on the store alone, before attach or
 //! without a core, answers that every key waits for the next start.
 //!
-//! The front end keeps six keys of its own — the theme, the table sorts, the
-//! Run Log level, connect at start, the last server and the Player Command —
-//! in the same store, and applies them itself.
+//! The front end keeps nine keys of its own — the theme, the table sorts, the
+//! Run Log level, connect at start, the last server, the Player Command, the
+//! last tab, the terminal title and the completion bell — in the same store,
+//! and applies them itself.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +30,7 @@ use rmule_primitives::{ServerEndpoint, UserHash};
 
 use crate::table_sort::{Direction, TableSorts};
 use crate::theme::Theme;
+use crate::view::ViewId;
 use crate::words::Sentence;
 use crate::words::app as words;
 
@@ -96,9 +98,8 @@ impl SharedConfig {
 
     /// Persist one edit and answer when it takes effect, reporting the store's
     /// own refusal verbatim. A core key's answer is core's; a front-end key's
-    /// is this app's own: the theme, the Run Log level, a sort, the last
-    /// server and the Player Command apply at once, connect at start only at
-    /// a start.
+    /// is this app's own: everything applies at once but connect at
+    /// start, which only a start reads.
     pub fn commit(&self, edit: &PrefEdit) -> Result<TakesEffect, SettingError> {
         #[cfg(test)]
         if self
@@ -131,6 +132,9 @@ impl SharedConfig {
             FrontEndEdit::PlayerCommand(command) => {
                 set(FrontEndKey::PlayerCommand, command.unwrap_or(""))?;
             }
+            FrontEndEdit::LastTab(view) => set(FrontEndKey::LastTab, view.key())?,
+            FrontEndEdit::TerminalTitle(on) => set(FrontEndKey::TerminalTitle, &on.to_string())?,
+            FrontEndEdit::CompletionBell(on) => set(FrontEndKey::CompletionBell, &on.to_string())?,
             // Every table shares one value: re-read it so the write keeps the
             // other tables' entries as the store has them.
             FrontEndEdit::TableSort {
@@ -178,9 +182,9 @@ impl SharedConfig {
             obfuscation: ObfuscationChoice::of(core.obfuscation),
             port_mapping: core.port_mapping == PortMappingMode::Auto,
             table_sorts: TableSorts::parse(text(FrontEndKey::TableSorts)?.as_deref()),
-            // Off unless the operator turned it on (ADR-0095).
+            // On unless the operator turned it off (ADR-0095).
             connect_at_start: text(FrontEndKey::ConnectAtStart)?
-                .is_some_and(|value| value == "true"),
+                .is_none_or(|value| value == "true"),
             // Lean unless the operator turned the full level on.
             run_log_full: rmule_core::run_log::Level::from_preference(
                 text(FrontEndKey::RunLogFull)?.as_deref(),
@@ -191,6 +195,10 @@ impl SharedConfig {
             last_server: text(FrontEndKey::LastServer)?
                 .and_then(|value| ServerEndpoint::parse_host_port(&value).ok()),
             player_command: text(FrontEndKey::PlayerCommand)?.filter(|text| !text.is_empty()),
+            last_tab: ViewId::parse(text(FrontEndKey::LastTab)?.as_deref()),
+            terminal_title: text(FrontEndKey::TerminalTitle)?.is_some_and(|value| value == "true"),
+            completion_bell: text(FrontEndKey::CompletionBell)?
+                .is_some_and(|value| value == "true"),
             user_hash: Some(identity.user_hash()),
             kad_node_id: Some(kad.id),
         })
@@ -384,7 +392,8 @@ pub struct Preferences {
     /// Every table's **Table Sort**, kept across runs.
     pub table_sorts: TableSorts,
     /// Whether the app performs the operator's connect at start, to
-    /// [`last_server`](Self::last_server) (ADR-0095). Off by default.
+    /// [`last_server`](Self::last_server) (ADR-0095). On by default; with no
+    /// server yet there is nothing to connect to.
     pub connect_at_start: bool,
     /// Whether the Run Log is written at its full level. Off by default.
     pub run_log_full: bool,
@@ -394,6 +403,13 @@ pub struct Preferences {
     /// player's words. `None` until the operator sets one, and then Preview
     /// opens the **Default App**.
     pub player_command: Option<String>,
+    /// The tab the last run showed, which this run opens on.
+    pub last_tab: ViewId,
+    /// Whether the terminal's title carries the rates and the tally. Off by
+    /// default: a title is the operator's until they give it up.
+    pub terminal_title: bool,
+    /// Whether a finished download rings the terminal's bell. Off by default.
+    pub completion_bell: bool,
     /// The **Dead Server Limit** (ADR-0052): failed tries in a row after
     /// which a listed server is dead. Live — core takes it up at once.
     pub dead_server_retries: u32,
@@ -440,10 +456,13 @@ impl Default for Preferences {
             obfuscation: ObfuscationChoice::Off,
             port_mapping: true,
             table_sorts: TableSorts::default(),
-            connect_at_start: false,
+            connect_at_start: true,
             run_log_full: false,
             last_server: None,
             player_command: None,
+            last_tab: ViewId::default(),
+            terminal_title: false,
+            completion_bell: false,
             dead_server_retries: rmule_core::DEFAULT_DEAD_AFTER,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,
@@ -486,6 +505,9 @@ impl Preferences {
             PrefEdit::RunLogFull(on) => self.run_log_full = *on,
             PrefEdit::LastServer(server) => self.last_server = Some(server.clone()),
             PrefEdit::PlayerCommand(command) => self.player_command = command.clone(),
+            PrefEdit::LastTab(view) => self.last_tab = *view,
+            PrefEdit::TerminalTitle(on) => self.terminal_title = *on,
+            PrefEdit::CompletionBell(on) => self.completion_bell = *on,
             PrefEdit::DeadServerRetries(limit) => self.dead_server_retries = *limit,
             PrefEdit::WithholdShares(on) => self.withhold_shares = *on,
             PrefEdit::RememberPeers(peers) => self.remember_peers = *peers,
@@ -555,6 +577,14 @@ pub enum PrefEdit {
     /// The server the operator just connected to, written by the app on the
     /// `Connected` edge rather than by the Settings form.
     LastServer(ServerEndpoint),
+    /// The tab now up, written by the app on each switch rather than by the
+    /// Settings form.
+    LastTab(ViewId),
+    /// Whether the terminal's title carries the rates and the tally; the next
+    /// frame follows.
+    TerminalTitle(bool),
+    /// Whether a finished download rings the bell; the next one follows.
+    CompletionBell(bool),
     /// A table's sort, written by the table itself rather than the Settings
     /// form; the view already shows it.
     TableSort {
@@ -588,6 +618,12 @@ pub enum FrontEndEdit<'a> {
     LastServer(&'a ServerEndpoint),
     /// See [`PrefEdit::PlayerCommand`].
     PlayerCommand(Option<&'a str>),
+    /// See [`PrefEdit::LastTab`].
+    LastTab(ViewId),
+    /// See [`PrefEdit::TerminalTitle`].
+    TerminalTitle(bool),
+    /// See [`PrefEdit::CompletionBell`].
+    CompletionBell(bool),
     /// See [`PrefEdit::TableSort`].
     TableSort {
         /// The table's stored key.
@@ -640,6 +676,9 @@ impl PrefEdit {
             Self::PlayerCommand(command) => {
                 return Keeper::FrontEnd(FrontEndEdit::PlayerCommand(command.as_deref()));
             }
+            Self::LastTab(view) => return Keeper::FrontEnd(FrontEndEdit::LastTab(*view)),
+            Self::TerminalTitle(on) => return Keeper::FrontEnd(FrontEndEdit::TerminalTitle(*on)),
+            Self::CompletionBell(on) => return Keeper::FrontEnd(FrontEndEdit::CompletionBell(*on)),
             Self::TableSort {
                 table,
                 column,

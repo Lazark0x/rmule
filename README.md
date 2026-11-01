@@ -108,7 +108,8 @@ eD2k server until you say so.
    is empty, and Settings › *Fetch list* turns it off. In Networks (`1`), `U`
    fetches a list from any URL and `a` adds one server as `host:port`.
 3. **Connect.** Connecting is yours: select a server in Networks and press
-   `c`. To connect at every start instead, turn on *Autoconnect* in Settings.
+   `c`. Each later start connects to that server again; *Autoconnect* in
+   Settings turns this off.
 4. **Kad** starts after the first server login, or at once when you press `K`
    in Networks. If rmule knows no Kad contacts yet, it fetches `nodes.dat` from
    `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)

@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
 use crate::action::Action;
+use crate::rates::format_rate;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::view::ViewId;
@@ -104,6 +105,18 @@ pub fn draw_overlays(frame: &mut Frame, state: &UiState, chrome: &ChromeState, t
             theme,
         );
     }
+}
+
+/// The terminal's title this state asks for; `None` while the setting is off.
+#[must_use]
+pub fn terminal_title(state: &UiState) -> Option<String> {
+    state.preferences.terminal_title.then(|| {
+        crate::words::app::terminal_title(
+            &format_rate(state.rates.down_total_bps),
+            &format_rate(state.rates.up_total_bps),
+            state.tally(),
+        )
+    })
 }
 
 /// Char width of one status segment.

@@ -13,9 +13,9 @@ pub enum FrontEndKey {
     /// key.
     TableSorts,
     /// Whether the app performs the operator's connect at attach
-    /// (`"true"`/`"false"`, off when unset — ADR-0095, "Connecting is the
-    /// operator's act"; aMule's `Autoconnect`, which rmule keeps off by
-    /// default).
+    /// (`"true"`/`"false"`, on when unset, so a stored `"false"` is the
+    /// operator's off and stays — ADR-0095, "Connecting is the operator's
+    /// act"; aMule's `Autoconnect`).
     ConnectAtStart,
     /// The server the operator last connected to, as `host:port`: what a
     /// connect at start dials. Written on every `Connected`.
@@ -30,6 +30,15 @@ pub enum FrontEndKey {
     /// split into words at each Preview launch; unset when absent or empty,
     /// and Preview is then off.
     PlayerCommand,
+    /// The tab the app last showed, as [`ViewId::key`](crate::view::ViewId::key):
+    /// what the next run opens on.
+    LastTab,
+    /// Whether the app writes rates and the tally to the terminal's title
+    /// (`"true"`/`"false"`, off when unset).
+    TerminalTitle,
+    /// Whether a finished download rings the terminal's bell
+    /// (`"true"`/`"false"`, off when unset).
+    CompletionBell,
 }
 
 impl FrontEndKey {
@@ -44,6 +53,9 @@ impl FrontEndKey {
             Self::LastServer => "last_server",
             Self::RunLogFull => rmule_core::run_log::PREFERENCE_KEY,
             Self::PlayerCommand => "player_command",
+            Self::LastTab => "last_tab",
+            Self::TerminalTitle => "terminal_title",
+            Self::CompletionBell => "completion_bell",
         }
     }
 }

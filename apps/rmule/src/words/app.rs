@@ -58,6 +58,9 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         PrefEdit::DeadServerRetries(_) | PrefEdit::WithholdShares(_) => {
             super::server::policy_receipt(edit)
         }
+        PrefEdit::LastTab(view) => format!("last tab → {}", view.title()),
+        PrefEdit::TerminalTitle(on) => format!("terminal title → {}", on_off(*on)),
+        PrefEdit::CompletionBell(on) => format!("completion bell → {}", on_off(*on)),
         PrefEdit::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
         PrefEdit::PlayerCommand(command) => super::player::receipt(command.as_deref()),
     };
@@ -410,3 +413,23 @@ pub fn tally_part(part: crate::state::TallyPart, count: usize, short: bool) -> S
 pub const fn tally_gap(short: bool) -> &'static str {
     if short { " " } else { " · " }
 }
+
+/// The terminal's title: the rates and the tally, read from a tab or a tmux
+/// window with the app out of sight.
+#[must_use]
+pub fn terminal_title(down: &str, up: &str, tally: crate::state::Tally) -> String {
+    let mut title = format!("rmule ▼ {down} ▲ {up}");
+    for (part, count) in tally.parts() {
+        if count > 0 {
+            title.push(' ');
+            title.push_str(&tally_part(part, count, true));
+        }
+    }
+    title
+}
+
+/// What the Settings row for the terminal title does.
+pub const TERMINAL_TITLE_NOTE: &str = "rates and counts in the window title";
+
+/// What the Settings row for the completion bell does.
+pub const COMPLETION_BELL_NOTE: &str = "rings the terminal when a download finishes";

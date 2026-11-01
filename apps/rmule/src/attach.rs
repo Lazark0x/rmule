@@ -105,8 +105,8 @@ pub struct Attachment<F> {
     pub preferences: Preferences,
     /// The Kad join, assembled here and run by the app later.
     pub kad: KadJoin<F>,
-    /// What the start does about connecting (ADR-0095): nothing unless the
-    /// operator turned connect at start on.
+    /// What the start does about connecting (ADR-0095): nothing with connect
+    /// at start off, or on a first run.
     pub at_start: AtStart,
     /// The Connection Ceiling the open-descriptor limit lowered at attach,
     /// for the operator to read why (ADR-0116).

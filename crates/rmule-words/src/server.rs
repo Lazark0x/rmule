@@ -419,9 +419,6 @@ pub const NO_SERVER_LISTED: Sentence = Sentence::fixed("no server listed — pre
 /// The add-server form's address does not make a server endpoint.
 pub const INVALID_ADDRESS: &str = "not a server address: a host name or IP and a port 1–65535";
 
-/// Connect at start with no server ever connected to.
-pub const NO_LAST_SERVER: Sentence =
-    Sentence::fixed("connect at start: no server connected to yet — connect once with c");
 /// Connect at start with the last server gone from the list.
 pub const LAST_SERVER_UNLISTED: Sentence =
     Sentence::fixed("connect at start: the server last connected to is no longer listed");

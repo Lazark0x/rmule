@@ -236,3 +236,42 @@ fn a_leading_tilde_is_the_operators_home_and_nothing_else_is() {
     assert_eq!(under_home("/srv/~/dl", home()), PathBuf::from("/srv/~/dl"));
     assert_eq!(under_home("~/dl", None), PathBuf::from("~/dl"));
 }
+
+/// Connect at start reads on from a store that never heard of it, and an off
+/// the store holds is the operator's and stays: the default is the value,
+/// not a rung that would turn their choice over.
+#[test]
+fn connect_at_start_is_on_unless_the_operator_stored_off() {
+    let config = SharedConfig::open(rmule_testkit::memory_store());
+    assert!(config.load(None).expect("load").connect_at_start);
+
+    config
+        .commit(&PrefEdit::ConnectAtStart(false))
+        .expect("commit");
+    assert!(!config.load(None).expect("load").connect_at_start);
+
+    config
+        .commit(&PrefEdit::ConnectAtStart(true))
+        .expect("commit");
+    assert!(config.load(None).expect("load").connect_at_start);
+}
+
+/// The two opt-ins start off, and the tab comes back as it was left.
+#[test]
+fn the_last_tab_and_the_opt_ins_read_back() {
+    let config = SharedConfig::open(rmule_testkit::memory_store());
+    let fresh = config.load(None).expect("load");
+    assert_eq!(fresh.last_tab, crate::view::ViewId::Networks);
+    assert!(!fresh.terminal_title && !fresh.completion_bell);
+
+    for edit in [
+        PrefEdit::LastTab(crate::view::ViewId::Transfers),
+        PrefEdit::TerminalTitle(true),
+        PrefEdit::CompletionBell(true),
+    ] {
+        config.commit(&edit).expect("commit");
+    }
+    let stored = config.load(None).expect("load");
+    assert_eq!(stored.last_tab, crate::view::ViewId::Transfers);
+    assert!(stored.terminal_title && stored.completion_bell);
+}

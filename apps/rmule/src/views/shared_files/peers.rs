@@ -313,7 +313,7 @@ mod tests {
             let drawn = render_to_lines(width, 10, |frame| {
                 view.draw_peers(frame, frame.area(), &state, &theme());
             });
-            let rate_lines = drawn.lines().filter(|line| line.contains("2255.1 KB/s"));
+            let rate_lines = drawn.lines().filter(|line| line.contains("2.2 MB/s"));
             assert_eq!(
                 rate_lines.count(),
                 1,

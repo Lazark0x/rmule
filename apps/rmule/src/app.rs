@@ -54,6 +54,10 @@ pub struct App {
     /// A link waiting for the OSC 52 write (needs the terminal, which
     /// `reduce` never sees); flushed by the run loop.
     pending_copy: Option<String>,
+    /// A finished download owes the terminal's bell; flushed by the run loop.
+    pending_bell: bool,
+    /// The title the terminal shows now, so a frame writes only a change.
+    shown_title: Option<String>,
     /// The command door to the core; `None` until
     /// [`with_client`](Self::with_client).
     client: Option<BridgeHandle>,
@@ -77,6 +81,8 @@ pub struct App {
     /// Whether the operator was told the last-connected server could not be
     /// kept; told once, however many logins follow.
     last_server_unsaved_told: bool,
+    /// Likewise for the tab the next run opens on.
+    last_tab_unsaved_told: bool,
     /// The Run Log's level, shared with its writers: the Settings row turns
     /// it, and the next line written follows.
     run_log: rmule_core::run_log::LevelHandle,
@@ -106,6 +112,8 @@ impl App {
             dirty: true, // first frame always paints
             too_small: false,
             pending_copy: None,
+            pending_bell: false,
+            shown_title: None,
             client: None,
             pending_commands: Vec::new(),
             kad_start: None,
@@ -113,6 +121,7 @@ impl App {
             kad_first_login_owed: false,
             kad_join_ended_told: false,
             last_server_unsaved_told: false,
+            last_tab_unsaved_told: false,
             run_log: rmule_core::run_log::LevelHandle::default(),
             history: history::HistoryPoll::default(),
         }
@@ -153,6 +162,7 @@ impl App {
         self.views.transfers.restore_sort(&preferences.table_sorts);
         self.views.networks.restore_sort(&preferences.table_sorts);
         self.views.shared.restore_sort(&preferences.table_sorts);
+        self.chrome.active = preferences.last_tab;
         self.state.preferences = preferences;
         self.config = Some(config);
         self
@@ -220,6 +230,9 @@ impl App {
                     }
                     if let Some(link) = self.pending_copy.take() {
                         tui.copy_to_clipboard(&link)?;
+                    }
+                    if std::mem::take(&mut self.pending_bell) {
+                        tui.ring_bell()?;
                     }
                     self.flush_commands();
                     // ADR-0069: input redraws immediately; core bursts wait
@@ -345,6 +358,8 @@ impl App {
         let theme = &self.theme;
         let views = &mut self.views;
         let mut too_small = false;
+        let title = chrome::terminal_title(state);
+        let new_title = (title != self.shown_title).then_some(title);
         off_the_workers(|| {
             tui.draw(|frame| {
                 too_small = crate::views::too_small::holds(frame.area());
@@ -364,8 +379,14 @@ impl App {
                 {
                     frame.set_cursor_position(caret);
                 }
-            })
+            })?;
+            new_title
+                .as_ref()
+                .map_or(Ok(()), |title| tui.set_title(title.as_deref()))
         })?;
+        if let Some(title) = new_title {
+            self.shown_title = title;
+        }
         self.too_small = too_small;
         self.dirty = false;
         Ok(())
@@ -396,6 +417,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingSurface {
         frames: Vec<String>,
+        titles: Vec<Option<String>>,
     }
 
     impl Surface for RecordingSurface {
@@ -408,6 +430,41 @@ mod tests {
         fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
             Ok(())
         }
+
+        fn set_title(&mut self, title: Option<&str>) -> std::io::Result<()> {
+            self.titles.push(title.map(str::to_owned));
+            Ok(())
+        }
+
+        fn ring_bell(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The title is the operator's until they give it up, follows the rates
+    /// only when they change, and goes back when the setting is turned off.
+    #[test]
+    fn the_terminal_title_follows_the_setting_and_writes_only_a_change() {
+        let mut app = App::new(Theme::default_dark());
+        let mut surface = RecordingSurface::default();
+        let now = Instant::now();
+
+        app.draw(&mut surface, now).expect("draw");
+        assert!(surface.titles.is_empty(), "off leaves the title alone");
+
+        app.state.preferences.terminal_title = true;
+        app.state.rates.down_total_bps = 8.0 * 1024.0 * 1024.0;
+        app.draw(&mut surface, now).expect("draw");
+        app.draw(&mut surface, now).expect("draw");
+        assert_eq!(
+            surface.titles,
+            [Some("rmule ▼ 8.0 MB/s ▲ 0.0 KB/s".to_string())],
+            "written once"
+        );
+
+        app.state.preferences.terminal_title = false;
+        app.draw(&mut surface, now).expect("draw");
+        assert_eq!(surface.titles.last(), Some(&None), "given back");
     }
 
     /// A stalled terminal keeps its own task, not a worker: on a runtime of
@@ -600,6 +657,14 @@ mod tests {
         }
 
         fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn set_title(&mut self, _title: Option<&str>) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn ring_bell(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }

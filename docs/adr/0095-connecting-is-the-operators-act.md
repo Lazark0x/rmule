@@ -30,11 +30,13 @@ the listener and waits for its mapping first (ADR-0086). The listener is up from
 Every activity asks `SharedServerSession::live_session`, which waits out an operator connect in
 flight and then answers the live handle or nothing. It never dials.
 
-- **Connect at start** is a Settings preference, **off by default** (aMule's `Autoconnect` is on,
-  `Preferences.cpp:1160`). When on, the TUI sends at attach the same `ConnectToServer` to the
-  server the operator last connected to, recorded on every `Connected` edge. With none recorded
-  or one no longer listed, nothing is dialed and the status bar says why. An unreachable server
-  gets one attempt; rmule does not walk the list as aMule's `ConnectToAnyServer` does
+- **Connect at start** is a Settings preference, **on by default**, as aMule's `Autoconnect` is
+  (`Preferences.cpp:1160`). It repeats the operator's own act: the TUI sends at attach the same
+  `ConnectToServer` to the server they last connected to, recorded on every `Connected` edge, and
+  a restart of a tool left running for days comes back to work rather than to `No network`. With
+  none recorded, a first run, nothing is dialed and nothing is said; with one no longer listed,
+  nothing is dialed and the status bar says why. The default is the value an unset key reads, so
+  a stored off stays off and no store rung is needed. An unreachable server gets one attempt; rmule does not walk the list as aMule's `ConnectToAnyServer` does
   (`ServerConnect.cpp:55-70`), because each step would dial a server the operator never picked.
 - **The listener is up from attach.** A core built to restore at attach starts the Serve activity at
   attach, before it restores any download, on `0.0.0.0:<the Core Settings' TCP port>`; its TCP
