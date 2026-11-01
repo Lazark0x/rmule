@@ -7,6 +7,7 @@
 //! wait.
 
 use parking_lot::Mutex;
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -31,20 +32,52 @@ pub(crate) struct HeldPlace {
     pub(crate) ip: IpAddr,
 }
 
-/// The node's held places, by the download that holds each.
+/// The node's held places, by the download that holds each, and how many
+/// hold each place: a queue rank asks once per waiter, so the ask does not
+/// walk the downloads.
+#[derive(Debug, Default)]
+struct Held {
+    by_download: HashMap<DownloadId, HashSet<HeldPlace>>,
+    holders: HashMap<HeldPlace, usize>,
+}
+
+impl Held {
+    /// `download` holds `now` and nothing else.
+    fn replace(&mut self, download: DownloadId, now: HashSet<HeldPlace>) {
+        if self
+            .by_download
+            .get(&download)
+            .is_some_and(|held| *held == now)
+        {
+            return;
+        }
+        for place in self.by_download.remove(&download).into_iter().flatten() {
+            if let Entry::Occupied(mut holders) = self.holders.entry(place) {
+                *holders.get_mut() -= 1;
+                if *holders.get() == 0 {
+                    holders.remove();
+                }
+            }
+        }
+        for place in &now {
+            *self.holders.entry(*place).or_default() += 1;
+        }
+        if !now.is_empty() {
+            self.by_download.insert(download, now);
+        }
+    }
+}
+
+/// The node's held places, shared by every run and the serve side.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SharedHeldPlaces(Arc<Mutex<HashMap<DownloadId, HashSet<HeldPlace>>>>);
+pub(crate) struct SharedHeldPlaces(Arc<Mutex<Held>>);
 
 impl SharedHeldPlaces {
-    fn lock(&self) -> parking_lot::MutexGuard<'_, HashMap<DownloadId, HashSet<HeldPlace>>> {
-        self.0.lock()
-    }
-
     /// Whether some download stands queued at the peer `user_hash` names at
     /// `ip`.
     pub(crate) fn holds(&self, user_hash: UserHash, ip: IpAddr) -> bool {
         let place = HeldPlace { user_hash, ip };
-        self.lock().values().any(|places| places.contains(&place))
+        self.0.lock().holders.contains_key(&place)
     }
 
     /// `download`'s seat: what it publishes replaces what it held, and its
@@ -67,19 +100,14 @@ pub(crate) struct HeldPlacesSeat {
 impl HeldPlacesSeat {
     /// Replace the run's held places with `now`.
     pub(crate) fn hold(&self, now: impl IntoIterator<Item = HeldPlace>) {
-        let now: HashSet<HeldPlace> = now.into_iter().collect();
-        let mut places = self.places.lock();
-        if now.is_empty() {
-            places.remove(&self.download);
-        } else {
-            places.insert(self.download, now);
-        }
+        let now = now.into_iter().collect();
+        self.places.0.lock().replace(self.download, now);
     }
 }
 
 impl Drop for HeldPlacesSeat {
     fn drop(&mut self) {
-        self.places.lock().remove(&self.download);
+        self.places.0.lock().replace(self.download, HashSet::new());
     }
 }
 
@@ -106,5 +134,29 @@ mod tests {
         assert!(!places.holds(UserHash::from_bytes([8; 16]), at));
         drop(seat);
         assert!(!places.holds(hash, at));
+    }
+
+    /// A place two downloads hold stays held until the last lets it go, and
+    /// a run that moves on takes its old place with it.
+    #[test]
+    fn a_place_two_runs_hold_outlives_one_of_them() {
+        let places = SharedHeldPlaces::default();
+        let at = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 7));
+        let place = |byte| HeldPlace {
+            user_hash: UserHash::from_bytes([byte; 16]),
+            ip: at,
+        };
+        let holds = |byte| places.holds(UserHash::from_bytes([byte; 16]), at);
+        let first = places.seat(DownloadId::from_u64(1));
+        let second = places.seat(DownloadId::from_u64(2));
+        first.hold([place(7)]);
+        second.hold([place(7)]);
+        second.hold([place(7)]);
+        drop(first);
+        assert!(holds(7));
+        second.hold([place(8)]);
+        assert!(!holds(7) && holds(8));
+        second.hold([]);
+        assert!(!holds(8));
     }
 }

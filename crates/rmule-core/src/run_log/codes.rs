@@ -96,6 +96,7 @@ pub(super) fn failure(record: Record, failure: &DownloadFailure) -> Record {
         DownloadFailure::PartVerificationFailed => "part_verification_failed",
         DownloadFailure::FinalPathTaken => "final_path_taken",
         DownloadFailure::StoreFailed => "store_failed",
+        DownloadFailure::StoredLinkUnreadable => "stored_link_unreadable",
         DownloadFailure::TaskPanicked => "task_panicked",
         DownloadFailure::CompletedFileNotMoved { os_code } => {
             let record = record.code("failure", "completed_file_not_moved");

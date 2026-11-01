@@ -11,7 +11,7 @@ use crate::adapters::{
 use crate::content::{ContentFileStore, free_space, on_pool};
 use crate::download::part_check::{PartCheck, Restart};
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{RunNumber, StopReason, file_link_from_record};
+use crate::download::{RunNumber, StopReason};
 use crate::service::activity::ActiveDownload;
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, DownloadCommand, DownloadEvent, DownloadId,
@@ -264,7 +264,7 @@ where
         if record.lifecycle() == DownloadLifecycle::Completing {
             return self.resume_completing(&record, remembered).await;
         }
-        let file = match file_link_from_record(&record) {
+        let file = match record.file_link() {
             Ok(file) => file,
             Err(reason) => {
                 self.fail_at_rest(download_id, reason).await;

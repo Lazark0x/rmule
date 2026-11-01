@@ -173,6 +173,19 @@ impl DownloadRow {
         }
     }
 
+    /// Fail the row for `reason`.
+    pub(super) fn fail(&mut self, reason: DownloadFailure) {
+        self.lifecycle = DownloadLifecycle::Failed;
+        self.failure = Some(reason);
+    }
+
+    /// Move the row to `state`, with no reason: one belongs to the failure
+    /// it explains.
+    pub(super) fn enter(&mut self, state: DownloadLifecycle) {
+        self.lifecycle = state;
+        self.failure = None;
+    }
+
     /// Whether a second row for this file's identity would race this one.
     /// Terminal rows (completed, cancelled) do not; a completing one still
     /// writes its part file and its destination (ADR-0115).

@@ -165,6 +165,10 @@ pub enum DownloadFailure {
     /// Run Log; the verified parts are kept and a Restart runs it again.
     #[error("the download's task panicked")]
     TaskPanicked,
+    /// The link the row stores does not parse, so the row is damaged and no
+    /// run can start from it. Parts and sources failed nothing.
+    #[error("the download's stored link could not be read")]
+    StoredLinkUnreadable,
 }
 
 /// Why the completion move's check did not pass a finished file (ADR-0115,

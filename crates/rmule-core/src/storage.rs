@@ -10,7 +10,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use rmule_primitives::{AichRootHash, Ed2kFileLink, Ed2kLink, PartHash, ServerEndpoint};
+use rmule_primitives::{AichRootHash, Ed2kFileLink, PartHash, ServerEndpoint};
 
 use crate::content::Revalidation;
 use crate::file_history::Ed2kIdentity;
@@ -77,7 +77,7 @@ pub(crate) fn resolve_hash_authority(
     canonical_link: &str,
     provisional: &[PartHash],
 ) -> ResolvedAuthority {
-    if let Ok(Ed2kLink::File(file)) = Ed2kLink::parse(canonical_link)
+    if let Ok(file) = crate::durable::stored_file_link(canonical_link)
         && let Some(set) = file.part_hash_set
     {
         return ResolvedAuthority::Link(set.hashes().to_vec());

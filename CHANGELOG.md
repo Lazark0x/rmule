@@ -98,6 +98,15 @@ All notable changes to rmule are recorded here. The format follows
 - SIGQUIT, SIGUSR1, SIGUSR2 and SIGALRM quit and give the terminal back. A
   crash restores the cursor.
 
+### Store
+
+- A store written before the first release is refused with its version and the
+  oldest one this build upgrades, and is left as it was: open it once with
+  rmule 0.2.0, which upgrades it.
+- A scan commits its files many at a time, so a first scan of thousands of small
+  files no longer stalls the app.
+- A download whose stored link is damaged says so, rather than blaming a part.
+
 ### Interop harness
 
 - Every flow writes one typed verdict to one TOML file, and the harness exits

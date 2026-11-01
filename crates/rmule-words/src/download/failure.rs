@@ -50,6 +50,9 @@ pub fn download_failure_words(reason: &DownloadFailure) -> String {
         DownloadFailure::StoreFailed => {
             "rmule's store could not read or write this download's record"
         }
+        DownloadFailure::StoredLinkUnreadable => {
+            "the link this download was stored with is damaged, so add it again from its link"
+        }
         DownloadFailure::TaskPanicked => {
             "rmule hit an internal fault, written to its log; every checked part is kept, so Restart it"
         }

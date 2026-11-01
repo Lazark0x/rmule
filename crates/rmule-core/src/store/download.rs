@@ -342,8 +342,7 @@ impl DurableDownloadRepository {
             if !row.lifecycle.can_transition_to(DownloadLifecycle::Failed) {
                 return Err(CoreError::InvalidLifecycleTransition);
             }
-            row.lifecycle = DownloadLifecycle::Failed;
-            row.failure = Some(reason);
+            row.fail(reason);
             Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
         })
     }
@@ -366,8 +365,7 @@ impl DurableDownloadRepository {
             ) {
                 return Err(CoreError::InvalidLifecycleTransition);
             }
-            row.lifecycle = DownloadLifecycle::Completing;
-            row.failure = None;
+            row.enter(DownloadLifecycle::Completing);
             row.final_path = HomePath::new(destination, self.home());
             Ok(DOWNLOADS.update(txn, &id.as_u64(), &row).map(|_| ())?)
         })
@@ -701,10 +699,7 @@ impl DownloadRepository for DurableDownloadRepository {
             if !row.lifecycle.can_transition_to(state) {
                 return Err(CoreError::InvalidLifecycleTransition);
             }
-            row.lifecycle = state;
-            // A reason belongs to the failure it explains; every other
-            // lifecycle has none (`fail` writes both together).
-            row.failure = None;
+            row.enter(state);
             // A finished or dropped download keeps no peers (ADR-0109,
             // "Source Seeds"): they leave in the move that ends it.
             if !row.is_live() {

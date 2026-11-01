@@ -52,5 +52,5 @@ pub(crate) use reask_routes::ReaskRoutes;
 pub(crate) use runner::{
     CompletionFs, CompletionGate, DiscoveryLiveness, DownloadRequest, DownloadTask,
     FinalFileInPlace, LaterLinkSources, OsCompletionFs, Recovered, RunnerContext, StopAnswer,
-    StopReason, file_link_from_record, link_sources, names_sources,
+    StopReason, link_sources, names_sources,
 };

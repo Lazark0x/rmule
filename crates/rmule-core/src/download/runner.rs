@@ -9,7 +9,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::DurableDownloadRecord;
 use crate::adapters::{PeerTransferService, SourceLookupService};
 use crate::download::persist::store_failed;
 use crate::download::state::SourcingPosture;
@@ -24,7 +23,7 @@ use crate::service::{
 };
 use crate::storage::DownloadRepository;
 use rmule_peer::PeerHandshakeContext;
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, SourceSighting};
+use rmule_primitives::{Ed2kFileLink, SourceSighting};
 use tokio::sync::{Mutex, mpsc, watch};
 
 mod adopt;
@@ -526,15 +525,6 @@ where
     )
     .await?;
     completion::complete(runner, request.download_id, &file, file_hash_only_parts).await
-}
-
-pub(crate) fn file_link_from_record(
-    record: &DurableDownloadRecord,
-) -> Result<Ed2kFileLink, DownloadFailure> {
-    match Ed2kLink::parse(record.canonical_link()) {
-        Ok(Ed2kLink::File(file)) => Ok(file),
-        _ => Err(DownloadFailure::PartVerificationFailed),
-    }
 }
 
 fn check_stop(rx: &watch::Receiver<StopReason>) -> Result<(), DownloadFailure> {

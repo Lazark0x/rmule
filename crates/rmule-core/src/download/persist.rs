@@ -113,7 +113,7 @@ pub(crate) fn hash_set_learned<S, P>(
     let Ok(record) = runner.rt.store.load_download(download_id) else {
         return;
     };
-    let Ok(Ed2kLink::File(mut link)) = Ed2kLink::parse(record.canonical_link()) else {
+    let Ok(mut link) = record.file_link() else {
         return;
     };
     let Ok(set) = PartHashSet::from_hashes(link.size(), hashes.to_vec()) else {

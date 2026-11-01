@@ -9,9 +9,7 @@ use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{
-    CompletionGate, FinalFileInPlace, Recovered, StopAnswer, file_link_from_record,
-};
+use crate::download::{CompletionGate, FinalFileInPlace, Recovered, StopAnswer};
 use crate::registry::SharedFileRegistry;
 use crate::service::{CoreCommandRejectReason, DownloadId};
 use crate::storage::DownloadRepository;
@@ -107,7 +105,7 @@ where
         remembered: Vec<SourceSeed>,
     ) -> Result<(), CoreCommandRejectReason> {
         let download_id = record.id();
-        let file = match file_link_from_record(record) {
+        let file = match record.file_link() {
             Ok(file) => file,
             Err(reason) => {
                 self.fail_at_rest(download_id, reason).await;
