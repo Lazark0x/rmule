@@ -91,6 +91,18 @@ impl Scripted {
         stamp
     }
 
+    /// A file of `size` bytes no read may reach: its stamp alone exists, as
+    /// a file too large to script.
+    pub(crate) fn sized(&mut self, path: &str, size: u64, modified: u64) -> FileStamp {
+        let stamp = FileStamp {
+            size,
+            modified: at(modified),
+        };
+        self.entry(path, EntryKind::File(stamp));
+        self.files.insert(PathBuf::from(path), (stamp, Vec::new()));
+        stamp
+    }
+
     /// Give the file at `path` an identity: inode `inode` on device 1, born
     /// at second `born`.
     pub(crate) fn identify(&mut self, path: &str, inode: u64, born: u64) -> FileIdentity {

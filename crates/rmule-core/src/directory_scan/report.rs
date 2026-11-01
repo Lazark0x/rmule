@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use rmule_primitives::FileHash;
 
 use super::{FileIdentity, ScanSummary, SpareCopy, WatchFault};
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedFileEntry};
 
 /// A registry change the scan asks the actor to make, or the end of its
 /// first pass.
@@ -54,6 +54,14 @@ pub(crate) enum ScanReport {
         kind: io::ErrorKind,
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
+    },
+    /// The file at `path` is refused before any read of it. Told once until
+    /// it is hashed or gone.
+    Refused {
+        /// The file.
+        path: PathBuf,
+        /// Why.
+        refusal: ShareRefusal,
     },
     /// A file hashed and ready to share.
     Share(SharedFileEntry),

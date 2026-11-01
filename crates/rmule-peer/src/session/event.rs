@@ -84,7 +84,7 @@ impl PeerEvent {
             }
             PeerPacket::HashSetAnswer(a) => Self::Requester(RequesterEvent::HashSetReceived {
                 file_hash: a.file_hash,
-                part_hashes: a.part_hashes.clone(),
+                part_hashes: a.part_hashes.hashes().to_vec(),
             }),
             PeerPacket::FileReqAnsNoFil(n) => Self::Requester(RequesterEvent::FileProbed {
                 file_hash: n.file_hash,

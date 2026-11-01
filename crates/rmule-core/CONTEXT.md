@@ -762,8 +762,11 @@ _Avoid_: shared folders, library, share roots
 A registry row a removed **Shared Directory List** entry took out, or a **Spare Copy** under it, kept durably by its path with its stamp, identity, content and part hash set (ADR-0101, "Shared Directories"). It shares nothing and answers nothing on the wire; a pass that finds the same path, size and modification time takes its entry instead of reading the file, so adding the directory again reads nothing.
 _Avoid_: hash cache, tombstone, dormant row
 
+**Share Refusal**:
+Why a file on disk is not shared, ruled from its size before a byte of it is read (ADR-0102): past `MAX_ED2K_FILE_SIZE`, 256 GiB, no server, peer or Kad node could be told what it is, so a scan does not hash it, says so once (`ScanEvent::FileRefused`) and shares nothing, as a stock client skips it. One gate: the scan rules with it on a found file and the **Registry Check** on a stored row.
+
 **Withheld Row**:
-A **Shared File Registry** row kept, with its hash set, while nothing is offered for it, because its file is not readable now: its folder is missing, it cannot be opened or read, or it is gone or changed and awaits a ruling (ADR-0106, "The registry against the disk"); or because it lies under a **Shared Directory List** entry the guards refuse (ADR-0101). Held in memory with its reason and when rmule noticed; a withheld row is in no serve snapshot, no announce, no Kad publication and not in the **File-Known Predicate**'s shared half. It is offered again once a look finds it readable, unless it lies under a refused entry.
+A **Shared File Registry** row kept, with its hash set, while nothing is offered for it, because its file is not readable now: its folder is missing, it cannot be opened or read, or it is gone or changed and awaits a ruling (ADR-0106, "The registry against the disk"); because it lies under a **Shared Directory List** entry the guards refuse (ADR-0101); or because its size is past the limit eD2k addresses (a **Share Refusal** on a row stored before the gate). Held in memory with its reason and when rmule noticed; a withheld row is in no serve snapshot, no announce, no Kad publication and not in the **File-Known Predicate**'s shared half. It is offered again once a look finds it readable, unless it lies under a refused entry or stands refused by its size.
 _Avoid_: hidden, disabled, offline file
 
 **Registry Check**:

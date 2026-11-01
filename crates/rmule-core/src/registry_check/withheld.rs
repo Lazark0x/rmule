@@ -33,6 +33,9 @@ pub enum WithheldReason {
     /// under no listed entry nearer to it that they pass. It stays until the
     /// entry passes them again or the operator removes it.
     Refused,
+    /// A stored row of a size eD2k does not address, written before the gate
+    /// that refuses one. It stays until the operator unshares it.
+    PastSizeLimit,
 }
 
 /// One withheld row's state.

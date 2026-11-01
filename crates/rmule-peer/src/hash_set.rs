@@ -18,7 +18,7 @@
 //! the whole-file hash is already sufficient. Per ADR-0018 an empty answer is
 //! still preserved as an empty `part_hashes`.
 
-use rmule_primitives::{FileHash, Packet, PartHash, WireReader, WireTruncated};
+use rmule_primitives::{FileHash, Packet, PartHash, PartHashList, WireReader, WireTruncated};
 use thiserror::Error;
 
 use crate::opcode::PeerOpcode;
@@ -38,7 +38,7 @@ pub struct HashSetAnswer {
     /// The file they belong to.
     pub file_hash: FileHash,
     /// One hash per part. Position is the only thing binding a hash to its part, so the order is the contract.
-    pub part_hashes: Vec<PartHash>,
+    pub part_hashes: PartHashList,
 }
 
 impl HashSetRequest {
@@ -99,6 +99,10 @@ impl HashSetAnswer {
             buf.copy_from_slice(chunk);
             part_hashes.push(PartHash::from_bytes(buf));
         }
+        let part_hashes =
+            PartHashList::new(part_hashes).map_err(|_| HashSetDecodeError::CountOverflow {
+                count: declared_count,
+            })?;
         Ok(Self {
             file_hash,
             part_hashes,
@@ -108,14 +112,13 @@ impl HashSetAnswer {
     #[must_use]
     /// Frame the answer.
     pub fn encode_packet(&self) -> Packet {
-        let count = u16::try_from(self.part_hashes.len())
-            .expect("part_hashes count exceeds u16 — wire encoding does not support that");
+        let hashes = self.part_hashes.hashes();
         let mut payload = Vec::with_capacity(
-            FileHash::BYTE_LEN + COUNT_LEN + self.part_hashes.len() * PartHash::BYTE_LEN,
+            FileHash::BYTE_LEN + COUNT_LEN + hashes.len() * PartHash::BYTE_LEN,
         );
         payload.extend_from_slice(self.file_hash.as_bytes());
-        payload.extend_from_slice(&count.to_le_bytes());
-        for h in &self.part_hashes {
+        payload.extend_from_slice(&self.part_hashes.count().to_le_bytes());
+        for h in hashes {
             payload.extend_from_slice(h.as_bytes());
         }
         Packet::new(

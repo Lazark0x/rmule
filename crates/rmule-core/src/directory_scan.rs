@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime};
 
 use rmule_primitives::FileHash;
 
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedFileEntry};
 
 pub use fs::FsDirectorySource;
 pub(crate) use hash::HashTurn;
@@ -156,8 +156,8 @@ pub(crate) struct Told {
     /// Paths the running watch does not cover; forgotten when a new watch
     /// starts, which covers them again.
     unwatched: HashSet<PathBuf>,
-    /// Files the watch could not read; each forgotten once it is hashed or
-    /// found gone.
+    /// Files the operator was told are not shared, unreadable or refused;
+    /// each forgotten once it is hashed or found gone.
     not_hashed: HashSet<PathBuf>,
 }
 
@@ -185,6 +185,21 @@ impl Told {
                 kind: error.kind(),
                 os_code: error.raw_os_error(),
             });
+        }
+    }
+
+    /// The files of `refused` are not shared: each said once until it is
+    /// hashed or gone.
+    fn refused(
+        &mut self,
+        refused: Vec<(PathBuf, ShareRefusal)>,
+        report: &mut dyn FnMut(ScanReport),
+    ) {
+        for (path, refusal) in refused {
+            if self.not_hashed.insert(path.clone()) {
+                tracing::warn!(path = %path.display(), ?refusal, "refused; not shared");
+                report(ScanReport::Refused { path, refusal });
+            }
         }
     }
 
@@ -451,7 +466,8 @@ pub(crate) fn run_pass(
         .chain(&plan.gone)
         .map(|row| row.file_hash)
         .collect();
-    let (carried, to_hash) = carry::carry(source, root, plan.hash, known, &lost);
+    let (to_read, refused) = hash::admit(plan.hash);
+    let (carried, to_hash) = carry::carry(source, root, to_read, known, &lost);
     let ask = match consent {
         Consent::Ask(ask) if !to_hash.is_empty() => Some(ask),
         Consent::Confirm(ask) => Some(ask),
@@ -468,6 +484,8 @@ pub(crate) fn run_pass(
         return PassEnd::Stopped;
     }
     told.leftovers(plan.leftovers, report);
+    let refused_count = refused.len();
+    told.refused(refused, report);
     unreadable(plan.unreadable, report);
     whereabouts.seed(&known.spares, root, &plan.spares_left);
     for path in plan.spares_left {
@@ -488,6 +506,7 @@ pub(crate) fn run_pass(
         trusted: plan.trusted,
         carried: carried_count,
         dropped: plan.changed.len() + gone.len() - moved.len(),
+        skipped: refused_count,
         ..ScanSummary::default()
     };
     // Where each shared content lives now, so a second copy of it never

@@ -397,6 +397,12 @@ where
                     .into(),
                 );
             }
+            ScanReport::Refused { path, refusal } => {
+                send_event(
+                    &self.evt_tx,
+                    ScanEvent::FileRefused { dir, path, refusal }.into(),
+                );
+            }
             ScanReport::LeftoverParts(paths) => {
                 tracing::info!(
                     count = paths.len(),

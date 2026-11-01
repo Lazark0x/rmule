@@ -14,13 +14,15 @@
 use std::collections::HashMap;
 
 use rmule_peer::{PartBitmap, PeerIdentity};
-use rmule_primitives::{Ed2kFileClass, Ed2kText, FileHash, PartHash, PeerEndpoint, is_large_file};
+use rmule_primitives::{
+    Ed2kFileClass, Ed2kText, FileHash, PartHashList, PartHashSet, PeerEndpoint, is_large_file,
+};
 
 use super::reask::full_bitmap;
 use super::{ReadFrom, ServeDecision, ServeState};
 use crate::registry::SharedFileEntry;
 use crate::serve::source_exchange::ServedFileKind;
-use crate::served_downloads::{ExchangePool, ReadTarget, ServedLook};
+use crate::served_downloads::{ExchangePool, ReadTarget, ServedLook, WholeSet};
 
 /// The file an ask names, as the share set holds it.
 #[derive(Clone, Copy, Debug)]
@@ -71,13 +73,16 @@ impl<'a> Found<'a> {
     }
 
     /// The part hash set we answer a hash-set ask with: a row's stored set,
-    /// a download's once whole — `None` until then, answered as not found.
-    pub(super) fn hash_set(&self) -> Option<Vec<PartHash>> {
+    /// a download's once whole — `None` until then, or for a row whose set
+    /// is not its size's, answered as not found.
+    pub(super) fn hash_set(&self) -> Option<PartHashList> {
         match self {
-            Self::Row(entry) => Some(entry.part_hashes.clone()),
-            Self::Download { look, .. } => {
-                look.served.set.as_ref().map(|set| set.hashes().to_vec())
+            Self::Row(entry) => {
+                PartHashSet::from_hashes(entry.file_size, entry.part_hashes.clone())
+                    .ok()
+                    .map(PartHashSet::into_list)
             }
+            Self::Download { look, .. } => look.served.set.as_ref().map(WholeSet::list),
         }
     }
 

@@ -30,6 +30,7 @@ honestly and the row is corrected at that moment, not at the next start.**
   | nothing, in a folder that is there | gone | leaves and joins the Had Set (ADR-0105) |
   | nothing, and no folder either | folder missing | withheld, with no time bound |
   | an error other than "not found", or a file that cannot be opened | unreadable | withheld, never Had |
+  | a row past eD2k's size limit, whatever its path holds (ADR-0102) | refused | withheld until the operator unshares it |
 
 - **Who rules.** A row under a live, watched scan's directory is the scan's: *gone* and *changed*
   only withhold it, and the scan rules (a move, a rehash, a leave). Every other row is the Registry

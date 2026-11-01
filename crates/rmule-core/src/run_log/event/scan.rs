@@ -80,6 +80,12 @@ impl ScanEvent {
                 .path("dir", dir)
                 .path("path", path)
                 .os_error(*kind, *os_code),
+            S::FileRefused { dir, path, refusal } => codes::share_refusal(
+                Record::new("scan.file_refused")
+                    .path("dir", dir)
+                    .path("path", path),
+                *refusal,
+            ),
             S::Unlistable { dir } => Record::new("scan.unlistable").path("dir", dir),
         }
     }

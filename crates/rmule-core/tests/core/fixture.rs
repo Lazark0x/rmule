@@ -541,7 +541,7 @@ pub async fn serve_called_back(
                 PeerEvent::Server(ServerEvent::HashSetRequested { file_hash }) => {
                     conn.send(PeerCommand::Server(ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: Vec::new(),
+                        part_hashes: rmule_primitives::PartHashList::default(),
                     }))
                     .await
                     .unwrap();

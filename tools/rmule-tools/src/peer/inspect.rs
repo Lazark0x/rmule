@@ -46,8 +46,8 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
         PeerPacket::HashSetAnswer(r) => {
             println!("kind: hash_set_answer");
             println!("file_hash: {}", r.file_hash.to_hex_upper());
-            println!("part_hash_count: {}", r.part_hashes.len());
-            for (i, h) in r.part_hashes.iter().enumerate() {
+            println!("part_hash_count: {}", r.part_hashes.count());
+            for (i, h) in r.part_hashes.hashes().iter().enumerate() {
                 println!("part_hash[{i}]: {}", h.to_hex_upper());
             }
         }

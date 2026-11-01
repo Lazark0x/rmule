@@ -8,8 +8,9 @@ use std::time::SystemTime;
 
 use rmule_core::{
     DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryState, ScanEvent, ScanPhase,
-    ScanSummary, WatchFault,
+    ScanSummary, ShareRefusal, WatchFault,
 };
+use rmule_primitives::MAX_ED2K_FILE_SIZE;
 
 use super::Sentence;
 use super::os::{kind_words, refusal_words};
@@ -207,11 +208,27 @@ pub fn line(event: &ScanEvent) -> Sentence {
             path.display(),
             refusal_words(*kind, *os_code)
         ),
+        ScanEvent::FileRefused { path, refusal, .. } => format!(
+            "{} is not shared: {}",
+            path.display(),
+            share_refusal_words(*refusal)
+        ),
         ScanEvent::Unlistable { dir } => format!(
             "{} cannot be listed, nothing unshared; it is scanned again at the next start",
             dir.display()
         ),
     })
+}
+
+/// Why a file is refused a share.
+fn share_refusal_words(refusal: ShareRefusal) -> String {
+    match refusal {
+        ShareRefusal::PastSizeLimit { file_size } => format!(
+            "at {} it is past the {} eD2k can address",
+            human_size(file_size),
+            human_size(MAX_ED2K_FILE_SIZE)
+        ),
+    }
 }
 
 /// A scan's phase as a short state: the strip's and Settings' words.

@@ -4,7 +4,8 @@
 //! bytes is refused the same way: it has no part to fetch.
 
 use rmule_primitives::{
-    Ed2kLink, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, PrimitiveError, SearchResult,
+    ED2K_PART_SIZE, Ed2kLink, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, PartHash, PartHashList,
+    PartHashSet, PrimitiveError, SearchResult,
 };
 
 const HASH: &str = "0123456789ABCDEF0123456789ABCDEF";
@@ -68,4 +69,30 @@ fn a_search_row_of_zero_bytes_is_refused_by_that_cause() {
 fn a_file_link_of_zero_bytes_is_refused_by_that_cause() {
     assert!(link_of(1).is_ok(), "one byte is a file");
     assert_eq!(link_of(0).unwrap_err(), PrimitiveError::FileSizeZero);
+}
+
+/// No set exists past the ceiling, and the one at it fits the `u16` of
+/// `OP_HASHSETANSWER`: the 65,536 hashes that overflowed it are refused where
+/// they would become a set.
+#[test]
+fn a_part_hash_set_exists_only_up_to_the_ceiling() {
+    let hash = PartHash::from_bytes([1; 16]);
+    let count = PartHashSet::expected_hash_count(MAX_ED2K_FILE_SIZE).unwrap();
+    let set = PartHashSet::from_hashes(MAX_ED2K_FILE_SIZE, vec![hash; count]).unwrap();
+    assert_eq!(usize::from(set.into_list().count()), count);
+
+    let past = 65_535 * ED2K_PART_SIZE;
+    assert_eq!(
+        PartHashSet::from_hashes(past, vec![hash; 65_536]).unwrap_err(),
+        PrimitiveError::FileSizeAboveLimit { file_size: past }
+    );
+}
+
+#[test]
+fn a_list_past_the_wire_count_is_refused_by_that_cause() {
+    let refused = PartHashList::new(vec![PartHash::from_bytes([1; 16]); 65_536]);
+    assert_eq!(
+        refused.unwrap_err(),
+        PrimitiveError::TooManyPartHashes { count: 65_536 }
+    );
 }

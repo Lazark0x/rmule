@@ -49,8 +49,9 @@ impl LinkRefusal {
         match error {
             PrimitiveError::InvalidHashLength { .. }
             | PrimitiveError::InvalidHashEncoding { .. }
-            | PrimitiveError::InvalidPartHashSetCount { .. } => Self::BadHash,
-            PrimitiveError::FileTooLarge { .. } | PrimitiveError::FileSizeAboveLimit { .. } => {
+            | PrimitiveError::InvalidPartHashSetCount { .. }
+            | PrimitiveError::TooManyPartHashes { .. } => Self::BadHash,
+            PrimitiveError::FileSizeAboveLimit { .. } => {
                 Self::TooLarge
             }
             PrimitiveError::FileSizeZero => Self::ZeroSize,

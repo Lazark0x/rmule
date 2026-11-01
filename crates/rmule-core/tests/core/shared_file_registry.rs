@@ -45,6 +45,7 @@ fn part_hashes() -> Vec<PartHash> {
     vec![
         PartHash::from_bytes([0xAA; PartHash::BYTE_LEN]),
         PartHash::from_bytes([0xBB; PartHash::BYTE_LEN]),
+        PartHash::from_bytes([0xCC; PartHash::BYTE_LEN]),
     ]
 }
 
@@ -311,7 +312,7 @@ async fn a_file_shared_before_a_restart_answers_a_hash_set_probe_after_it() {
             .expect("the connection stayed open"),
         ServeOutput::Server(ServerCommand::AnswerHashSet {
             file_hash,
-            part_hashes: part_hashes(),
+            part_hashes: rmule_primitives::PartHashList::new(part_hashes()).unwrap(),
         }),
         "the set the file was shared with, not an empty one",
     );

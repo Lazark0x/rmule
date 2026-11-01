@@ -186,6 +186,7 @@ impl Harness {
             ScanReport::Held { .. }
             | ScanReport::Unreadable { .. }
             | ScanReport::NotHashed { .. }
+            | ScanReport::Refused { .. }
             | ScanReport::LeftoverParts(_)
             | ScanReport::WatchInterrupted(_)
             | ScanReport::WatchRestored

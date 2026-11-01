@@ -3,7 +3,7 @@
 //! sources, the slot grant, the queue rank and the blocks on a granted slot.
 //! Who gets a slot is core's decision; these only carry it out.
 
-use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHash, SourceSighting};
+use rmule_primitives::{AichRootHash, Ed2kText, FileHash, PartHashList, SourceSighting};
 
 use crate::file::PartBitmap;
 use crate::hash_set::HashSetAnswer;
@@ -46,7 +46,7 @@ pub enum ServerCommand {
         /// The file the set belongs to.
         file_hash: FileHash,
         /// One hash per part, in part order.
-        part_hashes: Vec<PartHash>,
+        part_hashes: PartHashList,
     },
     /// Answer an inbound `OP_AICHREQUEST` with a part's AICH
     /// recovery data (`OP_AICHANSWER`, ADR-0038). Core builds the tree for the

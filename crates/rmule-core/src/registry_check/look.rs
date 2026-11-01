@@ -6,7 +6,7 @@
 use std::io;
 
 use crate::directory_scan::{DirectorySource, EntryKind, FileStamp};
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedFileEntry};
 
 /// What a look found at a row's path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -22,11 +22,17 @@ pub(crate) enum Look {
     /// The path could not be looked at, or its file could not be opened or
     /// read, for this kind of error.
     Unreadable(io::ErrorKind),
+    /// The row's size is one no gate would let in now: it stands refused
+    /// whatever its path holds.
+    Refused(ShareRefusal),
 }
 
 /// Look at `row`'s path: one `stat`, and one more of its folder when the
 /// file is not there. Nothing is opened.
 pub(crate) fn look(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+    if let Some(refusal) = ShareRefusal::of(row.file_size) {
+        return Look::Refused(refusal);
+    }
     match source.kind(&row.path) {
         Ok(EntryKind::File(stamp)) if matches_row(row, stamp) => Look::Readable,
         Ok(EntryKind::File(_)) => Look::Changed,

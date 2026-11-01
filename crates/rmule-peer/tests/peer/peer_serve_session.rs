@@ -11,7 +11,7 @@ use rmule_peer::{
     SetReqFileId, StartUploadReq,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{Ed2kText, FileHash, Packet, PartHash, UserHash};
+use rmule_primitives::{Ed2kText, FileHash, Packet, PartHash, PartHashList, UserHash};
 use rmule_testkit::peer_session::{peer_at, serverless_ctx};
 
 /// An inbound session driven through the hello exchange — ready to serve.
@@ -522,7 +522,8 @@ fn full_inbound_serve_flow_hello_to_part_bytes() {
     )));
     s.handle_command(PeerCommand::Server(ServerCommand::AnswerHashSet {
         file_hash: fh,
-        part_hashes: vec![PartHash::from_bytes([0x01; PartHash::BYTE_LEN])],
+        part_hashes: PartHashList::new(vec![PartHash::from_bytes([0x01; PartHash::BYTE_LEN])])
+            .unwrap(),
     }));
     assert!(matches!(
         decode_last_write(&drain(|| s.poll_output())),

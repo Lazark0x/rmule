@@ -53,18 +53,16 @@ pub enum PrimitiveError {
         actual: usize,
     },
 
-    /// No part-hash count can be derived from this file size: the count
-    /// overflows on the way out. Only reachable near `u64::MAX`, so in
-    /// practice it means a size field that was never a real file's.
-    #[error("file is too large: {file_size} bytes")]
-    FileTooLarge {
-        /// The rejected size.
-        file_size: u64,
+    /// More part hashes than the `u16` count of one hash-set answer holds.
+    #[error("{count} part hashes do not fit one hash-set answer")]
+    TooManyPartHashes {
+        /// How many there were.
+        count: usize,
     },
 
-    /// A link or a search row named a file larger than eD2k addresses
-    /// ([`MAX_ED2K_FILE_SIZE`](crate::MAX_ED2K_FILE_SIZE), 256 GiB): refused
-    /// where it is decoded, as aMule refuses it.
+    /// A link, a search row or a part hash set named a file larger than eD2k
+    /// addresses ([`MAX_ED2K_FILE_SIZE`](crate::MAX_ED2K_FILE_SIZE), 256 GiB):
+    /// refused where it is built, as aMule refuses it.
     #[error("file size {file_size} is above the eD2k limit")]
     FileSizeAboveLimit {
         /// The size the link or row named.

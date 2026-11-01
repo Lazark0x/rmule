@@ -6,25 +6,30 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ED2K_PART_SIZE, PartHash, PartHashSet};
+use rmule_primitives::{ED2K_PART_SIZE, PartHash, PartHashList, PartHashSet};
 
 use crate::VerifiedPartRecord;
 
 /// A part hash set holding every hash its file's size calls for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct WholeSet(Arc<[PartHash]>);
+pub(crate) struct WholeSet(Arc<PartHashSet>);
 
 impl WholeSet {
     /// `hashes` as the whole set of a `file_size`-byte file; `None` when they
     /// are not as many as the size calls for (none held is not a set).
     pub(crate) fn of(file_size: u64, hashes: &[PartHash]) -> Option<Self> {
-        let expected = PartHashSet::expected_hash_count(file_size).ok()?;
-        (expected > 0 && hashes.len() == expected).then(|| Self(hashes.into()))
+        let set = PartHashSet::from_hashes(file_size, hashes.to_vec()).ok()?;
+        (!hashes.is_empty()).then(|| Self(Arc::new(set)))
     }
 
     /// The hashes in part order.
     pub(crate) fn hashes(&self) -> &[PartHash] {
-        &self.0
+        self.0.hashes()
+    }
+
+    /// The set as one answer carries it.
+    pub(crate) fn list(&self) -> PartHashList {
+        PartHashSet::clone(&self.0).into_list()
     }
 }
 

@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use rmule_primitives::{FileHash, PartHash};
+use rmule_primitives::{FileHash, MAX_ED2K_FILE_SIZE, PartHash};
 
 use crate::registry_check::{WithheldReason, WithheldRows};
 use crate::service::{DownloadId, ServeEvent};
@@ -29,6 +29,31 @@ pub enum ShareSource {
     /// The **Download Directory Scan** found the file under the download
     /// directory and hashed it (ADR-0102).
     DownloadDirectory,
+}
+
+/// Why a file on disk is not shared, ruled from what is known of it before a
+/// byte is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareRefusal {
+    /// It is larger than eD2k addresses, so no server, peer or Kad node could
+    /// be told its size, and a stock client skips it the same way.
+    PastSizeLimit {
+        /// The file's size.
+        file_size: u64,
+    },
+}
+
+impl ShareRefusal {
+    /// The refusal a file of `file_size` bytes meets, if any. The one gate:
+    /// a scan rules with it before it reads, and the Registry Check rules
+    /// with it on a stored row.
+    pub(crate) const fn of(file_size: u64) -> Option<Self> {
+        if file_size > MAX_ED2K_FILE_SIZE {
+            Some(Self::PastSizeLimit { file_size })
+        } else {
+            None
+        }
+    }
 }
 
 /// One row of the **Shared File Registry**: a file we serve, identified by

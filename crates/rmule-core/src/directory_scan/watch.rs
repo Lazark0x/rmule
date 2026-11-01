@@ -406,6 +406,8 @@ impl Round<'_, '_> {
                 }
             }
         }
+        let (still, refused) = hash::admit(still);
+        self.told.refused(refused, self.report);
         let total = still.len();
         for (done, file) in still.into_iter().enumerate() {
             set_phase(

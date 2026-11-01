@@ -166,7 +166,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                 ServeInput::Server(ServerEvent::HashSetRequested { file_hash }) => serve_conn
                     .send(ServeOutput::Server(ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: Vec::new(),
+                        part_hashes: rmule_primitives::PartHashList::default(),
                     }))
                     .await
                     .unwrap(),

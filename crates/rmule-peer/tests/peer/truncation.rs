@@ -17,7 +17,7 @@ use rmule_peer::{
 };
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kText, FileHash, Ipv4Endpoint, Ipv6Endpoint, Packet, PacketProtocol,
-    PartHash, PeerEndpoint, PeerSource, SourceClaim, UserHash,
+    PartHash, PartHashList, PeerEndpoint, PeerSource, SourceClaim, UserHash,
 };
 use rmule_testkit::wire::cut_payload;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -80,7 +80,7 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
             "hash-set answer",
             HashSetAnswer {
                 file_hash: hash(),
-                part_hashes: vec![PartHash::from_bytes([3; 16]); 2],
+                part_hashes: PartHashList::new(vec![PartHash::from_bytes([3; 16]); 2]).unwrap(),
             }
             .encode_packet(),
         ),

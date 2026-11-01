@@ -285,7 +285,7 @@ pub fn invalid_query(error: &rmule_primitives::PrimitiveError) -> Sentence {
         PrimitiveError::InvalidHashLength { .. }
         | PrimitiveError::InvalidHashEncoding { .. }
         | PrimitiveError::InvalidPartHashSetCount { .. }
-        | PrimitiveError::FileTooLarge { .. }
+        | PrimitiveError::TooManyPartHashes { .. }
         | PrimitiveError::FileSizeAboveLimit { .. }
         | PrimitiveError::FileSizeZero
         | PrimitiveError::InvalidLink { .. }

@@ -53,7 +53,7 @@ pub use file_class::Ed2kFileClass;
 pub use file_name::{SafeFileName, fold_as_a_volume, is_unprintable};
 pub use hash::{
     AichRootHash, ED2K_PART_SIZE, FileHash, FileHashSummary, MAX_ED2K_FILE_SIZE, PartHash,
-    PartHashSet, ServerHash, UserHash, ed2k_status_part_count, kad_wire_id, part_count,
+    PartHashList, PartHashSet, ServerHash, UserHash, ed2k_status_part_count, kad_wire_id, part_count,
 };
 pub use hash::{OLD_MAX_FILE_SIZE, is_large_file};
 pub use identity::{ClientId, ClientIdentity, ServerEndpoint};

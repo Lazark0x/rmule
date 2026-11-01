@@ -8,6 +8,7 @@
 
 use parking_lot::{Condvar, Mutex};
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -15,7 +16,7 @@ use std::time::Duration;
 use rmule_primitives::FileHashSummary;
 
 use super::{DirectorySource, FoundFile};
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry};
 
 /// The most one read takes, so a raised stop flag is seen within one
 /// mebibyte of it rather than one part.
@@ -60,6 +61,22 @@ impl Drop for TurnGuard {
         *taken.lock() = false;
         freed.notify_one();
     }
+}
+
+/// Part `files` into those a scan may go on to read and those refused by
+/// their stamp alone, so a refused file costs no read. [`hash_file`] rejects
+/// a read whose size is not the stamp's, so an entry it yields for an admitted
+/// file is within the gate too.
+pub(super) fn admit(files: Vec<FoundFile>) -> (Vec<FoundFile>, Vec<(PathBuf, ShareRefusal)>) {
+    let mut admitted = Vec::with_capacity(files.len());
+    let mut refused = Vec::new();
+    for file in files {
+        match ShareRefusal::of(file.stamp.size) {
+            Some(refusal) => refused.push((file.path, refusal)),
+            None => admitted.push(file),
+        }
+    }
+    (admitted, refused)
 }
 
 /// The entry for `file`, or `None` when its size or time moved while it was

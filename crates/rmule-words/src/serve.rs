@@ -8,6 +8,8 @@ use rmule_core::{
     ServeStopReason, ShareRejectReason, SharesWithheld, WaiterLeaveCause, WithheldReason,
 };
 
+use rmule_primitives::MAX_ED2K_FILE_SIZE;
+
 use super::Sentence;
 use super::os::kind_words;
 use super::units::{address, human_size};
@@ -21,6 +23,7 @@ pub const fn withheld_words(reason: WithheldReason) -> &'static str {
         WithheldReason::FolderMissing => "folder missing",
         WithheldReason::Unreadable(_) => "unreadable",
         WithheldReason::Refused => "folder refused",
+        WithheldReason::PastSizeLimit => "too large",
     }
 }
 
@@ -93,6 +96,10 @@ pub fn withheld(reason: WithheldReason) -> Sentence {
         WithheldReason::Refused => {
             "its shared folder now leads where rmule will not share".to_string()
         }
+        WithheldReason::PastSizeLimit => format!(
+            "it is past the {} eD2k can address",
+            human_size(MAX_ED2K_FILE_SIZE)
+        ),
     };
     Sentence::owned(format!("a shared file is no longer offered: {why}"))
 }

@@ -163,10 +163,11 @@ fn peer_packet_inspect_hash_set_request_kind() {
 fn peer_packet_inspect_hash_set_answer_lists_part_hashes() {
     let pkt = HashSetAnswer {
         file_hash: file_hash(),
-        part_hashes: vec![
+        part_hashes: rmule_primitives::PartHashList::new(vec![
             PartHash::from_bytes([0xAA; 16]),
             PartHash::from_bytes([0xBB; 16]),
-        ],
+        ])
+        .unwrap(),
     }
     .encode_packet();
     run_inspect_against("hsans.bin", &pkt)

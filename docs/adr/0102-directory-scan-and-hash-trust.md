@@ -30,6 +30,12 @@ aMule citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR
   download rows name. A pass reads it once its listing is done, and every watch round reads it
   again, so a path a download names before its file lands there is known by the time the scan
   judges that file.
+- **A file past eD2k's limit is refused before it is read.** Past `MAX_ED2K_FILE_SIZE`, 256 GiB,
+  no server, peer or Kad node can be told what the file is, so the scan rules on its stamp, hashes
+  nothing and says once which file and why (`ScanEvent::FileRefused`), as stock's hasher skips one
+  (`ThreadTasks.cpp:98` at 3.1.0). A row stored before the rule is withheld by the Registry Check
+  (ADR-0106). A `PartHashSet` exists only up to the limit, so an answer's `u16` count cannot
+  overflow whatever a store holds.
 - **Which rows the scan owns:** every registry row under its directory, whatever its source. A file
   it hashes enters as `ShareSource::DownloadDirectory`. When content it hashes is already shared
   from another path still on disk, the first path in wins and the new path is recorded as a spare

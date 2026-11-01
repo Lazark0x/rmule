@@ -182,7 +182,7 @@ fn a_download_with_its_whole_set_and_no_part_answers_the_set_and_offers_nothing(
             p,
             ServerCommand::AnswerHashSet {
                 file_hash: file,
-                part_hashes: set(),
+                part_hashes: rmule_primitives::PartHashList::new(set()).unwrap(),
             },
         )]
     );

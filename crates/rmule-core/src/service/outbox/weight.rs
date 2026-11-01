@@ -214,6 +214,7 @@ fn of_scan(event: &ScanEvent) -> Weight {
         | E::PathUnwatched { .. }
         | E::LeftoverParts { .. }
         | E::FileNotHashed { .. }
+        | E::FileRefused { .. }
         | E::Unlistable { .. } => Weight::Edge,
     }
 }

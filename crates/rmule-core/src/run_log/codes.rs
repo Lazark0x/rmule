@@ -14,7 +14,7 @@ use crate::{
     PartReleaseReason, PartsLost, PeerReachDropReason, PeerRetirementReason, PeerStreamRole,
     QuitStep, ReconnectEnd, RelatedSearchRefusal, SearchFailure, SearchLegState,
     SearchResultSkipReason, ServeStartFailure, ServeStopReason, ServerConnectFailure,
-    ServerListUpdateFailure, ShareRejectReason, SharesWithheld, SocketRole, SourcePurgeReason,
+    ServerListUpdateFailure, ShareRefusal, ShareRejectReason, SharesWithheld, SocketRole, SourcePurgeReason,
     SourceWait, TunnelTransport, VerificationAuthority, VolumeStop, WaiterLeaveCause, WatchFault,
     WithheldReason,
 };
@@ -249,6 +249,15 @@ pub(super) fn withheld(record: Record, reason: WithheldReason) -> Record {
             record.code("reason", "unreadable").os_error(kind, None)
         }
         WithheldReason::Refused => record.code("reason", "refused"),
+        WithheldReason::PastSizeLimit => record.code("reason", "past_size_limit"),
+    }
+}
+
+pub(super) fn share_refusal(record: Record, refusal: ShareRefusal) -> Record {
+    match refusal {
+        ShareRefusal::PastSizeLimit { file_size } => record
+            .code("reason", "past_size_limit")
+            .file_size("size", file_size),
     }
 }
 

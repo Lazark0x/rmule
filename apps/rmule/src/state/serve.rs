@@ -121,6 +121,7 @@ pub const fn withheld_rank(withheld: Option<WithheldReason>) -> u64 {
         Some(WithheldReason::FolderMissing) => 4,
         Some(WithheldReason::Unreadable(_)) => 5,
         Some(WithheldReason::Refused) => 6,
+        Some(WithheldReason::PastSizeLimit) => 7,
     }
 }
 
@@ -230,6 +231,7 @@ fn scan_dir(event: &ScanEvent) -> &Path {
         | S::PathUnwatched { dir, .. }
         | S::LeftoverParts { dir, .. }
         | S::FileNotHashed { dir, .. }
+        | S::FileRefused { dir, .. }
         | S::Unlistable { dir }
         | S::DirectoryAdded { dir, .. }
         | S::DirectoryRefused { dir, .. }

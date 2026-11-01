@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use rmule_primitives::FileHash;
 
 use crate::directory_scan::{DirectorySource, RowsNow, WatchBatch, WatchFault, WatchSignal};
-use crate::registry::SharedFileEntry;
+use crate::registry::{ShareRefusal, SharedFileEntry};
 use look::{Look, look, look_after_failure, look_and_open};
 
 /// How often each withheld row is looked at again.
@@ -321,6 +321,9 @@ impl Check<'_> {
             Look::FolderMissing => self.withhold(file_hash, WithheldReason::FolderMissing),
             Look::Unreadable(reason) => {
                 self.withhold(file_hash, WithheldReason::Unreadable(reason))
+            }
+            Look::Refused(ShareRefusal::PastSizeLimit { .. }) => {
+                self.withhold(file_hash, WithheldReason::PastSizeLimit)
             }
         };
         if let Some(ruling) = ruling {

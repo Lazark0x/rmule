@@ -15,7 +15,7 @@ use super::{
     Consent, DirEntry, DirectorySource, EntryKind, FileStamp, Memory, PassEnd, ProgressCell,
     ScanReport, ScanSummary, SpareCopy, run_pass,
 };
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry};
 
 struct Outcome {
     end: PassEnd,
@@ -56,6 +56,7 @@ fn shared_paths(reports: &[ScanReport]) -> Vec<PathBuf> {
             | ScanReport::Held { .. }
             | ScanReport::Unreadable { .. }
             | ScanReport::NotHashed { .. }
+            | ScanReport::Refused { .. }
             | ScanReport::LeftoverParts(_)
             | ScanReport::WatchInterrupted(_)
             | ScanReport::WatchRestored
@@ -66,6 +67,36 @@ fn shared_paths(reports: &[ScanReport]) -> Vec<PathBuf> {
             | ScanReport::Finished(_) => None,
         })
         .collect()
+}
+
+/// A file past eD2k's limit is told once and costs no read, and an offer
+/// counts it nowhere.
+#[test]
+fn a_file_past_the_size_limit_is_refused_unread_and_never_offered() {
+    let mut dir = Scripted::new();
+    let size = rmule_primitives::MAX_ED2K_FILE_SIZE + 1;
+    dir.sized("/dl/disk.img", size, 1);
+    let outcome = pass(&dir, &[]);
+    assert_eq!(dir.opens(), 0, "a refused file is not read");
+    assert_eq!(
+        outcome.end,
+        PassEnd::Finished(ScanSummary {
+            skipped: 1,
+            ..ScanSummary::default()
+        })
+    );
+    assert!(outcome.reports.contains(&ScanReport::Refused {
+        path: PathBuf::from("/dl/disk.img"),
+        refusal: ShareRefusal::PastSizeLimit { file_size: size },
+    }));
+    assert!(
+        !outcome
+            .reports
+            .iter()
+            .any(|report| matches!(report, ScanReport::Share(_))),
+        "{:?}",
+        outcome.reports
+    );
 }
 
 #[test]

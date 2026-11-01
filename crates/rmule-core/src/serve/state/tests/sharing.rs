@@ -251,12 +251,38 @@ fn an_ext_bundle_naming_another_size_is_answered_not_found() {
     );
 }
 
+/// A stored row whose size eD2k cannot address reaches the answer only as a
+/// "no such file": the 65,536 hashes it holds never become a frame.
+#[test]
+fn a_row_past_the_size_limit_answers_a_hash_set_ask_with_not_found() {
+    let mut past = entry(hash(0x23), 65_535 * ED2K_PART_SIZE, "disk.img");
+    past.part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 65_536];
+    let mut state = serving_state(1, vec![past]);
+    let p = peer(1);
+    assert_eq!(
+        state.on_conn_event(
+            Instant::now(),
+            p,
+            ServeInput::Server(ServerEvent::HashSetRequested {
+                file_hash: hash(0x23)
+            }),
+            &no_modifiers(),
+        ),
+        vec![send(
+            p,
+            ServerCommand::AnswerFileNotFound {
+                file_hash: hash(0x23)
+            }
+        )],
+    );
+}
+
 /// Unsharing mid-probe answers "no such file" instead of silently
 /// dropping the request (design §5): the snapshot refresh is what flips
 /// the answer.
 #[test]
 fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
-    let part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 2];
+    let part_hashes = vec![PartHash::from_bytes([0xAB; PartHash::BYTE_LEN]); 3];
     let mut shared = entry(hash(0x22), 2 * ED2K_PART_SIZE, "hashed.bin");
     shared.part_hashes = part_hashes.clone();
     let mut state = serving_state(1, vec![shared]);
@@ -276,7 +302,7 @@ fn an_unshared_file_answers_not_found_after_the_snapshot_refresh() {
             p,
             ServerCommand::AnswerHashSet {
                 file_hash: hash(0x22),
-                part_hashes,
+                part_hashes: rmule_primitives::PartHashList::new(part_hashes).unwrap(),
             }
         )],
     );

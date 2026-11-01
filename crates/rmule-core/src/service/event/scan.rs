@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::{DirectoryOffer, DirectoryRefusal, ScanSummary, WatchFault};
+use crate::{DirectoryOffer, DirectoryRefusal, ScanSummary, ShareRefusal, WatchFault};
 
 use super::CoreEvent;
 
@@ -145,6 +145,16 @@ pub enum ScanEvent {
         kind: std::io::ErrorKind,
         /// The OS's error number, when there is one.
         os_code: Option<i32>,
+    },
+    /// The file at `path` under `dir` is refused, so it is not shared and was
+    /// not read. Said once per file until it is hashed or gone.
+    FileRefused {
+        /// The directory.
+        dir: PathBuf,
+        /// The file refused.
+        path: PathBuf,
+        /// Why.
+        refusal: ShareRefusal,
     },
     /// `dir` itself could not be listed — missing, unmounted or unreadable.
     /// Nothing was unshared: a disk that is gone for now is not a deletion.

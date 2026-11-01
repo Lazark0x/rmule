@@ -209,6 +209,7 @@ const fn scan(event: &ScanEvent) -> Severity {
         | S::WatchInterrupted { .. }
         | S::PathUnwatched { .. }
         | S::FileNotHashed { .. }
+        | S::FileRefused { .. }
         | S::Unlistable { .. } => Severity::Warning,
         S::ConsentRequested { .. }
         | S::DirectoryAdded { .. }

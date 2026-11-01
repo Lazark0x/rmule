@@ -121,7 +121,7 @@ async fn serve_once_with_sui(
                 let _ = conn
                     .send(PeerCommand::Server(ServerCommand::AnswerHashSet {
                         file_hash,
-                        part_hashes: Vec::new(),
+                        part_hashes: rmule_primitives::PartHashList::default(),
                     }))
                     .await;
             }
