@@ -202,6 +202,18 @@ async fn one_pump_merges_both_families_in_whichever_order_they_arrive() {
 /// closing a peer link at Quit is exactly that — so the `TIME_WAIT` is on the
 /// listening port itself.
 #[tokio::test]
+async fn an_accepted_link_sends_each_write_at_once() {
+    let pair = TcpFamilyPair::bind(0, FamilySelection::v4_only())
+        .await
+        .expect("bind");
+    let _dialer = tokio::net::TcpStream::connect((Ipv4Addr::LOCALHOST, pair.local_port()))
+        .await
+        .expect("dial");
+    let (accepted, _) = pair.accept().await.expect("accept");
+    assert!(accepted.nodelay().expect("the socket answers"));
+}
+
+#[tokio::test]
 async fn a_listener_rebinds_its_port_at_once_after_it_closed_a_connection() {
     use tokio::io::AsyncReadExt;
 

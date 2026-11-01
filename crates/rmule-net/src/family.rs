@@ -667,11 +667,24 @@ impl TcpFamilyPair {
                 (None, None) => return Err(refused_every_family(&self.binds)),
             };
             match source_endpoint(from) {
-                Some(peer) => return Ok((stream, peer)),
+                Some(peer) => {
+                    send_each_write_at_once(&stream);
+                    return Ok((stream, peer));
+                }
                 // Dropping the stream closes it before a byte is read.
                 None => tracing::trace!(%from, "connection from a link-local source closed"),
             }
         }
+    }
+}
+
+/// Hand each of `stream`'s writes to the wire as it comes: the short last
+/// segment of a served block must not wait on the ACK of the one before it
+/// (Nagle), and the far side's next ask waits on that segment. A socket that
+/// refuses still carries the session, only slower.
+pub(crate) fn send_each_write_at_once(stream: &tokio::net::TcpStream) {
+    if let Err(error) = stream.set_nodelay(true) {
+        tracing::warn!(%error, "the link keeps Nagle's delay");
     }
 }
 

@@ -79,6 +79,7 @@ pub(crate) async fn connect_server(
             match TcpStream::connect(addr).await {
                 Ok(stream) => {
                     keep_alive(&stream);
+                    crate::family::send_each_write_at_once(&stream);
                     return Ok((stream, addr));
                 }
                 Err(error) => last = Some(error),

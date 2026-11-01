@@ -72,6 +72,7 @@ pub(super) async fn open_stream(
         .await
         .map_err(|_| DriverError::ConnectTimeout)?
         .map_err(|source| PeerNetError::Connect { source })?;
+    crate::family::send_each_write_at_once(&stream);
     let Some(target) = toward else {
         return Ok(OpenedStream::Plain(stream));
     };
@@ -80,4 +81,25 @@ pub(super) async fn open_stream(
         .await
         .map_err(|_| PeerNetError::CryptUnanswered)??;
     Ok(OpenedStream::Obfuscated(Box::new(crypt)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
+
+    use super::{OpenedStream, open_stream};
+
+    #[tokio::test]
+    async fn a_dialed_link_sends_each_write_at_once() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let peer = PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, port));
+        let opened = open_stream(peer, Duration::from_secs(1), Duration::from_secs(1), None);
+        let Ok(OpenedStream::Plain(stream)) = opened.await else {
+            panic!("a plain dial to a live listener opens plain");
+        };
+        assert!(stream.nodelay().unwrap());
+    }
 }
