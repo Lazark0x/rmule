@@ -106,7 +106,7 @@ async fn promoted(head_start: Duration, waited: Duration) -> PeerEndpoint {
     let _ = queue.admit(at(2), FILE, t0);
     let _ = queue.admit(at(1), FILE, t0 + head_start);
     let freed = queue.release(at(9), t0 + head_start + waited, &modifiers);
-    freed.granted.expect("a waiter takes the slot").0
+    freed.granted.expect("a waiter takes the slot").peer
 }
 
 /// The preference stays inside aMule's score: a waiter we queue at passes

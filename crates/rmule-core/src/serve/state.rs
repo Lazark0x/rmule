@@ -53,7 +53,7 @@ use crate::serve::source_exchange::SourceExchangeThrottle;
 use crate::served_downloads::{PartFileIdentity, PartialEnd, ServedLook};
 use crate::service::{DialBackEnd, GrantRoad, ServeEvent};
 use crate::upload_queue::ScoreModifiers;
-use crate::upload_queue::{Promotion, UploadSlotQueue};
+use crate::upload_queue::{Promotion, SlotGrant, UploadSlotQueue};
 
 /// One effect the serve task must enact, drained in order from a
 /// [`ServeState`] entry point. Everything that touches I/O, a clock, a
@@ -504,8 +504,13 @@ impl ServeState {
     /// shared tail of a slot-freeing event (ADR-0057).
     fn promotion_decisions(&mut self, promotion: Promotion) -> Vec<ServeDecision> {
         let mut decisions = Vec::new();
-        if let Some((promoted, file_hash)) = promotion.granted {
-            if promotion.dial_back {
+        if let Some(SlotGrant {
+            peer: promoted,
+            file_hash,
+            dial_back,
+        }) = promotion.granted
+        {
+            if dial_back {
                 decisions.extend(self.reach_promoted(promoted, file_hash));
             } else {
                 decisions.push(ServeDecision::Send {

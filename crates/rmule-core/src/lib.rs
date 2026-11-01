@@ -256,7 +256,7 @@ pub use store::{
 };
 pub use upload_queue::{
     Admission, LOW_ID_ABUSE_WAIT_LIST_THRESHOLD, MAX_WAITING_PER_ADDRESS, Promotion,
-    ReaskResolution, Relinked, UploadSlotQueue, WaiterContact, WaiterLeaveCause,
+    ReaskResolution, Relinked, SlotGrant, UploadSlotQueue, WaiterContact, WaiterLeaveCause,
 };
 
 /// One routing-table contact, re-exported so a front-end can hand
