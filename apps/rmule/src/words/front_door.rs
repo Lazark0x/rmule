@@ -78,6 +78,9 @@ pub const fn no_terminal(missing: MissingTerminal) -> &'static str {
         MissingTerminal::Both => {
             "rmule needs a terminal, and neither its input nor its output is one; nothing was started."
         }
+        MissingTerminal::NoCursor => {
+            "rmule needs a terminal that can draw a full screen, and TERM=dumb cannot; nothing was started. Run it in a terminal emulator, or use rmule-cli."
+        }
     }
 }
 
@@ -207,12 +210,12 @@ Options:
         "  RMULE_LOG       the filter on what the Run Log writes, in tracing-subscriber's
                   EnvFilter syntax (default info); it does not choose lean or
                   detailed
-  RMULE_THEME     the colours: dark, light, 256 or mono; beats NO_COLOR and
-                  COLORTERM, and a theme chosen in Settings beats it
+  RMULE_THEME     the colours: dark, light, 256, 16 or mono; beats NO_COLOR
+                  and COLORTERM, and a theme chosen in Settings beats it
   NO_COLOR        set and not empty: no colour at all
   COLORTERM       truecolor or 24bit selects the full-colour theme; otherwise
-                  the 256-colour one, or no colour on a console with TERM
-                  linux, vt100 and the like
+                  the 256-colour one, sixteen colours on a console with TERM
+                  linux, none with vt100 and the like
 
 rmule draws on the terminal it is started from: its input and output must both
 be a terminal, or it exits without starting.

@@ -134,6 +134,7 @@ impl SharedConfig {
             }
             FrontEndEdit::LastTab(view) => set(FrontEndKey::LastTab, view.key())?,
             FrontEndEdit::TerminalTitle(on) => set(FrontEndKey::TerminalTitle, &on.to_string())?,
+            FrontEndEdit::ReaderMode(on) => set(FrontEndKey::ReaderMode, &on.to_string())?,
             FrontEndEdit::CompletionBell(on) => set(FrontEndKey::CompletionBell, &on.to_string())?,
             FrontEndEdit::Mouse(on) => set(FrontEndKey::Mouse, &on.to_string())?,
             // Every table shares one value: re-read it so the write keeps the
@@ -198,6 +199,7 @@ impl SharedConfig {
             player_command: text(FrontEndKey::PlayerCommand)?.filter(|text| !text.is_empty()),
             last_tab: ViewId::parse(text(FrontEndKey::LastTab)?.as_deref()),
             terminal_title: text(FrontEndKey::TerminalTitle)?.is_some_and(|value| value == "true"),
+            reader_mode: text(FrontEndKey::ReaderMode)?.is_some_and(|value| value == "true"),
             completion_bell: text(FrontEndKey::CompletionBell)?
                 .is_some_and(|value| value == "true"),
             mouse: text(FrontEndKey::Mouse)?.is_none_or(|value| value == "true"),
@@ -211,12 +213,12 @@ impl SharedConfig {
 /// environment reading.
 ///
 /// [`Auto`](Self::Auto) *is* the environment reading — `RMULE_THEME`, then the
-/// `COLORTERM` truecolor convention (spec §5) — so a stored choice and the
-/// escape hatch are one setting with five values instead of two mechanisms
+/// terminal's [`Capability`](crate::capability::Capability) — so a stored choice and the
+/// escape hatch are one setting with six values instead of two mechanisms
 /// arguing over which wins.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ThemeChoice {
-    /// Defer to the environment, re-read at every start.
+    /// Defer to the environment and the terminal, read again at every start.
     #[default]
     Auto,
     /// The truecolor dark palette, whatever the terminal reports.
@@ -225,17 +227,20 @@ pub enum ThemeChoice {
     Light,
     /// The hand-tuned 256-color palette, for terminals that mangle RGB.
     Fallback256,
+    /// The sixteen named colours, as the terminal's own settings paint them.
+    Ansi16,
     /// No colour: the terminal's own, whatever it reports.
     Mono,
 }
 
 impl ThemeChoice {
     /// Every choice, in the order the Settings field cycles them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Auto,
         Self::Dark,
         Self::Light,
         Self::Fallback256,
+        Self::Ansi16,
         Self::Mono,
     ];
 
@@ -247,6 +252,7 @@ impl ThemeChoice {
             Self::Dark => "dark",
             Self::Light => "light",
             Self::Fallback256 => "256",
+            Self::Ansi16 => "16",
             Self::Mono => "mono",
         }
     }
@@ -268,6 +274,7 @@ impl ThemeChoice {
             Self::Dark => Theme::default_dark(),
             Self::Light => Theme::light(),
             Self::Fallback256 => Theme::fallback_256(),
+            Self::Ansi16 => Theme::ansi_for(detected.light),
             Self::Mono => Theme::mono(),
         }
     }
@@ -410,6 +417,9 @@ pub struct Preferences {
     /// Whether the terminal's title carries the rates and the tally. Off by
     /// default: a title is the operator's until they give it up.
     pub terminal_title: bool,
+    /// **Reader Mode**: the terminal's cursor rests on the selected row and
+    /// the data tick repaints nothing on its own.
+    pub reader_mode: bool,
     /// Whether a finished download rings the terminal's bell. Off by default.
     pub completion_bell: bool,
     /// Whether the app takes the mouse from the terminal. On by default;
@@ -468,6 +478,7 @@ impl Default for Preferences {
             player_command: None,
             last_tab: ViewId::default(),
             terminal_title: false,
+            reader_mode: false,
             completion_bell: false,
             mouse: true,
             dead_server_retries: rmule_core::DEFAULT_DEAD_AFTER,
@@ -514,6 +525,7 @@ impl Preferences {
             PrefEdit::PlayerCommand(command) => self.player_command = command.clone(),
             PrefEdit::LastTab(view) => self.last_tab = *view,
             PrefEdit::TerminalTitle(on) => self.terminal_title = *on,
+            PrefEdit::ReaderMode(on) => self.reader_mode = *on,
             PrefEdit::CompletionBell(on) => self.completion_bell = *on,
             PrefEdit::Mouse(on) => self.mouse = *on,
             PrefEdit::DeadServerRetries(limit) => self.dead_server_retries = *limit,
@@ -591,6 +603,8 @@ pub enum PrefEdit {
     /// Whether the terminal's title carries the rates and the tally; the next
     /// frame follows.
     TerminalTitle(bool),
+    /// Whether **Reader Mode** is on.
+    ReaderMode(bool),
     /// Whether a finished download rings the bell; the next one follows.
     CompletionBell(bool),
     /// Whether the app takes the mouse from the terminal.
@@ -632,6 +646,8 @@ pub enum FrontEndEdit<'a> {
     LastTab(ViewId),
     /// See [`PrefEdit::TerminalTitle`].
     TerminalTitle(bool),
+    /// See [`PrefEdit::ReaderMode`].
+    ReaderMode(bool),
     /// See [`PrefEdit::CompletionBell`].
     CompletionBell(bool),
     /// See [`PrefEdit::Mouse`].
@@ -690,6 +706,7 @@ impl PrefEdit {
             }
             Self::LastTab(view) => return Keeper::FrontEnd(FrontEndEdit::LastTab(*view)),
             Self::TerminalTitle(on) => return Keeper::FrontEnd(FrontEndEdit::TerminalTitle(*on)),
+            Self::ReaderMode(on) => return Keeper::FrontEnd(FrontEndEdit::ReaderMode(*on)),
             Self::CompletionBell(on) => return Keeper::FrontEnd(FrontEndEdit::CompletionBell(*on)),
             Self::Mouse(on) => return Keeper::FrontEnd(FrontEndEdit::Mouse(*on)),
             Self::TableSort {

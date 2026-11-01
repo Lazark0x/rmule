@@ -4,7 +4,7 @@
 │                                                                             █│
 │ Networks                                                                    █│
 │ a               add server                                                  █│
-│ U               update server list from URL                                 ▂│
+│ U               update server list from URL                                 ▃│
 │ c               connect to the selected server, or disconnect from the one   │
 │                 you are on                                                   │
 │ K               start or stop Kad                                            │
@@ -19,6 +19,6 @@
 │ g / G           top / bottom; Home / End too                                 │
 │ /               filter the focused list as you type                          │
 │ Space / T       tag a row / every row on show                               ▼│
-│/                                                                     62 of 62│
-└─────────────────────────────────────────────────────────────── ↑/↓ ─ 19 / 86 ┘
+│/                                                                     63 of 63│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 19 / 90 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

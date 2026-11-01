@@ -12,7 +12,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_core::{ServerHealth, ServerPriority};
@@ -148,7 +148,6 @@ impl NetworksView {
         theme: &Theme,
     ) {
         let focused = self.focus == Pane::Servers;
-        let border = if focused { theme.accent } else { theme.dim };
         let rows = self.ordered(state);
         // The edge, as the status bar reads it, so the two say one thing in
         // every frame.
@@ -202,7 +201,7 @@ impl NetworksView {
             )
         };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(border)),
+            theme.pane(focused),
             area.width,
             (&title, Style::new().fg(theme.fg)),
             (&hint, theme.dim_text()),
@@ -232,7 +231,7 @@ impl NetworksView {
             &SERVER_COLS,
             SERVER_NAME_COL,
             &SERVER_GIVE_WAY,
-            theme.dim_text(),
+            theme.header(),
         )
         .flex_pair(SERVER_DESC_COL)
         .gutter(SERVER_GUTTER_W)

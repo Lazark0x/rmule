@@ -144,16 +144,24 @@ impl InputPump {
 /// Blocking poll/read pump: forwards terminal events onto the action bus
 /// until told to stop or the bus closes. 100 ms poll keeps shutdown prompt
 /// without busy-waiting.
+///
+/// A `tail` is a probe the terminal has not finished answering. It ends first,
+/// here, off the first frame's path: a late answer read as input is keys. The
+/// operator's own keys among what it read go on the bus ahead of the rest.
 #[must_use]
 pub fn spawn_input_pump(
     actions: mpsc::Sender<Action>,
     shutdown: Arc<AtomicBool>,
     stop: Stop,
+    tail: Option<crate::probe::Tail>,
 ) -> InputPump {
     let (ended_tx, ended) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("rmule-input".into())
         .spawn(move || {
+            for event in tail.map_or_else(Vec::new, crate::probe::Tail::drain) {
+                let _ = actions.blocking_send(Action::Input(event));
+            }
             pump(actions, shutdown, stop, || {
                 if ratatui::crossterm::event::poll(Duration::from_millis(100))? {
                     ratatui::crossterm::event::read().map(Some)

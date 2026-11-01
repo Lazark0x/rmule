@@ -9,7 +9,7 @@
 ││ Share a dir  Enter, type a path, Enter                                    █││
 ││                                                                           █││
 ││Network                                                                    █││
-││ Nickname     rmule  (on restart)                                          ▇││
+││ Nickname     rmule  (on restart)                                           ││
 ││ eD2k port    4662  (on restart)                                            ││
 ││ UDP port     4672  (on restart)                                            ││
 ││ Obfuscation  off  peer TCP/UDP + Kad + server UDP                          ││
@@ -20,5 +20,5 @@
 ││ Update lists off  merge every address below at start  (on restart)         ││
 ││ List URLs    none set  server.met addresses, space between  (on restart)   ││
 ││                                                                           ▼││
-│└──────────────────────────────────────────────────────────────────── 1 / 24 ┘│
+│└──────────────────────────────────────────────────────────────────── 1 / 25 ┘│
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

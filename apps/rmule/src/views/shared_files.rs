@@ -148,14 +148,6 @@ enum Pane {
 /// The files table's share of the tab.
 const FILES_SHARE: u16 = 55;
 
-fn pane_border(theme: &Theme, focused: bool) -> Style {
-    if focused {
-        Style::new().fg(theme.accent) // accent border = focus
-    } else {
-        theme.chrome()
-    }
-}
-
 /// Zero counts render dim (honest "nothing yet"); positive counts read normal.
 fn num_style(value: u64, theme: &Theme) -> Style {
     if value > 0 {

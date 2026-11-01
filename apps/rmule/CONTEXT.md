@@ -33,8 +33,18 @@ A render snapshot compared glyph-exactly against `tests/goldens/<name>.txt`, dra
 _Avoid_: snapshot test (too generic), screenshot, visual test
 
 **Help**:
-The `?` overlay: the tab the operator came from first, then what every tab shares, the other tabs, and a Words table for the terms, Known-File Marks and bracketed figures the screens use unexplained. Letters type into its **Row Filter**, so `↑`/`↓`, the page keys, `Home` and `End` scroll it, `Esc` takes the text before it takes the overlay, and `?` closes it while nothing is typed.
+The `?` overlay: the tab the operator came from first, then what every tab shares, the other tabs, and a Words table for the terms and bracketed figures the screens use unexplained, and a table of the Known-File Marks that says what this theme shows. Letters type into its **Row Filter**, so `↑`/`↓`, the page keys, `Home` and `End` scroll it, `Esc` takes the text before it takes the overlay, and `?` closes it while nothing is typed.
 _Avoid_: manual, cheat sheet
+
+**Capability**:
+What a run's terminal can show, read once at the start from the environment and the terminal's answers to the probe (`capability`, `probe`): a colour tier (truecolor, 256, the sixteen named colours, none), whether its ground is light, and a **Glyph Tier**. The probe asks for the background (OSC 11), measures one box-drawing character by a cursor report, and asks device attributes last, so that answer ends the wait. It is the run's one question: it goes through the **Line** before the loop starts, the loop asks nothing, and a stop's re-entry keeps the answers, since `fg` finds the same terminal. A terminal that stays silent costs a bounded fraction of a second and then draws; input waits a little longer for a late answer, which would otherwise arrive as keys, and the operator's own keys among what it read go on as input. A terminal that says what its ground is keeps it and gets the palette for that side; one that does not gets the opaque palette its pairs are known to read on. `TERM=dumb` is refused before any of this.
+_Avoid_: terminfo, feature detection
+
+**Glyph Tier**:
+Which glyphs a frame ends in (`glyphs`). Views draw one set; the tier rewrites the finished frame cell for cell, so no view holds a glyph choice and nothing moves. **Plain** replaces the frame's marks and typographic signs with ASCII and keeps the operator's text, for an ambiguous-wide terminal and the Linux console; **Ascii** also turns all other text to `?`, for a terminal not reading UTF-8. The measure beats the locale: `LC_ALL=C` on a UTF-8 terminal stays Unicode.
+
+**Reader Mode**:
+The Settings preference for a screen reader or braille display, off by default: the terminal's cursor rests on an open menu's item or the focused pane's selected row, and the data tick repaints nothing on its own, so a screen with nothing new does not change: its figures and ages wait for news or a key. `rmule-cli` remains the plain path.
 
 **Chrome**:
 Everything around the views: the tab bar, the status bar and its width budget, the help overlay, the flash, the mouse's capture, and the terminal's title and bell when the operator asks for them. It owns no core data — it reads the same `UiState` the views do.
@@ -161,7 +171,7 @@ The one column a table is ordered by, and its direction — view state, never co
 _Avoid_: ordering, ranking, sort mode, sort key (a key with no column)
 
 **Row Selection**:
-What selecting a row is in every table: the cursor on a row's identity (`RowCursor`), moved by `j`/`k`/`↑`/`↓` and `g`/`G`, and the one mark it wears — the `▸` gutter marker and the selection background across the row, bold in the focused pane and dimmed, never hidden, in a pane without the focus. `PgUp`/`PgDn` and `Ctrl-U`/`Ctrl-D` move by the rows on screen and `Home`/`End` to the ends, in one place (`RowMove::of`), so every table, the log, the Settings rows and a modal that only reads move alike. A click selects and focuses; `Enter`/`m` open the **Row Menu** on the selected row. Settings' form fields are not rows.
+What selecting a row is in every table: the cursor on a row's identity (`RowCursor`), moved by `j`/`k`/`↑`/`↓` and `g`/`G`, and the one mark it wears — the `▸` gutter marker and the selection across the row, a background or, with no fill to spare, reverse video; bold in the focused pane, plain and still marked (underlined where it has no fill) in a pane without the focus. `PgUp`/`PgDn` and `Ctrl-U`/`Ctrl-D` move by the rows on screen and `Home`/`End` to the ends, in one place (`RowMove::of`), so every table, the log, the Settings rows and a modal that only reads move alike. A click selects and focuses; `Enter`/`m` open the **Row Menu** on the selected row. Settings' form fields are not rows.
 _Avoid_: highlight, cursor row, active row, current row
 
 **Viewport**:
@@ -177,7 +187,7 @@ What orders two rows the sort column holds equal: name ascending, then the row's
 _Avoid_: secondary sort, stable sort, sort history
 
 **Known-File Mark**:
-What a search result says about the operator's own history with its file: **Downloading**, **Failed**, **Have**, **Withheld**, **Had** or **Cancelled**, at most one, in that precedence; no mark means the file is new to them. Drawn as the row's colour and a text attribute, in place of the source-count tint, with its word opening the Name cell; the help overlay's Words table says what each means.
+What a search result says about the operator's own history with its file: **Downloading**, **Failed**, **Have**, **Withheld**, **Had** or **Cancelled**, at most one, in that precedence; no mark means the file is new to them. Drawn as the row's colour and a text attribute, in place of the source-count tint, with its word opening the Name cell; the help overlay's marks table says what each means and shows. **Have** takes its attribute only in a theme with no colour.
 _Avoid_: file status, known flag, File-Known Predicate (core's serving gate, a different question)
 
 **Held Search**:

@@ -237,8 +237,29 @@ Settings marks the choices that take effect on restart.
 
 `rmule --data-dir <path>` picks the data directory and
 `rmule --log-level detailed` adds peer addresses, file names, paths and hashes
-to the Run Log for one run. `RMULE_THEME` (`dark`, `light`, `256` or `mono`)
-picks the colours, and `NO_COLOR` turns them off. rmule needs a terminal on both its input and its output.
+to the Run Log for one run. rmule needs a terminal on both its input and its
+output, and one that can draw a full screen, so `TERM=dumb` is refused.
+
+### Terminals
+
+rmule asks the terminal how many colours it has, what its background is and
+how wide it draws a box character, then keeps the terminal's own background and
+picks dark or light to suit. A terminal that does not say gets the opaque dark
+palette. `RMULE_THEME` (`dark`, `light`, `256`, `16` or `mono`) or the Theme row
+in Settings overrides it and paints what it names. `NO_COLOR` turns colour off,
+and reverse video, underlines and a heavy border then carry what colour did.
+The Linux console gets its sixteen colours. A terminal that cannot show the box
+and mark characters one cell wide gets ASCII frames; on a charset other than
+UTF-8, names outside ASCII show as `?` and cannot be typed.
+
+### Screen readers
+
+A screen reader or braille display reads `rmule` poorly: it is a full screen
+of columns, with no line of its own. Use `rmule-cli` for that: every command
+prints plain lines, one run at a time. To use `rmule` itself with one, turn on
+*Reader mode* in Settings: the terminal's cursor rests on the selected row or
+an open menu's item, and the figures that tick each second wait for news or a
+key, so a screen with nothing new stays still.
 
 ## Using `rmule-cli`
 

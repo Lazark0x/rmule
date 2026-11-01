@@ -9,7 +9,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use rmule_primitives::{Ed2kText, SearchResult};
 
@@ -48,7 +48,8 @@ fn source_tint(count: u32, theme: &Theme) -> Color {
 }
 
 /// A marked row's look (ADR-0100): the mark's colour in place of the source
-/// tint, and an attribute as the second cue, beside the mark's word.
+/// tint, and an attribute as the second cue, beside the mark's word. Have's
+/// attribute is for a theme with no colour alone.
 fn mark_style(mark: &KnownFileMark, theme: &Theme) -> Style {
     match mark {
         KnownFileMark::Downloading { .. } => Style::new()
@@ -57,7 +58,12 @@ fn mark_style(mark: &KnownFileMark, theme: &Theme) -> Style {
         KnownFileMark::Failed { .. } => Style::new()
             .fg(theme.mark_failed)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        KnownFileMark::Have { .. } => Style::new().fg(theme.mark_have).add_modifier(Modifier::DIM),
+        // Dim would take back the contrast the palette holds the colour to,
+        // so it is only the cue where no colour is left to hold.
+        KnownFileMark::Have { .. } if theme.colourless() => {
+            Style::new().add_modifier(Modifier::DIM)
+        }
+        KnownFileMark::Have { .. } => Style::new().fg(theme.mark_have),
         KnownFileMark::Withheld { .. } => Style::new()
             .fg(theme.mark_withheld)
             .add_modifier(Modifier::UNDERLINED),
@@ -205,10 +211,8 @@ impl SearchesView {
             .held
             .current_id()
             .and_then(|search_id| super::more::offered(state, search_id));
-        // The results pane is the active (accent-bordered) pane whenever the
-        // input is unfocused and neither the menu nor the filter editor is up.
+        // The results pane is the active pane whenever the input is unfocused and neither the menu nor the filter editor is up.
         let active = !self.input_focused && self.menu.is_none() && !self.filters_open;
-        let border = if active { theme.accent } else { theme.dim };
         let title = self.current_not_sent().map_or_else(
             || {
                 let related = self
@@ -258,7 +262,7 @@ impl SearchesView {
             reopen.to_string()
         };
         let block = crate::views::title::titled_first_key(
-            Block::bordered().border_style(Style::new().fg(border)),
+            theme.pane(active),
             area.width,
             (&title, Style::new().fg(theme.fg)),
             (&hint, theme.dim_text()),
@@ -375,13 +379,12 @@ impl SearchesView {
                 Cell::new(result_type_text(result), tint),
             ]
         };
-        let header_style = Style::new().fg(theme.dim).add_modifier(Modifier::BOLD);
         let table = Table::of(
             &self.sort,
             &RESULT_COLS,
             RESULT_FLEX,
             &RESULT_GIVE_WAY,
-            header_style,
+            theme.header(),
         )
         .wants(&wants)
         .empty(crate::words::rows::NO_MATCH);

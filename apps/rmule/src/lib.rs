@@ -49,6 +49,8 @@
 //!   action flash.
 //! - [`view`] / [`views`] — which tab is up, and the six that draw into it.
 //! - [`theme`] — the semantic palette every widget reads roles off.
+//! - [`probe`] / [`capability`] — the terminal's answers and what it can show;
+//!   [`glyphs`] — the last pass on a frame, for one that shows less.
 //! - [`row_selection`] — the one mark every table puts on its selected row.
 //! - `form` — the one field-list editor the add-server modal, the search
 //!   options and the Settings tab all run on; validation stays with the view.
@@ -62,17 +64,20 @@ pub mod app;
 pub mod args;
 pub mod attach;
 pub mod bridge;
+pub mod capability;
 pub mod chrome;
 pub mod client;
 pub mod config;
 pub mod connect;
 pub mod fault;
 pub(crate) mod form;
+pub mod glyphs;
 pub mod input;
 pub mod job;
 pub mod kad;
 pub(crate) mod line_edit;
 pub mod player;
+pub mod probe;
 pub mod rates;
 pub(crate) mod row_filter;
 pub mod row_selection;

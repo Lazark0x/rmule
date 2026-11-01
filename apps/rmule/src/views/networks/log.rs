@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::{NetworksView, Pane};
 use crate::row_selection::viewport;
@@ -103,9 +103,8 @@ impl NetworksView {
             .iter()
             .filter(|line| line.severity >= self.log_floor)
             .collect();
-        let border = if focused { theme.accent } else { theme.dim };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(border)),
+            theme.pane(focused),
             area.width,
             (
                 &words::title(shown.len(), state.log.len(), self.log_floor),

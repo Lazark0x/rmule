@@ -61,6 +61,7 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         }
         PrefEdit::LastTab(view) => format!("last tab → {}", view.title()),
         PrefEdit::TerminalTitle(on) => format!("terminal title → {}", on_off(*on)),
+        PrefEdit::ReaderMode(on) => format!("reader mode → {}", on_off(*on)),
         PrefEdit::CompletionBell(on) => format!("completion bell → {}", on_off(*on)),
         PrefEdit::Mouse(on) => format!("mouse → {}", on_off(*on)),
         PrefEdit::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
@@ -109,6 +110,11 @@ pub fn store_opening(opening: Opening) -> Sentence {
         )),
     }
 }
+
+/// A terminal on a legacy charset: rmule reads and writes UTF-8 alone.
+pub const LEGACY_CHARSET: Sentence = Sentence::fixed(
+    "this terminal is not on UTF-8: names outside ASCII show as ? and cannot be typed",
+);
 
 /// The Download dir row left empty: downloads need somewhere to land.
 pub const DOWNLOAD_DIR_REQUIRED: Sentence = Sentence::fixed("a download directory is required");
@@ -399,6 +405,9 @@ pub fn terminal_title(down: &str, up: &str, tally: crate::state::Tally) -> Strin
 
 /// What the Settings row for the terminal title does.
 pub const TERMINAL_TITLE_NOTE: &str = "rates and counts in the window title";
+
+/// What the Settings row for Reader Mode does.
+pub const READER_MODE_NOTE: &str = "cursor on the selected row; figures wait for a key";
 
 /// What the Settings row for the completion bell does.
 pub const COMPLETION_BELL_NOTE: &str = "rings the terminal when a download finishes";

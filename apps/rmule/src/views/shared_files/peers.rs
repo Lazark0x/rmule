@@ -15,13 +15,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 use rmule_primitives::FileHash;
 
 use super::rate_cell;
-use super::{Pane, SharedView, pane_border, render_empty};
+use super::{Pane, SharedView, render_empty};
 use crate::state::{UiState, UploadPeer, UploadState};
 use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
@@ -130,7 +130,7 @@ impl SharedView {
             " f active  / filter  Tab files  s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(pane_border(theme, focused)),
+            theme.pane(focused),
             area.width,
             (&format!(" Uploads · {mode} "), theme.dim_text()),
             (hint, theme.dim_text()),
@@ -186,13 +186,12 @@ impl SharedView {
                 .unwrap_or(0);
             wants[index] = widest.min(cap);
         }
-        let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
         let table = Table::of(
             &self.peer_sort,
             &PEER_COLS,
             PEER_FLEX,
             &PEER_GIVE_WAY,
-            header_style,
+            theme.header(),
         )
         .wants(&wants)
         .empty(if self.peer_filter.shown() {

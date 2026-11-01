@@ -17,7 +17,8 @@
 //! - [`volume`]: the free bytes under a part file and whether its volume is
 //!   FAT.
 //! - [`terminal`]: a terminal's hang-up, the standard streams left behind it,
-//!   and stopping as a shell's job, for the TUI's stop path.
+//!   and stopping as a shell's job, for the TUI's stop path; and an unblocked
+//!   read end on it, for the TUI's capability probe.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`

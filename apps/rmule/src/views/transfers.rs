@@ -51,7 +51,7 @@ use std::time::Instant;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Paragraph};
 use rmule_core::DownloadId;
@@ -86,8 +86,8 @@ mod sources;
 /// The downloads table's share of the tab.
 const SHARE: u16 = 62;
 
-/// Which pane holds selection focus; the focused pane wears the accent border
-/// (every pane's focus cue). Row actions always target the selected *download*, whichever
+/// Which pane holds selection focus; the focused pane wears the focus border
+/// ([`Theme::pane`], every pane's focus cue). Row actions always target the selected *download*, whichever
 /// pane has focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Pane {
@@ -193,20 +193,10 @@ fn pane_block(
     focused: bool,
     theme: &Theme,
 ) -> Block<'static> {
-    let border = if focused {
-        Style::new().fg(theme.accent)
-    } else {
-        theme.chrome()
-    };
-    let title_style = if focused {
-        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD)
-    } else {
-        theme.dim_text()
-    };
     crate::views::title::titled(
-        Block::bordered().border_style(border),
+        theme.pane(focused),
         width,
-        (title, title_style),
+        (title, theme.pane_title(focused)),
         (hint, theme.dim_text()),
     )
 }

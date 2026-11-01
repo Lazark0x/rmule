@@ -168,6 +168,28 @@ terminal, so nothing that serves them waits for one.
   before the flush confirms, it says so rather than reporting a clean drain. Every way
   out of a run is this Quit (ADR-0118).
 
+### The terminal the TUI draws on
+
+The TUI reads one **Capability** at the start: the environment's claims, then the
+terminal's answers to one probe sent after raw mode is up, ending in device attributes so
+that answer closes the wait. It is the run's only question: its bytes go through the Line
+(ADR-0118) before the loop starts, the loop asks nothing, and a stop's re-entry keeps the
+answers. A silent terminal holds the first frame for a bound of 150 ms, and input starts
+only once a late answer can no longer read as keys, with the keys typed meanwhile handed on.
+The answers replace crossterm's two-second kitty query.
+
+- **Palettes.** Truecolor, 256, the sixteen named colours and none are four tiers of one
+  set of roles, and a test holds every text pair in every palette to WCAG's 4.5:1. A
+  terminal that names its ground keeps it and gets the palette for that side; only one that
+  says nothing gets the opaque ground. An explicit `RMULE_THEME` or Settings choice paints
+  what it names.
+- **Shape stands in for colour.** With no accent, the active tab and the selected row
+  reverse, headers underline and the focused pane's border turns heavy, all behind the
+  theme's role methods, so no view asks which theme it is.
+- **Glyphs are a last pass.** Views draw Unicode; a **Glyph Tier** rewrites the finished
+  frame, one ASCII cell for one mark, so it costs no layout and no view can miss one.
+- **No cursor, no run.** `TERM=dumb` is refused like a missing terminal (ADR-0076).
+
 ## Consequences
 
 - Front ends share one source of truth, the core's store; adding a front end adds no

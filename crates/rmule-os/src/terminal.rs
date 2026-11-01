@@ -1,6 +1,9 @@
 //! What a process does about the terminal it runs on, behind the TUI's stop
 //! path (ADR-0118): whether the terminal hung up, what to leave on the
-//! standard streams when it did, and stopping as a shell's job.
+//! standard streams when it did, and stopping as a shell's job. Beside those,
+//! an unblocked read end for the answers the capability probe asks for (ADR-0069):
+//! std opens a file only blocking, and a silent terminal must not hold the
+//! first frame.
 //!
 //! Linux and macOS go through `rustix`'s safe calls. Windows has no hang-up to
 //! watch, no streams that spin and no stop: the console's close is a signal
@@ -53,6 +56,17 @@ pub fn stop_process_group() {
     imp::stop_process_group();
 }
 
+/// The controlling terminal, opened so a read with nothing to read returns
+/// [`std::io::ErrorKind::WouldBlock`]. It shares the terminal's input with
+/// standard input: what it reads, the input reader will not.
+///
+/// # Errors
+///
+/// The process has no controlling terminal, or the system has no such read.
+pub fn open_unblocked() -> std::io::Result<std::fs::File> {
+    imp::open_unblocked()
+}
+
 /// The signals job control sends: the terminal's stop, then the continue.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
@@ -69,11 +83,17 @@ mod imp {
     use std::time::Duration;
 
     use rustix::event::{PollFd, PollFlags, poll};
+    use rustix::fs::{Mode, OFlags, open};
     use rustix::io::Errno;
     use rustix::process::{Signal, getpgrp, getsid, kill_current_process_group};
     use rustix::termios::{QueueSelector, tcflush};
 
     use super::NoStop;
+
+    pub(super) fn open_unblocked() -> std::io::Result<File> {
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY;
+        Ok(open("/dev/tty", flags, Mode::empty())?.into())
+    }
 
     pub(super) fn wait_for_hangup(rest: Duration) -> bool {
         let input = stdin();
@@ -139,6 +159,10 @@ mod imp {
     use std::time::Duration;
 
     use super::NoStop;
+
+    pub(super) fn open_unblocked() -> std::io::Result<std::fs::File> {
+        Err(std::io::ErrorKind::Unsupported.into())
+    }
 
     pub(super) fn wait_for_hangup(_rest: Duration) -> bool {
         false

@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use super::SearchesView;
 use crate::state::UiState;
@@ -47,11 +47,6 @@ impl SearchesView {
     ) -> Option<Position> {
         let focused = self.input_focused;
         let editing = self.filters_open;
-        let border = if focused || editing {
-            theme.accent
-        } else {
-            theme.dim
-        };
         let hint = if editing {
             " Tab field  ←→ type  Enter search  Esc close "
         } else if focused {
@@ -60,7 +55,7 @@ impl SearchesView {
             " i focus  o options "
         };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(border)),
+            theme.pane(focused || editing),
             area.width,
             (" Search ", Style::new().fg(theme.fg)),
             (hint, theme.dim_text()),

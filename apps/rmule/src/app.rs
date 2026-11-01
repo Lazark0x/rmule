@@ -382,6 +382,7 @@ impl App {
     /// Draw if the terminal can take a frame; if not, the state stays dirty
     /// and the next tick asks again.
     fn draw<S: Surface>(&mut self, tui: &mut S, now: Instant) {
+        let reader_mode = self.state.preferences.reader_mode;
         let state = &self.state;
         let chrome_state = &self.chrome;
         let theme = &self.theme;
@@ -405,14 +406,19 @@ impl App {
             };
             let overlay_caret = chrome::draw_overlays(frame, state, chrome_state, theme);
             // The terminal's own cursor, where an input method composes.
-            // An overlay covers the field and takes the keys.
+            // An overlay covers the field and takes the keys. With no caret,
+            // Reader Mode rests it on what the keys are moving.
             let caret = if chrome_state.help_open || chrome_state.quit_open {
                 overlay_caret
             } else {
                 caret
             };
-            if let Some(caret) = caret {
-                frame.set_cursor_position(caret);
+            if let Some(cursor) = caret.or_else(|| {
+                reader_mode
+                    .then(|| crate::row_selection::focus_point(frame.buffer_mut(), theme))
+                    .flatten()
+            }) {
+                frame.set_cursor_position(cursor);
             }
         });
         // A held frame rendered nothing: its size, caret, title and mouse all
@@ -541,6 +547,35 @@ mod tests {
         app.state.preferences.terminal_title = false;
         app.draw(&mut surface, now);
         assert_eq!(surface.titles.last(), Some(&None), "given back");
+    }
+
+    /// A screen reader hears every cell that changes, so with Reader Mode on
+    /// the data tick waits for news or a key.
+    #[test]
+    fn reader_mode_repaints_for_a_key_and_not_for_the_data_tick() {
+        let tick = |now| {
+            Action::Snapshot(crate::bridge::BridgeSnapshot {
+                diagnostics: rmule_core::diagnostics::DiagnosticsSnapshot::default(),
+                rates: crate::rates::TransferRates {
+                    down_total_bps: 1234.5,
+                    ..crate::rates::TransferRates::default()
+                },
+                taken_at: now,
+            })
+        };
+        let now = Instant::now();
+        let mut app = App::new(Theme::default_dark());
+        app.dirty = false;
+        let _ = app.reduce(tick(now), now);
+        assert!(app.dirty, "off, a tick paints");
+
+        let mut app = App::new(Theme::default_dark());
+        app.state.preferences.reader_mode = true;
+        app.dirty = false;
+        let _ = app.reduce(tick(now), now);
+        assert!(!app.dirty, "on, it does not");
+        let _ = app.reduce(Action::Flash(crate::words::app::SHUTTING_DOWN), now);
+        assert!(app.dirty, "news still does");
     }
 
     #[test]

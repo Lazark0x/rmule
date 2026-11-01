@@ -130,7 +130,7 @@ impl TransfersView {
             &SOURCE_COLS,
             SOURCE_FLEX,
             &SOURCE_GIVE_WAY,
-            theme.dim_text(),
+            theme.header(),
         )
         .wants(&wants);
         let rows = Rows {

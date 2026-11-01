@@ -32,6 +32,7 @@ fn state() -> UiState {
             player_command: None,
             last_tab: crate::view::ViewId::default(),
             terminal_title: false,
+            reader_mode: false,
             completion_bell: false,
             mouse: true,
             dead_server_retries: 3,
@@ -702,12 +703,13 @@ fn slash_filters_the_rows_and_esc_brings_them_back() {
     let narrowed = shown(&mut view);
     assert!(narrowed.contains("Mouse"), "{narrowed}");
     assert!(!narrowed.contains("Nickname"), "{narrowed}");
+    assert!(!narrowed.contains("Theme"), "{narrowed}");
     assert!(matches!(
         view.slots.get(view.form.focus),
         Some(Slot::Row(Row::Mouse))
     ));
     view.handle_key(press(KeyCode::Esc), &state);
-    assert!(shown(&mut view).contains("Nickname"));
+    assert!(shown(&mut view).contains("Theme"));
     view.handle_key(press(KeyCode::Char('/')), &state);
     for letter in "zzzz".chars() {
         view.handle_key(press(KeyCode::Char(letter)), &state);

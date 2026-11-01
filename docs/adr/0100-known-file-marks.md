@@ -15,7 +15,7 @@ A search result carries at most one of six marks, by this precedence:
 |---|---|---|
 | Downloading | a running, waiting, paused or completing download | mark colour, bold |
 | Failed | a download whose run ended in an error; it still holds the file's place | `mark_failed`, bold and underlined |
-| Have | in the Shared File Registry and offered — on disk now | mark colour, dim |
+| Have | in the Shared File Registry and offered — on disk now | mark colour; dim only where the theme has no colour, since dim takes back the contrast the colour is held to |
 | Withheld | in the registry, but rmule cannot read the file now | `mark_withheld`, underlined |
 | Had | was in the registry; its file has since left the disk | mark colour, italic |
 | Cancelled | a download dropped before it completed | mark colour, struck through |

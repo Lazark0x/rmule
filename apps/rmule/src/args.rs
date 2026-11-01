@@ -172,7 +172,7 @@ pub const BUILD: Build = Build {
     dirty: matches!(env!("RMULE_BUILD_DIRTY").as_bytes(), b"1"),
 };
 
-/// Which of the run's standard streams is not a terminal.
+/// Why the run has no terminal it can draw on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MissingTerminal {
     /// Input is not a terminal.
@@ -181,14 +181,22 @@ pub enum MissingTerminal {
     Output,
     /// Neither is.
     Both,
+    /// Both are, but `TERM=dumb` says it has no cursor to address: an editor's
+    /// shell buffer, where a full screen draws as noise.
+    NoCursor,
 }
 
 impl MissingTerminal {
-    /// Which stream fails to be a terminal, from whether input and output
-    /// are; `None` when both are.
+    /// What is missing, from whether input and output are terminals and
+    /// whether `TERM` is `dumb`; `None` when the full screen can run.
     #[must_use]
-    pub const fn from_streams(input_is_terminal: bool, output_is_terminal: bool) -> Option<Self> {
+    pub const fn from_streams(
+        input_is_terminal: bool,
+        output_is_terminal: bool,
+        dumb: bool,
+    ) -> Option<Self> {
         match (input_is_terminal, output_is_terminal) {
+            (true, true) if dumb => Some(Self::NoCursor),
             (true, true) => None,
             (false, true) => Some(Self::Input),
             (true, false) => Some(Self::Output),

@@ -22,8 +22,9 @@ One **Row Selection** in every table the Table Sort names; the keys and the mark
   go. With a tag standing `p`, `x` and the row menu act on the tagged rows, else on the
   selected one; a tagged row wears `•` in its gutter, and the confirm counts them. A table
   with no row action, Sources and Uploads, has no tags.
-- The selected row wears `▸` in the gutter and the selection background, bold in the
-  focused pane and dimmed but still marked in the others.
+- The selected row wears `▸` in the gutter and the selection background, or reverse video
+  in a theme with no fill to spare; bold in the focused pane, plain and still marked in the
+  others, where a row with no fill is underlined.
 - The cursor is an identity: it follows its row through every re-order, and when its row
   leaves it stays at the same height. The **Viewport** moves no further than keeps it
   visible.

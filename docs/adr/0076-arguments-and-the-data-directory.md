@@ -40,13 +40,14 @@ the run has a terminal.
 - `--help` prints the usage, the options, the data directory and Run Log for this
   invocation with the rule that picked them, and every environment variable the binary
   reads on its platform (`RMULE_DATA`, the platform's data-home variables, `RMULE_LOG`,
-  `RMULE_THEME`, `COLORTERM`).
+  `RMULE_THEME`, `COLORTERM`, `NO_COLOR`).
 - **Run Log level:** `--log-level` wins over the stored *Full run log* preference for the
   run and is never stored; `detailed` is the operator's word for full. `RMULE_LOG` stays the
   `tracing` filter and chooses no level.
 - **No terminal, no run.** When stdin or stdout is not a terminal, `rmule` says so on
   stderr and exits 1, after the arguments and before the Run Log and the core, so a piped
-  run writes nothing into the data directory.
+  run writes nothing into the data directory. `TERM=dumb` counts as no terminal: it has no
+  cursor to address, and the refusal names what to use instead.
 - **Builds are told apart.** A build script records the commit (12 hex digits of `HEAD`),
   the commit's UTC date, and whether the sources that build `rmule` had uncommitted
   changes to tracked files (the app's sources, build script and manifest, each linked

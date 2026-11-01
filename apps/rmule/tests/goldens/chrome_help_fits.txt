@@ -16,9 +16,9 @@
 │ j/k  ↑/↓        select row in focused pane                                                      █│
 │ PgUp / PgDn     a page; Ctrl-U / Ctrl-D too                                                     █│
 │ g / G           top / bottom; Home / End too                                                    █│
-│ /               filter the focused list as you type                                             ▂│
-│ Space / T       tag a row / every row on show                                                    │
-│ Tab / Shift-Tab cycle panes (accent border = focus)                                              │
+│ /               filter the focused list as you type                                             █│
+│ Space / T       tag a row / every row on show                                                   █│
+│ Tab / Shift-Tab cycle panes (the focused pane's border stands out)                               │
 │ z               zoom the focused pane to the whole tab, or back                                  │
 │ m / Enter       row action menu; acts on the tagged rows if any                                  │
 │ x               take the row away, or the tagged rows; asks first                                │
@@ -36,7 +36,9 @@
 │ mouse           click tab/row selects, header sorts, a click runs a menu item, the wheel scrolls │
 │                 the pane under it                                                                │
 │ copy text       hold Shift, or Option on macOS, to drag; or turn Mouse off in Settings or start  │
-│                 with --no-mouse: clicks and the wheel then do nothing                           ▼│
-│/                                                                                         62 of 62│
-└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 37 / 82 ┘
+│                 with --no-mouse: clicks and the wheel then do nothing                            │
+│                                                                                                  │
+│ Searches                                                                                        ▼│
+│/                                                                                         63 of 63│
+└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 39 / 85 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —──────────────────Esc leave ┘

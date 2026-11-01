@@ -32,8 +32,9 @@
 │ Fetch seeds  on  nodes.dat on first Kad start  (on restart)                │
 │                                                                            │
 │Appearance                                                                  │
-│ Theme        auto  auto = RMULE_THEME / COLORTERM                          │
+│ Theme        auto  auto = RMULE_THEME, then the terminal                   │
 │ Terminal title off  rates and counts in the window title                   │
+│ Reader mode  off  cursor on the selected row; figures wait for a key       │
 │ Bell         off  rings the terminal when a download finishes              │
 │ Mouse        on  off: a drag selects text; clicks and the wheel do nothing │
 │                                                                            │
@@ -56,5 +57,4 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                                                                            │
-└──────────────────────────────────────────────────────────────────── 1 / 24 ┘
+└──────────────────────────────────────────────────────────────────── 1 / 25 ┘

@@ -48,7 +48,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Paragraph;
 
 use crate::action::Action;
 use crate::config::{
@@ -97,6 +97,7 @@ pub(super) enum Row {
     AutoFetchNodesDat,
     Theme,
     TerminalTitle,
+    ReaderMode,
     CompletionBell,
     Mouse,
     RunLogFull,
@@ -105,7 +106,7 @@ pub(super) enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 26] = [
+    const ALL: [Row; 27] = [
         Row::DownloadDir,
         Row::TempDir,
         Row::DataDir,
@@ -127,6 +128,7 @@ impl Row {
         Row::AutoFetchNodesDat,
         Row::Theme,
         Row::TerminalTitle,
+        Row::ReaderMode,
         Row::CompletionBell,
         Row::Mouse,
         Row::RunLogFull,
@@ -376,13 +378,19 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 ThemeChoice::ALL.map(ThemeChoice::name).to_vec(),
                 theme_index,
             )
-            .with_note("auto = RMULE_THEME / COLORTERM"),
+            .with_note("auto = RMULE_THEME, then the terminal"),
             Row::TerminalTitle => Field::choice(
                 "Terminal title",
                 ON_OFF.to_vec(),
                 usize::from(prefs.terminal_title),
             )
             .with_note(words::TERMINAL_TITLE_NOTE),
+            Row::ReaderMode => Field::choice(
+                "Reader mode",
+                ON_OFF.to_vec(),
+                usize::from(prefs.reader_mode),
+            )
+            .with_note(words::READER_MODE_NOTE),
             Row::CompletionBell => {
                 Field::choice("Bell", ON_OFF.to_vec(), usize::from(prefs.completion_bell))
                     .with_note(words::COMPLETION_BELL_NOTE)
@@ -516,6 +524,7 @@ impl SettingsView {
             Some(Row::PortMapping) => PrefEdit::PortMapping(self.form.choice(index) == 1),
             Some(Row::RunLogFull) => PrefEdit::RunLogFull(self.form.choice(index) == 1),
             Some(Row::TerminalTitle) => PrefEdit::TerminalTitle(self.form.choice(index) == 1),
+            Some(Row::ReaderMode) => PrefEdit::ReaderMode(self.form.choice(index) == 1),
             Some(Row::CompletionBell) => PrefEdit::CompletionBell(self.form.choice(index) == 1),
             Some(Row::Mouse) => PrefEdit::Mouse(self.form.choice(index) == 1),
             Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
@@ -753,11 +762,7 @@ impl SettingsView {
             " Enter edit  ←→ step  / filter  j/k row "
         };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(Style::new().fg(if self.editing {
-                theme.accent
-            } else {
-                theme.dim
-            })),
+            theme.pane(self.editing),
             area.width,
             (" Settings ", Style::new().fg(theme.fg)),
             (hint, theme.dim_text()),

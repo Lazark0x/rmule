@@ -32,9 +32,11 @@ use rmule::app::App;
 use rmule::args::{self, BUILD, Invocation, MissingTerminal, RunArgs};
 use rmule::attach::{Attachment, Live, attach};
 use rmule::bridge::{self, BridgeConfig};
+use rmule::capability::{Capability, TerminalEnv};
+use rmule::glyphs::GlyphTier;
 use rmule::input::spawn_input_pump;
 use rmule::stop::Stop;
-use rmule::theme::{Colours, Theme};
+use rmule::theme::Theme;
 use rmule::tui::Tui;
 use rmule::words::front_door;
 use rmule::words::severity::Severity;
@@ -75,6 +77,7 @@ fn main() -> ExitCode {
     if let Some(missing) = MissingTerminal::from_streams(
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
+        std::env::var_os("TERM").is_some_and(|term| term == "dumb"),
     ) {
         say(front_door::no_terminal(missing));
         return ExitCode::from(EXIT_FAILURE);
@@ -106,23 +109,27 @@ fn data_dir(run_args: &RunArgs) -> Option<args::DataDir> {
     args::resolve_data_dir(run_args.data_dir.as_deref(), |name| std::env::var_os(name))
 }
 
-async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
-    let (actions_tx, actions_rx) = tokio::sync::mpsc::channel(256);
-    let shutdown = Arc::new(AtomicBool::new(false));
-
-    // Theme detection (spec §5, `Theme::select`). This is what the Settings
-    // tab's `auto` choice means; a stored choice replaces it in
-    // `App::with_config`.
+/// What this terminal can show, from the environment and its answers.
+fn capability(answers: &rmule::probe::Answers) -> Capability {
     let colorterm = std::env::var("COLORTERM").ok();
     let term = std::env::var("TERM").ok();
-    let theme = Theme::select(
-        std::env::var("RMULE_THEME").ok().as_deref(),
-        Colours {
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|name| std::env::var(name).ok().filter(|value| !value.is_empty()));
+    Capability::read(
+        TerminalEnv {
             colorterm: colorterm.as_deref(),
             term: term.as_deref(),
             no_color: std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+            locale: locale.as_deref(),
         },
-    );
+        answers,
+    )
+}
+
+async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
+    let (actions_tx, actions_rx) = tokio::sync::mpsc::channel(256);
+    let shutdown = Arc::new(AtomicBool::new(false));
 
     // Attach the core before entering the alternate screen, so a run with no
     // core ends with its reason on the normal screen and a failing status,
@@ -195,10 +202,20 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         Err(_) => true,
     };
 
-    let mut tui = Tui::enter(&stop)?;
-    let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown), stop.clone());
+    let (mut tui, probed) = Tui::enter(&stop)?;
+    let capability = capability(&probed.answers);
+    tui.set_glyphs(capability.glyphs);
+    let pump = spawn_input_pump(
+        actions_tx.clone(),
+        Arc::clone(&shutdown),
+        stop.clone(),
+        probed.tail,
+    );
     let job_control_refused = rmule::job::listen(actions_tx.clone()).is_err();
 
+    // This is what the Settings tab's `auto` choice means; a stored choice
+    // replaces it in `App::with_config`.
+    let theme = Theme::select(std::env::var("RMULE_THEME").ok().as_deref(), capability);
     let mut app = App::new(theme);
     let Attachment {
         core,
@@ -254,6 +271,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         ceiling_lowered: ceiling_lowered.map(rmule::words::download::ceiling_lowered),
         cannot_connect,
         download_dir_set: session.download_dir.is_some(),
+        legacy_charset: capability.glyphs == GlyphTier::Ascii,
     });
     for (severity, note) in notes {
         let _ = actions_tx.send(Action::Note(severity, note)).await;

@@ -36,6 +36,8 @@ pub enum FrontEndKey {
     /// Whether the app writes rates and the tally to the terminal's title
     /// (`"true"`/`"false"`, off when unset).
     TerminalTitle,
+    /// Whether **Reader Mode** is on (`"true"`/`"false"`, off when unset).
+    ReaderMode,
     /// Whether a finished download rings the terminal's bell
     /// (`"true"`/`"false"`, off when unset).
     CompletionBell,
@@ -57,6 +59,7 @@ impl FrontEndKey {
             Self::PlayerCommand => "player_command",
             Self::LastTab => "last_tab",
             Self::TerminalTitle => "terminal_title",
+            Self::ReaderMode => "reader_mode",
             Self::CompletionBell => "completion_bell",
             Self::Mouse => "mouse",
         }

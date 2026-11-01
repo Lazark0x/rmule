@@ -269,12 +269,13 @@ fn the_last_tab_and_the_opt_ins_read_back() {
         PrefEdit::Mouse(false),
         PrefEdit::LastTab(crate::view::ViewId::Transfers),
         PrefEdit::TerminalTitle(true),
+        PrefEdit::ReaderMode(true),
         PrefEdit::CompletionBell(true),
     ] {
         config.commit(&edit).expect("commit");
     }
     let stored = config.load(None).expect("load");
     assert_eq!(stored.last_tab, crate::view::ViewId::Transfers);
-    assert!(stored.terminal_title && stored.completion_bell);
+    assert!(stored.terminal_title && stored.completion_bell && stored.reader_mode);
     assert!(!stored.mouse);
 }

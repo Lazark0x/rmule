@@ -335,7 +335,10 @@ impl App {
                     return Flow::Continue;
                 }
                 let closed_a_search = matches!(action, Action::ForgetSearch(_));
-                self.dirty |= self.state.apply(action, now);
+                // Reader Mode: the data tick's levels wait for news or a key.
+                let held =
+                    self.state.preferences.reader_mode && matches!(action, Action::Snapshot(_));
+                self.dirty |= self.state.apply(action, now) && !held;
                 if closed_a_search {
                     return self.reduce(Action::Flash(crate::words::search::CLOSED), now);
                 }

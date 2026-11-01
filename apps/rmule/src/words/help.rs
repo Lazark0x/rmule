@@ -28,7 +28,10 @@ pub const EVERYWHERE: Section = Section {
         ("g / G", "top / bottom; Home / End too"),
         ("/", "filter the focused list as you type"),
         ("Space / T", "tag a row / every row on show"),
-        ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
+        (
+            "Tab / Shift-Tab",
+            "cycle panes (the focused pane's border stands out)",
+        ),
         ("z", "zoom the focused pane to the whole tab, or back"),
         (
             "m / Enter",
@@ -175,28 +178,62 @@ pub const WORDS: Section = Section {
         ),
         ("Done 42%", "bytes verified against the file's hashes"),
         ("▸  •", "the row the cursor is on; a tagged row"),
-        ("downloading", "a result in Transfers now: bold"),
+    ],
+};
+
+/// How a result's mark and the selection look in a theme with colour: each mark
+/// has its colour, and all but `have` an attribute as well.
+const MARKS: Section = Section {
+    title: "Marks on a result",
+    rows: &[
+        ("downloading", "in Transfers now: its colour, bold"),
         (
             "failed",
-            "a result whose download failed and holds its place: bold, underlined",
+            "its download failed and holds its place: its colour, bold, underlined",
         ),
-        ("have", "a result on your disk, shared: dim"),
+        ("have", "on your disk, shared: its colour"),
         (
             "withheld",
-            "a result rmule cannot read now, offered to nobody: underlined",
+            "rmule cannot read it now, offered to nobody: its colour, underlined",
         ),
+        ("had", "downloaded once, no longer held: its colour, italic"),
+        ("cancelled", "you cancelled it: its colour, struck through"),
         (
-            "had",
-            "a result you downloaded once and no longer hold: italic",
+            "selected",
+            "the focused pane's row is bold whatever its mark: its word says which",
         ),
-        ("cancelled", "a result you cancelled: struck through"),
+    ],
+};
+
+/// [`MARKS`] with no colour: the attribute is all there is.
+const MARKS_NO_COLOUR: Section = Section {
+    title: "Marks on a result",
+    rows: &[
+        ("downloading", "in Transfers now: bold"),
+        (
+            "failed",
+            "its download failed and holds its place: bold, underlined",
+        ),
+        ("have", "on your disk, shared: dim"),
+        (
+            "withheld",
+            "rmule cannot read it now, offered to nobody: underlined",
+        ),
+        ("had", "downloaded once, no longer held: italic"),
+        ("cancelled", "you cancelled it: struck through"),
+        (
+            "selected",
+            "reversed and bold in the focused pane, underlined in another, \
+             whatever its mark: its word says which",
+        ),
     ],
 };
 
 /// The overlay's tables for a visit from `active`: that tab's first, then what
-/// every tab shares, the rest in the tabs' order, and the words last.
+/// every tab shares, the rest in the tabs' order, and the words last, with what
+/// a mark looks like in a theme with colour or, `colourless`, without.
 #[must_use]
-pub fn sections(active: ViewId) -> Vec<Section> {
+pub fn sections(active: ViewId, colourless: bool) -> Vec<Section> {
     let tabs = [
         (ViewId::Networks, NETWORKS),
         (ViewId::Searches, SEARCHES),
@@ -210,6 +247,6 @@ pub fn sections(active: ViewId) -> Vec<Section> {
     own.map(|(_, section)| *section)
         .chain([EVERYWHERE])
         .chain(rest.map(|(_, section)| *section))
-        .chain([WORDS])
+        .chain([WORDS, if colourless { MARKS_NO_COLOUR } else { MARKS }])
         .collect()
 }

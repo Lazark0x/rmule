@@ -19,11 +19,10 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::widgets::Block;
+use ratatui::style::Style;
 
 use super::sort::SharedLine;
-use super::{Pane, SharedView, num_style, pane_border, render_empty};
+use super::{Pane, SharedView, num_style, render_empty};
 use crate::state::{UiState, withheld_words};
 use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
@@ -128,7 +127,7 @@ impl SharedView {
             " m menu  / filter  Tab uploads  Space tag  s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
-            Block::bordered().border_style(pane_border(theme, focused)),
+            theme.pane(focused),
             area.width,
             (&title, theme.dim_text()),
             (hint, theme.dim_text()),
@@ -149,8 +148,7 @@ impl SharedView {
             return;
         }
         let cells = |index: usize, _: &[usize]| file_cells(&lines_in_order[index], theme);
-        let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
-        let table = Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style)
+        let table = Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, theme.header())
             .wants(&FILE_WANTS)
             .empty(crate::words::rows::NO_MATCH);
         let tagged = |index: usize| self.tags.contains(&lines_in_order[index].file_hash);

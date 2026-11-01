@@ -101,22 +101,20 @@ pub(super) fn draw_help(
         area.width,
         area.height.saturating_sub(2),
     );
-    let tables: Vec<(&str, Vec<Binding>)> = sections(active)
+    let sections = sections(active, theme.colourless());
+    let tables: Vec<(&str, Vec<Binding>)> = sections
         .iter()
         .map(|section| (section.title, kept(section, filter)))
         .filter(|(_, rows)| !rows.is_empty())
         .collect();
     let kept_rows = tables.iter().map(|(_, rows)| rows.len()).sum();
-    let total_rows = sections(active)
-        .iter()
-        .map(|section| section.rows.len())
-        .sum();
+    let total_rows = sections.iter().map(|section| section.rows.len()).sum();
     // Greedy width: the overlay takes whatever it needs to show every
     // binding whole, and only wraps the description column when the frame is
     // narrower than that. Its width does not follow the filter: the panel
     // stands still as the operator types.
     let key_w = KEY_COL_W;
-    let natural = sections(active)
+    let natural = sections
         .iter()
         .flat_map(|section| section.rows.iter())
         .map(|(_, what)| key_w + 3 + display_width(what))
@@ -273,7 +271,7 @@ mod tests {
     fn golden_help_overlay_fits_a_tall_frame() {
         let mut chrome = chrome();
         chrome.update(&Action::ToggleHelp, now());
-        assert_golden("chrome_help_fits", 100, 42, |frame| {
+        assert_golden("chrome_help_fits", 100, 44, |frame| {
             draw_frame(
                 frame,
                 &UiState::default(),

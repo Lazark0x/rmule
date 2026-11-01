@@ -171,7 +171,7 @@ fn each_mark_takes_its_colour_and_attribute_in_place_of_the_source_tint() {
     state.file_history = Some(history(Some(dir.path().join("clip_low.avi")), true, true));
     assert_eq!(
         look(&draw_golden(&mut view, &state), "clip_low"),
-        (t.mark_have, Modifier::DIM)
+        (t.mark_have, Modifier::empty())
     );
     queue_clip(&mut state);
     assert_eq!(

@@ -1,6 +1,6 @@
 //! Terminal lifecycle (spec §5 feature floor): raw mode + alternate screen
 //! entered by hand, mouse capture, kitty-keyboard enhancement pushed only
-//! when the terminal reports support (feature-detected, never assumed), and
+//! when the terminal's answer to the probe reports support, and
 //! synchronized output (DEC mode 2026) wrapped around every frame so a big
 //! repaint commits atomically. [`leave`] is the one restore: [`Tui`]'s `Drop`,
 //! the panic hook and the stop deadline (ADR-0118) all reach it, and only the
@@ -9,7 +9,9 @@
 //!
 //! Every byte goes through the line thread, so nothing here waits on the
 //! terminal: a frame the line is not ready for is held, a stalled terminal
-//! holds nobody, the loop asks the terminal nothing (`Screen`), and losing
+//! holds nobody, the loop asks the terminal nothing (`Screen`; the one
+//! question of a run is the start's [`probe`], before the loop, and a stop's
+//! re-entry keeps its answers), and losing
 //! the terminal is told to the [`Stop`] rather than
 //! returned as an error. Crossterm's reader spins on a dead descriptor and
 //! never returns, so the loss also blanks the standard streams, which parks
@@ -45,11 +47,13 @@ use ratatui::crossterm::queue;
 use ratatui::crossterm::style::Print;
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-    SetTitle, disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement,
+    SetTitle, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::{Frame, Terminal};
 pub use rmule_os::terminal::NoStop;
 
+use crate::glyphs::GlyphTier;
+use crate::probe::{self, Probed};
 use crate::stop::Stop;
 use line::Line;
 use screen::Screen;
@@ -160,8 +164,21 @@ fn release_title() -> Vec<u8> {
 
 /// The bytes that take the screen.
 fn enter_bytes() -> Vec<u8> {
+    let mut bytes = screen_bytes();
+    bytes.extend(input_mode_bytes());
+    bytes
+}
+
+/// The alternate screen alone: where the probe's character leaves no trace.
+fn screen_bytes() -> Vec<u8> {
     let mut bytes = Vec::new();
     let _ = queue!(bytes, EnterAlternateScreen);
+    bytes
+}
+
+/// The input modes, the kitty keyboard among them if the terminal took it.
+fn input_mode_bytes() -> Vec<u8> {
+    let mut bytes = Vec::new();
     if KITTY_ACCEPTED.load(Ordering::SeqCst) {
         let _ = queue!(
             bytes,
@@ -215,19 +232,28 @@ pub struct Tui {
     title: Option<String>,
     /// Whether the mouse is taken, for that re-entry to take again.
     mouse: bool,
+    /// The last pass on every frame, from the start's probe: a stop's
+    /// re-entry finds the same terminal and asks it nothing.
+    glyphs: GlyphTier,
 }
 
 impl Tui {
     /// Enter the full-screen UI, its loss told to `stop`. Must run on a real
-    /// terminal; the kitty probe runs after raw mode is up (it queries the
-    /// device). A failure part way gives back what was taken.
-    pub fn enter(stop: &Stop) -> std::io::Result<Self> {
+    /// terminal; the probe runs after raw mode is up (it queries the device),
+    /// on the alternate screen, and before the loop. A failure part way gives
+    /// back what was taken.
+    pub fn enter(stop: &Stop) -> std::io::Result<(Self, Probed)> {
         enable_raw_mode()?;
         ENTERED.store(true, Ordering::SeqCst);
         Self::take_screen(stop).inspect_err(|_| leave())
     }
 
-    fn take_screen(stop: &Stop) -> std::io::Result<Self> {
+    /// Set the glyph tier the probe's answers came to.
+    pub const fn set_glyphs(&mut self, glyphs: GlyphTier) {
+        self.glyphs = glyphs;
+    }
+
+    fn take_screen(stop: &Stop) -> std::io::Result<(Self, Probed)> {
         #[cfg(unix)]
         let out = std::fs::File::from(stdout().as_fd().try_clone_to_owned()?);
         #[cfg(windows)]
@@ -236,19 +262,21 @@ impl Tui {
         let line = Line::open(out, move || lose_terminal(&on_loss))?;
         let _ = LINE.set(line.clone());
         watch_for_hangup(stop.clone());
-        KITTY_ACCEPTED.store(
-            supports_keyboard_enhancement().unwrap_or(false),
-            Ordering::SeqCst,
-        );
-        line.send(enter_bytes());
+        line.send(screen_bytes());
+        let probed = probe::ask(|questions| line.send(questions));
+        KITTY_ACCEPTED.store(probed.answers.kitty, Ordering::SeqCst);
+        line.send(input_mode_bytes());
         let terminal = Terminal::new(Screen::new(line.clone()))?;
-        Ok(Self {
+        let tui = Self {
             terminal,
             line,
-            repaint_owed: false,
+            // The whole of the first frame, over the probe's character.
+            repaint_owed: true,
             title: None,
             mouse: false,
-        })
+            glyphs: GlyphTier::default(),
+        };
+        Ok((tui, probed))
     }
 }
 
@@ -334,7 +362,14 @@ impl Surface for Tui {
         }
         // Past the writes, which cannot fail, only asking the terminal for
         // its size can, and that is a terminal going: its frame is held.
-        let drawn = self.terminal.draw(render).is_ok();
+        let glyphs = self.glyphs;
+        let drawn = self
+            .terminal
+            .draw(|frame| {
+                render(frame);
+                glyphs.apply(frame.buffer_mut());
+            })
+            .is_ok();
         let backend = self.terminal.backend_mut();
         let _ = queue!(backend, EndSynchronizedUpdate);
         let _ = Write::flush(backend);
@@ -354,8 +389,9 @@ impl Surface for Tui {
     }
 
     fn set_title(&mut self, title: Option<&str>) {
-        self.title = title.map(str::to_owned);
-        self.line.send(title.map_or_else(release_title, take_title));
+        self.title = title.map(|title| self.glyphs.text(title));
+        self.line
+            .send(self.title.as_deref().map_or_else(release_title, take_title));
     }
 
     fn ring_bell(&mut self) {

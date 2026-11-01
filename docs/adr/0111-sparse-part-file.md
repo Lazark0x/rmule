@@ -167,6 +167,8 @@ before completion, and the finished file is never pre-sized either.
   acknowledged on Windows, none where the system refuses; what a reading means is ADR-0031's.
   Module `volume` holds `free_bytes(dir)` and `is_fat(dir)`, the readings the Volume Stop
   (ADR-0094) and the refusal of a large file on FAT (ADR-0115) take; what they mean is core's.
+  Module `terminal` holds `open_unblocked()`, a read end on the run's terminal for the TUI's
+  capability probe (ADR-0069), through `rustix` on Linux and macOS.
 - **Safe where a safe call exists:** the Linux punch goes through `rustix`, the Unix reading through
   std, and the exclusive rename on Linux and macOS through `rustix`'s `renameat_with` with
   `RenameFlags::NOREPLACE` (`renameat2(RENAME_NOREPLACE)`, `renameatx_np(RENAME_EXCL)`), the

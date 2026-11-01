@@ -1,24 +1,24 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
-│                                                                             ▲│
-│ Words                                                                        │
-│ HighID          peers can reach you directly                                 │
-│ LowID           peers cannot reach you; the server relays for you            │
-│ Grants          what a server lets a client do: its limits and flags         │
+│ Grants          what a server lets a client do: its limits and flags        ▲│
 │ carried         a file a scan kept its hash for, unread                      │
 │ Stalled         holds a slot and has moved no bytes for 30 seconds           │
 │ Sources 42 (7)  peers that have the file (of them, with all of it)           │
 │ Requests 3 (12) this run (all time); Accepted, Transferred too               │
 │ Done 42%        bytes verified against the file's hashes                     │
 │ ▸  •            the row the cursor is on; a tagged row                       │
-│ downloading     a result in Transfers now: bold                              │
-│ failed          a result whose download failed and holds its place: bold,    │
+│                                                                              │
+│ Marks on a result                                                            │
+│ downloading     in Transfers now: its colour, bold                           │
+│ failed          its download failed and holds its place: its colour, bold,   │
 │                 underlined                                                   │
-│ have            a result on your disk, shared: dim                          ▆│
-│ withheld        a result rmule cannot read now, offered to nobody:          █│
-│                 underlined                                                  █│
-│ had             a result you downloaded once and no longer hold: italic     █│
-│ cancelled       a result you cancelled: struck through                      ▼│
-│/                                                                     62 of 62│
-└─────────────────────────────────────────────────────────────── ↑/↓ ─ 86 / 86 ┘
+│ have            on your disk, shared: its colour                             │
+│ withheld        rmule cannot read it now, offered to nobody: its colour,     │
+│                 underlined                                                  ▅│
+│ had             downloaded once, no longer held: its colour, italic         █│
+│ cancelled       you cancelled it: its colour, struck through                █│
+│ selected        the focused pane's row is bold whatever its mark: its word  █│
+│                 says which                                                  ▼│
+│/                                                                     63 of 63│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 90 / 90 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

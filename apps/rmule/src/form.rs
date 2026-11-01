@@ -582,7 +582,7 @@ impl Form {
             }
             let focused = index == self.focus;
             let label_style = if focused {
-                Style::new().fg(theme.accent)
+                theme.focused_label()
             } else {
                 theme.dim_text()
             };

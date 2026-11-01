@@ -145,7 +145,10 @@ fn every_table_marks_its_selected_row_in_either_focus() {
                     assert!(word.modifier.contains(Modifier::BOLD), "{context}: bold");
                     assert!(!word.modifier.contains(Modifier::DIM), "{context}");
                 } else {
-                    assert!(word.modifier.contains(Modifier::DIM), "{context}: dimmed");
+                    assert!(
+                        !word.modifier.contains(Modifier::DIM),
+                        "{context}: not dimmed"
+                    );
                     assert!(!word.modifier.contains(Modifier::BOLD), "{context}");
                 }
             }

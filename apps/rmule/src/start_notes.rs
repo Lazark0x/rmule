@@ -21,12 +21,15 @@ pub struct StartFacts {
     pub cannot_connect: Option<Sentence>,
     /// A download has somewhere to land.
     pub download_dir_set: bool,
+    /// The terminal does not read UTF-8, so a typed name cannot reach rmule.
+    pub legacy_charset: bool,
 }
 
 /// The notes of a start, mildest first.
 #[must_use]
 pub fn start_notes(facts: StartFacts) -> Vec<(Severity, Sentence)> {
     let warnings = [
+        facts.legacy_charset.then_some(app::LEGACY_CHARSET),
         (!facts.download_dir_set).then_some(download::NO_DOWNLOAD_DIR),
         facts.cannot_connect,
         facts.ceiling_lowered,

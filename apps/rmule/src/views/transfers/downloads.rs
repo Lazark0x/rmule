@@ -332,7 +332,7 @@ impl TransfersView {
             &DOWNLOAD_COLS,
             DOWNLOAD_FLEX,
             &DOWNLOAD_GIVE_WAY,
-            theme.dim_text(),
+            theme.header(),
         )
         .wants(&wants)
         .left(PROGRESS_COL)
