@@ -97,7 +97,6 @@ pub(super) fn draw_help(
         ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
         ("m / Enter", "row action menu"),
         ("/", "Searches: focus query input"),
-        ("← / →", "Searches: pick method (input focused)"),
         ("o", "Searches: type/size/sources/extension filters"),
         (
             "x / n",

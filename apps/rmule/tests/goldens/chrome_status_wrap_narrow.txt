@@ -7,6 +7,6 @@
 │                                          │
 │                                          │
 │                                          │
-│✱ no download dir — set one with rmule-cli│
-│config set-download-dir                   │
+│✱ no download dir yet: press 6, then set  │
+│Download dir in Settings                  │
 └ ●eD2k HighID ●Kad off ───────────────────┘

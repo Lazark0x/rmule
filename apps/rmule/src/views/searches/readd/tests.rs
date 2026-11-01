@@ -190,7 +190,6 @@ fn a_download_marks_its_file_in_every_held_search() {
         &rmule_primitives::KeywordQuery::new(Ed2kText::from_utf8("beta"))
             .expect("a valid query")
             .into(),
-        super::super::method::SearchMethod::default(),
         search_id(2),
     );
     fold(

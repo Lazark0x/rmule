@@ -7,7 +7,7 @@
 //! names that id, so nothing is matched by order: the results and status stay
 //! in [`UiState::searches`] under it, a refusal in [`UiState::refused_searches`].
 //! A search the view did not send (another front end on the same core) is held
-//! as an entry with no query. An entry adds only the query, the method and its
+//! as an entry with no query. An entry adds only the query and its
 //! own cursor. Nothing here is written anywhere.
 
 mod kind;
@@ -26,7 +26,6 @@ use rmule_primitives::{FileHash, SearchQuery};
 
 pub(super) use kind::HeldKind;
 
-use super::method::SearchMethod;
 use super::sort::ResultId;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
@@ -53,7 +52,6 @@ pub(super) struct HeldSearch {
     /// Related-Files Search, the file's name; empty when none was known.
     pub(super) query: String,
     pub(super) kind: HeldKind,
-    pub(super) method: SearchMethod,
     /// The selection in this search's results.
     pub(super) cursor: RowCursor<ResultId>,
 }
@@ -79,7 +77,7 @@ pub(super) struct HeldSearches {
 impl HeldSearches {
     /// Open an entry for a query just sent under `id`: at the right end, and
     /// current.
-    pub(super) fn open(&mut self, query: &SearchQuery, method: SearchMethod, id: SearchId) {
+    pub(super) fn open(&mut self, query: &SearchQuery, id: SearchId) {
         let (query, kind) = match query {
             SearchQuery::Keywords(query) => {
                 (query.phrase().to_display_string(), HeldKind::Keywords)
@@ -96,7 +94,6 @@ impl HeldSearches {
             id,
             query,
             kind,
-            method,
             cursor: RowCursor::default(),
         });
         self.current = self.entries.len() - 1;
@@ -109,14 +106,12 @@ impl HeldSearches {
         &mut self,
         query: &str,
         related: Option<FileHash>,
-        method: SearchMethod,
         why: String,
     ) {
         self.entries.push(HeldSearch {
             id: SearchId::mint(),
             query: query.to_string(),
             kind: HeldKind::NotSent { why, related },
-            method,
             cursor: RowCursor::default(),
         });
         self.current = self.entries.len() - 1;
@@ -149,7 +144,6 @@ impl HeldSearches {
                     id,
                     query: String::new(),
                     kind: HeldKind::Keywords,
-                    method: SearchMethod::default(),
                     cursor: RowCursor::default(),
                 });
             }
@@ -317,7 +311,7 @@ impl SearchesView {
             rmule_primitives::KeywordQuery::new(rmule_primitives::Ed2kText::from_utf8(query))
                 .expect("a valid test query");
         let id = crate::fixture::search_id(self.held.entries.len() as u64 + 1);
-        self.held.open(&sent.into(), SearchMethod::default(), id);
+        self.held.open(&sent.into(), id);
         self.query = query.to_string();
         self
     }
@@ -353,23 +347,14 @@ impl SearchesView {
         ViewOutcome::Redraw
     }
 
-    /// The input shows the current entry's query and method; with no entry
+    /// The input shows the current entry's query; with no entry
     /// left, the empty prompt. A Related-Files entry leaves the input empty:
     /// its file is no keywords to edit, and the query line names it instead.
     pub(super) fn show_current_query(&mut self) {
         match self.held.current() {
-            Some(entry) if entry.kind.related_file().is_some() => {
-                self.query.clear();
-                self.method = entry.method;
-            }
-            Some(entry) => {
-                self.query.clone_from(&entry.query);
-                self.method = entry.method;
-            }
-            None => {
-                self.query.clear();
-                self.method = SearchMethod::default();
-            }
+            Some(entry) if entry.kind.related_file().is_some() => self.query.clear(),
+            Some(entry) => self.query.clone_from(&entry.query),
+            None => self.query.clear(),
         }
     }
 

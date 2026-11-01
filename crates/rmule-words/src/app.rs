@@ -106,8 +106,14 @@ pub const CORE_STOPPED: Sentence =
 /// A command on a run with no core.
 pub const CORE_NOT_ATTACHED: Sentence = Sentence::fixed("core not attached (UI-only run)");
 
-/// A link went to the clipboard.
-pub const LINK_COPIED: Sentence = Sentence::fixed("link copied");
+/// A link was written to the terminal, which may ignore the clipboard write.
+pub const LINK_SENT: Sentence = Sentence::fixed("link sent to the terminal's clipboard");
+
+/// The link itself for the log, since no terminal says whether it took it.
+#[must_use]
+pub fn link_sent(link: &str) -> Sentence {
+    Sentence::owned(format!("link: {}", super::plain(link)))
+}
 
 /// Why a command was refused. Each names what to do about it where there is
 /// something to do.

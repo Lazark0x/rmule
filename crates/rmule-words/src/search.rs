@@ -56,22 +56,40 @@ pub const fn skip_words(reason: SearchResultSkipReason) -> &'static str {
     }
 }
 
+/// A leg of a search, by name.
+#[derive(Clone, Copy)]
+enum Leg {
+    Server,
+    OtherServers,
+    Kad,
+}
+
+impl Leg {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::OtherServers => "other servers",
+            Self::Kad => "Kad",
+        }
+    }
+}
+
 /// One leg's state as the operator reads it: `leg` names it, and the words
 /// for "never ran" depend on which leg it is.
-fn leg_clause(leg: &str, state: SearchLegState, reconnecting: bool) -> String {
+fn leg_clause(leg: Leg, state: SearchLegState, reconnecting: bool) -> String {
     let words = match state {
         SearchLegState::WaitingForSession if reconnecting => "waiting for the reconnect",
         SearchLegState::WaitingForSession => "waiting for a connection",
         SearchLegState::WaitingForKad => "waiting for Kad",
         SearchLegState::Sent => "searching",
         SearchLegState::Settled => "done",
-        SearchLegState::NotRun if leg == "Kad" => "not running",
+        SearchLegState::NotRun if matches!(leg, Leg::Kad) => "not running",
         SearchLegState::NotRun => "not asked",
         SearchLegState::Unanswered => "not answered — the session ended",
         SearchLegState::WalkStopped => "cut short — Kad stopped",
         SearchLegState::NotSent(why) => not_sent_words(why),
     };
-    format!("{leg}: {words}")
+    format!("{}: {words}", leg.name())
 }
 
 /// The sweep's clause: its state, with the servers it asked and those that
@@ -87,7 +105,7 @@ fn sweep_clause(state: SearchLegState, tally: SweepTally, reconnecting: bool) ->
         SearchLegState::Sent if tally.answered > 0 => {
             format!("other servers: searching, {answered}")
         }
-        _ => leg_clause("other servers", state, reconnecting),
+        _ => leg_clause(Leg::OtherServers, state, reconnecting),
     }
 }
 
@@ -109,10 +127,10 @@ const fn not_sent_words(why: LegNotSent) -> &'static str {
 /// waiting for a session waits for.
 #[must_use]
 pub fn legs_line(legs: SearchLegs, related: bool, reconnecting: bool) -> String {
-    let mut clauses = vec![leg_clause("server", legs.server, reconnecting)];
+    let mut clauses = vec![leg_clause(Leg::Server, legs.server, reconnecting)];
     if !related {
         clauses.push(sweep_clause(legs.sweep, legs.sweep_servers, reconnecting));
-        clauses.push(leg_clause("Kad", legs.kad, reconnecting));
+        clauses.push(leg_clause(Leg::Kad, legs.kad, reconnecting));
     }
     clauses.join(" · ")
 }
@@ -214,8 +232,20 @@ pub fn log_line(event: &SearchEvent) -> Sentence {
 /// Stop on an entry whose search has not started.
 pub const NOT_STARTED: Sentence = Sentence::fixed("the search has not started yet");
 
-/// The Kad method asked for, which every search already uses.
-pub const KAD_ALWAYS_ON: Sentence = Sentence::fixed("always on — every search also walks Kad");
+/// Who a search sent now would ask, from the session and Kad levels; a search
+/// asks everyone it can, so this is a fact and not a choice.
+#[must_use]
+pub const fn asks(server: bool, kad: bool) -> &'static str {
+    match (server, kad) {
+        (true, true) => "Asks: the connected server, the other listed servers and Kad",
+        (true, false) => "Asks: the connected server and the other listed servers; Kad is off",
+        (false, true) => "Asks: Kad; no server is connected",
+        (false, false) => "Asks: nobody yet; a search waits for a server or Kad",
+    }
+}
+
+/// Who a Related-Files Search asks.
+pub const ASKS_CONNECTED_SERVER: &str = "Asks: the connected server only";
 
 /// A server that holds more of a search, or why it no longer does, as the
 /// entry's status clause.

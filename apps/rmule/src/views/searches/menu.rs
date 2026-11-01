@@ -55,6 +55,14 @@ impl MenuItem {
     fn reason(self, state: &UiState) -> Option<&'static str> {
         match self {
             MenuItem::SearchRelated => crate::views::related::unavailable(state),
+            MenuItem::Download
+                if state
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.download_dir.is_none()) =>
+            {
+                Some(crate::words::download::SET_DOWNLOAD_DIR_FIRST)
+            }
             _ => None,
         }
     }
@@ -175,6 +183,21 @@ impl SearchesView {
 
 #[cfg(test)]
 mod tests {
+    /// Offered with no directory, Download would be refused at the last step.
+    #[test]
+    fn download_is_greyed_with_the_way_on_until_a_directory_is_set() {
+        let mut state = session_state();
+        assert_eq!(MenuItem::Download.reason(&state), None);
+        if let Some(session) = &mut state.session {
+            session.download_dir = None;
+        }
+        assert_eq!(
+            MenuItem::Download.reason(&state),
+            Some("set a download dir first: press 6")
+        );
+        assert!(!MenuItem::Download.selectable(&state));
+    }
+
     use crate::state::SearchStatus;
     use ratatui::crossterm::event::KeyCode;
     use rmule_core::{CoreCommand, DownloadCommand};

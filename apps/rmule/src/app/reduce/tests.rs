@@ -320,8 +320,13 @@ fn copy_link_queues_the_osc52_write_and_flashes() {
     assert_eq!(app.pending_copy.as_deref(), Some("ed2k://|file|x|1|AA|/"));
     assert_eq!(
         app.chrome.flash_text(Instant::now()),
-        Some("link copied"),
-        "the flash is the user-visible receipt"
+        Some("link sent to the terminal's clipboard"),
+        "the flash claims the write, not the clipboard"
+    );
+    assert_eq!(
+        app.state.notable.as_ref().map(|note| note.as_str()),
+        Some("link: ed2k://|file|x|1|AA|/"),
+        "a terminal that ignored the write leaves the link readable"
     );
 }
 

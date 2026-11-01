@@ -12,26 +12,27 @@ use ratatui::widgets::{Block, Paragraph};
 
 use super::SearchesView;
 use crate::form::CURSOR;
+use crate::state::UiState;
 use crate::theme::Theme;
 use crate::wrap::{clamp_u16, labeled_lines};
 
-/// The query-input block is three inner lines (query + method + filters) inside
+/// The query-input block is three inner lines (query + who it asks + filters) inside
 /// a border → 5 rows tall; it grows when a line wraps or the filter
 /// editor is open, and the results table takes the rest.
 const INPUT_HEIGHT: u16 = 5;
 
 impl SearchesView {
     /// Rows the input block needs at `inner_width`: the border pair plus the
-    /// wrapped query, method and filter lines.
-    pub(super) fn input_height(&self, inner_width: usize, theme: &Theme) -> u16 {
+    /// wrapped query, who-it-asks and filter lines.
+    pub(super) fn input_height(&self, inner_width: usize, state: &UiState, theme: &Theme) -> u16 {
         let inner_width = inner_width.max(1);
         let query = self.query_lines(inner_width, false, theme).len();
-        let method = self.method_lines(inner_width, theme).len();
+        let asks = self.asks_lines(inner_width, state, theme).len();
         let filters = self.filter_lines(inner_width, theme).len();
-        clamp_u16(query + method + filters + 2).max(INPUT_HEIGHT)
+        clamp_u16(query + asks + filters + 2).max(INPUT_HEIGHT)
     }
 
-    pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub(super) fn draw_input(&self, frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
         let focused = self.input_focused;
         let editing = self.filters_open;
         let border = if focused || editing {
@@ -42,7 +43,7 @@ impl SearchesView {
         let hint = if editing {
             " Tab field  ←→ type  Enter search  Esc close "
         } else {
-            " / focus  ←→ method  o options "
+            " / focus  o options "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(Style::new().fg(border)),
@@ -57,7 +58,7 @@ impl SearchesView {
         }
         let inner_width = usize::from(inner.width);
         let mut lines = self.query_lines(inner_width, focused, theme);
-        lines.extend(self.method_lines(inner_width, theme));
+        lines.extend(self.asks_lines(inner_width, state, theme));
         lines.extend(self.filter_lines(inner_width, theme));
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -139,7 +140,7 @@ mod tests {
             view.handle_key(press(KeyCode::Char(c)), &state);
         }
         // 4 rows is the unwrapped block; the query alone needs several more.
-        let height = view.input_height(76, &Theme::default_dark());
+        let height = view.input_height(76, &UiState::default(), &Theme::default_dark());
         assert!(
             height > INPUT_HEIGHT,
             "the input block grew to {height} rows"

@@ -1,8 +1,8 @@
 ┌ Search ─────── / focus ┐
 │❯ ubuntu                │
-│Method: eD2k server ▾   │
-│Kad ▾ (always on — every│
-│search also walks Kad)  │
+│Asks: nobody yet; a     │
+│search waits for a      │
+│server or Kad           │
 │Filters: none   o edit  │
 └────────────────────────┘
 [ubuntu · 3]

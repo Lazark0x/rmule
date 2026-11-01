@@ -1,6 +1,6 @@
-┌ Search ───────────────────────────────────── / focus  ←→ method  o options ┐
+┌ Search ──────────────────────────────────────────────── / focus  o options ┐
 │❯ related to: debian-12.5.0-amd64-netinst.iso                               │
-│Method: the connected server only                                           │
+│Asks: the connected server only                                             │
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
  ubuntu · 0… [~debian-12.5.0-amd64-… · 0]

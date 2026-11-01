@@ -7,7 +7,7 @@
 //!
 //! View state only (ADR-0069): the search *data* lives in [`UiState::searches`]
 //! (folded from `SearchEvent`); this component holds focus, the typed query, the
-//! selected method, the typed constraints, the held searches with their queries
+//! typed constraints, the held searches with their queries
 //! and cursors, the results' **Table Sort** (one for every held search), and the
 //! row-menu cursor.
 //!
@@ -17,12 +17,10 @@
 //! expression tree. They live here as `Filters`, summarised on one line under
 //! the query when idle and expanded into an editor by `o`.
 //!
-//! **The two methods are not a choice.** A `StartSearch` fans out to *both*
-//! surfaces at once (ADR-0051 + ADR-0062: the TCP search, the global-UDP sweep,
-//! and a Kad keyword walk feed one merged result set), so the Kad slot renders
-//! greyed-with-reason — not because it is missing, but because it is never
-//! *not* running. Global-UDP has no slot at all: no reachable server answers
-//! `0x98`, so offering it would be offering nothing.
+//! **There is no method to pick.** A `StartSearch` fans out to every surface
+//! at once (ADR-0051 + ADR-0062: the TCP search, the global-UDP sweep and a Kad
+//! keyword walk feed one merged result set), so the line under the query says
+//! who a search would ask, from the levels.
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -42,7 +40,6 @@ use crate::theme::Theme;
 use filters::Filters;
 use held::HeldSearches;
 use menu::{draw_menu, menu_step};
-use method::SearchMethod;
 use readd::ReAdd;
 use sort::ResultsTable;
 
@@ -50,7 +47,7 @@ mod filters;
 mod held;
 mod input;
 mod menu;
-mod method;
+mod asks;
 mod more;
 mod no_core;
 mod readd;
@@ -65,7 +62,6 @@ pub struct SearchesView {
     /// `/` focuses the query line; `Esc` returns to the results pane.
     input_focused: bool,
     query: String,
-    method: SearchMethod,
     /// Drawing state only: the row the current Held Search's cursor was
     /// placed on each frame, and the Viewport's offset.
     results_state: TableState,
@@ -191,7 +187,6 @@ impl SearchesView {
                     self.query.pop();
                     ViewOutcome::Redraw
                 }
-                KeyCode::Left | KeyCode::Right => self.cycle_method(),
                 KeyCode::Char(c) => {
                     self.query.push(c);
                     ViewOutcome::Redraw
@@ -256,7 +251,7 @@ impl SearchesView {
         // the query left in the input.
         if let Some(reason) = no_core::absent(state) {
             let phrase = phrase.to_string();
-            self.held.open_unsent(&phrase, None, self.method, reason);
+            self.held.open_unsent(&phrase, None, reason);
             return ViewOutcome::Redraw;
         }
         // A search names no server: core sends each leg where it can
@@ -285,7 +280,7 @@ impl SearchesView {
                 // outcome core reports finds it by id.
                 let query = query.into();
                 let search_id = rmule_core::SearchId::mint();
-                self.held.open(&query, self.method, search_id);
+                self.held.open(&query, search_id);
                 ViewOutcome::Emit(Action::Command(CoreCommand::Search(
                     SearchCommand::StartSearch { search_id, query },
                 )))
@@ -340,8 +335,8 @@ impl SearchesView {
         let _ = now; // the searches view has no time-based rendering (yet).
         self.held.bind(state);
         // The input block grows with its wrapped content instead of clipping a
-        // long query or the method line's deferral tag.
-        let input_h = self.input_height(usize::from(area.width.saturating_sub(2)), theme);
+        // long query.
+        let input_h = self.input_height(usize::from(area.width.saturating_sub(2)), state, theme);
         let strip_h = u16::from(held::strip_shown(&self.held, state));
         let [input_area, strip_area, results_area] = Layout::vertical([
             Constraint::Length(input_h.min(area.height)),
@@ -352,7 +347,7 @@ impl SearchesView {
         self.input_area = input_area;
         self.results_area = results_area;
 
-        self.draw_input(frame, input_area, theme);
+        self.draw_input(frame, input_area, state, theme);
         self.held.draw(frame, strip_area, state, theme);
         self.draw_results(frame, results_area, state, theme);
 

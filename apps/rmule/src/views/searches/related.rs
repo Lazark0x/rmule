@@ -5,7 +5,6 @@
 use rmule_core::{CoreCommand, SearchCommand, SearchFailure};
 use rmule_primitives::{RelatedFilesQuery, SearchQuery};
 
-use super::method::SearchMethod;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
 use crate::state::{SearchPane, SearchStatus, UiState, refusal_text};
@@ -35,7 +34,6 @@ impl SearchesView {
             self.held.open_unsent(
                 &query.file_name().to_display_string(),
                 Some(query.file_hash()),
-                SearchMethod::default(),
                 reason,
             );
             self.show_current_query();
@@ -55,7 +53,7 @@ impl SearchesView {
         self.filters_open = false;
         self.input_focused = false;
         let search_id = rmule_core::SearchId::mint();
-        self.held.open(&query, SearchMethod::default(), search_id);
+        self.held.open(&query, search_id);
         self.show_current_query();
         ViewOutcome::Emit(Action::Command(CoreCommand::Search(
             SearchCommand::StartSearch { search_id, query },

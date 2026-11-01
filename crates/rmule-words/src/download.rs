@@ -122,7 +122,10 @@ pub const NOTHING_TO_PAUSE: Sentence =
     Sentence::fixed("completed: nothing to pause (m ▸ Clear from list)");
 /// A download asked for with no download directory set.
 pub const NO_DOWNLOAD_DIR: Sentence =
-    Sentence::fixed("no download dir — set one with rmule-cli config set-download-dir");
+    Sentence::fixed("no download dir yet: press 6, then set Download dir in Settings");
+
+/// A row menu's Download, greyed until a directory is set.
+pub const SET_DOWNLOAD_DIR_FIRST: &str = "set a download dir first: press 6";
 
 /// A failed write stopped the store: the sentence that says what cures it.
 pub const STORE_STOPPED: Sentence = Sentence::fixed(

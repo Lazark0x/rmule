@@ -3,6 +3,7 @@
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
+│                                                                                                  │
 │┌ Help ──────────────────────────────────────────────────────────────────────────────────────────┐│
 ││ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                                               ││
 ││                                                                                                ││
@@ -14,7 +15,6 @@
 ││ Tab / Shift-Tab cycle panes (accent border = focus)                                            ││
 ││ m / Enter       row action menu                                                                ││
 ││ /               Searches: focus query input                                                    ││
-││ ← / →           Searches: pick method (input focused)                                          ││
 ││ o               Searches: type/size/sources/extension filters                                  ││
 ││ x / n           Searches: stop or close a search / server's next page                          ││
 ││ s / S           sort the focused table by next column / reverse                                ││

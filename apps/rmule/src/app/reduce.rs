@@ -158,8 +158,10 @@ impl App {
                 flow
             }
             Action::CopyLink(link) => {
+                let note = app_words::link_sent(&link);
                 self.pending_copy = Some(link);
-                self.reduce(Action::Flash(app_words::LINK_COPIED), now)
+                self.dirty |= self.state.apply(Action::Note(note), now);
+                self.reduce(Action::Flash(app_words::LINK_SENT), now)
             }
             Action::Preference(edit) => match self.write_preference(edit) {
                 Some(flash) => self.reduce(Action::Flash(flash), now),
