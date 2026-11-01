@@ -11,7 +11,7 @@ use rmule_peer::{
     PeerSession, RequesterCommand, RequesterEvent, ServerCommand,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{FileHash, Packet, PartHash, UserHash};
+use rmule_primitives::{FileHash, Packet, UserHash};
 use rmule_testkit::peer_session::*;
 
 /// `EMBLOCKSIZE`: the block a stock downloader asks for.
@@ -203,7 +203,6 @@ fn downloading(file: FileHash, start: u64) -> PeerSession {
     }));
     client.handle_bytes(&reqfilename_answer(file, "x"));
     client.handle_bytes(&file_status(file, 1, &[0x01]));
-    client.handle_bytes(&hashset_answer(file, &[PartHash::from_bytes([0; 16])]));
     client.handle_bytes(&acceptuploadreq());
     let _ = drain(|| client.poll_output());
     client

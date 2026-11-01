@@ -256,7 +256,7 @@ impl PeerPacket {
     /// the `OP_ANSWERSOURCES` cross-check version — a faithful stand-in for
     /// callers with no session context (offline fixture decode, tests) — and
     /// no extended-requests level, the level before any peer identified.
-    /// The live session uses [`Self::decode_for_peer`] instead, threading the
+    /// The live session uses `Self::decode_for_peer` instead, threading the
     /// *tracked peer's own* claimed nibble (ADR-0055).
     pub fn decode(packet: &Packet) -> Result<Self, PeerPacketDecodeError> {
         Self::decode_for_peer(
