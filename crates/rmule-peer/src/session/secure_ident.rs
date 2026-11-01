@@ -40,10 +40,8 @@ pub(super) struct SuiState {
     peer_wants_signature: bool,
     /// We have already sent our signature (send exactly once).
     our_signature_sent: bool,
-    /// We have already verified the peer and emitted `IdentityVerified`.
-    verified: bool,
-    /// A signature was judged on this link: one is all it gets, a failed one
-    /// included, as a verify costs an RSA operation per packet
+    /// A signature was judged on this link, its verdict emitted: one is all it
+    /// gets, a failed one included, as a verify costs an RSA operation per packet
     /// (`BaseClient.cpp:2638`, `:2670`).
     judged: bool,
 }
@@ -228,7 +226,7 @@ impl PeerSession {
     /// signature folds in the address its kind byte names — an IP
     /// mismatch (or an unknown kind) simply fails, non-terminally.
     fn try_verify_peer(&mut self) {
-        if self.sui.verified || self.sui.judged {
+        if self.sui.judged {
             return;
         }
         let State::Identified(identity) = &self.state else {
@@ -268,7 +266,6 @@ impl PeerSession {
         };
         self.sui.judged = true;
         if verified {
-            self.sui.verified = true;
             self.core
                 .push_event(PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,
