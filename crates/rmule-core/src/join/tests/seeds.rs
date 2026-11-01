@@ -85,7 +85,7 @@ fn kad_join(commands: &[CoreCommand]) -> &KadEnableConfig {
         .expect("a Kad join")
 }
 
-/// The ticket's first half: every fetch fails and both networks still have
+/// Every fetch fails and both networks still have
 /// somewhere to go.
 #[tokio::test]
 async fn a_cold_start_with_every_fetch_failing_joins_from_the_seeds() {
@@ -118,7 +118,7 @@ async fn a_cold_start_with_every_fetch_failing_joins_from_the_seeds() {
     ));
 }
 
-/// The ticket's second half: a list that passes for real adds its rows, and
+/// A list that passes for real adds its rows, and
 /// the seed keeps its place and its priority under a row naming it `Low`.
 #[tokio::test]
 async fn a_forged_list_lands_beside_the_seeds_and_moves_none() {
