@@ -1,7 +1,8 @@
 //! The outbound session's spine: hello out, answer in, `Identified`. Plus the
 //! ways a link ends — a malformed answer, a local disconnect, an elapsed hello
 //! deadline — and the frames that must not end it: an unknown opcode, a second
-//! `start`, a frame split across two reads, a peer's own late `OP_HELLO`.
+//! `start`, a frame split across two reads, a peer's own late `OP_HELLO`. Which
+//! malformed frames cost the link is `peer_frame_legs`' table.
 
 use crate::fixture::plain_hello_body;
 use rmule_peer::{

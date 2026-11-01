@@ -132,6 +132,16 @@ impl ServeState {
         let kept = self.keep_asker(peer, file_hash);
         // The file is set before any sub is walked (`:1103`).
         let moved = self.follow_asked_file(peer, file_hash);
+        let mut asks = asks;
+        // A name ask whose status does not count this file's parts is cleared
+        // and answered, whatever the wire's count promised to follow.
+        let cut = cut.filter(|cut| {
+            let throws = cut.throws_for(size);
+            if !throws {
+                asks.push(BundledAsk::Name { part_status: None });
+            }
+            throws
+        });
         if let Some(cut) = cut {
             let statuses = asks.into_iter().filter_map(|ask| match ask {
                 BundledAsk::Name { part_status } => Some(part_status),

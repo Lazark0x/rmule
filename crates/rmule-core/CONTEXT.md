@@ -105,7 +105,7 @@ One slot's run from its grant: the bytes it has sent and the time it began. Whil
 _Avoid_: serve flow (that is what the slot has in motion), transfer
 
 **Ask Pace**:
-The serve side's one score of how fast each client asks for what costs us: a slot ask, a known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a later one takes 1 off, and 10 bans the address. A reask scores on its own table and its 10 earns the **Hush**, because a datagram proves no sender. Keyed by accounting key and **User Hash**, ages out with the client at 34 minutes, bounded (ADR-0055 divergence 7).
+The serve side's one score of how fast each client asks for what costs us: a slot ask, of any size, a known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a later one takes 1 off, and 10 bans the address. A reask scores on its own table and its 10 earns the **Hush**, because a datagram proves no sender. Keyed by accounting key and **User Hash**, ages out with the client at 34 minutes, bounded (ADR-0055 divergence 7).
 _Avoid_: aggressiveness counter, flood limiter (that is Kad's)
 
 **Hush**:

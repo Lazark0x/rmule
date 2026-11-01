@@ -10,8 +10,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_net::peer::ObfuscationPolicy;
-use rmule_peer::{ConnectionEvent, PeerCommand, PeerEvent, SideCommand, SideEvent};
-use rmule_primitives::PeerEndpoint;
+use rmule_peer::{
+    ConnectionEvent, NoticeEvent, PeerCommand, PeerEvent, PeerOpcode, SideCommand, SideEvent,
+};
+use rmule_primitives::{PacketProtocol, PeerEndpoint};
 use tokio::sync::mpsc;
 
 use super::dialer::{BuddyLink, Dialed, Dialer};
@@ -218,6 +220,13 @@ impl<D: Dialer> FirewalledFront<D> {
             PeerEvent::Side(SideEvent::BuddyReaskCallbackReceived { relay }) => {
                 self.on_relayed_reask(relay, now).await;
             }
+            // A relay too short for what stock reads first throws, and stock
+            // drops the link it came on (`ClientTCPSocket.cpp:1637`, `:1706-1708`).
+            PeerEvent::Notice(NoticeEvent::UnknownPacket {
+                protocol: PacketProtocol::Emule,
+                opcode,
+                payload_len,
+            }) if relay_cut_short(opcode, payload_len) => self.on_link_lost(now).await,
             // Everything else on this link is the ordinary session's — a
             // buddy that also downloads from us is served by nobody here, and
             // the session's own rules already answered or dropped it.
@@ -295,5 +304,21 @@ impl<D: Dialer> FirewalledFront<D> {
         {
             tracing::debug!("buddy keepalive not queued; the link driver is busy or gone");
         }
+    }
+}
+
+/// Whether a relay our buddy framed ends ahead of what stock's reader takes
+/// before any gate: the sixteen-byte check of an `OP_CALLBACK` (when Kad runs,
+/// as it does on a held buddy link), or the requester and the hash of an
+/// `OP_REASKCALLBACKTCP`. A longer one the session could not read parks as
+/// `Unknown` and costs nothing, since its tail is read only past gates the
+/// notice cannot tell.
+fn relay_cut_short(opcode: u8, payload_len: usize) -> bool {
+    if opcode == PeerOpcode::Callback.as_u8() {
+        payload_len < 16
+    } else if opcode == PeerOpcode::ReaskCallbackTcp.as_u8() {
+        payload_len < 4 + 2 + 16
+    } else {
+        false
     }
 }

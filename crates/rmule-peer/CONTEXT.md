@@ -16,8 +16,12 @@ _Avoid_: download session, leech side
 The half of a **Peer Session** that answers the remote peer's intent to download *from us*: reply to an inbound hello, answer file/hash-set probes for files we share, admit or queue the remote peer, and send part bytes on a granted slot. The **upload-slot queue policy** (who to admit, ranking, slot budget) is NOT owned here — it lives in the **Core Orchestrator**; the **Server Capability** only carries per-connection grant mechanics and reports inbound requests as events.
 _Avoid_: upload session, seed side, served session
 
+**Peer Violation**:
+What a peer did that cost it the link: one stable code for each way aMule's handler throws, carried by the close and written as a sentence by the words module. The frame gate rules it before any leg acts: by when the frame came (*before hello*, *handshake unfinished*), then by who asked (*wrong file*, *unsolicited*), and only then by its body (*malformed frame*). A frame aMule logs and returns on is no violation.
+_Avoid_: protocol error (a code, not a message), malformed (only one of the codes)
+
 **Wire Fault**:
-Why a frame's body is not the packet its opcode names: truncated, the wrong size, a declared length its bytes deny. Every leg of the `PeerPacket` umbrella raises this one type. A leg the session treats differently from a malformed frame keeps its own: the hello's refusal (**Hello Refusal**) and a source answer's non-terminal skip. The session reads a fault by the frame that carried it, so a malformed slot ask stays open as `Unknown` and every other plain leg closes the link.
+Why a frame's body is not the packet its opcode names: truncated, the wrong size, a declared length its bytes deny. Every leg of the `PeerPacket` umbrella raises this one type. A leg the session treats differently from a malformed frame keeps its own: the hello's refusal (**Hello Refusal**) and a source answer's non-terminal skip. The session reads a fault by the frame that carried it: where aMule's reader throws the link closes as a **Peer Violation**, and where it returns the frame parks as `Unknown`.
 _Avoid_: per-leg decode error (one reason for every leg that merely refuses)
 
 **Event Row**:

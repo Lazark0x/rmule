@@ -676,7 +676,7 @@ impl PeerSession {
             ProbeState::Pending { name, .. } => {
                 *name = Some(answer.file_name);
             }
-            // Unsolicited or duplicate — preserve as Unknown event-ish behaviour:
+            // A duplicate, or an answer on a settled probe:
             // upgrade the probe state so a re-probe sees Available eventually.
             _ => {
                 flow.probe = ProbeState::Pending {

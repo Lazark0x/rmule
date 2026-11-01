@@ -92,8 +92,10 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   corrupt cells from the part's **Arrived Ranges**, retires the workers that wrote into
   them, and distrusts a corrupt cell's sole writer. The dropped blocks are handed again to
   the next workers with room, and the part re-verifies by MD4.
-- **Bad AICH input is a skip, not an error.** A malformed `0x9C`, a master-hash echo that
-  does not match, or recovery data that does not chain to the trusted root falls back to
+- **Bad AICH input is a skip, not an error.** An `0x9C` with no ask out closes the link, as
+  aMule's reader throws (`DownloadClient.cpp:1606-1608`), and so does one that stops inside
+  the part number or the root of the very block asked. Any other malformed `0x9C`, a
+  master-hash echo that does not match, or recovery data that does not chain to the trusted root falls back to
   the rootless path, and the peer session stays open. So does recovery data naming no
   corrupt block, and an ask whose worker ends before it answers. While the ask is out the
   part is verifying, so none of its blocks is handed.

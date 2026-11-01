@@ -468,11 +468,11 @@ impl PeerPacket {
             // reason they decode here: the session surfaces the parsed relay
             // and its owner routes it, exactly as it does the buddy ping.
             //
-            // A malformed relay is **not** a protocol violation: the gates
+            // A malformed relay is not the session's to rule on: the gates
             // that matter (it arrived on our buddy's link, the buddy-ID XOR
-            // check, the file we serve) are core's, and tearing the buddy link
-            // down over one bad frame would cost every relay behind it. It
-            // parks as `Unknown`, ADR-0018's liberal receive.
+            // check, the file we serve) are core's. It parks as `Unknown`,
+            // and the held buddy link's owner reads the notice for the cut
+            // aMule's reader throws on.
             PeerOpcode::Callback => Ok(Callback::decode_packet(packet)
                 .map_or_else(|_| Self::unknown_from(packet), Self::BuddyCallback)),
             PeerOpcode::ReaskCallbackTcp => Ok(ReaskCallbackTcp::decode_packet(packet)

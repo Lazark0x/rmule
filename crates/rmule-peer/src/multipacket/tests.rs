@@ -137,7 +137,7 @@ fn an_ext_bundles_name_status_is_read_by_the_size_it_carries() {
 }
 
 #[test]
-fn request_stops_at_unknown_sub_and_reports_it() {
+fn request_passes_over_an_unknown_sub_and_reports_it() {
     let mut payload = hash().as_bytes().to_vec();
     payload.push(0x58); // Name — parsed
     payload.push(0x4F); // SetReqId — parsed
@@ -280,7 +280,7 @@ fn answer_rejects_truncated_status_bitmap() {
 }
 
 #[test]
-fn answer_stops_at_unknown_sub_and_reports_it() {
+fn answer_passes_over_an_unknown_sub_and_reports_it() {
     let mut payload = hash().as_bytes().to_vec();
     payload.push(0x59);
     payload.extend_from_slice(&0u16.to_le_bytes()); // empty name, parsed

@@ -67,15 +67,16 @@ holds aMule's request to rmule as a server.
 - **Capabilities.** Both bits are registry entries (ADR-0047), lit together.
 
 **Walker error policy.** A truncated or malformed item closes with `ProtocolViolation`,
-as aMule's `CEOFException` disconnects. An unknown sub-opcode stops the walk: rmule acts
-on the parsed prefix, emits one non-terminal diagnostic (sub-opcode and remaining
-length) and stays open. The remainder is unparseable by construction, since the stream
-has no length framing.
+as aMule's `CEOFException` disconnects. A byte no sub claims is passed over and the next
+read as a sub-opcode, as aMule's `switch`, which has no `default:`, does; the first such
+byte is one non-terminal diagnostic (sub-opcode and remaining length) and the link stays.
+A size no eD2k file can have matches no shared file, so it is the not-found every other
+mismatch is, with no sub walked.
 
-**Tolerance follows the house rule.** A pre-handshake bundle lands in the same
-preserve-unknown arm as any pre-handshake request (ADR-0018). An answer for a file rmule
-never solicited is dropped without creating state or disconnecting, in both shapes.
-Duplicate items are processed one by one, as in aMule.
+**The gates are stock's.** A bundle before the handshake ended closes, and so does an
+answer about a file this link never asked (ADR-0018). A link can ask after several files,
+where aMule's client holds one, so a file with a flow is one it asked about. Unsolicited
+bundles are not fanned in.
 
 ## Consequences
 
@@ -85,9 +86,9 @@ Duplicate items are processed one by one, as in aMule.
 - The base `0x92` form has no compliant capture, because aMule always chooses `0xA4`
   toward an ExtMultiPacket peer. It differs only by the absent `size8` and is covered by
   the deterministic tier.
-- rmule diverges from aMule only on inbound tolerance, which compliant peers never
-  exercise: aMule garbage-walks payload bytes after an unknown sub and disconnects on a
-  pre-handshake bundle or an answer for the wrong file.
+- A bundle's status sub is read by its wire count, where aMule reads by the file's: the
+  two differ by the one phantom byte an exact multiple's count promises, which aMule's own
+  writer sends.
 
 ## Considered options
 
@@ -96,10 +97,9 @@ Duplicate items are processed one by one, as in aMule.
 - **Bundle items as `PeerPacket` variants re-entering `PeerPacket::decode`.** Rejected:
   the payloads are fragments, and wrapping synthetic packets puts wire fiction into
   dispatch.
-- **Mirroring aMule's garbage walk on unknown subs.** Rejected: it can fabricate a parse,
-  such as a fake file status.
-- **Mirroring aMule's pre-handshake and wrong-hash disconnects.** Rejected: it
-  contradicts the preserve-unknown arm the fan-in lands in.
+- **Stopping the walk at an unknown sub.** Rejected: a byte the stream carries past it is
+  still a sub to aMule, which answers it or throws on it, and what a frame costs the link
+  is aMule's ruling (ADR-0018).
 - **Advertising MultiPacket without ExtMultiPacket.** Rejected: `0xA4` costs one
   `size8` read, and a split advert invents a client shape not found in the wild.
 - **Opening a one-part file with a standalone SX2 source ask.** Rejected: aMule throws on

@@ -151,7 +151,7 @@ in core when the count is not the file's.
 | --- | --- | --- |
 | **Name ask (`OP_REQUESTFILENAME`)** | | |
 | Shorter than a hash: disconnect | `cts:436`, `:484` | same |
-| Before the hello | `cts:307-308` throw | kept as unknown, link open (ADR-0018) |
+| Before the hello | `cts:307-308` throw | same |
 | Banned IP: silence | `cts:186`, `:433` | refused at accept |
 | Unshared file: silence, link kept | `cts:442-447` | same |
 | A downloading file over one part is answered | `cts:441-455` | same, from its Served Download; the asker becomes a candidate (ADR-0113) |
@@ -168,7 +168,7 @@ in core when the count is not the file's.
 | Unshared: `OP_FILEREQANSNOFIL` | `cts:503-512` | same |
 | Shared: `OP_FILESTATUS`, a complete file as count 0, a part file as its parts (`cts:524-528`); sets the Asked File | `cts:521-529` | same; a part file's from the Verified Range, and a download not yet offered moves no standing (ADR-0113) |
 | **Bundle (`OP_MULTIPACKET` / `_EXT`)** | | |
-| Before the handshake | `cts:1050-1054` throw | kept as unknown, link open (ADR-0018) |
+| Before the handshake | `cts:1050-1054` throw | same |
 | Header cut short: disconnect | `cts:1057-1058` | same |
 | Unshared, or `_EXT` size not the file's: one `OP_FILEREQANSNOFIL`, no sub walked | `cts:1061-1085` | same |
 | Large file, asker without large-file support: not found | `cts:1070-1073` | not modelled (divergence 4) |
@@ -177,12 +177,12 @@ in core when the count is not the file's.
 | Name and status subs answered in the `0x93` | `cts:1112-1141` | same |
 | AICH sub only from a complete hashset | `cts:1122-1131` | cached root in the `0x93`, else a later standalone `0x9D` (divergence 5) |
 | Source subs answered out of band, one throttle | `cts:1144-1180` | same |
-| Unknown sub | no `default:` | stop, keep the prefix, report (ADR-0054) |
+| Unknown sub | no `default:`: the next byte is read as a sub | same, the first reported (ADR-0054) |
 | `0x93` only when something was answered | `cts:1183` | same |
 | `0x93` items in request order | `cts:1106-1182` | always name, status, AICH (divergence 6) |
 | **Slot and transfer** | | |
 | Slot ask before the handshake: silence | `cts:597-599` | kept as unknown |
-| Slot ask not exactly a hash: silence, link kept | `cts:606` | same |
+| Slot ask not exactly a hash: scored, then silence, link kept | `cts:601-606` | same (`MalformedSlotAsk`) |
 | Slot ask for an unshared file: nothing sent | `cts:607-617` | same |
 | Repeat slot ask keeps the place, moves the Asked File | `cts:613`, `uq:401-431` | same |
 | Aggressive asker banned | `cts:601`, `cus:194`, `uc:795-824`; 3.1.0 `cts:1768` | same, keyed by client; a source of ours is never banned; a reask scores apart and earns the Hush (divergence 7) |

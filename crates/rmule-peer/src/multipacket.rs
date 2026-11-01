@@ -178,6 +178,24 @@ pub struct MultiPacketAnswer {
     pub unknown_sub: Option<UnknownSub>,
 }
 
+impl BundleCut {
+    /// Whether this cut ends the walk for a file of `file_size` bytes. A plain
+    /// bundle names no size, so its walker followed the wire's count; a count
+    /// that is not the file's is one aMule clears after its two bytes and reads
+    /// nothing of (`UploadClient.cpp:418-422`), so its bytes never ran out.
+    #[must_use]
+    pub fn throws_for(&self, file_size: u64) -> bool {
+        match self {
+            Self::NameStatus(Some(status)) => {
+                status.count() == 0
+                    || u32::from(status.count())
+                        == rmule_primitives::ed2k_status_part_count(file_size)
+            }
+            Self::NameStatus(None) | Self::Sources2 => true,
+        }
+    }
+}
+
 impl MultiPacketRequest {
     /// Read a bundle, passing over any byte no sub claims. `level` is the
     /// session's negotiated extended-requests level: it alone says whether a
@@ -444,10 +462,18 @@ fn read_name_status(rest: &[u8], file_size: Option<u64>) -> NameStatus {
                     status: Some(status),
                     len: reader.position(),
                 },
-                Err(_) => NameStatus::Cut(None),
+                Err(_) => NameStatus::Cut(read_cut_status(rest)),
             }
         }
     }
+}
+
+/// The status a plain bundle's name sub ran out inside: its count and the bits
+/// that came, `None` when not even the count did. The serving side knows
+/// whether that count is the file's, and so whether aMule would have read on.
+fn read_cut_status(rest: &[u8]) -> Option<WireStatus> {
+    let (count, bits) = rest.split_first_chunk::<2>()?;
+    Some(WireStatus::padded(u16::from_le_bytes(*count), bits))
 }
 
 #[cfg(test)]

@@ -28,6 +28,14 @@ forward-compatible. The session layer surfaces an unknown packet as a diagnostic
 and keeps the connection alive. The Kad UDP codecs, where no connection is at stake,
 report an unknown opcode as a typed error of its own, distinct from malformed bytes.
 
+On a peer link, what a frame costs is stock's handler's ruling, not the decoder's. The
+link closes where aMule's reader throws, since `PacketReceived`'s catch disconnects
+(2.3.3 `ClientTCPSocket.cpp:2018-2047`), and stays where it returns or never reads: a
+frame before the hello, an answer about a file the link never asked, a hash set or AICH
+answer nobody asked for all close; a body stock does not look at, a cut block, a key or
+signature it logs and drops all stay, parked as `Unknown` by shape alone. `frame_gate`
+holds that ruling, leg by leg, and `tests/peer/peer_frame_legs.rs` is its table.
+
 ## Consequences
 
 - An unknown opcode or tag from a fork or modded server is visible in diagnostics and

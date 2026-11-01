@@ -16,7 +16,8 @@
 //! This file owns the struct, the constructors and the driver-facing
 //! lifecycle — `start`, the signal entry points, `poll_output` and the close
 //! discipline. Each protocol leg implements its own half in a private
-//! submodule: `wire` (the byte boundary and opcode routing), `identity` (the
+//! submodule: `wire` (the byte boundary and opcode routing), `frame_gate`
+//! (what a frame costs the link, ruled ahead of any leg), `identity` (the
 //! peer's identity, read at the hello and kept current), `download` and
 //! `serve` (the two capabilities), `asked_ranges` (the block ranges the
 //! uploader holds as asked), `source_exchange`, `aich`, `multipacket`,

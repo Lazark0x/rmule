@@ -171,7 +171,8 @@ impl PeerSession {
     /// Fan a bundled `OP_MULTIPACKETANSWER` (ADR-0054) into the exact same
     /// handlers a standalone `ReqFileNameAnswer`/`FileStatus`/`AichFileHashAns`
     /// would reach, so a bundle upgrades per-file probe state identically to
-    /// the separate-packet sequence — including when unsolicited.
+    /// the separate-packet sequence. `frame_gate` has refused an answer about
+    /// a file this link never asked, before any item reaches here.
     pub(super) fn on_multipacket_answer(&mut self, ans: MultiPacketAnswer) {
         let file_hash = ans.file_hash;
         for item in ans.items {
