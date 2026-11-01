@@ -132,7 +132,7 @@ pub fn decode_nodes_dat(
 
 /// Run the nodes.dat pipeline: bounded GET → [`decode_nodes_dat`]'s
 /// try-normal-then-fallback dispatch → the rows the file's host can vouch for,
-/// as dial candidates at most [`MAX_FETCHED_CANDIDATES`] long.
+/// as dial candidates at most `MAX_FETCHED_CANDIDATES` long.
 ///
 /// **A fetched file is the mirror's word** (ADR-0120): its Kad IDs and verified
 /// flags prove nothing, so whichever reader decoded it, the result is

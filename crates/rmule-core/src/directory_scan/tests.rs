@@ -15,7 +15,7 @@ use super::{
     Consent, DirEntry, DirectorySource, EntryKind, FileStamp, Memory, PassEnd, ProgressCell,
     ScanReport, ScanSummary, SpareCopy, run_pass,
 };
-use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry, SharedRow};
+use crate::registry::{ShareRefusal, ShareSource, SharedRow};
 
 struct Outcome {
     end: PassEnd,

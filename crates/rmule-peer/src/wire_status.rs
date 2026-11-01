@@ -71,10 +71,8 @@ impl WireStatus {
         let count = count_of(file_size);
         Self {
             count,
-            bytes: PartBitmap::from_fn(u32::from(count), |part| {
-                part.value() >= real || held(part)
-            })
-            .into_bytes(),
+            bytes: PartBitmap::from_fn(u32::from(count), |part| part.value() >= real || held(part))
+                .into_bytes(),
         }
     }
 

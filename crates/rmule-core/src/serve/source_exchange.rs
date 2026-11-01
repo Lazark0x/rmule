@@ -58,7 +58,7 @@ pub(crate) struct SxCandidate {
     pub(crate) source: SourceSighting,
     /// The parts the candidate holds — for an upload-engaged client, the
     /// status its own last name ask or UDP reask wrote, through
-    /// [`PartBitmap::advertised_parts`]
+    /// [`WireStatus::advertised_parts`](rmule_peer::WireStatus::advertised_parts)
     /// — or `None` when we do not know them: the unknown-status branch of the
     /// needed-chunk filter.
     pub(crate) part_status: Option<PartBitmap>,
@@ -85,7 +85,7 @@ pub(crate) struct SxRequester {
     /// never served back.
     pub(crate) endpoint: Option<PeerEndpoint>,
     /// The requester's part status (its last name ask's or UDP reask's, through
-    /// [`PartBitmap::advertised_parts`]), or `None` when unknown — no ask carried one (an
+    /// [`WireStatus::advertised_parts`](rmule_peer::WireStatus::advertised_parts)), or `None` when unknown — no ask carried one (an
     /// extended-requests-v0 claimant) or its count did not fit the file. An
     /// unknown requester is sent only sources holding at least one part, plus
     /// the unknowns — the rule aMule wrote for it and left unreachable
@@ -136,7 +136,7 @@ pub(crate) fn select_sources(
 ///   pools (`KnownFile.cpp:1000-1019`, `PartFile.cpp:2621-2632`).
 /// - **Geometry mismatch** → drop, as aMule skips a source whose count is not
 ///   the file's (`KnownFile.cpp:981-984`); unreachable when every status is
-///   read through [`PartBitmap::advertised_parts`] for the one file.
+///   read through [`WireStatus::advertised_parts`](rmule_peer::WireStatus::advertised_parts) for the one file.
 fn is_worth_serving(
     kind: ServedFileKind,
     requester: &SxRequester,

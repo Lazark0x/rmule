@@ -90,7 +90,7 @@ pub struct SharedFileEntry {
 /// was not read with its set has no such field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SharedRow {
-    /// [`SharedFileEntry::file_hash`].
+    /// `SharedFileEntry::file_hash`.
     pub file_hash: FileHash,
     /// [`SharedFileEntry::file_size`].
     pub file_size: u64,
