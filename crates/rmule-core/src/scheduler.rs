@@ -82,8 +82,7 @@ impl PartOrder {
 pub(crate) trait Progress {
     /// `peer`'s Delivery Rate in bytes per second, `None` until measured.
     fn rate(&self, peer: PeerEndpoint) -> Option<u64>;
-    /// The Arrived Ranges of `part_index`, relative to the part's start;
-    /// `None` when nothing of it arrived.
+    /// The Arrived Ranges of `part_index`; `None` when nothing of it arrived.
     fn arrived(&self, part_index: u32) -> Option<&ByteRanges>;
     /// The Failed Cells `part_index` keeps from an attempt that failed with
     /// no root; `None` for a part that has not failed so.
@@ -232,9 +231,8 @@ impl DownloadScheduler {
     /// The blocks of `part_index` that have arrived are done: every claim its
     /// Arrived Ranges `arrived` now cover ends, whoever delivered it.
     pub(crate) fn settle(&mut self, part_index: u32, arrived: &ByteRanges) {
-        let offset = part_plan(self.file_size, part_index).offset;
         if let Some(claims) = self.claims.get_mut(&part_index) {
-            claims.retain(|claim| !arrived.covers(claim.start - offset, claim.end - offset));
+            claims.retain(|claim| !arrived.covers(claim.start, claim.end));
             if claims.is_empty() {
                 self.claims.remove(&part_index);
                 self.parts_generation += 1;

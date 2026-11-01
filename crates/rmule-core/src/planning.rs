@@ -3,7 +3,7 @@
 //! as `part_count` counts them — an exact multiple of the part size has no
 //! trailing empty part — so every consumer sees the same geometry.
 
-use rmule_primitives::ED2K_PART_SIZE;
+use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE};
 
 /// One part's geometry: which part it is and the byte range it covers. Derived
 /// from the file size alone, so every consumer computes the same ranges the wire
@@ -17,6 +17,29 @@ pub struct PartPlan {
     /// Its length in bytes: the full part size except for the file's last part,
     /// which is short unless the file is an exact multiple of the part size.
     pub len: u64,
+}
+
+impl PartPlan {
+    /// The offset just past the part's last byte.
+    #[must_use]
+    pub const fn end(&self) -> u64 {
+        self.offset + self.len
+    }
+
+    /// How many `EMBLOCKSIZE` cells the part cuts into.
+    pub(crate) const fn cells(&self) -> usize {
+        self.len.div_ceil(EMBLOCKSIZE) as usize
+    }
+
+    /// The cell holding file offset `offset`, which lies in the part.
+    pub(crate) const fn cell_of(&self, offset: u64) -> usize {
+        ((offset - self.offset) / EMBLOCKSIZE) as usize
+    }
+
+    /// The file offset of cell `cell`'s first byte.
+    pub(crate) const fn cell_start(&self, cell: usize) -> u64 {
+        self.offset + cell as u64 * EMBLOCKSIZE
+    }
 }
 
 /// One block a worker is handed to ask (ADR-0117): an absolute byte range

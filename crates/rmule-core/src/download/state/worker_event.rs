@@ -380,8 +380,8 @@ impl DownloadState {
         let assembled = self
             .assembly
             .entry(part_index)
-            .or_insert_with(|| PartAssembly::new(part.len));
-        assembled.merge(peer, user_hash, offset.saturating_sub(part.offset), bytes);
+            .or_insert_with(|| PartAssembly::new(part));
+        assembled.merge(peer, user_hash, offset, bytes);
         let complete = assembled.is_complete();
         self.scheduler.settle(part_index, assembled.arrived());
         if let Some(slot) = self.worker_slots.get(&peer).copied() {

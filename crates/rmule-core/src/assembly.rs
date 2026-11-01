@@ -12,17 +12,18 @@ use std::collections::HashMap;
 use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint, UserHash, aich_block_hash};
 
 use crate::byte_ranges::ByteRanges;
+use crate::planning::PartPlan;
 
 mod failed_cells;
 
 pub(crate) use failed_cells::{Attempt, Cell, Verdict};
 
-/// One in-flight part's arrived bytes, by offset within the part.
+/// One in-flight part's arrived bytes, in the file's offsets.
 #[derive(Clone, Debug)]
 pub(crate) struct PartAssembly {
-    /// The part's length.
-    len: u64,
-    /// The **Arrived Ranges**, relative to the part's start.
+    /// The part.
+    plan: PartPlan,
+    /// The **Arrived Ranges**, in the file's offsets.
     arrived: ByteRanges,
     /// The bytes, one `EMBLOCKSIZE` cell each, allocated at its first byte.
     cells: Vec<Option<Box<[u8]>>>,
@@ -35,11 +36,11 @@ pub(crate) struct PartAssembly {
 }
 
 impl PartAssembly {
-    /// An empty assembly for a part of `len` bytes.
-    pub(crate) fn new(len: u64) -> Self {
-        let cells = usize::try_from(len.div_ceil(EMBLOCKSIZE)).unwrap_or(usize::MAX);
+    /// An empty assembly for `plan`.
+    pub(crate) fn new(plan: PartPlan) -> Self {
+        let cells = plan.cells();
         Self {
-            len,
+            plan,
             arrived: ByteRanges::default(),
             cells: vec![None; cells],
             writers: vec![Vec::new(); cells],
@@ -48,8 +49,8 @@ impl PartAssembly {
     }
 
     /// Merge `bytes` that `peer`, whose hello named `user_hash`, delivered at
-    /// `offset` within the part. Only bytes not yet arrived are written;
-    /// bytes past the part's end are dropped. Answers how many bytes were new.
+    /// file offset `offset`. Only bytes not yet arrived are written; bytes
+    /// outside the part are dropped. Answers how many bytes were new.
     pub(crate) fn merge(
         &mut self,
         peer: PeerEndpoint,
@@ -57,18 +58,21 @@ impl PartAssembly {
         offset: u64,
         bytes: &[u8],
     ) -> u64 {
-        let end = offset.saturating_add(bytes.len() as u64).min(self.len);
+        let start = offset.max(self.plan.offset);
+        let end = offset
+            .saturating_add(bytes.len() as u64)
+            .min(self.plan.end());
         let mut written = 0;
         if let Some(user_hash) = user_hash {
             self.user_hashes.insert(peer, user_hash);
         }
-        for (start, stop) in self.arrived.insert(offset.min(end), end) {
+        for (fresh, stop) in self.arrived.insert(start, end) {
             self.write(
                 peer,
-                start,
-                &bytes[(start - offset) as usize..(stop - offset) as usize],
+                fresh,
+                &bytes[(fresh - offset) as usize..(stop - offset) as usize],
             );
-            written += stop - start;
+            written += stop - fresh;
         }
         written
     }
@@ -78,9 +82,9 @@ impl PartAssembly {
         let mut at = start;
         let mut rest = bytes;
         while !rest.is_empty() {
-            let cell = (at / EMBLOCKSIZE) as usize;
+            let cell = self.plan.cell_of(at);
             let cell_len = self.cell_len(cell);
-            let within = (at - cell as u64 * EMBLOCKSIZE) as usize;
+            let within = (at - self.plan.cell_start(cell)) as usize;
             let take = rest.len().min(cell_len - within);
             let buffer =
                 self.cells[cell].get_or_insert_with(|| vec![0; cell_len].into_boxed_slice());
@@ -93,14 +97,14 @@ impl PartAssembly {
         }
     }
 
-    /// The **Arrived Ranges**, relative to the part's start.
+    /// The **Arrived Ranges**, in the file's offsets.
     pub(crate) fn arrived(&self) -> &ByteRanges {
         &self.arrived
     }
 
     /// Whether every byte of the part has arrived.
     pub(crate) fn is_complete(&self) -> bool {
-        self.arrived.covers(0, self.len)
+        self.arrived.covers(self.plan.offset, self.plan.end())
     }
 
     /// The workers that wrote into AICH block `block` of the part; empty when
@@ -114,9 +118,9 @@ impl PartAssembly {
     pub(crate) fn drop_blocks(&mut self, blocks: &[u16]) {
         for &block in blocks {
             let cell = block as usize;
-            let start = u64::from(block) * EMBLOCKSIZE;
+            let start = self.plan.cell_start(cell);
             self.arrived
-                .remove(start, (start + EMBLOCKSIZE).min(self.len));
+                .remove(start, (start + EMBLOCKSIZE).min(self.plan.end()));
             if let Some(buffer) = self.cells.get_mut(cell) {
                 *buffer = None;
             }
@@ -147,13 +151,12 @@ impl PartAssembly {
 
     /// The length of cell `cell`: `EMBLOCKSIZE`, or less for the part's last.
     fn cell_len(&self, cell: usize) -> usize {
-        let cell_start = cell as u64 * EMBLOCKSIZE;
-        (self.len - cell_start).min(EMBLOCKSIZE) as usize
+        (self.plan.end() - self.plan.cell_start(cell)).min(EMBLOCKSIZE) as usize
     }
 
     /// The part's bytes in order, a cell not yet arrived read as zeros.
     pub(crate) fn bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(usize::try_from(self.len).unwrap_or(0));
+        let mut out = Vec::with_capacity(usize::try_from(self.plan.len).unwrap_or(0));
         for (cell, buffer) in self.cells.iter().enumerate() {
             match buffer {
                 Some(buffer) => out.extend_from_slice(buffer),
@@ -184,6 +187,15 @@ mod tests {
         (start..end).map(byte).collect()
     }
 
+    /// Part 0 of `len` bytes.
+    fn part(len: u64) -> PartPlan {
+        PartPlan {
+            part_index: 0,
+            offset: 0,
+            len,
+        }
+    }
+
     /// Blocks asked a byte shorter around a link's Asked Ranges leave the
     /// grid (ADR-0107): they merge wherever they land, from whichever worker,
     /// and the part completes once the ranges cover it, every byte where it
@@ -191,7 +203,7 @@ mod tests {
     #[test]
     fn assembly_merges_off_grid_blocks() {
         let len = 3 * EMBLOCKSIZE + 1_000;
-        let mut a = PartAssembly::new(len);
+        let mut a = PartAssembly::new(part(len));
         let first = EMBLOCKSIZE - 1;
         // Worker 2's off-grid block lands first, across the first cell edge.
         assert_eq!(
@@ -220,7 +232,7 @@ mod tests {
     /// not, are dropped, and its sender is no contributor.
     #[test]
     fn a_later_copy_of_an_arrived_byte_is_dropped() {
-        let mut a = PartAssembly::new(10);
+        let mut a = PartAssembly::new(part(10));
         assert_eq!(a.merge(peer(1), None, 2, &[1, 1, 1]), 3);
         assert_eq!(a.merge(peer(2), None, 2, &[9, 9, 9]), 0);
         assert!(!a.attempt().writers().contains(&peer(2)));
@@ -235,12 +247,30 @@ mod tests {
     #[test]
     fn dropping_a_block_forgets_only_its_cell() {
         let len = 2 * EMBLOCKSIZE;
-        let mut a = PartAssembly::new(len);
+        let mut a = PartAssembly::new(part(len));
         a.merge(peer(1), None, 0, &slice(0, EMBLOCKSIZE));
         a.merge(peer(2), None, EMBLOCKSIZE, &slice(EMBLOCKSIZE, len));
         a.drop_blocks(&[0]);
         assert_eq!(a.arrived().gaps(0, len), vec![(0, EMBLOCKSIZE)]);
         assert!(a.writers_of_block(0).is_empty());
         assert_eq!(a.attempt().writers(), BTreeSet::from([peer(2)]));
+    }
+
+    /// An arrival is in the file's offsets, on any part: bytes before the
+    /// part's start or past its end go nowhere, never to its first byte.
+    #[test]
+    fn an_arrival_outside_its_part_lands_nowhere() {
+        let plan = PartPlan {
+            part_index: 2,
+            offset: 2 * rmule_primitives::ED2K_PART_SIZE,
+            len: 100,
+        };
+        let mut a = PartAssembly::new(plan);
+        assert_eq!(a.merge(peer(1), None, 0, &[7; 50]), 0);
+        assert_eq!(a.merge(peer(1), None, plan.offset - 10, &[7; 20]), 10);
+        assert_eq!(
+            a.arrived().gaps(plan.offset, plan.end()),
+            vec![(plan.offset + 10, plan.end())]
+        );
     }
 }

@@ -9,7 +9,7 @@ use rmule_primitives::PeerEndpoint;
 use super::claims::Claim;
 use super::rank::{RankInputs, duplicate_rank};
 use super::{DUPLICATE_SET_BLOCKS, DownloadScheduler, Progress};
-use crate::planning::{BlockPlan, part_plan};
+use crate::planning::BlockPlan;
 
 impl DownloadScheduler {
     /// `peer`'s Duplicate Set of at most `room` blocks, or none: it already
@@ -54,19 +54,18 @@ impl DownloadScheduler {
                     .unwrap_or(u64::MAX);
                 // What of the block is still to come: the holder's arrived
                 // bytes are not asked twice.
-                let offset = part_plan(self.file_size, part).offset;
                 let unarrived = progress.arrived(part).map_or_else(
-                    || vec![(claim.start - offset, claim.end - offset)],
-                    |ranges| ranges.gaps(claim.start - offset, claim.end - offset),
+                    || vec![(claim.start, claim.end)],
+                    |ranges| ranges.gaps(claim.start, claim.end),
                 );
                 for (start, end) in unarrived {
                     candidates.push((
                         duplicate_rank(part, inputs, finish),
-                        offset + start,
+                        start,
                         BlockPlan {
                             part_index: part,
-                            start: offset + start,
-                            end: offset + end,
+                            start,
+                            end,
                         },
                     ));
                 }
@@ -90,10 +89,9 @@ impl DownloadScheduler {
                 other.holder == claim.holder && (other.seq, other.start) <= (claim.seq, claim.start)
             })
             .map(|(part, other)| {
-                let offset = part_plan(self.file_size, part).offset;
-                let arrived = progress.arrived(part).map_or(0, |ranges| {
-                    ranges.covered_within(other.start - offset, other.end - offset)
-                });
+                let arrived = progress
+                    .arrived(part)
+                    .map_or(0, |ranges| ranges.covered_within(other.start, other.end));
                 (other.end - other.start).saturating_sub(arrived)
             })
             .sum()

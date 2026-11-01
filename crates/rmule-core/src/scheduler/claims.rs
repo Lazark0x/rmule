@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use rmule_primitives::{EMBLOCKSIZE, PeerEndpoint};
+use rmule_primitives::PeerEndpoint;
 
 use super::rank::{RankInputs, rank};
 use super::{DownloadScheduler, Progress};
@@ -97,8 +97,8 @@ impl DownloadScheduler {
         let mut keyed: Vec<((bool, usize), BlockPlan)> = blocks
             .into_iter()
             .map(|block| {
-                let offset = part_plan(self.file_size, block.part_index).offset;
-                let writers = failed.writers_of((block.start - offset) / EMBLOCKSIZE);
+                let plan = part_plan(self.file_size, block.part_index);
+                let writers = failed.writers_of(plan.cell_of(block.start) as u64);
                 let turn = turns.entry(writers).or_default();
                 let key = (writers.contains(&peer), *turn);
                 *turn += 1;
@@ -118,17 +118,17 @@ impl DownloadScheduler {
         let plan = part_plan(self.file_size, part_index);
         let mut taken = progress.arrived(part_index).cloned().unwrap_or_default();
         for claim in self.claims.get(&part_index).into_iter().flatten() {
-            taken.insert(claim.start - plan.offset, claim.end - plan.offset);
+            taken.insert(claim.start, claim.end);
         }
         let mut blocks = Vec::new();
-        for (start, end) in taken.gaps(0, plan.len) {
+        for (start, end) in taken.gaps(plan.offset, plan.end()) {
             let mut at = start;
             while at < end {
-                let stop = ((at / EMBLOCKSIZE + 1) * EMBLOCKSIZE).min(end);
+                let stop = plan.cell_start(plan.cell_of(at) + 1).min(end);
                 blocks.push(BlockPlan {
                     part_index,
-                    start: plan.offset + at,
-                    end: plan.offset + stop,
+                    start: at,
+                    end: stop,
                 });
                 at = stop;
             }
