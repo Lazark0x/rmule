@@ -656,6 +656,8 @@ async fn await_worker_shutdown(
 }
 
 #[cfg(test)]
+mod drain_bench;
+#[cfg(test)]
 mod tests;
 
 /// Hand the run a worker riding `key`'s peer over its Peer Link, when one is
