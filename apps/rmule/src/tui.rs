@@ -183,9 +183,10 @@ fn restore_bytes() -> Vec<u8> {
     if KITTY_PUSHED.swap(false, Ordering::SeqCst) {
         let _ = queue!(bytes, PopKeyboardEnhancementFlags);
     }
+    // Apart, since a console that refuses the first would drop the rest.
+    let _ = queue!(bytes, DisableBracketedPaste);
     let _ = queue!(
         bytes,
-        DisableBracketedPaste,
         DisableMouseCapture,
         LeaveAlternateScreen,
         cursor::Show

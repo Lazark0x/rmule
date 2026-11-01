@@ -76,5 +76,10 @@ tracing-subscriber.workspace = true
 # `start_paused` + `time::advance` pace the bridge's data tick deterministically.
 tokio = { workspace = true, features = ["test-util"] }
 
+# The exits leg opens a real pty, whose closed master is the only way to lose
+# a terminal. Already in the tree under `rmule-os`.
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dev-dependencies]
+rustix = { workspace = true, features = ["pty"] }
+
 [lints]
 workspace = true

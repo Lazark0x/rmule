@@ -2718,6 +2718,7 @@ dependencies = [
  "rmule-primitives",
  "rmule-testkit",
  "rmule-words",
+ "rustix",
  "shlex",
  "tempfile",
  "thiserror 2.0.18",
