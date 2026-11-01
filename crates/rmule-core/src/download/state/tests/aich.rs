@@ -3,6 +3,7 @@
 //! distinct IPs agree, and the provisional hash-set authority a set that is
 //! not the file's own is refused against.
 
+use super::super::aich::{AichVote, AichVoter, MAX_VOTERS, masked_ip};
 use super::*;
 
 /// `peer` states `root` as the file's AICH master hash.
@@ -228,9 +229,8 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
 #[test]
 fn trusted_set_commits_a_root_once_enough_distinct_ips_agree() {
     // A rootless download collects AICH master-hash proposals; the root is
-    // committed (turning on recovery) only after >= 10 distinct IPs agree
-    // (ADR-0038 secure AICH). peer(1..=10) have distinct masked IPs
-    // (10.0.0.n & 0x00F0FFFF == n).
+    // committed (turning on recovery) only after >= 10 distinct voters agree
+    // (ADR-0038 secure AICH).
     let root = AichRootHash::from_bytes([0xA7; AichRootHash::BYTE_LEN]);
     let mut state = file_hash_only_state(Vec::new(), 1);
     assert_eq!(state.trusted_aich_root(), None);
@@ -238,26 +238,117 @@ fn trusted_set_commits_a_root_once_enough_distinct_ips_agree() {
     for n in 1..=9 {
         let _ = state.on_worker_event(
             t0(),
-            peer(n),
+            voter(n),
             PeerWorkerEvent::AichFileHashReceived { root },
         );
     }
     assert_eq!(
         state.trusted_aich_root(),
         None,
-        "9 agreeing IPs is below the 10-IP trust threshold"
+        "9 agreeing voters is below the 10-voter trust threshold"
     );
 
     let _ = state.on_worker_event(
         t0(),
-        peer(10),
+        voter(10),
         PeerWorkerEvent::AichFileHashReceived { root },
     );
     assert_eq!(
         state.trusted_aich_root(),
         Some(root),
-        "the 10th distinct agreeing IP commits the trusted root"
+        "the 10th distinct agreeing voter commits the trusted root"
     );
+}
+
+/// Stock keeps the top 20 bits (`SHAHashSet.cpp:451`, a network-order word on
+/// a little-endian host), so one subnet is one voter however many hosts it has.
+#[test]
+fn ten_addresses_of_one_subnet_are_one_voter() {
+    let root = AichRootHash::from_bytes([0xA7; AichRootHash::BYTE_LEN]);
+    let mut state = file_hash_only_state(Vec::new(), 1);
+
+    for n in 1..=10 {
+        states_root(&mut state, peer(n), root);
+    }
+
+    assert_eq!(state.trusted_aich_root(), None);
+}
+
+#[test]
+fn a_voter_is_the_top_twenty_bits_of_its_address() {
+    let at = |a, b, c, d| {
+        masked_ip(PeerEndpoint::V4(Ipv4Endpoint::new(
+            Ipv4Addr::new(a, b, c, d),
+            4662,
+        )))
+    };
+
+    assert_eq!(at(10, 20, 0x30, 1), at(10, 20, 0x3F, 254));
+    assert_ne!(at(10, 20, 0x30, 1), at(10, 20, 0x40, 1));
+    assert_ne!(at(10, 20, 0x30, 1), at(11, 20, 0x30, 1));
+}
+
+/// One peer posting root after root neither grows the tally nor drags the
+/// total past the 92 % line, so ten honest voters still reach trust.
+#[test]
+fn a_peer_posting_many_roots_holds_one_vote() {
+    let root = AichRootHash::from_bytes([0xA7; AichRootHash::BYTE_LEN]);
+    let mut state = file_hash_only_state(Vec::new(), 1);
+    for n in 0..=255 {
+        states_root(
+            &mut state,
+            voter(200),
+            AichRootHash::from_bytes([n; AichRootHash::BYTE_LEN]),
+        );
+    }
+
+    for n in 1..=9 {
+        states_root(&mut state, voter(n), root);
+    }
+    states_root(&mut state, voter(200), root);
+    assert_eq!(
+        state.trusted_aich_root(),
+        Some(root),
+        "its vote moved with it: ten of ten"
+    );
+}
+
+#[test]
+fn a_restated_vote_leaves_the_root_it_held() {
+    let (first, second) = (
+        AichRootHash::from_bytes([0xA7; AichRootHash::BYTE_LEN]),
+        AichRootHash::from_bytes([0xB8; AichRootHash::BYTE_LEN]),
+    );
+    let mut state = file_hash_only_state(Vec::new(), 1);
+    for n in 1..=9 {
+        states_root(&mut state, voter(n), first);
+    }
+    states_root(&mut state, voter(9), second);
+
+    states_root(&mut state, voter(10), first);
+
+    assert_eq!(state.trusted_aich_root(), None, "nine hold it, not ten");
+}
+
+#[test]
+fn past_its_size_the_vote_counts_no_new_voter_and_a_held_one_may_restate() {
+    let (root, other) = (
+        AichRootHash::from_bytes([0xA7; AichRootHash::BYTE_LEN]),
+        AichRootHash::from_bytes([0xB8; AichRootHash::BYTE_LEN]),
+    );
+    let v6 = |n: u64| AichVoter::V6(n);
+    let mut vote = AichVote::default();
+    for n in 0..MAX_VOTERS as u64 {
+        vote.cast(v6(n), other);
+    }
+
+    assert!(!vote.cast(v6(MAX_VOTERS as u64), root));
+    assert_eq!(vote.ballots.len(), MAX_VOTERS);
+    assert_eq!(vote.tally.get(&root), None);
+
+    vote.cast(v6(0), root);
+    assert_eq!(vote.tally.get(&root), Some(&1));
+    assert_eq!(vote.tally.get(&other), Some(&(MAX_VOTERS - 1)));
 }
 
 /// The AICH recovery pins a corrupt block on its sender: that sender —

@@ -244,17 +244,18 @@ pub enum KadEvent {
         user_hash: Option<UserHash>,
     },
     /// A per-`(IP, opcode)` flood bucket crossed the report threshold
-    /// (`count > 5 × rate`, ADR-0064). aMule bans the IP at its eD2k
-    /// client-list layer here — Kad itself keeps answering the IP's other
-    /// opcodes unchanged (the per-opcode bucket already contains the flood).
-    /// `KadNode` only reports: a future core-owned `BanStore` is the
-    /// enforcement consumer of this event.
+    /// (`count > 5 × rate`, ADR-0064). `KadNode` only reports; core's
+    /// `BanStore` enforces, and `proven` picks what it enforces: a ban at every
+    /// door, or the Hush a datagram that proves nothing earns.
     FloodOffenderDetected {
         /// The flooding IP.
         ip: Ipv4Addr,
         /// The opcode whose bucket overflowed — the flood is per-opcode, so
         /// this IP's other traffic is still being served.
         opcode: u8,
+        /// Whether the bucket counted datagrams carrying a valid receiver key,
+        /// each proving its sender receives at `ip`.
+        proven: bool,
     },
     /// A TCP firewall check was asked of `helper` (aMule
     /// `AddKadFirewallRequest`): its connect-back is awaited for

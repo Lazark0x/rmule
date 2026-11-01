@@ -33,9 +33,11 @@ use rmule_peer::{ClientUdpOpcode, ReaskCallbackUdp};
 use rmule_primitives::{DatagramSenderAddress, Ipv4Endpoint, PacketProtocol, PeerEndpoint};
 use tokio::sync::mpsc;
 
+use rmule_net::kad::KadDatagram;
+
 use super::peer_crypt::PeerUdpCrypt;
 use super::{ClientUdpDatagram, ClientUdpSend, SharedKadInlet};
-use crate::ban_store::SharedBanStore;
+use crate::ban_store::{DatagramStanding, SharedBanStore};
 use crate::buddy_link::{RendezvousRelay, SharedBuddySlot};
 use crate::diagnostics::DiagnosticsState;
 use crate::firewalled::front::{
@@ -221,7 +223,8 @@ pub(crate) struct ClientUdpEngine<T> {
     /// arrived on, or the requester's NAT drops it.
     send_tx: mpsc::Sender<ClientUdpSend>,
     /// A banned IP's every datagram stops here, whichever protocol it speaks
-    /// (`MuleUDPSocket.cpp:176-177`).
+    /// (`MuleUDPSocket.cpp:176-177`); a hushed one's stops here unless it
+    /// may yet prove a round trip.
     bans: SharedBanStore,
 }
 
@@ -281,12 +284,12 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
     /// Route one datagram by its leading protocol byte, then — for peer-UDP —
     /// by its opcode.
     async fn demux(&self, udp_src: PeerEndpoint, datagram: Vec<u8>) {
-        if self
+        let standing = self
             .bans
             .lock()
             .await
-            .is_banned(udp_src.ip(), std::time::Instant::now())
-        {
+            .datagram_standing(udp_src.ip(), std::time::Instant::now());
+        if standing == DatagramStanding::Banned {
             tracing::trace!(%udp_src, "datagram from a banned IP; dropped");
             self.diagnostics.count_banned_datagram();
             return;
@@ -312,18 +315,27 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
             .crypt
             .receive(DatagramSenderAddress::from_ip(udp_src.ip()), datagram);
         match demux_protocol(&datagram) {
+            // A peer-UDP datagram has no round trip to prove (ADR-0064). A
+            // Kad one may, and only the node can read it; a NAT-T frame rides a
+            // Tunnel, and a Tunnel is a proven connection.
+            ClientUdpRoute::PeerUdp if standing == DatagramStanding::Hushed => {
+                tracing::trace!(%udp_src, "peer-UDP datagram from a hushed IP; dropped");
+                self.diagnostics.count_hushed_datagram();
+            }
             ClientUdpRoute::PeerUdp => self.route_peer_udp(udp_src, datagram).await,
             ClientUdpRoute::Natt => self.route_natt(udp_src, datagram),
             // The sockets are unified (ADR-0057): `rmule_net::kad`'s own bind
             // is gone and this front is where a Kad datagram arrives.
             ClientUdpRoute::Kad | ClientUdpRoute::KadPacked => {
-                self.route_kad(udp_src, datagram, KadForm::Declared);
+                self.route_kad(udp_src, datagram, KadForm::Declared, standing);
             }
             // Possibly an obfuscated Kad datagram — the peer-UDP key already
             // missed, and only the node's own keys can tell. Handing it on
             // costs a failed magic-value check there; refusing it here would
             // lose every obfuscated Kad datagram rmule is sent.
-            ClientUdpRoute::Unclaimed => self.route_kad(udp_src, datagram, KadForm::Possible),
+            ClientUdpRoute::Unclaimed => {
+                self.route_kad(udp_src, datagram, KadForm::Possible, standing);
+            }
             ClientUdpRoute::Undersized => {
                 tracing::trace!(
                     %udp_src,
@@ -355,7 +367,13 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
     /// nothing else could, and that is where eMuleAI's IPv6 key — which
     /// differs from emule-qt's in a byte eMuleAI never writes — lands
     /// (ADR-0087's divergence note).
-    fn route_kad(&self, udp_src: PeerEndpoint, datagram: Vec<u8>, form: KadForm) {
+    fn route_kad(
+        &self,
+        udp_src: PeerEndpoint,
+        datagram: Vec<u8>,
+        form: KadForm,
+        standing: DatagramStanding,
+    ) {
         // The family is the question, not an ed2k id's packing: a Kad contact
         // at `x.y.z.0` is a contact.
         let Some(from) = udp_src.as_v4() else {
@@ -374,7 +392,12 @@ impl<T: ClientUdpTransport> ClientUdpEngine<T> {
             }
             return;
         };
-        match self.kad_inlet.send((from, datagram)) {
+        let datagram = KadDatagram {
+            from,
+            bytes: datagram,
+            hushed: standing == DatagramStanding::Hushed,
+        };
+        match self.kad_inlet.send(datagram) {
             Ok(()) => {}
             // No node running: there is nothing this could be handed to, and
             // a stopped Kad node is not a drop worth counting.

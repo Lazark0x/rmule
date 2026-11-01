@@ -364,6 +364,10 @@ pub struct SessionCounters {
     /// Datagrams the client-UDP front dropped unread because their address
     /// is banned (ADR-0064).
     pub banned_datagrams_total: u64,
+    /// Datagrams dropped because their address is under the Hush and they
+    /// proved no round trip (ADR-0064): at the client-UDP front, or for Kad in
+    /// the node.
+    pub hushed_datagrams_total: u64,
     /// The client-UDP demux front's transport returned closed and the front
     /// wound down. In production this happens only when the
     /// receive-error budget (`RuntimeClientUdpTransport::recv`) is

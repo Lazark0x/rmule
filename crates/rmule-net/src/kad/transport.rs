@@ -27,7 +27,16 @@ use crate::family::UdpFamilyPair;
 /// One inbound Kad datagram: the IPv4 endpoint it truly came from, and its
 /// bytes exactly as they arrived — still obfuscated if the sender obfuscated
 /// them, because only [`KadNode`](rmule_kad::KadNode)'s own keys can tell.
-pub type KadDatagram = (Ipv4Endpoint, Vec<u8>);
+#[derive(Debug)]
+pub struct KadDatagram {
+    /// The datagram's source.
+    pub from: Ipv4Endpoint,
+    /// The datagram as it arrived.
+    pub bytes: Vec<u8>,
+    /// The source is under the Hush (ADR-0064): the node, the one reader of
+    /// the receiver key, hears it only with a round trip proven.
+    pub hushed: bool,
+}
 
 /// How many inbound datagrams a core's Kad inlet holds before one is dropped.
 ///
@@ -128,6 +137,8 @@ pub(crate) enum KadReceive {
         from: Ipv4Endpoint,
         /// How many bytes of the scratch it filled.
         len: usize,
+        /// The source is under the Hush (ADR-0064).
+        hushed: bool,
     },
     /// A datagram from a non-IPv4 source, counted and dropped before the node
     /// ever saw it. Only an owned pair can produce one: the core's front rules
@@ -154,7 +165,11 @@ impl KadTransport {
     pub(crate) async fn recv(&mut self, scratch: &mut [u8]) -> KadReceive {
         match self {
             Self::Owned(pair) => match pair.recv(scratch).await {
-                Ok((len, PeerEndpoint::V4(from))) => KadReceive::Datagram { from, len },
+                Ok((len, PeerEndpoint::V4(from))) => KadReceive::Datagram {
+                    from,
+                    len,
+                    hushed: false,
+                },
                 Ok((_, from @ PeerEndpoint::V6(_))) => {
                     tracing::debug!(%from, "dropping non-IPv4 Kad datagram");
                     KadReceive::NonIpv4
@@ -165,7 +180,11 @@ impl KadTransport {
                 }
             },
             Self::Shared(inlet) => match inlet.datagrams.recv().await {
-                Some((from, bytes)) => {
+                Some(KadDatagram {
+                    from,
+                    bytes,
+                    hushed,
+                }) => {
                     let cells = &*inlet.traffic.0;
                     KadTraffic::record(&cells.datagrams_in, &cells.bytes_in, bytes.len());
                     // A UDP datagram cannot exceed the driver's 64 KiB
@@ -173,7 +192,7 @@ impl KadTransport {
                     // that shrank it.
                     let len = bytes.len().min(scratch.len());
                     scratch[..len].copy_from_slice(&bytes[..len]);
-                    KadReceive::Datagram { from, len }
+                    KadReceive::Datagram { from, len, hushed }
                 }
                 None => KadReceive::Closed,
             },
@@ -267,6 +286,7 @@ impl ScriptedTransport {
                 KadReceive::Datagram {
                     from: Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, 4000),
                     len,
+                    hushed: false,
                 }
             }
             Err(kind) => KadReceive::Transient(kind),

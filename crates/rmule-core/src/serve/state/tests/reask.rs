@@ -537,11 +537,37 @@ fn a_ping_from_the_address_the_standing_hello_names_is_the_waiters() {
     assert!(!answered(udp([45, 55, 200, 4], 6000)));
 }
 
-/// A known waiter's reask is an ask on the **Ask Pace**: the fifth fast one
-/// bans it unanswered (`ClientUDPSocket.cpp:440-452`), and a reask inside
-/// stock's cadence never scores.
+/// Forged reasks that scored on the same table would leave a waiter's next
+/// TCP ask to cross the line and bring the ban the datagrams could not earn.
 #[test]
-fn a_fifth_fast_reask_bans_the_waiter_unanswered() {
+fn fast_reasks_bring_no_later_tcp_ask_closer_to_a_ban() {
+    let file_hash = hash(0x71);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
+    let (holder, waiter) = (peer_at([10, 0, 0, 1], 4662), peer_at([10, 0, 0, 2], 4662));
+    identify(&mut state, holder, user(1), t);
+    identify_udp(&mut state, waiter, user(2), 6000, 4, t);
+    let _ = slot_request(&mut state, holder, file_hash, t);
+    let _ = slot_request(&mut state, waiter, file_hash, t);
+    let ping = reask_ping(file_hash);
+    let src = udp([10, 0, 0, 2], 6000);
+    for n in 1..=4 {
+        let at = t + Duration::from_secs(n);
+        let _ = state.on_reask_ping(at, src, &ping, &no_modifiers());
+    }
+
+    let asked = slot_request(&mut state, waiter, file_hash, t + Duration::from_secs(5));
+
+    assert!(!asked.contains(&ServeDecision::Ban { peer: waiter }));
+    assert!(state.queue.contains(waiter));
+}
+
+/// A known waiter's reask is an ask on the **Ask Pace**: the fifth fast one
+/// goes unanswered (`ClientUDPSocket.cpp:440-452`), and a reask inside stock's
+/// cadence never scores. A datagram proves no sender, so it earns the Hush, the
+/// waiter's place kept (ADR-0064): any stranger could have sent these five.
+#[test]
+fn a_fifth_fast_reask_hushes_the_address_and_keeps_the_waiters_place() {
     let file_hash = hash(0x71);
     let t = Instant::now();
     let mut state = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
@@ -553,7 +579,7 @@ fn a_fifth_fast_reask_bans_the_waiter_unanswered() {
     let ping = reask_ping(file_hash);
     let src = udp([10, 0, 0, 2], 6000);
 
-    for n in 1..=3 {
+    for n in 1..=4 {
         let at = t + Duration::from_secs(n);
         let answered = state.on_reask_ping(at, src, &ping, &no_modifiers());
         assert!(matches!(
@@ -561,15 +587,10 @@ fn a_fifth_fast_reask_bans_the_waiter_unanswered() {
             [ServeDecision::SendClientUdp { .. }]
         ));
     }
-    let banned = state.on_reask_ping(t + Duration::from_secs(4), src, &ping, &no_modifiers());
+    let fifth = state.on_reask_ping(t + Duration::from_secs(5), src, &ping, &no_modifiers());
 
-    assert_eq!(banned[0], ServeDecision::Ban { peer: waiter });
-    assert!(
-        !banned
-            .iter()
-            .any(|d| matches!(d, ServeDecision::SendClientUdp { .. }))
-    );
-    assert!(!state.queue.contains(waiter));
+    assert_eq!(fifth, [ServeDecision::Hush { peer: src }]);
+    assert!(state.queue.contains(waiter));
 
     let mut polite = serving_state(1, vec![entry(file_hash, 4096, "served.bin")]);
     identify(&mut polite, holder, user(1), t);

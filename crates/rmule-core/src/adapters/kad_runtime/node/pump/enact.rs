@@ -141,6 +141,7 @@ impl Enactor {
                 return Enacted::Answer(KadPumpInput::Sampled(self.sample()));
             }
             KadPumpEffect::Ban { ip, at } => self.ban_store.lock().await.ban(IpAddr::V4(ip), at),
+            KadPumpEffect::Hush { ip, at } => self.ban_store.lock().await.hush(IpAddr::V4(ip), at),
             KadPumpEffect::Verdict(write) => match write {
                 VerdictWrite::Tcp(tcp) => self.published.set_tcp(tcp),
                 VerdictWrite::Udp(udp) => self.published.set_udp(udp),
@@ -192,6 +193,7 @@ impl Enactor {
             DiagnosticsWrite::UndecodableEnvelope => {
                 self.diagnostics.count_kad_undecodable_envelope();
             }
+            DiagnosticsWrite::HushedDatagram => self.diagnostics.count_hushed_datagram(),
         }
     }
 

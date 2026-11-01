@@ -57,9 +57,12 @@ pub(crate) enum KadPumpEffect {
     },
     /// A write to **Address Learning**, answered with a fresh `Sampled`.
     Address(AddressWrite),
-    /// A flood offender the node reported, banned at the peer-TCP surface
-    /// (ADR-0064): Kad's own datagram path never consults the ban store.
+    /// A flood offender that proved its address, banned at every door
+    /// (ADR-0064).
     Ban { ip: Ipv4Addr, at: Instant },
+    /// A flood offender that proved nothing, hushed (ADR-0064): a forger may
+    /// have named the address.
+    Hush { ip: Ipv4Addr, at: Instant },
     /// A write to the Kad family of **Self Reach**.
     Verdict(VerdictWrite),
     /// A write to the Kad half of the **Awaited Testers**.
@@ -245,6 +248,8 @@ pub(crate) enum DiagnosticsWrite {
     KeywordsStored(usize),
     /// A datagram that opened like Kad and did not decode.
     UndecodableEnvelope,
+    /// One datagram the node stopped under the Hush.
+    HushedDatagram,
 }
 
 /// Work the driver runs beside the pump's path.

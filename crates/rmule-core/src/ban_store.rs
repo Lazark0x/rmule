@@ -1,15 +1,20 @@
-//! The core-owned **BanStore** (ADR-0064): where every ban lands, whoever
-//! raised it, for two hours by address.
+//! The core-owned **BanStore** (ADR-0064): where every ban and every **Hush**
+//! lands, whoever raised it, for two hours by address.
+//!
+//! What an offence earns follows what proved the sender. A finished connection
+//! or a datagram with a valid receiver key earns the ban; a datagram that
+//! proves nothing names an address anyone can forge, so it earns the Hush.
 //!
 //! `KadNode`'s flood limiter (ADR-0064, `rmule-kad`'s `flood.rs`) only
 //! *reports* an offender IP via `KadEvent::FloodOffenderDetected`, and the serve
 //! brain and a download's conviction raise their own: an `Arc<Mutex<_>>`-shared
-//! IP -> banned-until map, consulted by every surface that enforces it — the
+//! pair of tables, consulted by every surface that enforces them — the
 //! serve adapter's **Accept Gates** (refuse an inbound connection before the
 //! serve loop sees it), `RuntimePeerTransferService::start_download_worker`
 //! (skips dialing a banned candidate source entirely), the serve brain (a ban
 //! reaches a live link and a waiter) and the client-UDP front (a banned
-//! address's datagram stops there, Kad included, as `MuleUDPSocket.cpp:176-177`).
+//! address's datagram stops there, Kad included, as `MuleUDPSocket.cpp:176-177`,
+//! and a hushed address's stops unless it can prove a round trip).
 //! The server UDP socket is the one door left open: it hears only servers we
 //! asked.
 
@@ -24,19 +29,78 @@ use tokio::sync::Mutex;
 /// that enforce it (`Core::builder`'s single instance).
 pub(crate) type SharedBanStore = Arc<Mutex<BanStore>>;
 
-/// The rows the map holds at most, as `flood.rs` caps its buckets: each row is an
+/// The rows a table holds at most, as `flood.rs` caps its buckets: each row is an
 /// offence a stranger chose to commit, from an address it may rotate freely.
 const BAN_ROWS: usize = 50_000;
 
-/// IP -> banned-until (address-typed, so it applies to both families —
-/// ADR-0085), checked-then-evicted exactly like aMule's
+/// How the client-UDP front treats one address's datagrams.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DatagramStanding {
+    /// Heard as any other.
+    Open,
+    /// Heard only with a round trip proven (ADR-0064's Hush).
+    Hushed,
+    /// Stopped unread.
+    Banned,
+}
+
+/// One table of address -> until, checked-then-evicted exactly like aMule's
 /// `CClientList` ban list (`ClientList.cpp#L739`): a query past its deadline
 /// evicts the entry as it reads it, rather than waiting for a sweep. Keys are
 /// stored and looked up in their [`IpAddr::to_canonical`] form,
-/// so a mapped IPv4-in-IPv6 claim cannot dodge a ban placed on its plain IPv4.
+/// so a mapped IPv4-in-IPv6 claim cannot dodge a row placed on its plain IPv4.
+#[derive(Debug, Default)]
+struct Deadlines {
+    until: HashMap<IpAddr, Instant>,
+}
+
+impl Deadlines {
+    fn set(&mut self, ip: IpAddr, until: Instant, now: Instant) {
+        self.until.insert(ip.to_canonical(), until);
+        if self.until.len() > BAN_ROWS {
+            self.shed(now);
+        }
+    }
+
+    /// Bring the map back within [`BAN_ROWS`]: the expired rows no query came
+    /// for, and if every row is live, the eighth nearest its end, so a stranger
+    /// rotating addresses pays a sweep once per eighth rather than once per row.
+    fn shed(&mut self, now: Instant) {
+        self.until.retain(|_, until| *until > now);
+        if self.until.len() <= BAN_ROWS {
+            return;
+        }
+        let mut ends: Vec<Instant> = self.until.values().copied().collect();
+        let mut cut = ends.len() / 8;
+        let (_, &mut last_cut, _) = ends.select_nth_unstable(cut - 1);
+        // Counted, so rows ending at one instant still shed: a stranger's
+        // rows reported in one tick would otherwise sweep the map per row.
+        self.until.retain(|_, until| {
+            let goes = cut > 0 && *until <= last_cut;
+            cut -= usize::from(goes);
+            !goes
+        });
+    }
+
+    fn holds(&mut self, ip: IpAddr, now: Instant) -> bool {
+        let ip = ip.to_canonical();
+        match self.until.get(&ip) {
+            Some(&until) if until > now => true,
+            Some(_) => {
+                self.until.remove(&ip);
+                false
+            }
+            None => false,
+        }
+    }
+}
+
+/// The ban rows and the hush rows, apart: a forger mints hush rows at will, and
+/// shedding those must never reach a ban a proven offender earned.
 #[derive(Debug, Default)]
 pub(crate) struct BanStore {
-    banned_until: HashMap<IpAddr, Instant>,
+    banned: Deadlines,
+    hushed: Deadlines,
 }
 
 impl BanStore {
@@ -49,49 +113,44 @@ impl BanStore {
     /// aMule does not extend a ban past one `CLIENTBANTIME` either; the
     /// window simply resets from the latest offense.
     ///
+    /// Only a caller holding proof of the sender may ban (ADR-0064): anything a
+    /// lone datagram raised goes to [`hush`](Self::hush).
+    ///
     /// `ip` is unmapped first: the Kad flood report this is fed
     /// from is always IPv4 today, so this is a no-op in practice, but keying
     /// on the canonical form is what keeps a later mapped-form report from
     /// opening a second, unbanned key for the same host.
     pub(crate) fn ban(&mut self, ip: IpAddr, now: Instant) {
-        self.banned_until
-            .insert(ip.to_canonical(), now + Self::CLIENTBANTIME);
-        if self.banned_until.len() > BAN_ROWS {
-            self.shed(now);
-        }
+        self.banned.set(ip, now + Self::CLIENTBANTIME, now);
     }
 
-    /// Bring the map back within [`BAN_ROWS`]: the expired rows no query came
-    /// for, and if every row is live, the eighth nearest its end, so a stranger
-    /// rotating addresses pays a sweep once per eighth rather than once per row.
-    fn shed(&mut self, now: Instant) {
-        self.banned_until.retain(|_, until| *until > now);
-        if self.banned_until.len() <= BAN_ROWS {
-            return;
-        }
-        let mut ends: Vec<Instant> = self.banned_until.values().copied().collect();
-        let cut = ends.len() / 8;
-        let (_, &mut kept_from, _) = ends.select_nth_unstable(cut);
-        self.banned_until.retain(|_, until| *until >= kept_from);
+    /// Hush `ip` for [`CLIENTBANTIME`](Self::CLIENTBANTIME) from `now`: what an
+    /// offence earns when no proof names the sender (ADR-0064). A repeat report
+    /// resets the window, as [`ban`](Self::ban) does.
+    pub(crate) fn hush(&mut self, ip: IpAddr, now: Instant) {
+        self.hushed.set(ip, now + Self::CLIENTBANTIME, now);
     }
 
     /// Whether `ip` is currently banned. Checked-then-evicted (aMule
     /// `ClientList.cpp#L739`): an expired entry is removed as this reads it.
-    /// A row nobody queries goes when [`ban`](Self::ban) sheds.
+    /// A row nobody queries goes when the table sheds.
     ///
     /// `ip` is unmapped first: the peer-TCP dial site queries
     /// this with a candidate source's *claimed* address, and nothing stops a
     /// banned host from reappearing as `::ffff:`-its-own-IPv4 — without the
     /// unmap that claim would look up a key the ban was never stored under.
     pub(crate) fn is_banned(&mut self, ip: IpAddr, now: Instant) -> bool {
-        let ip = ip.to_canonical();
-        match self.banned_until.get(&ip) {
-            Some(&until) if until > now => true,
-            Some(_) => {
-                self.banned_until.remove(&ip);
-                false
-            }
-            None => false,
+        self.banned.holds(ip, now)
+    }
+
+    /// What the client-UDP front does with a datagram from `ip`.
+    pub(crate) fn datagram_standing(&mut self, ip: IpAddr, now: Instant) -> DatagramStanding {
+        if self.banned.holds(ip, now) {
+            DatagramStanding::Banned
+        } else if self.hushed.holds(ip, now) {
+            DatagramStanding::Hushed
+        } else {
+            DatagramStanding::Open
         }
     }
 }
@@ -118,7 +177,7 @@ mod tests {
 
         store.ban(ip(1), t0 + BanStore::CLIENTBANTIME);
 
-        assert_eq!(store.banned_until.len(), 1);
+        assert_eq!(store.banned.until.len(), 1);
     }
 
     /// A rotating address buys no memory: past the size the rows nearest their
@@ -131,10 +190,10 @@ mod tests {
             store.ban(row(n), t0 + Duration::from_millis(n as u64));
         }
 
-        assert!(store.banned_until.len() <= BAN_ROWS);
+        assert!(store.banned.until.len() <= BAN_ROWS);
         let latest = t0 + Duration::from_millis(BAN_ROWS as u64 * 2);
         assert!(store.is_banned(row(BAN_ROWS * 2 - 1), latest));
-        assert!(!store.banned_until.contains_key(&row(0)));
+        assert!(!store.banned.until.contains_key(&row(0)));
     }
 
     #[test]
@@ -185,6 +244,54 @@ mod tests {
 
         let different_mapped: IpAddr = "::ffff:203.0.113.2".parse().unwrap();
         assert!(!store.is_banned(different_mapped, t0));
+    }
+
+    /// A forger's row closes no door a proven connection uses.
+    #[test]
+    fn a_hush_stops_datagrams_and_leaves_tcp_open_for_its_two_hours() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        store.hush(ip(1), t0);
+
+        assert!(!store.is_banned(ip(1), t0), "accept and dial stay open");
+        assert_eq!(
+            store.datagram_standing(ip(1), t0),
+            DatagramStanding::Hushed
+        );
+        assert_eq!(store.datagram_standing(ip(2), t0), DatagramStanding::Open);
+        assert_eq!(
+            store.datagram_standing(ip(1), t0 + BanStore::CLIENTBANTIME),
+            DatagramStanding::Open
+        );
+    }
+
+    #[test]
+    fn a_hush_over_a_ban_leaves_the_ban_in_force() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        store.ban(ip(1), t0);
+        store.hush(ip(1), t0);
+
+        assert!(store.is_banned(ip(1), t0));
+        assert_eq!(
+            store.datagram_standing(ip(1), t0),
+            DatagramStanding::Banned
+        );
+    }
+
+    /// Hush rows are free to mint from any address; they must not shed a ban.
+    #[test]
+    fn rotating_hushes_push_out_no_ban() {
+        let mut store = BanStore::default();
+        let t0 = Instant::now();
+        store.ban(ip(1), t0);
+
+        for n in 0..BAN_ROWS * 2 {
+            store.hush(row(n), t0);
+        }
+
+        assert!(store.hushed.until.len() <= BAN_ROWS);
+        assert!(store.is_banned(ip(1), t0));
     }
 
     #[test]

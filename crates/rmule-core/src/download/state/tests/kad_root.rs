@@ -27,13 +27,13 @@ fn started(link: Option<AichRootHash>, kad: Option<KadAichRoot>) -> DownloadStat
     state
 }
 
-/// Ten distinct voters propose `root` (`peer(1..=10)` mask to ten IPs).
+/// Ten distinct voters propose `root`.
 fn vote(state: &mut DownloadState, root: AichRootHash) -> Vec<Decision> {
     (1..=10)
         .flat_map(|n| {
             state.on_worker_event(
                 t0(),
-                peer(n),
+                voter(n),
                 PeerWorkerEvent::AichFileHashReceived { root },
             )
         })

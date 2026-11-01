@@ -414,15 +414,16 @@ impl KadPumpState {
                 file_hash,
                 requester_tcp_port,
             })),
-            KadEvent::FloodOffenderDetected { ip, opcode } => {
+            KadEvent::FloodOffenderDetected { ip, opcode, proven } => {
                 // ADR-0064: the node only reports a flood offender; this is
-                // where the report becomes a peer-TCP ban.
-                out.push(KadPumpEffect::Ban { ip, at: now });
-                tracing::debug!(
-                    %ip,
-                    opcode,
-                    "flood offender banned at the peer-TCP surface"
-                );
+                // where the report becomes a ban, or the Hush when no datagram
+                // proved the address it named.
+                out.push(if proven {
+                    KadPumpEffect::Ban { ip, at: now }
+                } else {
+                    KadPumpEffect::Hush { ip, at: now }
+                });
+                tracing::debug!(%ip, opcode, proven, "flood offender reported");
             }
             event @ (KadEvent::ReachabilityRecheckStarted
             | KadEvent::ReachabilityConnectBack
@@ -525,6 +526,9 @@ impl KadPumpState {
                 buddy_tcp_port,
                 connect_options,
             )),
+            KadEvent::Diagnostic(KadNodeDiagnostic::HushedDropped { .. }) => {
+                out.push(KadPumpEffect::Diagnostics(DiagnosticsWrite::HushedDatagram));
+            }
             KadEvent::Diagnostic(KadNodeDiagnostic::UndecodableEnvelope { from, error }) => {
                 // A hostile or malformed datagram never panics the node; the
                 // count is what makes a crypt-armed run's own decode failures

@@ -142,6 +142,12 @@ fn peer(n: u8) -> PeerEndpoint {
     PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, n), 4662))
 }
 
+/// A peer in a `/20` of its own: `peer(n)` all share one, so they are one
+/// AICH voter (ADR-0038).
+fn voter(n: u8) -> PeerEndpoint {
+    PeerEndpoint::V4(Ipv4Endpoint::new(Ipv4Addr::new(10, n, 0, 1), 4662))
+}
+
 /// The endpoints `decisions` spawns a worker at, in order.
 fn spawned(decisions: &[Decision]) -> Vec<PeerEndpoint> {
     decisions

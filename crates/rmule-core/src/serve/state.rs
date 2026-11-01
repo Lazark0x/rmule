@@ -86,6 +86,9 @@ pub(super) enum ServeDecision {
     /// "Userhash invalid", `ClientList.cpp:384-392`), or its session proved
     /// another key under that hash (ADR-0107).
     Ban { peer: PeerEndpoint },
+    /// Hush the source of a datagram that overran its pace (ADR-0064): it
+    /// proved no sender, so no door closes and no place goes.
+    Hush { peer: PeerEndpoint },
     /// Send `block`'s `bytes` down `peer`'s link for `flow`, unless the flow
     /// has ended by the time the link's task reaches them. With `deflate` that
     /// task deflates them first, off the async runtime and off this loop, and
@@ -294,8 +297,10 @@ pub(super) struct ServeState {
     /// What the node holds of the current input's address, refreshed by the
     /// enactor (see [`ServeAsker`]).
     asker: ServeAsker,
-    /// The **Ask Pace** (ADR-0055 divergence 7).
+    /// The **Ask Pace** of what a link asked (ADR-0055 divergence 7).
     asks: AskPace,
+    /// The **Ask Pace** of what a datagram asked, which earns the Hush.
+    reask_asks: AskPace,
     /// The **Hash Track** of who proved a key where.
     hashes: HashTrack,
 }
@@ -321,6 +326,7 @@ impl ServeState {
             ours: ServeSelfPosition::default(),
             asker: ServeAsker::default(),
             asks: AskPace::default(),
+            reask_asks: AskPace::default(),
             hashes: HashTrack::default(),
         }
     }

@@ -1,9 +1,9 @@
 //! The AICH leg (ADR-0038): the secure trusted-root vote a peer's proposed
 //! root joins, and the recovery answer that repairs a part whose MD4 hash
-//! failed. Trust is a tally over masked proposing IPs, exactly as aMule's
+//! failed. Trust is a tally over masked proposing IPs, as aMule's
 //! `SHAHashSet` counts it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::KadAichRoot;
@@ -91,10 +91,11 @@ pub(crate) fn qualified_kad_root(
         .then_some(report.root)
 }
 
-/// The unique-IP key for trusted-set voting: aMule masks an IPv4 address to
-/// its 20 most significant bits (`dwIP &= 0x00F0FFFF`) so a single subnet
-/// cannot stuff the vote; `Ipv4Addr` → `u32` is big-endian (network order).
-/// An IPv6 proposer is keyed by its /64 — the prefix one delegation hands a
+/// The unique-IP key for trusted-set voting: aMule keeps an IPv4 address's 20
+/// most significant bits so a single subnet cannot stuff the vote. Its
+/// `dwIP &= 0x00F0FFFF` (`SHAHashSet.cpp:451`) reads so on a network-order word
+/// in a little-endian host; `Ipv4Addr` → `u32` is big-endian, so the bits to
+/// keep here are the high ones. An IPv6 proposer is keyed by its /64 — the prefix one delegation hands a
 /// host, the same anti-stuffing intent (no implementation pins a finer rule).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum AichVoter {
@@ -102,17 +103,59 @@ pub(super) enum AichVoter {
     V6(u64),
 }
 
-fn masked_ip(peer: PeerEndpoint) -> AichVoter {
+pub(super) fn masked_ip(peer: PeerEndpoint) -> AichVoter {
     match peer {
-        PeerEndpoint::V4(ep) => AichVoter::V4(u32::from(ep.ip) & 0x00F0_FFFF),
+        PeerEndpoint::V4(ep) => AichVoter::V4(u32::from(ep.ip) >> 12),
         PeerEndpoint::V6(ep) => AichVoter::V6((ep.ip.to_bits() >> 64) as u64),
     }
 }
 
+/// The voters a vote keeps, first come: enough for any swarm's ten-and-92 %,
+/// and a bound on what proposals can hold.
+pub(super) const MAX_VOTERS: usize = 1024;
+
+/// The trusted-set tally (ADR-0038): each voter's one standing vote, and how
+/// many stand behind each root.
+#[derive(Debug, Default)]
+pub(super) struct AichVote {
+    pub(super) ballots: HashMap<AichVoter, AichRootHash>,
+    pub(super) tally: HashMap<AichRootHash, usize>,
+}
+
+impl AichVote {
+    /// `voter` states `root`, its vote moving there; whether `root` now clears
+    /// the agreement thresholds. Only the root just voted can cross them: a
+    /// moved vote leaves the total alone, and a new voter raises it.
+    pub(super) fn cast(&mut self, voter: AichVoter, root: AichRootHash) -> bool {
+        if self.ballots.len() >= MAX_VOTERS && !self.ballots.contains_key(&voter) {
+            return false;
+        }
+        match self.ballots.insert(voter, root) {
+            Some(held) if held == root => {}
+            Some(held) => {
+                self.withdraw(held);
+                *self.tally.entry(root).or_default() += 1;
+            }
+            None => *self.tally.entry(root).or_default() += 1,
+        }
+        let ips = self.tally.get(&root).copied().unwrap_or(0);
+        ips >= MIN_UNIQUE_IPS_TO_TRUST && ips * 100 >= self.ballots.len() * MIN_PERCENTAGE_TO_TRUST
+    }
+
+    fn withdraw(&mut self, root: AichRootHash) {
+        if let Some(ips) = self.tally.get_mut(&root) {
+            *ips -= 1;
+            if *ips == 0 {
+                self.tally.remove(&root);
+            }
+        }
+    }
+}
+
 impl DownloadState {
-    /// Trusted-set vote (ADR-0038, eMule secure AICH): tally `peer`'s proposed
-    /// AICH master `root` by its masked IP and commit it once a root clears
-    /// the agreement thresholds — enabling recovery for a download whose link
+    /// Trusted-set vote (ADR-0038, eMule secure AICH): `peer`'s masked IP
+    /// states AICH master `root`, moving any vote it held, and the root
+    /// commits once it clears the agreement thresholds — enabling recovery for a download whose link
     /// carried no `h=`. The vote runs only while the download is rootless or
     /// holds a Kad root: a commit agreeing with the Kad root keeps it, and one
     /// naming another root leaves the download trusting neither, durably and
@@ -127,31 +170,19 @@ impl DownloadState {
         if !self.aich_root.vote_runs() {
             return;
         }
-        self.aich_root_votes
-            .entry(root)
-            .or_default()
-            .insert(masked_ip(peer));
-
-        let total_ips: usize = self.aich_root_votes.values().map(HashSet::len).sum();
-        if let Some((best_root, ips)) = self
-            .aich_root_votes
-            .iter()
-            .map(|(r, ips)| (*r, ips.len()))
-            .max_by_key(|&(_, ips)| ips)
-            && ips >= MIN_UNIQUE_IPS_TO_TRUST
-            && ips * 100 >= total_ips * MIN_PERCENTAGE_TO_TRUST
-        {
+        if self.aich_root_votes.cast(masked_ip(peer), root) {
+            self.aich_root_votes = AichVote::default();
             self.aich_root = match self.aich_root {
-                AichRootAuthority::Kad(kad_root) if kad_root != best_root => {
+                AichRootAuthority::Kad(kad_root) if kad_root != root => {
                     out.push(Decision::ContestKadAichRoot);
                     out.push(Decision::Emit(DownloadEvent::KadAichRootContested {
                         download_id: self.download_id,
                         kad_root,
-                        voted_root: best_root,
+                        voted_root: root,
                     }));
                     AichRootAuthority::Contested
                 }
-                _ => AichRootAuthority::Voted(best_root),
+                _ => AichRootAuthority::Voted(root),
             };
         }
     }

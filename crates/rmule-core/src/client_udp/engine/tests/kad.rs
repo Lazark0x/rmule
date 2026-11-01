@@ -102,12 +102,12 @@ async fn declared_kad_datagrams_reach_the_running_node() {
     engine.run().await;
 
     assert_eq!(
-        kad.try_recv(),
+        kad.try_recv().map(|d| (d.from, d.bytes)),
         Ok((Ipv4Endpoint::new(src_ip, 4672), plain)),
         "the plaintext Kad datagram reaches the node, tagged with its IPv4 source",
     );
     assert_eq!(
-        kad.try_recv(),
+        kad.try_recv().map(|d| (d.from, d.bytes)),
         Ok((Ipv4Endpoint::new(src_ip, 4672), packed))
     );
     assert_eq!(inboxes.reask_ping.try_recv(), Ok((src, ping)));
@@ -142,7 +142,7 @@ async fn an_obfuscated_kad_datagram_the_peer_key_missed_reaches_the_inlet_unalte
     engine.run().await;
 
     assert_eq!(
-        kad.try_recv(),
+        kad.try_recv().map(|d| (d.from, d.bytes)),
         Ok((Ipv4Endpoint::new(src_ip, 4672), obfuscated)),
         "the node's keys decide, so the front must hand over exactly what arrived",
     );
@@ -327,7 +327,7 @@ async fn an_undrained_reask_inbox_drops_and_counts_without_stalling_kad() {
         .expect("the front finishes its script with both reask inboxes full");
 
     assert_eq!(
-        kad.try_recv(),
+        kad.try_recv().map(|d| (d.from, d.bytes)),
         Ok((Ipv4Endpoint::new(src_ip, 4672), kad_datagram)),
         "the Kad datagram behind the flood reaches the node",
     );

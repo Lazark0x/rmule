@@ -476,11 +476,10 @@ pub(crate) struct DownloadState {
     /// MD4 failure; without one a failed part goes to its refetch (ADR-0117
     /// §1).
     aich_root: AichRootAuthority,
-    /// Trusted-set tally for a rootless download: each proposed AICH master root
-    /// → the set of distinct masked peer IPs that proposed it (ADR-0038, eMule
-    /// secure-AICH). A root is committed to `aich_root` once it clears the
-    /// agreement thresholds. Empty (and unused) once the vote is closed.
-    aich_root_votes: HashMap<AichRootHash, HashSet<aich::AichVoter>>,
+    /// Trusted-set tally for a rootless download (ADR-0038, eMule secure-AICH).
+    /// A root is committed to `aich_root` once it clears the agreement
+    /// thresholds. Empty (and unused) once the vote is closed.
+    aich_root_votes: aich::AichVote,
     /// The AICH root each connected worker's peer stated: a recovery ask goes
     /// only to one stating the trusted root.
     aich_stated: HashMap<PeerEndpoint, AichRootHash>,
@@ -601,7 +600,7 @@ impl DownloadState {
             link_part_hash_set,
             resolved,
             aich_root,
-            aich_root_votes: HashMap::new(),
+            aich_root_votes: aich::AichVote::default(),
             aich_stated: HashMap::new(),
             retired_peers: 0,
             sources,

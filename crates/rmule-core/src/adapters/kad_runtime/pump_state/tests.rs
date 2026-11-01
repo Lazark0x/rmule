@@ -751,6 +751,7 @@ fn contacts_are_counted_and_a_flood_offender_is_banned_when_reported() {
             KadPumpInput::Event(KadEvent::FloodOffenderDetected {
                 ip: offender,
                 opcode: 0x60,
+                proven: true,
             }),
             later,
         ),
@@ -758,5 +759,21 @@ fn contacts_are_counted_and_a_flood_offender_is_banned_when_reported() {
             ip: offender,
             at: later
         }]
+    );
+    assert_eq!(
+        step(
+            &mut state,
+            KadPumpInput::Event(KadEvent::FloodOffenderDetected {
+                ip: offender,
+                opcode: 0x60,
+                proven: false,
+            }),
+            later,
+        ),
+        [KadPumpEffect::Hush {
+            ip: offender,
+            at: later
+        }],
+        "a datagram that proved nothing bans nobody"
     );
 }

@@ -450,13 +450,17 @@ async fn run_driver(
                 // pair's IPv6 socket has no dialect to feed: a datagram that
                 // does arrive on it is counted and dropped at the transport,
                 // never inside the node.
-                KadReceive::Datagram { from, len } => {
+                KadReceive::Datagram { from, len, hushed } => {
                     receive_errors.record_success();
                     summary.datagrams_in += 1;
                     let addr = SocketAddr::new(IpAddr::V4(from.ip), from.port);
                     record(&capture, start, Direction::Inbound, addr, &buf[..len]).await;
                     let endpoint = KadNodeEndpoint::new(from.ip, from.port);
-                    node.handle_datagram(instant_at(start), endpoint, &buf[..len]);
+                    if hushed {
+                        node.handle_hushed_datagram(instant_at(start), endpoint, &buf[..len]);
+                    } else {
+                        node.handle_datagram(instant_at(start), endpoint, &buf[..len]);
+                    }
                 }
                 KadReceive::NonIpv4 => {
                     receive_errors.record_success();

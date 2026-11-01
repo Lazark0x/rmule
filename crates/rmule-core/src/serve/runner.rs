@@ -738,6 +738,10 @@ async fn enact<L: ServeRuntimeService>(
                 tracing::info!(%peer, "serve: address banned");
                 bans.lock().await.ban(peer.ip(), std::time::Instant::now());
             }
+            ServeDecision::Hush { peer } => {
+                tracing::info!(%peer, "serve: address hushed");
+                bans.lock().await.hush(peer.ip(), std::time::Instant::now());
+            }
             ServeDecision::ReadRange {
                 peer,
                 flow,

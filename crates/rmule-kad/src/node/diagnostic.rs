@@ -242,6 +242,12 @@ pub enum KadNodeDiagnostic {
         /// The opcode whose bucket the datagram fell in.
         opcode: u8,
     },
+    /// A datagram from an address under the Hush carried no valid receiver key
+    /// (ADR-0064), so it proved nothing and stopped before any decode.
+    HushedDropped {
+        /// Where the datagram came from.
+        from: KadNodeEndpoint,
+    },
     /// A `0x58`/`0x59` firewall **response** with no matching outstanding-check
     /// window — the sender was never asked to check us (or our own check is
     /// disabled), or its 180 s window already lapsed. aMule drops it as an

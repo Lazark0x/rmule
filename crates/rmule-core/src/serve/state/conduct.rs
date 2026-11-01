@@ -95,6 +95,17 @@ impl ServeState {
         self.asks.ask(now, key, user_hash) && !self.spares(peer)
     }
 
+    /// One reask of `peer` on the datagram road's own **Ask Pace**; `true` when
+    /// it earns the Hush. A datagram proves no sender (ADR-0064), so its score
+    /// stays apart from the one a link's asks build toward a ban.
+    pub(super) fn reask_hushes(&mut self, now: Instant, peer: PeerEndpoint) -> bool {
+        let Some(user_hash) = self.identities.get(&peer).map(PeerIdentity::user_hash) else {
+            return false;
+        };
+        let key = AccountingKey::of(peer.ip());
+        self.reask_asks.ask(now, key, user_hash) && !self.spares(peer)
+    }
+
     /// Ban `peer`'s address, and act on it at once ([`on_banned`](Self::on_banned)).
     pub(super) fn ban_asker(
         &mut self,

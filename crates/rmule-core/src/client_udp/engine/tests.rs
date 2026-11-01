@@ -161,11 +161,43 @@ async fn a_banned_address_is_dropped_before_any_protocol_reads_it() {
     );
     assert_eq!(inboxes.reask_ping.recv().await, None);
     assert_eq!(
-        kad_rx.try_recv().ok().map(|(from, _)| from.ip),
+        kad_rx.try_recv().ok().map(|datagram| datagram.from.ip),
         Some(open_ip)
     );
     assert!(kad_rx.try_recv().is_err());
     assert_eq!(diagnostics.snapshot().session.banned_datagrams_total, 2);
+}
+
+/// ADR-0064: a peer-UDP datagram has nothing to prove with, so the Hush stops
+/// it at the front. A Kad one goes on, marked, for the node to read its key.
+#[tokio::test]
+async fn a_hushed_address_loses_its_reask_and_its_kad_datagram_goes_on_marked() {
+    let hushed_ip = Ipv4Addr::new(203, 0, 113, 1);
+    let hushed = PeerEndpoint::V4(Ipv4Endpoint::new(hushed_ip, 5000));
+    let ping = ReaskFilePing {
+        file_hash: FileHash::from_bytes([0x11; FileHash::BYTE_LEN]),
+        part_status: None,
+        complete_sources: None,
+    }
+    .encode_udp();
+    let script = vec![(hushed, ping), (hushed, vec![0xE4, 0x00])];
+    let diagnostics = DiagnosticsState::default();
+    let (mut engine, mut inboxes, mut kad_rx) =
+        front_with_kad(scripted(script), None, diagnostics.clone(), 4);
+    let bans = crate::ban_store::SharedBanStore::default();
+    bans.lock().await.hush(hushed.ip(), Instant::now());
+    engine.bans = bans;
+
+    engine.run().await;
+
+    assert_eq!(inboxes.reask_ping.recv().await, None);
+    let kad = kad_rx.try_recv().expect("the Kad datagram goes on");
+    assert!(kad.hushed);
+    let session = diagnostics.snapshot().session;
+    assert_eq!(
+        (session.hushed_datagrams_total, session.banned_datagrams_total),
+        (1, 0)
+    );
 }
 
 #[tokio::test]
@@ -291,7 +323,7 @@ async fn a_banned_ip_reaches_neither_kad_nor_the_reask_surface() {
 
     let (from, _) = inboxes.reask_ping.recv().await.expect("the other's ping");
     assert_eq!(from, other);
-    let (from, _) = kad_rx.recv().await.expect("the other's Kad datagram");
+    let KadDatagram { from, .. } = kad_rx.recv().await.expect("the other's Kad datagram");
     assert_eq!(from, other.as_v4().expect("an IPv4 endpoint"));
     assert!(inboxes.reask_ping.try_recv().is_err());
     assert!(kad_rx.try_recv().is_err());

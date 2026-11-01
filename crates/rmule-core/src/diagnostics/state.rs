@@ -314,6 +314,13 @@ impl DiagnosticsState {
             inner.session.banned_datagrams_total.saturating_add(1);
     }
 
+    /// Count a datagram dropped for an address under the Hush.
+    pub fn count_hushed_datagram(&self) {
+        let mut inner = self.inner.lock();
+        inner.session.hushed_datagrams_total =
+            inner.session.hushed_datagrams_total.saturating_add(1);
+    }
+
     /// Count the client-UDP demux front's transport returning closed
     /// — in production, the receive-error budget exhausted.
     pub fn count_client_udp_transport_ended(&self) {

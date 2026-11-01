@@ -77,18 +77,17 @@ impl ServeState {
                 size: found.file_size(),
                 status: found.status(),
             });
-        // A shared file's reask from a known waiter is an ask like any: a
-        // banned client is not answered, whether a ban it already held got
-        // past the front on a relayed ping or this ask brought it
-        // (`ClientUDPSocket.cpp:440-452`).
+        // A shared file's reask from a known waiter is an ask: a banned client
+        // is not answered (`ClientUDPSocket.cpp:440-452`), and one past the
+        // pace is not either, though here it earns only the Hush (ADR-0064).
         if shared.is_some()
             && let Some(peer) = peer
         {
             if self.asker.banned && !self.spares(peer) {
                 return self.on_banned(now, peer, modifiers);
             }
-            if self.ask_bans(now, peer) {
-                return self.ban_asker(now, peer, modifiers);
+            if self.reask_hushes(now, peer) {
+                return vec![ServeDecision::Hush { peer: udp_src }];
             }
         }
         let room = QueueRoom {
