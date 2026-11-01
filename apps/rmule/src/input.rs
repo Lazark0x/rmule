@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
 };
 use tokio::sync::mpsc;
 
@@ -84,22 +84,48 @@ pub fn spawn_input_pump(
     std::thread::Builder::new()
         .name("rmule-input".into())
         .spawn(move || {
-            while !shutdown.load(Ordering::Relaxed) {
-                match ratatui::crossterm::event::poll(Duration::from_millis(100)) {
-                    Ok(true) => match ratatui::crossterm::event::read() {
-                        Ok(event) => {
-                            if actions.blocking_send(Action::Input(event)).is_err() {
-                                return; // UI gone
-                            }
-                        }
-                        Err(_) => return,
-                    },
-                    Ok(false) => {}
-                    Err(_) => return,
+            pump(actions, shutdown, || {
+                if ratatui::crossterm::event::poll(Duration::from_millis(100))? {
+                    ratatui::crossterm::event::read().map(Some)
+                } else {
+                    Ok(None)
                 }
-            }
+            });
         })
         .expect("spawn input pump thread")
+}
+
+/// Feed what `next` reads onto the bus until the run's end is asked for. A
+/// pump that ends any other way, a read failure or its own panic, leaves the
+/// operator no key to quit with, so its end is a Quit (ADR-0118).
+fn pump(
+    actions: mpsc::Sender<Action>,
+    shutdown: Arc<AtomicBool>,
+    mut next: impl FnMut() -> std::io::Result<Option<Event>>,
+) {
+    struct QuitAtEnd {
+        actions: mpsc::Sender<Action>,
+        shutdown: Arc<AtomicBool>,
+    }
+    impl Drop for QuitAtEnd {
+        fn drop(&mut self) {
+            if !self.shutdown.load(Ordering::Relaxed) {
+                let _ = self.actions.blocking_send(Action::Quit);
+            }
+        }
+    }
+    let end = QuitAtEnd { actions, shutdown };
+    while !end.shutdown.load(Ordering::Relaxed) {
+        match next() {
+            Ok(Some(event)) => {
+                if end.actions.blocking_send(Action::Input(event)).is_err() {
+                    return; // UI gone
+                }
+            }
+            Ok(None) => {}
+            Err(_) => return,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -109,6 +135,35 @@ mod tests {
     use super::*;
     use crate::fixture::press;
     use crate::view::ViewId;
+
+    fn a_quit_follows(
+        next: impl FnMut() -> std::io::Result<Option<Event>> + Send + 'static,
+    ) -> bool {
+        let (actions, mut bus) = mpsc::channel(4);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let pump = std::thread::spawn(move || pump(actions, shutdown, next));
+        let _ = pump.join();
+        matches!(bus.try_recv(), Ok(Action::Quit))
+    }
+
+    #[test]
+    fn a_pump_whose_read_fails_quits_the_run() {
+        assert!(a_quit_follows(|| Err(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe
+        ))));
+    }
+
+    #[test]
+    fn a_pump_that_panics_quits_the_run() {
+        assert!(a_quit_follows(|| panic!("a defect in the pump")));
+    }
+
+    #[test]
+    fn a_pump_told_to_stop_says_nothing() {
+        let (actions, mut bus) = mpsc::channel(4);
+        pump(actions, Arc::new(AtomicBool::new(true)), || Ok(None));
+        assert!(bus.try_recv().is_err());
+    }
 
     fn release(code: KeyCode) -> KeyEvent {
         KeyEvent {

@@ -66,7 +66,7 @@ pub fn install_hook(
                     .map_or(("unknown", 0), |site| (site.file(), site.line()));
                 eprintln!(
                     "{}",
-                    app_words::stopped_on_fault(file, line, run_log.as_deref())
+                    app_words::fault_at(file, line, run_log.as_deref())
                 );
             }
         }

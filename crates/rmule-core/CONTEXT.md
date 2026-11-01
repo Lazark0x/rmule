@@ -28,6 +28,10 @@ _Avoid_: start over (not an action of its own), retry, re-add (the Failed mark's
 `Core::shutdown`, or every `Core` handle dropped: every **Activity**'s stop in dependency order, each within a bound — search, download (aborted, its store row left as the operator last set it, so attach starts a running one again and leaves a paused one paused), serve, Kad, the server session's hang-up, awaited to its socket's close, then the port-mapping runtime's release pass, awaited — before the credit flush (ADR-0093). A front end issues no stop of its own before it: `Core::quit` hands back the rest of the event stream, where each step that runs is announced as a `CoreEvent::Quitting` — what the TUI's status bar names.
 _Avoid_: exit, teardown
 
+**Long Task**:
+A task no **Activity** ledger retires: the actor itself, the client-UDP front and its send drain, the reask router, the firewalled and NAT-T fronts. It has no stop; its panic is told as `CoreEvent::TaskDied` (ADR-0118), and the actor's is the core's end.
+_Avoid_: background task, daemon task
+
 **Outbox**:
 Where every core task reports (ADR-0069). Its send never waits: the Run Log has the event first, and a reader that stops reading costs itself detail and costs the node nothing. An **Edge** is never dropped, a **Level** replaces the last value of its subject, a **Note** is a peer-driven fact dropped with the Levels past the room, behind one `EventsShed`.
 _Avoid_: event channel, event bus

@@ -207,7 +207,7 @@ fn install_panic_hook(level: LevelHandle, log: Option<std::path::PathBuf>) {
             .map_or(("unknown", 0), |site| (site.file(), site.line()));
         say_err!(
             "{}",
-            rmule_words::app::stopped_on_fault(file, line, log.as_deref())
+            rmule_words::app::fault_at(file, line, log.as_deref())
         );
     }));
 }

@@ -21,8 +21,7 @@ unwinds it ends the one task it happened on, and that task's activity dies as an
 
 ### The record
 
-Every front end that keeps a Run Log installs `run_log::panic_record` from its panic hook. The
-hook writes a `panic` record and drains the log before anything else happens, so a panic's last
+`rmule` and `rmule-cli` call `run_log::panic_record` first in their panic hooks. It writes a `panic` record and drains the log before anything else happens, so a panic's last
 lines reach the file even when the process ends on the next instruction. The record holds the
 thread and the source location at every level; the panic's message holds arbitrary values, so it
 is a free-text field the full level admits alone.
@@ -50,7 +49,8 @@ supervisor (`crate::supervisor`) is the one reader of a long task's panic:
   [`LongTask`] that stopped. The actor's own death is told the same way; a front end treats that
   one as the core's end, since the rest of the node goes on holding the Outbox open.
 - The bridge is watched from outside its own task, and a panic in it reaches the UI as
-  `CoreClosed`.
+  `CoreClosed`. The input pump's end before the run's is a Quit, since it leaves no key to
+  press.
 
 Kad's watchdog and serve's liveness cell keep their shape: both already reach their retire.
 
@@ -59,8 +59,8 @@ Kad's watchdog and serve's liveness cell keep their shape: both already reach th
 `rmule` enters the terminal by hand, with no hook of ratatui's. A hook of its own decides by what
 the panic costs. A worker's panic leaves the terminal alone and prints nothing onto the frame: it
 is a Run Log record and a note on the action bus. A panic on the UI thread, or any panic in a dist
-build, restores the terminal first and then says on the normal screen that rmule stopped, where,
-and where the record is.
+build, restores the terminal first and then says on the normal screen what happened, where, and
+where the record is.
 
 ### Locks
 

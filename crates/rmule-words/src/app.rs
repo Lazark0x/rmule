@@ -30,16 +30,16 @@ pub const INTERNAL_FAULT: Sentence =
 pub const NO_STOP_SIGNALS: Sentence =
     Sentence::fixed("rmule cannot hear a stop signal this run; quit with q");
 
-/// What the normal screen says after a panic ended rmule (ADR-0118): where it
-/// happened, and the log that holds it.
+/// What the normal screen says after a panic (ADR-0118): where it happened,
+/// and the log that holds it.
 #[must_use]
-pub fn stopped_on_fault(file: &str, line: u32, log: Option<&Path>) -> String {
+pub fn fault_at(file: &str, line: u32, log: Option<&Path>) -> String {
     match log {
         Some(log) => format!(
-            "rmule stopped on an internal fault at {file}:{line}; the record is in {}",
+            "rmule hit an internal fault at {file}:{line}; the record is in {}",
             log.display()
         ),
-        None => format!("rmule stopped on an internal fault at {file}:{line}; this run has no log"),
+        None => format!("rmule hit an internal fault at {file}:{line}; this run has no log"),
     }
 }
 
