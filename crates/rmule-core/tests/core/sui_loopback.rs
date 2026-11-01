@@ -218,15 +218,12 @@ async fn sui_download(dial: DialAdapter) {
     };
 
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
-        file: Ed2kFileLink {
-            name: Ed2kText::from_utf8("loopback.bin"),
-            size: FILE_BYTES as u64,
-            file_hash: summary.file_hash(),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        file: Ed2kFileLink::new(
+            Ed2kText::from_utf8("loopback.bin"),
+            FILE_BYTES as u64,
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_testkit::file_name("loopback.bin"),
         if_taken: rmule_core::NameTaken::Refuse,

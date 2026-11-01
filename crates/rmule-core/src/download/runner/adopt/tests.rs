@@ -30,15 +30,12 @@ use crate::{PeerWorkerEvent, VerificationAuthority};
 const LOW_ID: u32 = 0x0003_1A2B;
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("adopted.bin"),
-        size: 1_000,
-        file_hash: FileHash::from_bytes([0x5E; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("adopted.bin"),
+        1_000,
+        FileHash::from_bytes([0x5E; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 fn high(last: u8) -> PeerEndpoint {

@@ -313,14 +313,10 @@ impl Ed2kSession {
                     );
                     return;
                 }
-                // aMule `SendLocalSrcRequest` writes the large form, and asks
-                // only a large-file server, for an `IsLargeFile` file
-                // (`DownloadQueue.cpp:1083-1098`), which a `u32` may still hold.
-                let request = if !rmule_primitives::is_large_file(target.file_size()) {
-                    GetSourcesRequest::Normal { target }
-                } else if self.grants.large_files {
-                    GetSourcesRequest::Large { target }
-                } else {
+                // aMule asks only a large-file server about a large file
+                // (`DownloadQueue.cpp:1083-1098`).
+                let request = GetSourcesRequest::sized(target);
+                if matches!(request, GetSourcesRequest::Large { .. }) && !self.grants.large_files {
                     self.reject_command(
                         Ed2kCommandKind::RequestSources {
                             file_hash: target.file_hash(),
@@ -330,7 +326,7 @@ impl Ed2kSession {
                         },
                     );
                     return;
-                };
+                }
                 // Ask for obfuscation-aware sources (`0x23` → the server answers
                 // `0x44` with per-source crypt options + optional User Hash) only
                 // when the server advertises TCP obfuscation *and* rmule's crypt

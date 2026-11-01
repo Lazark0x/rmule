@@ -215,7 +215,7 @@ where
     async fn second_link(&mut self, file: &Ed2kFileLink) -> bool {
         let holder = self.wiring.store.live_downloads().ok().and_then(|rows| {
             rows.into_iter()
-                .find(|row| row.file_hash() == file.file_hash && row.file_size() == file.size)
+                .find(|row| row.file_hash() == file.file_hash && row.file_size() == file.size())
         });
         let Some(holder) = holder else {
             return false;

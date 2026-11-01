@@ -44,7 +44,7 @@ impl PeerTransferService for CreditingPeerTransfer {
         _ctx: rmule_peer::PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let bytes = self.bytes.clone();
@@ -107,15 +107,12 @@ async fn run_credited_download(store: Arc<DurableStore>, user_hash: UserHash) ->
         .serve_runtime(RuntimeServeRuntimeService::new())
         .build();
 
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("credited.bin"),
-        size: FILE_BYTES as u64,
-        file_hash: summary.file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("credited.bin"),
+        FILE_BYTES as u64,
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),

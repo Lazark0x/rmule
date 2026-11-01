@@ -58,7 +58,7 @@ impl PeerTransferService for StuckPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = PeerWorkerEvent::every_part(file.size);
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         tokio::spawn(async move {
@@ -86,7 +86,7 @@ impl PeerTransferService for DisconnectOnCuePeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = PeerWorkerEvent::every_part(file.size);
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let disconnect = self.disconnect.clone();
@@ -104,15 +104,12 @@ impl PeerTransferService for DisconnectOnCuePeerTransfer {
 }
 
 fn example_file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: 11,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        11,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// Await the next fact from `core`, bounded so a stalled fixture times out
@@ -300,7 +297,7 @@ impl PeerTransferService for CompletingPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = PeerWorkerEvent::every_part(file.size);
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let deliver = Arc::clone(&self.deliver);
@@ -356,11 +353,12 @@ async fn a_completed_download_forgets_its_still_connected_workers_roster_ip() {
 
     let summary = FileHashSummary::digest_bytes(SERVED);
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
-        file: Ed2kFileLink {
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            ..example_file()
-        },
+        file: Ed2kFileLink::new(
+            example_file().name,
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),
         name: rmule_primitives::SafeFileName::clean(
             "roster-complete.bin",
@@ -404,7 +402,7 @@ impl PeerTransferService for QueuedThenHangUpPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = PeerWorkerEvent::every_part(file.size);
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         tokio::spawn(async move {
@@ -520,10 +518,8 @@ async fn a_sole_source_parked_on_its_standing_keeps_the_download_waiting() {
     // The standing is published on the fleet turn that pooled the source.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let second = Ed2kFileLink {
-        file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-        ..example_file()
-    };
+    let mut second = example_file();
+    second.file_hash = FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]);
     core.send(start(second, "second.bin")).await.unwrap();
     let parked = loop {
         if let CoreEvent::Download(DownloadEvent::SourceWaitsOnStanding { download_id, .. }) =

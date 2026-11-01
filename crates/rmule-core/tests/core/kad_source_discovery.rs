@@ -49,7 +49,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         assert_eq!(
             peer, self.expected_peer,
             "the scheduler dials the Kad-fed source"
@@ -180,7 +180,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
     let kad_source = PeerSource::new(ClientId::from_u32(u32::from_le_bytes([10, 0, 0, 11])), 4663);
     let row = rmule_primitives::SearchResult::new(
         link.file_hash,
-        link.size,
+        link.size(),
         vec![link.name.clone()],
         vec![kad_source],
     )

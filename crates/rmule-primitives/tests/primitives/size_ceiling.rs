@@ -4,8 +4,8 @@
 //! bytes is refused the same way: it has no part to fetch.
 
 use rmule_primitives::{
-    ED2K_PART_SIZE, Ed2kLink, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, PartHash, PartHashList,
-    PartHashSet, PrimitiveError, SearchResult,
+    ED2K_PART_SIZE, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, PartHash,
+    PartHashList, PartHashSet, PrimitiveError, SearchResult,
 };
 
 const HASH: &str = "0123456789ABCDEF0123456789ABCDEF";
@@ -26,6 +26,30 @@ fn a_file_link_above_the_ceiling_is_refused_by_that_cause() {
             PrimitiveError::FileSizeAboveLimit { file_size: size }
         );
     }
+}
+
+/// A link built in code meets the same ceiling as a parsed one, so no size
+/// reaches a part map past it by a route that skips the parser.
+#[test]
+fn a_link_built_in_code_is_refused_like_a_parsed_one() {
+    let built = |size| {
+        Ed2kFileLink::new(
+            Ed2kText::from_utf8("big.bin"),
+            size,
+            FileHash::from_bytes([1; 16]),
+        )
+    };
+    assert_eq!(
+        built(MAX_ED2K_FILE_SIZE).unwrap().size(),
+        MAX_ED2K_FILE_SIZE
+    );
+    assert_eq!(
+        built(MAX_ED2K_FILE_SIZE + 1).unwrap_err(),
+        PrimitiveError::FileSizeAboveLimit {
+            file_size: MAX_ED2K_FILE_SIZE + 1
+        }
+    );
+    assert_eq!(built(0).unwrap_err(), PrimitiveError::FileSizeZero);
 }
 
 #[test]

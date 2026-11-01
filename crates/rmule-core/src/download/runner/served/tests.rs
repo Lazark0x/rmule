@@ -128,7 +128,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
         record.id(),
         ContentFacts {
             file_hash: link.file_hash,
-            file_size: link.size,
+            file_size: link.size(),
             link_part_hash_set: link.part_hash_set.clone(),
             resolved,
             aich_root: crate::download::state::AichRootAuthority::Rootless,
@@ -170,7 +170,7 @@ fn working(link: &Ed2kFileLink, record: &DurableDownloadRecord) -> (DownloadStat
     decisions.extend(state.on_worker_event(
         now,
         PeerEndpoint::V4(SOURCE),
-        PeerWorkerEvent::every_part(link.size),
+        PeerWorkerEvent::every_part(link.size()),
     ));
     decisions.extend(state.on_worker_event(
         now,
@@ -344,10 +344,7 @@ async fn the_offer_waits_for_a_whole_set_that_arrives_after_the_part() {
     let bytes = content();
     let with_set = rmule_testkit::file_link("served.bin", &bytes);
     let set = with_set.part_hash_set.as_ref().unwrap().hashes().to_vec();
-    let link = Ed2kFileLink {
-        part_hash_set: None,
-        ..with_set
-    };
+    let link = with_set.with_part_hash_set(None);
     let cell = ServedDownloads::default();
     let offers = cell.offer_changes();
     let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
@@ -377,10 +374,7 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
     let bytes = content();
     let with_set = rmule_testkit::file_link("served.bin", &bytes);
     let mut set = with_set.part_hash_set.as_ref().unwrap().hashes().to_vec();
-    let link = Ed2kFileLink {
-        part_hash_set: None,
-        ..with_set
-    };
+    let link = with_set.with_part_hash_set(None);
     let cell = ServedDownloads::default();
     let (runner, mut held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
     let (state, part) = working(&link, &record);

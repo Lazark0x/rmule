@@ -206,15 +206,13 @@ async fn download_resume_completes_hermetically_from_verified_parts() {
     let mut bytes = vec![0xA5_u8; part_size];
     bytes.extend_from_slice(b"resume-tail");
     let summary = FileHashSummary::digest_bytes(&bytes);
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("hermetic-resume.bin"),
-        size: bytes.len() as u64,
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("hermetic-resume.bin"),
+        bytes.len() as u64,
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned());
     let hashes = file.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let first = bytes[..part_size].to_vec();
 

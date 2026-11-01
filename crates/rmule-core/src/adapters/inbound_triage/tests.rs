@@ -426,15 +426,12 @@ async fn the_adopted_buddy_links_close_frees_the_buddy_slot() {
         AdoptionBrief {
             own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: true,
-            file: Ed2kFileLink {
-                name: Ed2kText::from_utf8("adopted"),
-                size: 4096,
-                file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-                part_hash_set: None,
-                aich_root: None,
-                ipv6_sources: Vec::new(),
-                sources: Default::default(),
-            },
+            file: Ed2kFileLink::new(
+                Ed2kText::from_utf8("adopted"),
+                4096,
+                FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+            )
+            .expect("a size eD2k addresses"),
         },
     );
 

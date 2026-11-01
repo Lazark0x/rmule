@@ -176,15 +176,12 @@ async fn a_banned_peer_is_never_dialed() {
     let mut transfer =
         RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT).with_ban_store(ban_store);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let mut worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
@@ -231,15 +228,12 @@ async fn an_ip_filtered_peer_is_never_dialed() {
     let mut transfer =
         RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT).with_ip_filter(ip_filter);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let mut worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
@@ -278,15 +272,12 @@ async fn a_peer_requiring_crypt_is_reported_crypt_incompatible_while_ours_is_off
     let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let brief = WorkerBrief {
         peer_crypt: PeerCrypt::new(
             CryptStance::new(true, true, true),
@@ -351,7 +342,7 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
             blocks: vec![crate::BlockPlan {
                 part_index: 0,
                 start: 0,
-                end: file.size,
+                end: file.size(),
             }],
             handout: 1,
         })

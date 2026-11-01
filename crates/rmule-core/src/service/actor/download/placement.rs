@@ -51,7 +51,7 @@ where
             .guard_in_place(dir)
             .map_err(CoreCommandRejectReason::DownloadDirRefused)?;
         let parts = self.directories.temp_dir.as_deref().unwrap_or(dir);
-        if file.size > OLD_MAX_FILE_SIZE && [dir, parts].into_iter().any(lies_on_fat) {
+        if file.size() > OLD_MAX_FILE_SIZE && [dir, parts].into_iter().any(lies_on_fat) {
             return Err(CoreCommandRejectReason::FileTooLargeForVolume);
         }
         let live = self
@@ -62,7 +62,7 @@ where
         // A row for this very file is the store's to refuse by its identity.
         let others: Vec<&DurableDownloadRecord> = live
             .iter()
-            .filter(|row| row.file_hash() != file.file_hash || row.file_size() != file.size)
+            .filter(|row| row.file_hash() != file.file_hash || row.file_size() != file.size())
             .collect();
         let rows = HeldNames::of(others.iter().map(|row| row.paths()));
         match if_taken {

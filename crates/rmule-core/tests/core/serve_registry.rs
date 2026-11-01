@@ -204,7 +204,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
@@ -311,15 +311,13 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
     let part = 9_728_000_usize;
     let bytes = vec![0xE7_u8; part * 2];
     let summary = FileHashSummary::digest_bytes(&bytes);
-    let link = Ed2kFileLink {
-        name: Ed2kText::from_utf8("two-parts.bin"),
-        size: bytes.len() as u64,
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let link = Ed2kFileLink::new(
+        Ed2kText::from_utf8("two-parts.bin"),
+        bytes.len() as u64,
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned());
     let expected = summary
         .part_hash_set()
         .expect("two-part file has a hash set")
@@ -452,7 +450,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
     registry
         .share(rmule_core::SharedFileEntry {
             file_hash: link.file_hash,
-            file_size: link.size,
+            file_size: link.size(),
             path: old_path.clone(),
             name: "had.bin".into(),
             source: ShareSource::DownloadDirectory,

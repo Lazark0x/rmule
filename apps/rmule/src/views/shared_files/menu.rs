@@ -52,11 +52,7 @@ pub(super) enum MenuAction {
 fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
     let row = state.shared.get(&file_hash)?;
     let name = rmule_primitives::Ed2kText::from_utf8(row.name()?);
-    Some(crate::views::ed2k_file_link(
-        &name,
-        row.file_size?,
-        file_hash,
-    ))
+    crate::views::ed2k_file_link(&name, row.file_size?, file_hash)
 }
 
 /// The files-table menu (spec §3.5). Copy is greyed until the file's name and

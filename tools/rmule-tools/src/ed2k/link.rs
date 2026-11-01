@@ -21,7 +21,7 @@ fn print_link_summary(link: &Ed2kLink) {
         Ed2kLink::File(file) => {
             println!("kind: file");
             println!("name: {}", file.name.to_display_string());
-            println!("size: {}", file.size);
+            println!("size: {}", file.size());
             println!("file_hash: {}", file.file_hash.to_hex_upper());
             let part_hashes = file.part_hash_set.as_ref().map_or(&[][..], |s| s.hashes());
             println!("part_hash_count: {}", part_hashes.len());

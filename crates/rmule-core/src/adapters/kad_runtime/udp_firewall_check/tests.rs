@@ -347,7 +347,7 @@ impl PeerTransferService for DisconnectingPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = PeerWorkerEvent::every_part(file.size);
+        let advertised = PeerWorkerEvent::every_part(file.size());
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);
         let disconnect = self.disconnect.clone();
@@ -408,17 +408,12 @@ async fn a_download_workers_connect_marks_the_roster_and_the_runs_end_forgets_it
     let roster = builder.shared_peer_roster();
     let mut core = builder.build();
 
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: 11,
-        file_hash: rmule_primitives::FileHash::from_bytes(
-            [0xAB; rmule_primitives::FileHash::BYTE_LEN],
-        ),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        11,
+        rmule_primitives::FileHash::from_bytes([0xAB; rmule_primitives::FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     core.send(CoreCommand::Download(DownloadCommand::StartDownload {
         file,
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 4661).unwrap()),

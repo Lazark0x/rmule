@@ -105,7 +105,7 @@ fn start(
     state: &UiState,
 ) -> Result<ViewOutcome, LinkRefusal> {
     if let Some(KnownFileMark::Downloading { name }) =
-        KnownFileMarks::of(state).get(file.file_hash, file.size)
+        KnownFileMarks::of(state).get(file.file_hash, file.size())
         && !names_sources(&file)
     {
         return Err(LinkRefusal::AlreadyDownloading { name: name.clone() });

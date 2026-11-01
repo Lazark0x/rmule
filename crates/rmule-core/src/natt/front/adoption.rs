@@ -61,15 +61,13 @@ fn served_bytes() -> Vec<u8> {
 
 fn link(bytes: &[u8]) -> Ed2kFileLink {
     let summary = FileHashSummary::digest_bytes(bytes);
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("adopted-over-a-tunnel.bin"),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("adopted-over-a-tunnel.bin"),
+        summary.file_size(),
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned())
 }
 
 /// The callback the claim runs beside — what the adopted worker comes back
@@ -165,7 +163,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
                         rmule_peer::BundledAsk::SetReqId => {
                             ServeOutput::Server(ServerCommand::AnswerFileStatus {
                                 file_hash,
-                                bitmap: WireStatus::whole(file.size),
+                                bitmap: WireStatus::whole(file.size()),
                             })
                         }
                         _ => continue,
@@ -179,7 +177,7 @@ async fn serve_one_file(admitted: AdmittedPeer, file: Ed2kFileLink, bytes: Vec<u
             ServeInput::Server(ServerEvent::FileIdSet { file_hash }) => {
                 ServeOutput::Server(ServerCommand::AnswerFileStatus {
                     file_hash,
-                    bitmap: WireStatus::whole(file.size),
+                    bitmap: WireStatus::whole(file.size()),
                 })
             }
             ServeInput::Server(ServerEvent::PartsRequested { file_hash, ranges }) => {
@@ -238,13 +236,13 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
             blocks: vec![crate::BlockPlan {
                 part_index: 0,
                 start: 0,
-                end: file.size,
+                end: file.size(),
             }],
             handout: 1,
         })
         .await
         .expect("the adopted worker takes commands");
-    let mut assembled = vec![0u8; usize::try_from(file.size).expect("a test-sized file")];
+    let mut assembled = vec![0u8; usize::try_from(file.size()).expect("a test-sized file")];
     let mut delivered = 0u64;
     loop {
         let event = tokio::time::timeout(Duration::from_secs(20), worker.next_event())
@@ -258,7 +256,11 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
                 delivered += bytes.len() as u64;
             }
             PeerWorkerEvent::BlocksWanted { drained: true, .. } => {
-                assert_eq!(delivered, file.size, "the worker delivered its whole range");
+                assert_eq!(
+                    delivered,
+                    file.size(),
+                    "the worker delivered its whole range"
+                );
                 return assembled;
             }
             PeerWorkerEvent::Disconnected | PeerWorkerEvent::SlotTimeout => {

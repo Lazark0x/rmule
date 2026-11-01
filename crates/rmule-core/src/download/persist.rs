@@ -116,7 +116,7 @@ pub(crate) fn hash_set_learned<S, P>(
     let Ok(Ed2kLink::File(mut link)) = Ed2kLink::parse(record.canonical_link()) else {
         return;
     };
-    let Ok(set) = PartHashSet::from_hashes(link.size, hashes.to_vec()) else {
+    let Ok(set) = PartHashSet::from_hashes(link.size(), hashes.to_vec()) else {
         return;
     };
     link.part_hash_set = Some(set);

@@ -140,7 +140,7 @@ fn assert_expected_link(case_name: &str, expected: &ExpectedLink, link: &Ed2kLin
                 expected.name.as_deref(),
                 "{case_name} name"
             );
-            assert_eq!(Some(file.size), expected.size, "{case_name} size");
+            assert_eq!(Some(file.size()), expected.size, "{case_name} size");
             assert_eq!(
                 Some(file.file_hash.to_hex_upper()),
                 expected.file_hash.clone(),

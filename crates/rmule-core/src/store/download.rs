@@ -551,7 +551,7 @@ pub(crate) fn write_undecodable_row(store: &Store, key: u64) {
 fn claimed_parts(file: &Ed2kFileLink) -> Vec<VerifiedPartRecord> {
     let hashes = match crate::hashing::proven_link_hash_set(file) {
         Some(set) => set.hashes().to_vec(),
-        None if file.size < ED2K_PART_SIZE => {
+        None if file.size() < ED2K_PART_SIZE => {
             vec![PartHash::from_bytes(*file.file_hash.as_bytes())]
         }
         None => Vec::new(),
@@ -561,7 +561,7 @@ fn claimed_parts(file: &Ed2kFileLink) -> Vec<VerifiedPartRecord> {
         .enumerate()
         .filter_map(|(index, part_hash)| {
             let offset = index as u64 * ED2K_PART_SIZE;
-            let len = file.size.checked_sub(offset)?.min(ED2K_PART_SIZE);
+            let len = file.size().checked_sub(offset)?.min(ED2K_PART_SIZE);
             (len > 0).then_some(VerifiedPartRecord {
                 part_index: u32::try_from(index).ok()?,
                 offset,

@@ -302,15 +302,12 @@ impl Harness {
             crate::adapters::AdoptionBrief {
                 own_status: rmule_peer::WireStatus::downloader_empty(0),
                 want_sources: true,
-                file: rmule_primitives::Ed2kFileLink {
-                    file_hash: FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
-                    size: 9_728_000,
-                    name: rmule_primitives::Ed2kText::from_utf8("claimed"),
-                    part_hash_set: None,
-                    aich_root: None,
-                    ipv6_sources: Vec::new(),
-                    sources: Default::default(),
-                },
+                file: rmule_primitives::Ed2kFileLink::new(
+                    rmule_primitives::Ed2kText::from_utf8("claimed"),
+                    9_728_000,
+                    FileHash::from_bytes([0x22; FileHash::BYTE_LEN]),
+                )
+                .expect("a size eD2k addresses"),
             },
             false,
         );

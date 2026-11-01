@@ -67,7 +67,7 @@ impl PeerTransferService for DialRecorder {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let _ = self.dials.send(peer);
         let (command_tx, mut command_rx) = mpsc::channel(8);
         let (event_tx, event_rx) = mpsc::channel(8);

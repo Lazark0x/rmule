@@ -47,15 +47,14 @@ pub(crate) fn write_hashed(dir: &Path, bytes: u64) -> Result<SyntheticFile> {
     let handle = std::fs::File::open(&path).with_context(|| format!("open {}", path.display()))?;
     let summary = rmule_primitives::FileHashSummary::digest_reader(handle)
         .with_context(|| format!("hash {}", path.display()))?;
-    let link = rmule_primitives::Ed2kLink::File(rmule_primitives::Ed2kFileLink {
-        name: rmule_primitives::Ed2kText::from_utf8("shared.bin"),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    });
+    let link = rmule_primitives::Ed2kLink::File(
+        rmule_primitives::Ed2kFileLink::new(
+            rmule_primitives::Ed2kText::from_utf8("shared.bin"),
+            summary.file_size(),
+            summary.file_hash(),
+        )?
+        .with_part_hash_set(summary.part_hash_set().cloned()),
+    );
     Ok(SyntheticFile {
         path,
         link: link.to_string(),

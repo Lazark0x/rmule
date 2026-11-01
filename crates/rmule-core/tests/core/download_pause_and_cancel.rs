@@ -504,7 +504,7 @@ impl PeerTransferService for HoldingPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();
@@ -551,7 +551,7 @@ impl PeerTransferService for PartialSuccessThenHold {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let hashes = self.part_hashes.clone();

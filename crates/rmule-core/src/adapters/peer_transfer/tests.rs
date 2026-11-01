@@ -161,15 +161,12 @@ fn proving_with(key: Arc<SecureIdentKey>) -> RuntimePeerTransferService {
 
 /// A file to dial for; its content is never reached.
 fn a_file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// ADR-0058 responder **enactment**, the obfuscated leg (the two-reading rule's `Obfuscated`
@@ -323,15 +320,12 @@ async fn dialed_worker_reports_the_peer_user_hash_before_connected() {
 
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let mut worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await

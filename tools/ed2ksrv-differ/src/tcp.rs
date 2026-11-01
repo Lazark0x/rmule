@@ -313,7 +313,8 @@ fn get_sources(report: &mut Report) {
         (
             "getsources/v2-32bit-size",
             GetSourcesRequest::Normal {
-                target: SourceLookupTarget::new(file_hash(0x32), 4_096),
+                file_hash: file_hash(0x32),
+                file_size: 4_096,
             },
             Some(4_096u64),
         ),
@@ -332,10 +333,9 @@ fn get_sources(report: &mut Report) {
         let packet = request.encode_packet();
         let payload = packet.payload().to_vec();
         let hash = match request {
-            GetSourcesRequest::Legacy { file_hash } => file_hash,
-            GetSourcesRequest::Normal { target } | GetSourcesRequest::Large { target } => {
-                target.file_hash()
-            }
+            GetSourcesRequest::Legacy { file_hash }
+            | GetSourcesRequest::Normal { file_hash, .. } => file_hash,
+            GetSourcesRequest::Large { target } => target.file_hash(),
         };
 
         let ours = read([

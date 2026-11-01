@@ -21,7 +21,8 @@ fn get_sources_decodes_legacy_normal_and_large_wire_forms() {
     assert_eq!(
         GetSourcesRequest::decode_packet(&normal).unwrap(),
         GetSourcesRequest::Normal {
-            target: SourceLookupTarget::new(crate::fixture::hash(0x22), 1234),
+            file_hash: crate::fixture::hash(0x22),
+            file_size: 1234,
         }
     );
 
@@ -40,7 +41,8 @@ fn get_sources_decodes_legacy_normal_and_large_wire_forms() {
 #[test]
 fn get_sources_encodes_normal_and_large_requests() {
     let normal = GetSourcesRequest::Normal {
-        target: SourceLookupTarget::new(crate::fixture::hash(0x44), 42),
+        file_hash: crate::fixture::hash(0x44),
+        file_size: 42,
     };
     assert_eq!(normal.encode_packet().payload().len(), 20);
 

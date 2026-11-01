@@ -173,7 +173,7 @@ where
     // persisted before sets were proven on arrival may not be.
     let resolved = if link_hash_set.is_none()
         && !persisted_provisional_hashes.is_empty()
-        && hash_set_proves_file(file.file_hash, file.size, &persisted_provisional_hashes)
+        && hash_set_proves_file(file.file_hash, file.size(), &persisted_provisional_hashes)
     {
         ResolvedHashSet {
             authority: VerificationAuthority::PeerHashSet,
@@ -236,7 +236,7 @@ where
     let _global_source_guard = register(
         &runner.rt.global_source_registry,
         file.file_hash,
-        file.size,
+        file.size(),
         global_sources_tx,
         source_count.clone(),
     );
@@ -244,7 +244,7 @@ where
     let _kad_source_guard = register(
         &runner.rt.kad_source_registry,
         file.file_hash,
-        file.size,
+        file.size(),
         kad_sources_tx,
         source_count.clone(),
     );
@@ -274,7 +274,7 @@ where
         download_id,
         ContentFacts {
             file_hash: file.file_hash,
-            file_size: file.size,
+            file_size: file.size(),
             link_part_hash_set: link_hash_set,
             resolved,
             aich_root: AichRootAuthority::at_start(file.aich_root, kad_aich_root),

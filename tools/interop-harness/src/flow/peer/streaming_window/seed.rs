@@ -149,15 +149,14 @@ pub(crate) fn write_stream_file(dir: &Path, size: u64, seed: u64) -> Result<Stre
     let file = File::open(&path).with_context(|| format!("open {}", path.display()))?;
     let summary =
         FileHashSummary::digest_reader(file).with_context(|| format!("hash {}", path.display()))?;
-    let link = Ed2kLink::File(Ed2kFileLink {
-        name: Ed2kText::from_utf8(STREAM_FILE_NAME),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    })
+    let link = Ed2kLink::File(
+        Ed2kFileLink::new(
+            Ed2kText::from_utf8(STREAM_FILE_NAME),
+            summary.file_size(),
+            summary.file_hash(),
+        )?
+        .with_part_hash_set(summary.part_hash_set().cloned()),
+    )
     .to_string();
     let link_path = dir.join("stream.ed2k.txt");
     fs::write(&link_path, &link).with_context(|| format!("write {}", link_path.display()))?;

@@ -31,15 +31,12 @@ mod secure_ident;
 /// A one-part file of 4096 bytes no peer serves: a download target whose
 /// probe the peer's name answer completes.
 fn dummy_file(seed: u8) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHashSummary::digest_bytes(&[seed; 4096]).file_hash(),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A connection rmule *dialed* (to download) also serves the peer's pull on
@@ -102,15 +99,8 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
     // A dummy download target: we never assign a part, so this proves the
     // *serve* direction. Download coexistence is covered by download_loopback.
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(Ed2kText::from_utf8("dummy"), 4096, file_hash)
+        .expect("a size eD2k addresses");
     let _worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)
         .await
@@ -270,15 +260,12 @@ async fn a_side_frame_read_on_a_dialed_link_reaches_the_node_wide_service() {
     cells.kad_pump.install_for_good(pump_tx);
     let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
     transfer.adopt_cells(&cells);
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("dummy"),
-        size: 4096,
-        file_hash: FileHashSummary::digest_bytes(&[0xAB; 4096]).file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("dummy"),
+        4096,
+        FileHashSummary::digest_bytes(&[0xAB; 4096]).file_hash(),
+    )
+    .expect("a size eD2k addresses");
     let peer = PeerEndpoint::V4(Ipv4Endpoint::new(*bound.ip(), bound.port()));
     let _worker = transfer
         .start_peer_worker(peer, dialed_serve_ctx(), file)

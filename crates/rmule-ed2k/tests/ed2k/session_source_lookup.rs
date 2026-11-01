@@ -74,10 +74,9 @@ fn normal_request_sources_after_login_writes_get_sources() {
         0x19,
         "no crypt stance → plain OP_GETSOURCES"
     );
-    assert!(matches!(
-        GetSourcesRequest::decode_packet(&packet).unwrap(),
-        GetSourcesRequest::Normal { target } if target == expected
-    ));
+    let request = GetSourcesRequest::decode_packet(&packet).unwrap();
+    assert!(matches!(request, GetSourcesRequest::Normal { .. }));
+    assert_eq!(request.target(), Some(expected));
 }
 
 #[test]

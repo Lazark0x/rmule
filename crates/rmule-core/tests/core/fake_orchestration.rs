@@ -272,7 +272,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         assert_eq!(peer, self.expected_peer);
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
@@ -320,7 +320,7 @@ impl PeerTransferService for FirstPartThenBlocked {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let part_hashes = self.part_hashes.clone();
@@ -415,7 +415,11 @@ impl PeerTransferService for CapturePeerCrypt {
         // The runner always dials through `start_download_worker`; reaching
         // the plaintext base means the target was dropped en route.
         *self.captured.lock() = Some(None);
-        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
+        Ok(spawn_delivering_worker(
+            peer,
+            file.size(),
+            self.part.clone(),
+        ))
     }
 
     async fn start_download_worker(
@@ -426,7 +430,11 @@ impl PeerTransferService for CapturePeerCrypt {
         brief: rmule_core::WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
         *self.captured.lock() = Some(Some(brief.peer_crypt));
-        Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
+        Ok(spawn_delivering_worker(
+            peer,
+            file.size(),
+            self.part.clone(),
+        ))
     }
 }
 

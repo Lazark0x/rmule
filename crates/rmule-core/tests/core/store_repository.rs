@@ -39,15 +39,12 @@ fn download_name_and_exact_size_survive_a_store_reopen() {
     // A real-world ED2K name: spaces plus a Windows-1252 byte that is not
     // valid UTF-8 (ADR-0019), and a size no part count could approximate.
     let name = Ed2kText::from_bytes(b"caf\xE9 clip.avi".to_vec());
-    let file = Ed2kFileLink {
-        name: name.clone(),
-        size: 9_663_676_416,
-        file_hash: FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        name.clone(),
+        9_663_676_416,
+        FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
 
     let repo = repository(store_path);
     let created = repo
@@ -63,9 +60,9 @@ fn download_name_and_exact_size_survive_a_store_reopen() {
     let repo = repository(store_path);
     let loaded = repo.load_download(created.id()).unwrap();
     assert_eq!(loaded.metadata().name, name);
-    assert_eq!(loaded.metadata().size, file.size);
+    assert_eq!(loaded.metadata().size, file.size());
     assert_eq!(loaded.metadata().origin, DownloadMetadataOrigin::Link);
-    assert_eq!(loaded.file_size(), file.size);
+    assert_eq!(loaded.file_size(), file.size());
     // The restart projection is a second read — it must carry the same facts.
     let recovered = repo.live_downloads().unwrap();
     assert_eq!(

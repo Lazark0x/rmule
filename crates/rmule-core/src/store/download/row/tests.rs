@@ -8,15 +8,12 @@ use crate::DownloadPaths;
 use crate::store::assert_pinned;
 
 fn row() -> DownloadRow {
-    let file = Ed2kFileLink {
-        name: Ed2kText::from_utf8("a.bin"),
-        size: 10,
-        file_hash: FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = Ed2kFileLink::new(
+        Ed2kText::from_utf8("a.bin"),
+        10,
+        FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let paths = DownloadPaths::new("/dl/a.bin".into(), "/dl/a.bin.part".into());
     DownloadRow::new(&file, None, &paths, None, None)
 }

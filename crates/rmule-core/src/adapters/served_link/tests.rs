@@ -30,15 +30,12 @@ use super::*;
 mod overtaken;
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("partial.bin"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("partial.bin"),
+        4096,
+        FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// The asker's side of the handshake: its hello names `listen_port`.
@@ -365,10 +362,8 @@ async fn the_serve_side_letting_go_leaves_the_link_to_the_download_riding_it() {
 async fn a_second_download_waits_on_the_busy_link_and_takes_it_when_the_first_lets_go() {
     let mut linked = Linked::up().await;
     let first_file = file();
-    let second_file = Ed2kFileLink {
-        file_hash: FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]),
-        ..file()
-    };
+    let mut second_file = file();
+    second_file.file_hash = FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]);
     let mut first = linked.download(&first_file).await;
     linked.rode_the_link(first_file.file_hash).await;
 

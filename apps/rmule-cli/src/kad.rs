@@ -94,7 +94,7 @@ pub fn format_candidates(candidates: &[KadSourceCandidate]) -> Vec<String> {
 /// Parse an `--search` ed2k *file* link into a [`SourceLookupTarget`].
 pub fn parse_search_target(link: &str) -> Result<SourceLookupTarget> {
     match Ed2kLink::parse(link).with_context(|| format!("parse ed2k link {link}"))? {
-        Ed2kLink::File(file) => Ok(SourceLookupTarget::new(file.file_hash, file.size)),
+        Ed2kLink::File(file) => Ok(SourceLookupTarget::new(file.file_hash, file.size())),
         _ => bail!("--search must be an ed2k *file* link"),
     }
 }

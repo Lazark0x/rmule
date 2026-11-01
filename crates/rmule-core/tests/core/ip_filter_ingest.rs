@@ -86,7 +86,7 @@ impl PeerTransferService for ScriptedPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         assert_eq!(
             peer, self.expected_peer,
             "only the admitted source is ever dialed"

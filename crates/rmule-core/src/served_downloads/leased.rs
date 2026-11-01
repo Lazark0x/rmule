@@ -38,15 +38,12 @@ pub(crate) fn leased(file_hash: FileHash, final_path: PathBuf) -> Leased {
         .map(|part| PartHash::from_bytes([part; 16]))
         .collect();
     let store = rmule_testkit::memory_store();
-    let link = Ed2kFileLink {
-        name: Ed2kText::from_utf8(SharedFileEntry::name_of(&final_path)),
-        size: SIZE,
+    let link = Ed2kFileLink::new(
+        Ed2kText::from_utf8(SharedFileEntry::name_of(&final_path)),
+        SIZE,
         file_hash,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    )
+    .expect("a size eD2k addresses");
     let paths = DownloadPaths::from_final_path(final_path);
     let record = DurableDownloadRepository::new(store.clone())
         .create_download(&link, None, &paths, None)

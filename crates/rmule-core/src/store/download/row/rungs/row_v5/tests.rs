@@ -15,18 +15,15 @@ use crate::store::{DURABLE_STORE_FILE, DurableStore, open_durable_store};
 use crate::{DownloadId, DownloadLifecycle, DownloadPaths};
 
 fn row_v5(part_path: &str) -> DownloadRowV5 {
-    let file = rmule_primitives::Ed2kFileLink {
-        name: Ed2kText::from_utf8("a.bin"),
-        size: 10,
-        file_hash: FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = rmule_primitives::Ed2kFileLink::new(
+        Ed2kText::from_utf8("a.bin"),
+        10,
+        FileHash::from_bytes([0xA1; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     DownloadRowV5 {
         file_hash: file.file_hash,
-        file_size: file.size,
+        file_size: file.size(),
         canonical_link: Ed2kLink::File(file.clone()).to_string(),
         source_hint: None,
         final_path: "/dl/a.bin".into(),

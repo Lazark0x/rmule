@@ -79,7 +79,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
     let out = tempfile::tempdir().unwrap();
     let bytes = vec![0x5A_u8; 4096];
     let file = rmule_testkit::file_link("walked-buddy.bin", &bytes);
-    let key = KadSourceLookupRequest::new(SourceLookupTarget::new(file.file_hash, file.size))
+    let key = KadSourceLookupRequest::new(SourceLookupTarget::new(file.file_hash, file.size()))
         .kad_target();
 
     // The storer sits on the file's key, the buddy on its buddy ID.
@@ -114,7 +114,7 @@ async fn a_buddy_named_by_id_alone_is_walked_to_and_sent_the_0x52() {
         KadPublishedSource {
             source_type: Some(3),
             tcp_port: Some(4662),
-            file_size: Some(file.size),
+            file_size: Some(file.size()),
             encryption: Some(0x00),
             buddy: Some(KadBuddyContact {
                 buddy_id: BUDDY_ID,

@@ -124,15 +124,8 @@ fn request_for<S, P>(
 ) -> DownloadRequest {
     DownloadRequest {
         download_id: crate::DownloadId::from_u64(download_id),
-        file: rmule_primitives::Ed2kFileLink {
-            name: Ed2kText::from_utf8("span"),
-            size: 4,
-            file_hash,
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        file: rmule_primitives::Ed2kFileLink::new(Ed2kText::from_utf8("span"), 4, file_hash)
+            .expect("a size eD2k addresses"),
         identity: ClientIdentity::new(
             UserHash::from_bytes([
                 0x10, 0x32, 0x54, 0x76, 0x98, 0xBA, 0xDC, 0xFE, 0x01, 0x23, 0x45, 0x67, 0x89, 0xAB,

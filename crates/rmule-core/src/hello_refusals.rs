@@ -103,15 +103,12 @@ mod tests {
         cells.hello_refusals = refusals;
         let mut transfer = RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT);
         transfer.adopt_cells(&cells);
-        let file = Ed2kFileLink {
-            name: Ed2kText::from_utf8("wanted"),
-            size: 4096,
-            file_hash: FileHash::from_bytes([0x3C; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let file = Ed2kFileLink::new(
+            Ed2kText::from_utf8("wanted"),
+            4096,
+            FileHash::from_bytes([0x3C; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses");
         let peer = PeerEndpoint::V4(Ipv4Endpoint::new(std::net::Ipv4Addr::LOCALHOST, port));
         let mut worker = transfer
             .start_peer_worker(peer, dialed_serve_ctx(), file)

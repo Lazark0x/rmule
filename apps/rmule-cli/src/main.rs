@@ -568,7 +568,7 @@ async fn drive_add(
     }
     let serverless = server.is_none();
     let mut stop = StopRequest::install().context("install the stop handlers")?;
-    let size = file.size;
+    let size = file.size();
     let deadline = async {
         match timeout {
             Some(seconds) => tokio::time::sleep(std::time::Duration::from_secs(seconds)).await,

@@ -66,7 +66,7 @@ impl PeerTransferService for Gated {
         tokio::spawn(async move {
             let mut gate = this.gate.clone();
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
-            let _ = event_tx.send(rmule_testkit::every_part(file.size)).await;
+            let _ = event_tx.send(rmule_testkit::every_part(file.size())).await;
             let mut held = Vec::new();
             let mut last_handout = 0;
             loop {

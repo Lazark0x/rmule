@@ -206,10 +206,7 @@ async fn a_run_start_writes_the_set_a_peer_gave_an_earlier_run() {
     let bytes = vec![0x6D; rmule_primitives::ED2K_PART_SIZE as usize + 1];
     let proven = rmule_testkit::file_link("set.bin", &bytes);
     let hashes = proven.part_hash_set.as_ref().unwrap().hashes().to_vec();
-    let bare = rmule_primitives::Ed2kFileLink {
-        part_hash_set: None,
-        ..proven.clone()
-    };
+    let bare = proven.clone().with_part_hash_set(None);
     let paths = DownloadPaths::from_final_path(dir.path().join("set.bin"));
     let store = &runner.rt.store;
     let id = store

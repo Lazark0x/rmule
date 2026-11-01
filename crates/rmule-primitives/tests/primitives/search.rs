@@ -172,7 +172,7 @@ fn search_result_to_file_link_uses_primary_name_and_no_hash_set() {
     let link = result.to_file_link();
 
     assert_eq!(link.name.to_display_string(), "first.bin");
-    assert_eq!(link.size, 1024);
+    assert_eq!(link.size(), 1024);
     assert_eq!(link.file_hash, hash(0xaa));
     assert!(link.part_hash_set.is_none());
     assert!(link.aich_root.is_none());

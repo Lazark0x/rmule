@@ -50,22 +50,15 @@ use crate::words::absent;
 use crate::words::units::{self, rate};
 
 /// The canonical eD2k link for a file, through [`rmule_primitives::Ed2kLink`]'s
-/// `Display`, so names with spaces or `|` come out escaped.
+/// `Display`, so names with spaces or `|` come out escaped. `None` for a size
+/// no link can name: a stored share past eD2k's limit.
 pub(crate) fn ed2k_file_link(
     name: &rmule_primitives::Ed2kText,
     size: u64,
     file_hash: rmule_primitives::FileHash,
-) -> String {
-    rmule_primitives::Ed2kLink::File(rmule_primitives::Ed2kFileLink {
-        name: name.clone(),
-        size,
-        file_hash,
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    })
-    .to_string()
+) -> Option<String> {
+    let link = rmule_primitives::Ed2kFileLink::new(name.clone(), size, file_hash).ok()?;
+    Some(rmule_primitives::Ed2kLink::File(link).to_string())
 }
 
 /// The one way anything in this crate asks core to connect to a server

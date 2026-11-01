@@ -253,15 +253,12 @@ impl crate::adapters::SourceLookupService for SilentExcept {
 fn start_download(seed: u8) -> CoreCommand {
     let file_hash = FileHash::from_bytes([seed; FileHash::BYTE_LEN]);
     CoreCommand::Download(crate::DownloadCommand::StartDownload {
-        file: rmule_primitives::Ed2kFileLink {
-            name: Ed2kText::from_utf8("lifecycle.bin"),
-            size: 1024,
+        file: rmule_primitives::Ed2kFileLink::new(
+            Ed2kText::from_utf8("lifecycle.bin"),
+            1024,
             file_hash,
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        )
+        .expect("a size eD2k addresses"),
         source_hint: Some(ServerEndpoint::new("127.0.0.1", 1).expect("server endpoint")),
         name: rmule_primitives::SafeFileName::clean(&format!("lifecycle-{seed}.bin"), &file_hash),
         if_taken: crate::NameTaken::Refuse,
@@ -467,15 +464,12 @@ async fn an_injected_dial_adapter_meets_the_node_s_ban_store() {
                 bound.port(),
             )),
             crate::adapters::tests::dialed_serve_ctx(),
-            rmule_primitives::Ed2kFileLink {
-                name: rmule_primitives::Ed2kText::from_utf8("dummy"),
-                size: 4096,
-                file_hash: FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
-                part_hash_set: None,
-                aich_root: None,
-                ipv6_sources: Vec::new(),
-                sources: Default::default(),
-            },
+            rmule_primitives::Ed2kFileLink::new(
+                rmule_primitives::Ed2kText::from_utf8("dummy"),
+                4096,
+                FileHash::from_bytes([0xAB; FileHash::BYTE_LEN]),
+            )
+            .expect("a size eD2k addresses"),
         )
         .await
         .unwrap();

@@ -47,15 +47,12 @@ async fn adopted_callback(
         AdoptionBrief {
             own_status: rmule_peer::WireStatus::downloader_empty(0),
             want_sources: false,
-            file: Ed2kFileLink {
-                name: Ed2kText::from_utf8("called back"),
-                size: 4096,
-                file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-                part_hash_set: None,
-                aich_root: None,
-                ipv6_sources: Vec::new(),
-                sources: Default::default(),
-            },
+            file: Ed2kFileLink::new(
+                Ed2kText::from_utf8("called back"),
+                4096,
+                FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+            )
+            .expect("a size eD2k addresses"),
         },
     );
     // Where the adopted link's serve half goes while rmule serves.

@@ -114,15 +114,12 @@ mod buddy_hash_spelling {
     }
 
     pub(super) fn file() -> Ed2kFileLink {
-        Ed2kFileLink {
-            name: Ed2kText::from_utf8("issue-433"),
-            size: 1_000,
-            file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        }
+        Ed2kFileLink::new(
+            Ed2kText::from_utf8("issue-433"),
+            1_000,
+            FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses")
     }
 
     /// A one-part, callback-capable download state — the brain half of the
@@ -512,15 +509,12 @@ mod queued_roster {
     }
 
     pub(super) fn file() -> Ed2kFileLink {
-        Ed2kFileLink {
-            name: Ed2kText::from_utf8("queued-roster"),
-            size: 1_000,
-            file_hash: FileHash::from_bytes([0xCE; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        }
+        Ed2kFileLink::new(
+            Ed2kText::from_utf8("queued-roster"),
+            1_000,
+            FileHash::from_bytes([0xCE; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses")
     }
 
     /// A one-part, one-slot download dialing from [`dual_stack`].

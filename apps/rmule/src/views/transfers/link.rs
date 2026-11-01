@@ -38,7 +38,7 @@ pub(super) fn copy_link_reason(row: Option<&DownloadRow>) -> Option<&'static str
 /// every row menu uses.
 pub(super) fn copy_link_for(row: Option<&DownloadRow>) -> Option<String> {
     let (name, size, file_hash) = copy_link_facts(row)?;
-    Some(crate::views::ed2k_file_link(name, size, file_hash))
+    crate::views::ed2k_file_link(name, size, file_hash)
 }
 
 #[cfg(test)]

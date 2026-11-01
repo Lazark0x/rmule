@@ -153,10 +153,9 @@ impl DownloadRow {
         let metadata = DownloadMetadata::from_link(file);
         // A link set that is not the file's own is never recorded: the
         // row's authority and its canonical link agree with the run's.
-        let file = Ed2kFileLink {
-            part_hash_set: crate::hashing::proven_link_hash_set(file),
-            ..file.clone()
-        };
+        let file = file
+            .clone()
+            .with_part_hash_set(crate::hashing::proven_link_hash_set(file));
         Self {
             file_hash: file.file_hash,
             file_size: metadata.size,

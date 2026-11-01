@@ -18,15 +18,14 @@ pub(crate) fn hash_file(path: &Path) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("path has no valid UTF-8 file name")?;
-    let link = Ed2kLink::File(Ed2kFileLink {
-        name: Ed2kText::from_utf8(file_name),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    });
+    let link = Ed2kLink::File(
+        Ed2kFileLink::new(
+            Ed2kText::from_utf8(file_name),
+            summary.file_size(),
+            summary.file_hash(),
+        )?
+        .with_part_hash_set(summary.part_hash_set().cloned()),
+    );
 
     println!("size: {}", summary.file_size());
     println!("file_hash: {}", summary.file_hash().to_hex_upper());

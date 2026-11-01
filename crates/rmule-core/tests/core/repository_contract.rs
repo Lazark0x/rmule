@@ -223,15 +223,12 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
         PartHash::from_bytes([0x11; PartHash::BYTE_LEN]),
         PartHash::from_bytes([0x22; PartHash::BYTE_LEN]),
     ];
-    let hashless = Ed2kFileLink {
-        name: Ed2kText::from_utf8("provisional.bin"),
-        size: ED2K_PART_SIZE + 4,
-        file_hash: FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let hashless = Ed2kFileLink::new(
+        Ed2kText::from_utf8("provisional.bin"),
+        ED2K_PART_SIZE + 4,
+        FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let prov_paths = DownloadPaths::from_final_path(dir.join("provisional.bin"));
     let prov_id = repo
         .create_download(
@@ -250,15 +247,12 @@ async fn hash_authority_resolves_link_provisional_and_none<R: DownloadRepository
     );
 
     // No authority: neither a link `p=` set nor recorded peer hashes.
-    let hashless_small = Ed2kFileLink {
-        name: Ed2kText::from_utf8("none.bin"),
-        size: 128,
-        file_hash: FileHash::from_bytes([0x44; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let hashless_small = Ed2kFileLink::new(
+        Ed2kText::from_utf8("none.bin"),
+        128,
+        FileHash::from_bytes([0x44; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses");
     let none_paths = DownloadPaths::from_final_path(dir.join("none.bin"));
     let none_id = repo
         .create_download(

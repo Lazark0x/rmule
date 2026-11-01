@@ -43,7 +43,7 @@ pub(super) async fn copy_into_place<S, P>(
     tell(runner, download_id, &destination, CompletionStep::Copying).await;
     let copy = copy_path(&destination);
     remove_quietly(copy.clone()).await;
-    let copied = copy_answering_stop(runner, download_id, part_path, &copy, file.size).await?;
+    let copied = copy_answering_stop(runner, download_id, part_path, &copy, file.size()).await?;
     if copied != file.file_hash {
         remove_quietly(copy).await;
         tracing::warn!("the bytes copied do not hash to the file; repairing");

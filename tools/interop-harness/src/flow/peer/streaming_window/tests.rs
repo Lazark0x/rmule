@@ -16,7 +16,7 @@ fn the_seeds_ride_the_link_as_sources_rmule_reads() {
     let Ed2kLink::File(file) = Ed2kLink::parse(&sourced).unwrap() else {
         panic!("not a file link: {sourced}");
     };
-    assert_eq!(file.size, 116_736_000);
+    assert_eq!(file.size(), 116_736_000);
     assert_eq!(file.sources.peers().len(), 2);
 }
 
@@ -41,6 +41,9 @@ fn a_link_without_part_hashes_carries_no_hash_set() {
     let Ed2kLink::File(file) = Ed2kLink::parse(&bare).unwrap() else {
         panic!("not a file link: {bare}");
     };
-    assert_eq!((file.size, file.file_hash), (whole.size, whole.file_hash));
+    assert_eq!(
+        (file.size(), file.file_hash),
+        (whole.size(), whole.file_hash)
+    );
     assert!(file.part_hash_set.is_none(), "{bare}");
 }

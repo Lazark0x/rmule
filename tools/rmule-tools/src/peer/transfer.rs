@@ -192,7 +192,7 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
 
     let first_part = (
         0,
-        std::cmp::min(file.size, rmule_primitives::ED2K_PART_SIZE),
+        std::cmp::min(file.size(), rmule_primitives::ED2K_PART_SIZE),
     );
     let mut asks = Asks::new(if args.ranges.is_empty() {
         vec![first_part]
@@ -238,8 +238,8 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                             // MultiPacket, else the same standalone packets.
                             let _ = conn.send(PeerCommand::Requester(RequesterCommand::RequestFile {
                                 file_hash: file.file_hash,
-                                file_size: file.size,
-                                own_status: WireStatus::downloader_empty(file.size),
+                                file_size: file.size(),
+                                own_status: WireStatus::downloader_empty(file.size()),
                                 want_sources: true,
                                 want_aich_root: false,
                             })).await;
@@ -248,8 +248,8 @@ pub(crate) async fn transfer_capture(args: PeerTransferCaptureArgs) -> Result<()
                             let _ = conn
                                 .send(PeerCommand::Requester(RequesterCommand::ProbeFile {
                                     file_hash: file.file_hash,
-                                    file_size: file.size,
-                                    own_status: WireStatus::downloader_empty(file.size),
+                                    file_size: file.size(),
+                                    own_status: WireStatus::downloader_empty(file.size()),
                                 }))
                                 .await;
                         }
@@ -324,7 +324,7 @@ async fn send_next(
     let _ = conn
         .send(PeerCommand::Requester(RequesterCommand::RequestParts {
             file_hash: file.file_hash,
-            file_size: file.size,
+            file_size: file.size(),
             ranges,
         }))
         .await;

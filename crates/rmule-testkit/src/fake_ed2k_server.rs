@@ -718,9 +718,9 @@ where
 
 fn requested_hash(request: &GetSourcesRequest) -> FileHash {
     match request {
-        GetSourcesRequest::Legacy { file_hash } => *file_hash,
-        GetSourcesRequest::Normal { target } | GetSourcesRequest::Large { target } => {
-            target.file_hash()
+        GetSourcesRequest::Legacy { file_hash } | GetSourcesRequest::Normal { file_hash, .. } => {
+            *file_hash
         }
+        GetSourcesRequest::Large { target } => target.file_hash(),
     }
 }

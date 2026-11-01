@@ -56,7 +56,7 @@ pub(crate) fn seed_v1(
         &key,
         &DownloadRowV1 {
             file_hash: file.file_hash,
-            file_size: file.size,
+            file_size: file.size(),
             canonical_link: Ed2kLink::File(file.clone()).to_string(),
             server: server.clone(),
             final_path: paths.final_path().to_string_lossy().into_owned(),

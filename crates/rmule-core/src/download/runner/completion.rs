@@ -216,7 +216,7 @@ async fn check<S, P>(
     part_path: &Path,
 ) -> Result<(), DownloadFailure> {
     let hashed = runner
-        .until_stop(ContentFileStore::hash_file(part_path, file.size))
+        .until_stop(ContentFileStore::hash_file(part_path, file.size()))
         .await?;
     match hashed {
         Ok(hash) if hash == file.file_hash => Ok(()),
@@ -243,7 +243,7 @@ async fn own_file_at<S, P>(
         })
         .await
     };
-    if size != Some(file.size) {
+    if size != Some(file.size()) {
         return Ok(false);
     }
     hashes_to(runner, path, file).await
@@ -257,7 +257,7 @@ async fn hashes_to<S, P>(
     file: &Ed2kFileLink,
 ) -> Result<bool, DownloadFailure> {
     let hashed = runner
-        .until_stop(ContentFileStore::hash_file(path, file.size))
+        .until_stop(ContentFileStore::hash_file(path, file.size()))
         .await?;
     Ok(hashed.is_ok_and(|hash| hash == file.file_hash))
 }

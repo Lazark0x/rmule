@@ -256,7 +256,7 @@ async fn work_the_link(
     if opening != WorkerOpening::Granted {
         let connect_request = PeerCommand::Requester(RequesterCommand::RequestFile {
             file_hash: file.file_hash,
-            file_size: file.size,
+            file_size: file.size(),
             want_sources,
             want_aich_root: false,
             own_status,
@@ -337,7 +337,7 @@ async fn work_the_link(
                         PeerWorkerCommand::AskSlot => RequesterCommand::AskSlot { file_hash },
                         PeerWorkerCommand::TakeGrant => RequesterCommand::TakeOfferedSlot {
                             file_hash,
-                            file_size: file.size,
+                            file_size: file.size(),
                         },
                         _ => RequesterCommand::RequestHashSet { file_hash },
                     };
@@ -511,7 +511,7 @@ async fn stream_blocks(
             if cmd_tx
                 .send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash,
-                    file_size: file.size,
+                    file_size: file.size(),
                     ranges,
                 }))
                 .await

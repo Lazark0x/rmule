@@ -483,7 +483,7 @@ impl WorkerBrief {
     pub fn fresh(file: &Ed2kFileLink) -> Self {
         Self {
             peer_crypt: PeerCrypt::unknown(),
-            own_status: WireStatus::downloader_empty(file.size),
+            own_status: WireStatus::downloader_empty(file.size()),
             want_sources: true,
             opening: WorkerOpening::Probe,
         }

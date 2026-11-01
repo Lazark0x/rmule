@@ -96,15 +96,12 @@ pub fn file_config_store(dir: impl AsRef<Path>) -> DurableAppConfig {
 /// A leg that moves bytes wants `rmule_testkit::file_link` instead, which
 /// digests them.
 pub fn stub_link(name: &str, size: u64, seed: u8) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8(name),
         size,
-        file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+        FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A server on the eD2k default port that the leg records but never reaches —

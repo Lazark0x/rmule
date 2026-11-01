@@ -319,10 +319,8 @@ async fn a_hello_crossing_a_downloads_dial_closed_by_the_far_end_leaves_the_down
         "the dial is filed under the peer's names"
     );
 
-    let second = Ed2kFileLink {
-        file_hash: FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]),
-        ..file()
-    };
+    let mut second = file();
+    second.file_hash = FileHash::from_bytes([0x5B; FileHash::BYTE_LEN]);
     let brief = WorkerBrief {
         peer_crypt: PeerCrypt::new(CryptStance::new(false, false, false), Some(asker_hash())),
         ..WorkerBrief::fresh(&second)

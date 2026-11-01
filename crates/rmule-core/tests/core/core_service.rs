@@ -217,7 +217,7 @@ async fn the_file_history_names_the_shared_files_and_the_cancelled_downloads() {
         registry
             .share(rmule_core::SharedFileEntry {
                 file_hash: file.file_hash,
-                file_size: file.size,
+                file_size: file.size(),
                 path: dir.path().join(name),
                 name: name.to_string(),
                 source: rmule_core::ShareSource::Explicit,
@@ -452,7 +452,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
             }) if *download_id == expected_id
                 && *file_hash == file_link().file_hash
                 && metadata.name == file_link().name
-                && metadata.size == file_link().size
+                && metadata.size == file_link().size()
                 && metadata.origin == DownloadMetadataOrigin::Link,
         ),
         "expected DownloadRecovered(Active) with the persisted name/size for {expected_id:?} but saw {recovered:?}",
@@ -501,7 +501,7 @@ async fn start_surfaces_the_stored_name_and_exact_size_on_both_paths() {
         unreachable!("matched above")
     };
     assert_eq!(metadata.name, file_link().name);
-    assert_eq!(metadata.size, file_link().size);
+    assert_eq!(metadata.size, file_link().size());
     assert_eq!(metadata.origin, DownloadMetadataOrigin::Link);
 
     // The level path reports the same facts, so a snapshot-only consumer and
@@ -582,7 +582,7 @@ async fn resume_performs_a_fresh_source_lookup() {
         lookups.lock().as_slice(),
         &[SourceLookupTarget::new(
             file_link().file_hash,
-            file_link().size
+            file_link().size()
         )]
     );
     let snapshot = core.diagnostics_snapshot();
@@ -761,7 +761,7 @@ impl PeerTransferService for PendingPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {

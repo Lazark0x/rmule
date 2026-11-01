@@ -77,15 +77,12 @@ async fn serving(links: &SharedPeerLinks) -> (RuntimeServeRuntimeService, PeerEn
 }
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("wanted.bin"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0x6B; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("wanted.bin"),
+        4096,
+        FileHash::from_bytes([0x6B; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// The waiter's listener: the first link to it, then a count of every later

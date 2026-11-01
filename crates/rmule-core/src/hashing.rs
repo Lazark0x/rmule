@@ -82,7 +82,7 @@ pub(crate) fn part_hash_on_arrival(
         .get(part_index as usize)
         .copied()
         .or_else(|| {
-            (file.size < ED2K_PART_SIZE).then(|| PartHash::from_bytes(*file.file_hash.as_bytes()))
+            (file.size() < ED2K_PART_SIZE).then(|| PartHash::from_bytes(*file.file_hash.as_bytes()))
         })
 }
 
@@ -170,15 +170,12 @@ mod tests {
     fn small_file_without_part_hash_set_checks_its_part_against_the_file_hash() {
         let bytes = b"abc";
         let summary = FileHashSummary::digest_bytes(bytes);
-        let file = Ed2kFileLink {
-            name: rmule_primitives::Ed2kText::from_utf8("abc"),
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let file = Ed2kFileLink::new(
+            rmule_primitives::Ed2kText::from_utf8("abc"),
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses");
         let resolved = resolve_hash_set_authority(None, None).unwrap();
 
         let expected = part_hash_on_arrival(&resolved, &file, 0).unwrap();

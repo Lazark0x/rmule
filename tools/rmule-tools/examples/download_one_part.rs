@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
         Ed2kLink::File(f) => f,
         _ => anyhow::bail!("RMULE_LIVE_TRANSFER_FILE must be an ed2k file link"),
     };
-    let part0_len = std::cmp::min(file.size, ED2K_PART_SIZE);
+    let part0_len = std::cmp::min(file.size(), ED2K_PART_SIZE);
 
     let identity = ClientIdentity::new(
         UserHash::from_bytes([0x42; 16]),
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
                 .ok();
                 conn.send(PeerCommand::Requester(RequesterCommand::RequestParts {
                     file_hash: file.file_hash,
-                    file_size: file.size,
+                    file_size: file.size(),
                     ranges,
                 }))
                 .await

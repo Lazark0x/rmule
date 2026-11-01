@@ -43,7 +43,7 @@ fn completing(
             VerifiedPartRecord {
                 part_index,
                 offset,
-                len: (link.size - offset).min(ED2K_PART_SIZE),
+                len: (link.size() - offset).min(ED2K_PART_SIZE),
                 part_hash: *hash,
             },
         )

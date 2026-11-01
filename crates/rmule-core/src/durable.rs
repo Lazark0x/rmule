@@ -206,7 +206,7 @@ impl DownloadMetadata {
     pub fn from_link(file: &Ed2kFileLink) -> Self {
         Self {
             name: file.name.clone(),
-            size: file.size,
+            size: file.size(),
             origin: DownloadMetadataOrigin::Link,
         }
     }

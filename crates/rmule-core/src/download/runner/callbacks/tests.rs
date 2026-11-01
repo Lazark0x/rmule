@@ -23,15 +23,12 @@ fn hash(byte: u8) -> UserHash {
 }
 
 fn file() -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("claimed"),
-        size: 4096,
-        file_hash: FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("claimed"),
+        4096,
+        FileHash::from_bytes([0xCD; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A connected-server Low-ID candidate whose obfuscation-aware `0x44` item

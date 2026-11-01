@@ -58,7 +58,7 @@ impl PeerTransferService for CorruptingPeer {
         let (event_tx, event_rx) = mpsc::channel(16);
         tokio::spawn(async move {
             let _ = event_tx.send(PeerWorkerEvent::Connected).await;
-            let _ = event_tx.send(rmule_testkit::every_part(file.size)).await;
+            let _ = event_tx.send(rmule_testkit::every_part(file.size())).await;
             while let Some(command) = command_rx.recv().await {
                 match command {
                     PeerWorkerCommand::AskSlot | PeerWorkerCommand::TakeGrant => {
@@ -96,10 +96,7 @@ async fn root_the_recovery_asks_against(
 ) -> AichRootHash {
     let dir = tempfile::tempdir().unwrap();
     let bytes = b"a part a Kad root recovers".to_vec();
-    let file = Ed2kFileLink {
-        aich_root: link_root,
-        ..file_link_without_part_hash_set("rooted.bin", &bytes)
-    };
+    let file = file_link_without_part_hash_set("rooted.bin", &bytes).with_aich_root(link_root);
     let (asked, mut asks) = mpsc::unbounded_channel();
     let config = CoreConfig {
         slot_wait_timeout: QUEUED_FOR * 2,

@@ -665,7 +665,7 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
 
     let bytes = vec![0x22_u8; 4096];
     let file = rmule_testkit::file_link("type-6.bin", &bytes);
-    let target = SourceLookupTarget::new(file.file_hash, file.size);
+    let target = SourceLookupTarget::new(file.file_hash, file.size());
     let key = rmule_kad::KadSourceLookupRequest::new(target).kad_target();
 
     let bare = |id: KadId, user_hash: UserHash| rmule_net::kad::KadNetConfig {
@@ -726,7 +726,7 @@ async fn a_published_type_6_row_served_back_by_a_storer_takes_the_direct_udp_roa
         .expect("publisher alive");
 
     let searcher = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
-    let search = rmule_testkit::kad_source::search_datagram(key, 0, file.size);
+    let search = rmule_testkit::kad_source::search_datagram(key, 0, file.size());
     let candidate = timeout(HANG_GUARD, async {
         let mut buffer = [0u8; 2048];
         loop {

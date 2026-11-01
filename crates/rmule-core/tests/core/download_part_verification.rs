@@ -145,7 +145,7 @@ async fn a_link_hash_set_that_is_not_the_files_own_is_dropped_and_the_peers_set_
     let honest = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
     let mut wrong = honest.clone();
     wrong[0] = PartHash::from_bytes([0x55; PartHash::BYTE_LEN]);
-    link.part_hash_set = Some(PartHashSet::from_hashes(link.size, wrong).unwrap());
+    link.part_hash_set = Some(PartHashSet::from_hashes(link.size(), wrong).unwrap());
     let Ok(Ed2kLink::File(parsed)) = Ed2kLink::parse(&Ed2kLink::File(link.clone()).to_string())
     else {
         panic!("a link with a wrong set still parses");
@@ -233,15 +233,12 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
     let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     bytes.push(0xCD);
     let summary = FileHashSummary::digest_bytes(&bytes);
-    let link_without_parts = Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let link_without_parts = Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        summary.file_size(),
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses");
     let hashes = summary.part_hash_set().unwrap().hashes().to_vec();
     let first = bytes[..ED2K_PART_SIZE as usize].to_vec();
     let second = bytes[ED2K_PART_SIZE as usize..].to_vec();
@@ -313,15 +310,12 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
 async fn resumed_download_retires_peer_that_mismatches_persisted_provisional_authority() {
     let bytes = vec![0xAB; ED2K_PART_SIZE as usize];
     let summary = FileHashSummary::digest_bytes(&bytes);
-    let link_without_parts = Ed2kFileLink {
-        name: Ed2kText::from_utf8("example.bin"),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let link_without_parts = Ed2kFileLink::new(
+        Ed2kText::from_utf8("example.bin"),
+        summary.file_size(),
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses");
     let hashes = summary.part_hash_set().unwrap().hashes().to_vec();
     let mut mismatched = hashes.clone();
     mismatched[0] = PartHash::from_bytes([0x55; 16]);
@@ -402,7 +396,7 @@ impl PeerTransferService for MismatchedThenSuccess {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = rmule_testkit::every_part(file.size);
+        let advertised = rmule_testkit::every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(16);
         let mismatched_peer = self.mismatched_peer;

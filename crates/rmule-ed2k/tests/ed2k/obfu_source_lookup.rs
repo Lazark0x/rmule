@@ -8,7 +8,7 @@
 use rmule_ed2k::{Ed2kEvent, FoundSources, FoundSourcesObfu, GetSourcesRequest, ServerPacket};
 use rmule_primitives::{
     ClientId, CryptStance, FileHash, OutboundCrypt, Packet, PacketProtocol, PeerSource,
-    SourceClaim, SourceLookupTarget, UserHash,
+    SourceClaim, UserHash,
 };
 
 const HAS_USER_HASH: u8 = 0x80;
@@ -53,7 +53,8 @@ fn get_sources_obfu_swaps_only_the_opcode() {
     // `OP_GETSOURCES_OBFU` is the plaintext get-sources body under a different
     // opcode — it asks the server to answer with the obfuscation-aware `0x44`.
     let request = GetSourcesRequest::Normal {
-        target: SourceLookupTarget::new(crate::fixture::hash(0x44), 4242),
+        file_hash: crate::fixture::hash(0x44),
+        file_size: 4242,
     };
     let plain = request.encode_packet();
     let obfu = request.encode_obfu_packet();

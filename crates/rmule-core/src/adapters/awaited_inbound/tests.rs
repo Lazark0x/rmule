@@ -20,15 +20,12 @@ fn hash(byte: u8) -> UserHash {
 /// adoption carried.
 fn brief(seed: u8) -> AdoptionBrief {
     AdoptionBrief {
-        file: Ed2kFileLink {
-            name: Ed2kText::from_utf8("awaited"),
-            size: 4096,
-            file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        },
+        file: Ed2kFileLink::new(
+            Ed2kText::from_utf8("awaited"),
+            4096,
+            FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses"),
         own_status: WireStatus::downloader_empty(4096),
         want_sources: true,
     }

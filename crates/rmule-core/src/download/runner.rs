@@ -402,13 +402,13 @@ where
     served::lease_started(runner, request.download_id).await;
     // Every part already verified — a move a Pause stopped, a run that
     // ended between its last part and its move: nothing to fetch.
-    let parts = rmule_primitives::part_count(request.file.size) as usize;
+    let parts = rmule_primitives::part_count(request.file.size()) as usize;
     if request.verified_part_indexes.len() >= parts {
         return completion::complete(runner, request.download_id, &request.file, Vec::new()).await;
     }
     let file = request.file.clone();
     let target =
-        rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size);
+        rmule_primitives::SourceLookupTarget::new(request.file.file_hash, request.file.size());
     // Subscribed before the first lookup: a session that comes up after it
     // is asked too.
     let server_leg = server_leg::ServerLeg::new(runner.rt.server_session.session_changes(), target);

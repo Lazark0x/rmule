@@ -27,7 +27,7 @@ async fn the_live_download_folds_its_file_request_into_an_0xa4_bundle_for_an_ext
     let bytes = vec![0x5C_u8; (ED2K_PART_SIZE + 4096) as usize];
     let file = file_link("loopback.bin", &bytes);
     let file_hash = file.file_hash;
-    let file_size = file.size;
+    let file_size = file.size();
     let part_hashes = file
         .part_hash_set
         .clone()

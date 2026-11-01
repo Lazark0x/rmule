@@ -150,15 +150,13 @@ async fn rmule_b_discovers_and_downloads_rmule_a_via_kad_with_no_server() {
     let output_path = dir_b.path().join("downloaded.bin");
     core_b
         .send(CoreCommand::Download(DownloadCommand::StartDownload {
-            file: Ed2kFileLink {
-                name: Ed2kText::from_utf8("payload.bin"),
-                size: summary.file_size(),
-                file_hash: summary.file_hash(),
-                part_hash_set: summary.part_hash_set().cloned(),
-                aich_root: None,
-                ipv6_sources: Vec::new(),
-                sources: Default::default(),
-            },
+            file: Ed2kFileLink::new(
+                Ed2kText::from_utf8("payload.bin"),
+                summary.file_size(),
+                summary.file_hash(),
+            )
+            .expect("a size eD2k addresses")
+            .with_part_hash_set(summary.part_hash_set().cloned()),
             source_hint: Some(dead_server),
             name: rmule_testkit::file_name("downloaded.bin"),
             if_taken: rmule_core::NameTaken::Refuse,

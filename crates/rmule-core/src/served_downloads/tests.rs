@@ -14,15 +14,12 @@ use crate::store::download::DurableDownloadRepository;
 const SIZE: u64 = 2 * ED2K_PART_SIZE + 5;
 
 fn link(seed: u8, size: u64) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8("served.bin"),
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8("served.bin"),
         size,
-        file_hash: FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+        FileHash::from_bytes([seed; FileHash::BYTE_LEN]),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// A download row of `size` bytes for file `seed`, moved to `lifecycle`.

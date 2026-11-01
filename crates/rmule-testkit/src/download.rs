@@ -42,29 +42,24 @@ pub fn in_download_dir(settings: CoreSettings, dir: &Path) -> CoreSettings {
 /// has none to carry).
 pub fn file_link(name: &str, bytes: &[u8]) -> Ed2kFileLink {
     let summary = FileHashSummary::digest_bytes(bytes);
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
-        size: summary.file_size(),
-        file_hash: summary.file_hash(),
-        part_hash_set: summary.part_hash_set().cloned(),
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8(name),
+        summary.file_size(),
+        summary.file_hash(),
+    )
+    .expect("a size eD2k addresses")
+    .with_part_hash_set(summary.part_hash_set().cloned())
 }
 
 /// A link that carries no `p=` hash set at all, so the first peer to answer
 /// with one becomes the download's **verification authority**.
 pub fn file_link_without_part_hash_set(name: &str, bytes: &[u8]) -> Ed2kFileLink {
-    Ed2kFileLink {
-        name: Ed2kText::from_utf8(name),
-        size: bytes.len() as u64,
-        file_hash: FileHash::from_bytes(ed2k::Ed2kRed::digest(bytes).into()),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    }
+    Ed2kFileLink::new(
+        Ed2kText::from_utf8(name),
+        bytes.len() as u64,
+        FileHash::from_bytes(ed2k::Ed2kRed::digest(bytes).into()),
+    )
+    .expect("a size eD2k addresses")
 }
 
 /// The endpoint a fake source with `last_octet` resolves to, matching the
@@ -149,7 +144,7 @@ impl PeerTransferService for StaticPeerTransfer {
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
-            file.size,
+            file.size(),
             self.outcome.clone(),
             PlanExpectation::Count(self.expected_plan_count),
         ))
@@ -175,7 +170,7 @@ impl PeerTransferService for PlanAssertingPeerTransfer {
     ) -> Result<PeerWorker, DownloadFailure> {
         Ok(scripted_worker(
             peer,
-            file.size,
+            file.size(),
             self.outcome.clone(),
             PlanExpectation::Indexes(self.expected_plan_indexes.clone()),
         ))
@@ -194,7 +189,7 @@ impl PeerTransferService for PendingPeerTransfer {
         _ctx: PeerHandshakeContext,
         file: Ed2kFileLink,
     ) -> Result<PeerWorker, DownloadFailure> {
-        let advertised = every_part(file.size);
+        let advertised = every_part(file.size());
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {

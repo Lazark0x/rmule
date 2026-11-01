@@ -330,15 +330,13 @@ mod tests {
         let mut bytes = vec![0xAB; ED2K_PART_SIZE as usize];
         bytes.extend_from_slice(b"tail");
         let summary = FileHashSummary::digest_bytes(&bytes);
-        let link = Ed2kFileLink {
-            name: Ed2kText::from_utf8("autoshare-link.bin"),
-            size: summary.file_size(),
-            file_hash: summary.file_hash(),
-            part_hash_set: summary.part_hash_set().cloned(),
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let link = Ed2kFileLink::new(
+            Ed2kText::from_utf8("autoshare-link.bin"),
+            summary.file_size(),
+            summary.file_hash(),
+        )
+        .expect("a size eD2k addresses")
+        .with_part_hash_set(summary.part_hash_set().cloned());
         let expected = link.part_hash_set.as_ref().unwrap().hashes().to_vec();
 
         let dir = tempfile::tempdir().unwrap();
@@ -377,15 +375,12 @@ mod tests {
             PartHash::from_bytes([0x11; PartHash::BYTE_LEN]),
             PartHash::from_bytes([0x22; PartHash::BYTE_LEN]),
         ];
-        let link = Ed2kFileLink {
-            name: Ed2kText::from_utf8("autoshare-provisional.bin"),
-            size: ED2K_PART_SIZE + 4,
-            file_hash: FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
-            part_hash_set: None,
-            aich_root: None,
-            ipv6_sources: Vec::new(),
-            sources: Default::default(),
-        };
+        let link = Ed2kFileLink::new(
+            Ed2kText::from_utf8("autoshare-provisional.bin"),
+            ED2K_PART_SIZE + 4,
+            FileHash::from_bytes([0x33; FileHash::BYTE_LEN]),
+        )
+        .expect("a size eD2k addresses");
 
         let dir = tempfile::tempdir().unwrap();
         let handle = rmule_testkit::memory_store();

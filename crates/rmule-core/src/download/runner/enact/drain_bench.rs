@@ -138,15 +138,12 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
         NeverTransfers,
         diagnostics,
     );
-    let file = rmule_primitives::Ed2kFileLink {
-        name: Ed2kText::from_utf8("drain-bench"),
-        size: FILE_SIZE,
-        file_hash: FileHash::from_bytes([0; 16]),
-        part_hash_set: None,
-        aich_root: None,
-        ipv6_sources: Vec::new(),
-        sources: Default::default(),
-    };
+    let file = rmule_primitives::Ed2kFileLink::new(
+        Ed2kText::from_utf8("drain-bench"),
+        FILE_SIZE,
+        FileHash::from_bytes([0; 16]),
+    )
+    .expect("a size eD2k addresses");
     runner.rt.diagnostics.ensure_download(
         DownloadId::from_u64(1),
         file.file_hash,
