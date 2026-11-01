@@ -9,9 +9,8 @@
 //! Windows), install the Run Log there, attach the core
 //! ([`rmule::attach`]: the one Durable Store, the identities, the core
 //! over that store's seams), spawn the bridge, arm the Kad join
-//! ([`rmule::kad`]), run the UI. A
-//! failure to stand the core up falls back to a UI-only run with the reason in
-//! the status bar — honest degrade, never a broken UI.
+//! ([`rmule::kad`]), run the UI. A failure to stand the core up ends the run
+//! on the normal screen with its reason, and a failing status.
 //! v1 semantics are stock-aMule monolith: quitting the UI stops transfers —
 //! gracefully (`App::graceful_quit`): the core's own quit
 //! stops every activity in order and flushes the credit checkpoint,

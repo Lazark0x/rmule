@@ -13,8 +13,7 @@ use crate::fixture::*;
 use crate::state::{SearchStatus, UiState};
 use crate::theme::Theme;
 
-/// An app attached to a real core, so a command is queued rather than
-/// answered with "core not attached".
+/// An app attached to a real core.
 fn attached(state: UiState) -> App {
     let core = rmule_core::Core::builder(
         rmule_core::CoreConfig::default(),
@@ -130,16 +129,13 @@ async fn a_dimmed_item_sends_nothing_and_stays_on_its_tab() {
     assert_eq!(app.chrome.active, ViewId::Transfers);
 }
 
-/// A UI-only run — no client attached — dims the item with its
-/// reason even where the level last said the server grants it; nothing is
-/// queued and the tab stays.
+/// A stopped core dims the item with its reason even where the level last
+/// said the server grants it; nothing is queued and the tab stays.
 #[tokio::test(flavor = "multi_thread")]
-async fn with_no_core_attached_the_item_is_dimmed_and_nothing_is_queued() {
+async fn with_the_core_stopped_the_item_is_dimmed_and_nothing_is_queued() {
     let mut app = App::new(Theme::default_dark());
     app.state = connected_granting(three_downloads(), true);
-    app.state.ui_only = Some(crate::state::AttachFailure::OpenStore(
-        rmule_core::OpenRefusal::Busy,
-    ));
+    app.state.core_alive = false;
     app.chrome.active = ViewId::Transfers;
     keys(
         &mut app,
@@ -149,6 +145,6 @@ async fn with_no_core_attached_the_item_is_dimmed_and_nothing_is_queued() {
     assert_eq!(app.chrome.active, ViewId::Transfers);
     assert_eq!(
         crate::views::related::unavailable(&app.state),
-        Some("no core attached")
+        Some("the engine has stopped")
     );
 }

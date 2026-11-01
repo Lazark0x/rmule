@@ -70,7 +70,7 @@ impl SearchesView {
                 Some(ReAdd {
                     mark: KnownFileMark::Failed { download_id, .. },
                     ..
-                }) => restart_download(download_id, state),
+                }) => restart_download(download_id),
                 Some(readd) => start_download(&readd.result, state, true),
                 None => ViewOutcome::Redraw,
             },
@@ -142,9 +142,6 @@ impl SearchesView {
 /// Kad-only operator: core finds the sources over Kad and asks any server
 /// session that comes up later.
 fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOutcome {
-    if state.session.is_none() {
-        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-    }
     let file = result.to_file_link();
     ViewOutcome::Emit(Action::Command(CoreCommand::Download(
         DownloadCommand::StartDownload {
@@ -164,10 +161,7 @@ fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOu
 /// `ResumeDownload` for a failed download — the one Restart (ADR-0094,
 /// "Restart"): the same row, which core continues from what is on disk
 /// or starts over in its place; the store would refuse a new one for the file.
-fn restart_download(download_id: DownloadId, state: &UiState) -> ViewOutcome {
-    if state.session.is_none() {
-        return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-    }
+fn restart_download(download_id: DownloadId) -> ViewOutcome {
     ViewOutcome::Emit(Action::Command(CoreCommand::Download(
         DownloadCommand::ResumeDownload { download_id },
     )))

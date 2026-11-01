@@ -98,33 +98,11 @@ fn a_focused_input_captures_printables_including_binding_letters() {
 }
 
 #[test]
-fn enter_without_a_session_degrades_to_a_flash_and_keeps_the_typed_query() {
-    let state = UiState::default();
-    let mut view = SearchesView::new();
-    view.handle_key(press(KeyCode::Char('/')), &state);
-    for c in "big buck bunny".chars() {
-        view.handle_key(press(KeyCode::Char(c)), &state);
-    }
-    match view.handle_key(press(KeyCode::Enter), &state) {
-        ViewOutcome::Emit(Action::Flash(text)) => {
-            assert!(
-                text.contains("core not attached"),
-                "degrade names what is missing: {text}"
-            );
-        }
-        _ => panic!("expected a degrade flash"),
-    }
-    // The query survives the degrade, and focus is kept for editing.
-    assert_eq!(view.query, "big buck bunny");
-    assert!(view.input_focused);
-}
-
-#[test]
 fn a_search_needs_no_server() {
     // No server configured and none connected — a Kad-only operator.
     // The search is sent; core sends its Kad leg and holds the server leg.
     let mut state = session_state();
-    state.session.as_mut().expect("session").server = None;
+    state.session.server = None;
 
     let mut view = SearchesView::new();
     view.handle_key(press(KeyCode::Char('/')), &state);
@@ -145,7 +123,7 @@ fn a_search_needs_no_server() {
 fn a_download_needs_no_server() {
     let mut state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     state.session = session_state().session;
-    state.session.as_mut().expect("session").server = None;
+    state.session.server = None;
     state.connected_server = None;
     let mut view = SearchesView::new();
     view.handle_key(press(KeyCode::Char('g')), &state);

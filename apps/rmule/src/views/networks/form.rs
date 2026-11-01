@@ -34,7 +34,6 @@ use crate::wrap::clamp_u16;
 pub(super) const FORM_W: u16 = 58;
 
 /// Greyed-menu reason: the run has no core to log in with.
-pub(super) const NOT_ATTACHED: &str = "(core not attached — UI-only run)";
 
 /// Which form is up. Both are the same machine — labelled text fields, one
 /// focused, `Enter` commits — so the add form and the update-URL prompt cannot

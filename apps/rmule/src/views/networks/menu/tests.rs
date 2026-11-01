@@ -60,24 +60,10 @@ fn connect_emits_the_real_command_for_the_selected_row() {
     assert!(view.menu.is_none(), "menu closes after activating");
 }
 
-/// The degrade pattern: no core ⇒ the item is greyed with the
-/// reason. The connected row offers Disconnect in Connect's place,
-/// which ends the session and the intent to stay connected.
+/// The connected row offers Disconnect in Connect's place, which ends the
+/// session and the intent to stay connected.
 #[test]
-fn connect_is_greyed_without_a_session_and_the_connected_row_offers_disconnect() {
-    let mut state = listed_servers();
-    state.session = None;
-    let mut view = NetworksView::new();
-    // Row 2: not the connected one.
-    view.handle_key(press(KeyCode::Char('j')), &state);
-    view.handle_key(press(KeyCode::Char('j')), &state);
-    view.handle_key(press(KeyCode::Char('m')), &state);
-    let menu = view.menu.as_ref().unwrap();
-    assert_eq!(menu.items[0].label, "Connect (c)");
-    assert_eq!(menu.items[0].disabled.as_deref(), Some(NOT_ATTACHED));
-    view.menu = None;
-
-    // Row 0 *is* the connected server: Disconnect, where Connect was.
+fn the_connected_row_offers_disconnect() {
     let state = listed_servers();
     let mut view = NetworksView::new();
     view.handle_key(press(KeyCode::Char('m')), &state);

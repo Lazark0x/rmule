@@ -6,7 +6,7 @@
 [big buck bunny · —]
 ┌ Results · Not sent ─────────────────────────────────────────────── [ ] search  x close ┐
 │                                                                                        │
-│   not sent — no core is attached (UI-only run: another rmule is running on this data   │
-│                      directory). The query is still in the input.                      │
+│           not sent — the engine has stopped. The query is still in the input.          │
+│                                                                                        │
 │                                                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────┘

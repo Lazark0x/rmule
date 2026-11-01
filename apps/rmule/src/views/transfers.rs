@@ -39,8 +39,7 @@
 //! ## Wiring degrades (documented, real commands where they exist)
 //!
 //! - `Pause`, `Resume` and `Cancel…` emit real
-//!   [`rmule_core::DownloadCommand`]s; `Resume` needs a core, so on a
-//!   UI-only run it flashes instead.
+//!   [`rmule_core::DownloadCommand`]s.
 //! - `L` opens the Add-link form: a pasted file link becomes a download
 //!   through the same reader and command `rmule-cli add` and the Search
 //!   tab's Download use.
@@ -301,7 +300,7 @@ impl TransfersView {
             KeyCode::Char('C') => self.clear_completed_key(state),
             KeyCode::Char('L') => self.open_add_link(),
             KeyCode::Char('p') => match self.selected_row_status(state, ids) {
-                Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id, state)),
+                Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id)),
                 None => ViewOutcome::Ignored,
             },
             // The menu's Preview (ADR-0114): the app reads the row as the

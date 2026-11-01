@@ -88,7 +88,7 @@ pub(crate) fn listed_servers() -> UiState {
             connected_server: Some(endpoint("10.0.0.1", 4661)),
             ..DiagnosticsSnapshot::default()
         },
-        session: Some(session()),
+        session: session(),
         ..UiState::default()
     }
 }

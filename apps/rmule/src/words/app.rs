@@ -1,8 +1,8 @@
 //! The TUI's own app words, beside the shared ones it re-exports: a Settings
 //! receipt, why a form field refused its text (each refusal a code worded
 //! here, so a form carries a [`Sentence`] and never a `String`) and what an
-//! unset Temp Directory reads as, and a run with no core, which word the
-//! TUI's own types.
+//! unset Temp Directory reads as, and why a run could not start, which word
+//! the TUI's own types.
 
 pub use rmule_words::app::*;
 
@@ -103,15 +103,6 @@ pub fn store_opening(opening: Opening) -> Sentence {
             "upgrading the store from version {from} to {to}; a copy stays as rmule.redb.v{from}"
         )),
     }
-}
-
-/// A run with no core, and why — the status bar's note.
-#[must_use]
-pub fn ui_only(failure: AttachFailure) -> Sentence {
-    Sentence::owned(format!(
-        "UI-only: {} (see the run log)",
-        attach_failure_words(failure)
-    ))
 }
 
 /// The Download dir row left empty: downloads need somewhere to land.

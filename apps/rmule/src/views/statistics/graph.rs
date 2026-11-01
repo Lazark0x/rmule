@@ -22,7 +22,7 @@ use crate::views::relative_age;
 use crate::wrap::{display_width, wrapped_lines};
 
 /// The graph body before the first data tick. It names *why* the pane is
-/// empty, so a UI-only run does not read as a broken graph.
+/// empty, so it does not read as a broken graph.
 pub(super) const NO_SAMPLES: &str = "no samples yet — one lands each second";
 
 /// Which meter a graph plots. Both series ride the *same* [`RateSample`], so

@@ -48,6 +48,7 @@ pub(crate) fn state_with(results: Vec<SearchResult>, status: SearchStatus) -> Ui
     );
     UiState {
         searches,
+        session: session_state().session,
         ..UiState::default()
     }
 }
@@ -94,10 +95,10 @@ pub(crate) fn three_tier_results() -> Vec<SearchResult> {
 /// instead of flashing the honest reason.
 pub(crate) fn session_state() -> UiState {
     UiState {
-        session: Some(SessionConfig {
+        session: SessionConfig {
             server: Some(endpoint("srv.example", 4661)),
             download_dir: Some(std::path::PathBuf::from("/tmp/dl")),
-        }),
+        },
         ..UiState::default()
     }
 }

@@ -44,26 +44,25 @@ pub struct App {
     /// What the *environment* resolved to (spec §5), kept so the Settings
     /// tab's `auto` theme choice has something to mean at runtime.
     auto_theme: Theme,
-    /// The config store the Settings tab writes through. `None` = a
-    /// UI-only run: an edit degrades to the honest flash, exactly as a core
-    /// command does without a client.
+    /// The config store the Settings tab writes through; `None` until
+    /// [`with_config`](Self::with_config).
     config: Option<crate::config::SharedConfig>,
     dirty: bool,
     /// A link waiting for the OSC 52 write (needs the terminal, which
     /// `reduce` never sees); flushed by the run loop.
     pending_copy: Option<String>,
-    /// The command door to the core. `None` = UI-only run: commands
-    /// degrade to an honest flash.
+    /// The command door to the core; `None` until
+    /// [`with_client`](Self::with_client).
     client: Option<BridgeHandle>,
     /// Commands awaiting the async send (reduce is sync); flushed by the
     /// run loop in order.
     pending_commands: Vec<rmule_core::CoreCommand>,
     /// The Kad join's start lane: sent on the run's first eD2k
-    /// login, and on the operator's `K`. `None` on a UI-only run, where there
-    /// is no join to start.
+    /// login, and on the operator's `K`. `None` until
+    /// [`with_kad_start`](Self::with_kad_start).
     kad_start: Option<crate::kad::KadStarter>,
-    /// The player lane: each Preview sends one launch on it. `None` on a
-    /// UI-only run, where no player is started.
+    /// The player lane: each Preview sends one launch on it. `None` until
+    /// [`with_player`](Self::with_player).
     player: Option<crate::player::PlayerLauncher>,
     /// Whether the first-login start is still owed: spent by that login, or
     /// by the operator's own `K` first, so a login never re-starts a Kad the
@@ -89,9 +88,9 @@ enum Flow {
 }
 
 impl App {
-    /// A UI-only app: no core, no config store, no Kad arm. Every `with_*`
-    /// below upgrades one of those, so a startup that fails partway still
-    /// yields a running UI that flashes honestly instead of pretending.
+    /// An app with nothing attached yet: `main` gives it each with a `with_*`
+    /// below before the run starts, and a run that cannot get them never
+    /// reaches here (ADR-0083).
     #[must_use]
     pub fn new(theme: Theme) -> Self {
         Self {
@@ -129,7 +128,7 @@ impl App {
     /// `Start*`/`Resume` commands from it.
     #[must_use]
     pub fn with_session(mut self, session: crate::state::SessionConfig) -> Self {
-        self.state.session = Some(session);
+        self.state.session = session;
         self
     }
 
@@ -165,9 +164,7 @@ impl App {
 
     /// Install the Kad join's start lane: the join parked on its
     /// other half starts a node when this app observes its first eD2k login,
-    /// or when the operator presses `K`, and never at startup. Without one
-    /// the app never starts a join — a UI-only run has no core to join with,
-    /// and the Networks panel says "Kad: off" for the honest reason.
+    /// or when the operator presses `K`, and never at startup.
     #[must_use]
     pub fn with_kad_start(mut self, start: crate::kad::KadStarter) -> Self {
         self.kad_start = Some(start);
@@ -256,9 +253,9 @@ impl App {
     /// driven by the quit itself — one frame with the opening flash before
     /// anything runs, then a redraw naming each step as the core announces
     /// it (`CoreEvent::Quitting`, reduced like any other event). The terminal
-    /// is restored only once this returns and the loop breaks. A UI-only run
-    /// (`self.client` is `None`) has no core to quit and returns at once,
-    /// drawing nothing. A frame that cannot be drawn stops no step of the
+    /// is restored only once this returns and the loop breaks. With no client
+    /// there is no core to quit, and it returns at once, drawing nothing. A
+    /// frame that cannot be drawn stops no step of the
     /// quit; the first such error is answered once the quit has run.
     ///
     /// `actions` is the same bus `App::run` reads — the only door onto
@@ -683,11 +680,10 @@ mod tests {
         );
     }
 
-    /// A UI-only run (no core ever attached) has nothing to flush — quit
-    /// must return at once rather than reach for an absent client, drawing
-    /// nothing (there is no step to name).
+    /// With no core to flush, quit returns at once, drawing nothing (there is
+    /// no step to name).
     #[tokio::test]
-    async fn quit_on_a_ui_only_run_returns_with_no_client() {
+    async fn quit_with_no_client_returns_at_once() {
         let mut app = App::new(Theme::default_dark());
         let mut surface = RecordingSurface::default();
         let (_tx, mut actions_rx) = mpsc::channel(1);
@@ -696,7 +692,7 @@ mod tests {
             .expect("draw succeeds");
         assert!(
             surface.frames.is_empty(),
-            "a UI-only run has nothing to announce"
+            "nothing to announce"
         );
     }
 }

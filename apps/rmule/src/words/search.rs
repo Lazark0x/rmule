@@ -5,7 +5,7 @@
 pub use rmule_words::search::*;
 
 use super::Sentence;
-use crate::state::{AttachFailure, MoreEnded};
+use crate::state::MoreEnded;
 
 /// A [`MoreEnded`] as the operator reads it in the entry's status line.
 #[must_use]
@@ -25,21 +25,8 @@ pub fn more_ended(ended: Option<MoreEnded>) -> Sentence {
     Sentence::fixed(ended.map_or(MORE_REFUSED, more_ended_words))
 }
 
-/// Why nothing can be sent now: no core attached, and why (`Some`), or the
-/// core stopped (`None`).
-#[must_use]
-pub fn no_core_words(ui_only: Option<AttachFailure>) -> String {
-    match ui_only {
-        Some(failure) => format!(
-            "no core is attached (UI-only run: {})",
-            super::app::attach_failure_words(failure)
-        ),
-        None => "the core has stopped".to_string(),
-    }
-}
+/// Why nothing can be sent now.
+pub const ENGINE_STOPPED: &str = "the engine has stopped";
 
-/// `n` with no core to send through.
-#[must_use]
-pub fn nothing_sent(ui_only: Option<AttachFailure>) -> Sentence {
-    Sentence::owned(format!("nothing sent — {}", no_core_words(ui_only)))
-}
+/// `n` with the engine stopped.
+pub const NOTHING_SENT: Sentence = Sentence::fixed("nothing sent — the engine has stopped");

@@ -17,8 +17,7 @@
 //!   the levels lane for upload slots, the edge fold for downloads, queued
 //!   peers, shares, the eD2k connection and Kad.
 //!
-//! Nothing is invented. A run that never saw a data tick (UI-only, or before
-//! the first tick lands) shows `—` for every metered figure rather than a zero
+//! Nothing is invented. A run before the first data tick lands shows `—` for every metered figure rather than a zero
 //! nobody observed, and the graphs say so instead of drawing a flat line.
 //!
 //! # Why a sparkline and not a braille chart

@@ -1,5 +1,5 @@
-//! A run's own words: quit, a command core refused, a run with no core, the
-//! clipboard, and the Run Log.
+//! A run's own words: quit, a command core refused, the clipboard, and the Run
+//! Log.
 
 use std::path::Path;
 
@@ -108,9 +108,6 @@ pub const SHUTDOWN_GRACE_ELAPSED: Sentence =
 /// The core's event stream ended.
 pub const CORE_STOPPED: Sentence =
     Sentence::fixed("the engine stopped; press q and start rmule again");
-
-/// A command on a run with no core.
-pub const CORE_NOT_ATTACHED: Sentence = Sentence::fixed("core not attached (UI-only run)");
 
 /// A link was written to the terminal, which may ignore the clipboard write.
 pub const LINK_SENT: Sentence = Sentence::fixed("link sent to the terminal's clipboard");

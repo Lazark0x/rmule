@@ -1,4 +1,4 @@
-┌ Servers (40) · not connected ──────── a add · U update · m menu · s/S sort ┐
+┌ Servers (40) · not connected ─────── c connect · a add · U update · m menu ┐
 │   Name ▲    Address          Port   Ping Users Files  Age Prio Fail Static▲│
 │   Server 21 10.0.0.21        4661   soon  soon  soon soon Norm    0 no     │
 │   Server 22 10.0.0.22        4661   soon  soon  soon soon Norm    0 no    ▂│
@@ -11,7 +11,7 @@
 │Health: not reached yet — no answer and no failed try so far                │
 │Shares: announced at its next login, as to every server                     │
 └ too narrow to show: Desc ───────────────────────────────────────── 26 / 40 ┘
-┌ Log (0) ───────────────────────────┐┌ Kad ─────────────────────────────────┐
+┌ Log (0) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │

@@ -98,11 +98,6 @@ fn start(
     {
         return Err(LinkRefusal::AlreadyDownloading { name: name.clone() });
     }
-    if state.session.is_none() {
-        return Ok(ViewOutcome::Emit(Action::Flash(
-            crate::words::app::CORE_NOT_ATTACHED,
-        )));
-    }
     let command = Action::Command(CoreCommand::Download(DownloadCommand::StartDownload {
         name: SafeFileName::of_link(&file),
         file,

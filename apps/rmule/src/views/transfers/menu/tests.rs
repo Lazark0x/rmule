@@ -22,25 +22,10 @@ fn p_on_an_active_row_emits_a_real_pause_command() {
 }
 
 #[test]
-fn p_on_a_paused_row_flashes_without_a_session_and_resumes_with_one() {
+fn p_on_a_paused_row_resumes_it() {
     let mut view = TransfersView::new();
-    let mut state = three_downloads();
+    let state = three_downloads();
     view.select_row(&state, 1); // download_id(2), Paused
-    match view.handle_key(press(KeyCode::Char('p')), &state) {
-        ViewOutcome::Emit(Action::Flash(message)) => {
-            assert!(
-                message.contains("core not attached"),
-                "honest resume gap, got {message:?}"
-            );
-        }
-        other => panic!("expected a Flash without a session, got {other:?}"),
-    }
-
-    // With a session the real ResumeDownload goes out.
-    state.session = Some(crate::state::SessionConfig {
-        server: Some(rmule_primitives::ServerEndpoint::new("srv.example", 4661).expect("endpoint")),
-        download_dir: None,
-    });
     match view.handle_key(press(KeyCode::Char('p')), &state) {
         ViewOutcome::Emit(Action::Command(CoreCommand::Download(
             DownloadCommand::ResumeDownload { download_id, .. },
@@ -55,19 +40,14 @@ fn p_on_a_paused_row_flashes_without_a_session_and_resumes_with_one() {
 /// download — never a Pause core would refuse for a download with no run.
 #[test]
 fn a_failed_row_offers_restart_and_resumes_the_same_download() {
-    let mut state = three_downloads();
+    let state = three_downloads();
     let items = menu_items(
         DownloadStatus::Failed,
         crate::fixture::download_id(2),
         &state,
     );
     assert_eq!(items[0].label, "Restart");
-    state.session = Some(crate::fixture::session_state().session.expect("session"));
-    match pause_toggle_action(
-        DownloadStatus::Failed,
-        crate::fixture::download_id(2),
-        &state,
-    ) {
+    match pause_toggle_action(DownloadStatus::Failed, crate::fixture::download_id(2)) {
         Action::Command(CoreCommand::Download(DownloadCommand::ResumeDownload {
             download_id,
             ..

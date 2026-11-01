@@ -40,9 +40,6 @@ fn os_code_clause(os_code: Option<i32>) -> String {
     os_code.map_or_else(String::new, |code| format!(" (system code {code})"))
 }
 
-/// A Settings edit on a run with no config store.
-pub const NO_CONFIG_STORE: Sentence = Sentence::fixed("no config store (UI-only run)");
-
 /// The server just reached could not be kept for the next start.
 pub const LAST_SERVER_NOT_SAVED: Sentence = Sentence::fixed(
     "could not remember this server: connect at start may dial another (see the run log)",

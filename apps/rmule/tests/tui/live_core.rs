@@ -286,10 +286,10 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
     .expect("a loopback endpoint");
 
     let mut state = UiState {
-        session: Some(SessionConfig {
+        session: SessionConfig {
             server: Some(endpoint.clone()),
             download_dir: None,
-        }),
+        },
         ..UiState::default()
     };
 

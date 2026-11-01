@@ -50,7 +50,7 @@ pub use serve::{
 pub use server::{Ed2kConnection, Reconnect};
 pub use session::SessionConfig;
 
-/// Which step of attaching the core failed — why a run is UI-only. What the
+/// Which step of attaching the core failed — why a run ended before it began. What the
 /// store or the web client said is for the Run Log; the operator reads the
 /// step, worded by [`crate::words::app`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,8 +132,8 @@ pub struct UiState {
     /// compact by `log::line` in [`UiState::apply`] *before* the fold, capped
     /// at 200 lines (oldest drops). `CoreClosed` appends "core stopped".
     pub log: VecDeque<LogLine>,
-    /// Session config for real command construction; `None` degrades.
-    pub session: Option<SessionConfig>,
+    /// Session config for real command construction.
+    pub session: SessionConfig,
     /// The durable preferences as the config store holds them: what the
     /// Settings tab renders, and where the Networks list-update form reads its
     /// `server.met` mirror. Loaded at startup and folded forward by each
@@ -158,9 +158,6 @@ pub struct UiState {
     pub scan_consents: Vec<ScanConsent>,
     /// How many disclosure questions core has raised this run.
     pub scan_questions: u64,
-    /// Why this run has no core: `Some` on a UI-only run, where the core
-    /// failed to attach and nothing the operator asks for can be sent.
-    pub ui_only: Option<AttachFailure>,
 }
 
 impl Default for UiState {
@@ -184,12 +181,11 @@ impl Default for UiState {
             notable: None,
             core_alive: true,
             log: VecDeque::new(),
-            session: None,
+            session: SessionConfig::default(),
             preferences: crate::config::Preferences::default(),
             server_list_updating: false,
             scan_consents: Vec::new(),
             scan_questions: 0,
-            ui_only: None,
         }
     }
 }
@@ -295,11 +291,9 @@ impl UiState {
     /// or waits for one, so the name is only what the download row records.
     #[must_use]
     pub fn active_server(&self) -> Option<ServerEndpoint> {
-        self.connected_server.clone().or_else(|| {
-            self.session
-                .as_ref()
-                .and_then(|session| session.server.clone())
-        })
+        self.connected_server
+            .clone()
+            .or_else(|| self.session.server.clone())
     }
 }
 

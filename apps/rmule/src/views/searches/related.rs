@@ -44,9 +44,6 @@ impl SearchesView {
                 reason,
             )));
         }
-        if state.session.is_none() {
-            return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-        }
         let query = SearchQuery::from(query);
         self.menu = None;
         self.readd = None;

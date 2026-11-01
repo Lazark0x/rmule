@@ -48,14 +48,14 @@ fn without_a_player_command_a_ready_row_puts_one_default_app_launch_by_its_names
 }
 
 #[test]
-fn without_a_player_lane_a_ready_preview_flashes_that_no_core_is_attached() {
+fn without_a_player_lane_a_ready_preview_says_the_lane_ended() {
     let mut app = App::new(Theme::default_dark());
     app.state = preview_ready();
     let now = Instant::now();
     app.reduce(Action::Preview(download_id(1)), now);
     assert_eq!(
         app.chrome.flash_text(now),
-        Some(app_words::CORE_NOT_ATTACHED.as_str())
+        Some(crate::words::player::LANE_ENDED.as_str())
     );
 }
 

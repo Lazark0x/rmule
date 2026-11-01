@@ -61,15 +61,10 @@ pub(crate) fn ed2k_file_link(
 /// The one way anything in this crate asks core to connect to a server
 /// (ADR-0080 amendment).
 ///
-/// The login presents core's own Core Settings' credentials; a UI-only run
-/// (no [`SessionConfig`](crate::state::SessionConfig), no core) cannot
-/// connect. Shared by the Networks row menu and the Networks `c` key (selected
-/// row) so the two cannot degrade differently.
-pub(crate) fn connect_action(state: &UiState, server: rmule_primitives::ServerEndpoint) -> Action {
-    match &state.session {
-        Some(_) => Action::Command(rmule_core::CoreCommand::ConnectToServer { server }),
-        None => Action::Flash(crate::words::app::CORE_NOT_ATTACHED),
-    }
+/// The login presents core's own Core Settings' credentials. Shared by the
+/// Networks row menu and the Networks `c` key (selected row).
+pub(crate) const fn connect_action(server: rmule_primitives::ServerEndpoint) -> Action {
+    Action::Command(rmule_core::CoreCommand::ConnectToServer { server })
 }
 
 /// Whether `server` is the one the operator's intent stands on: connected
@@ -102,7 +97,7 @@ pub(crate) fn connect_toggle(state: &UiState, server: rmule_primitives::ServerEn
     if is_ours(state, &server) {
         Action::Command(rmule_core::CoreCommand::DisconnectFromServer)
     } else {
-        connect_action(state, server)
+        connect_action(server)
     }
 }
 

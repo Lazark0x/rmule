@@ -130,7 +130,7 @@ impl App {
                         self.tell_kad_join_ended(now);
                         Flow::Continue
                     }
-                    None => self.reduce(Action::Flash(app_words::CORE_NOT_ATTACHED), now),
+                    None => Flow::Continue,
                 }
             }
             Action::Preview(download_id) => self.preview(download_id, now),
@@ -141,15 +141,10 @@ impl App {
                     // start it again behind their back.
                     self.kad_first_login_owed = false;
                 }
-                if self.client.is_some() {
-                    // Queued for the run loop's async flush; outcomes come
-                    // back as core events on the bus.
-                    self.pending_commands.push(command);
-                    Flow::Continue
-                } else {
-                    // UI-only run: the only honest outcome is saying so.
-                    self.reduce(Action::Flash(app_words::CORE_NOT_ATTACHED), now)
-                }
+                // Queued for the run loop's async flush; outcomes come back
+                // as core events on the bus.
+                self.pending_commands.push(command);
+                Flow::Continue
             }
             Action::Commands(commands) => {
                 let mut flow = Flow::Continue;
@@ -329,10 +324,7 @@ impl App {
     fn write_preference(&mut self, edit: crate::config::PrefEdit) -> Option<Sentence> {
         let sort = matches!(edit, crate::config::PrefEdit::TableSort { .. });
         let effect = match &self.config {
-            // A UI-only run keeps nothing across runs; the sort is still the
-            // view's for this one, so it is not worth a flash per keypress.
-            None if sort => rmule_core::TakesEffect::Now,
-            None => return Some(crate::words::store::NO_CONFIG_STORE),
+            None => rmule_core::TakesEffect::Now,
             Some(config) => match config.commit(&edit) {
                 Ok(effect) => effect,
                 Err(rmule_core::SettingError::Refused(refusal)) => {
@@ -356,9 +348,7 @@ impl App {
                 self.run_log.set(rmule_core::run_log::Level::from_full(*on));
             }
             crate::config::PrefEdit::DownloadDir(dir) => {
-                if let Some(session) = &mut self.state.session {
-                    session.download_dir = Some(dir.clone());
-                }
+                self.state.session.download_dir = Some(dir.clone());
             }
             _ => {}
         }

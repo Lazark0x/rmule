@@ -1,6 +1,5 @@
-//! The Search tab with no core attached, at the view's seam: a UI-only run
-//! (the state a failed attach leaves) and a run whose core stopped. Keys in;
-//! what the entry says, what stays in the input, and that nothing was sent out.
+//! The Search tab with no core to send through, at the view's seam: a run
+//! whose core stopped. Keys in; what the entry says, what stays in the input, and that nothing was sent out.
 
 use std::time::Instant;
 
@@ -14,12 +13,10 @@ use crate::golden::{assert_golden, render_to_lines};
 use crate::state::{SearchStatus, UiState};
 use crate::view::ViewId;
 
-/// A UI-only run: no session, no core, and the reason the attach failed.
-fn ui_only() -> UiState {
+/// A run whose core has stopped.
+fn stopped() -> UiState {
     UiState {
-        ui_only: Some(crate::state::AttachFailure::OpenStore(
-            rmule_core::OpenRefusal::Busy,
-        )),
+        core_alive: false,
         ..UiState::default()
     }
 }
@@ -32,7 +29,7 @@ fn render(view: &mut SearchesView, state: &UiState) -> String {
 
 #[test]
 fn a_query_with_no_core_is_held_as_not_sent_and_stays_in_the_input() {
-    let state = ui_only();
+    let state = stopped();
     let mut view = SearchesView::new();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "big buck bunny".chars() {
@@ -75,17 +72,13 @@ fn a_related_search_with_no_core_opens_a_not_sent_entry_in_view() {
     let screen = render(&mut view, &state);
     assert!(screen.contains("Results · Not sent"), "{screen}");
     assert!(
-        screen.contains("not sent — the core has stopped"),
+        screen.contains("not sent — the engine has stopped"),
         "{screen}"
     );
     assert_eq!(
         crate::views::related::unavailable(&state),
-        Some("the core has stopped"),
+        Some("the engine has stopped"),
         "and the row menus dim the item with the reason"
-    );
-    assert_eq!(
-        crate::views::related::unavailable(&ui_only()),
-        Some("no core attached")
     );
 }
 

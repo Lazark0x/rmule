@@ -69,12 +69,7 @@ pub(super) fn traffic_text(bps: Option<f64>, bytes: u64) -> String {
 /// size.
 pub(super) fn draw_kad(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
     let kad_state = state.diagnostics.kad_state;
-    // `K` is hinted only with a core to send it to (No dead UI).
-    let hint = if state.session.is_some() {
-        crate::words::kad::switch_hint(kad_state)
-    } else {
-        ""
-    };
+    let hint = crate::words::kad::switch_hint(kad_state);
     let block = Block::bordered().border_style(theme.chrome());
     let block = crate::views::title::titled(
         block,

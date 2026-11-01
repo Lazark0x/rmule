@@ -32,7 +32,7 @@ fn with_session() -> UiState {
     let mut state = three_downloads();
     let mut config = session();
     config.download_dir = Some(PathBuf::from("/srv/downloads"));
-    state.session = Some(config);
+    state.session = config;
     state
 }
 

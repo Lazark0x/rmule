@@ -10,7 +10,7 @@ use rmule_core::DownloadId;
 use super::{App, Flow};
 use crate::action::Action;
 use crate::player::{Launch, Player, Start, argv, preview_target, split};
-use crate::words::{app as app_words, player as words};
+use crate::words::player as words;
 
 impl App {
     /// Hand download `id`'s file to the player, or flash why not.
@@ -33,7 +33,7 @@ impl App {
         };
         let refusal = match (launch, self.player.as_ref()) {
             (Err(refusal), _) => refusal,
-            (Ok(_), None) => app_words::CORE_NOT_ATTACHED,
+            (Ok(_), None) => words::LANE_ENDED,
             (Ok(launch), Some(player)) => match player.send(launch) {
                 Ok(()) => return Flow::Continue,
                 Err(_) => words::LANE_ENDED,

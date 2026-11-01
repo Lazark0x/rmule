@@ -26,7 +26,7 @@ const CLIP_SIZE: u64 = 734_003_200;
 /// listing the three tiers.
 fn searching(dir: &Path) -> (SearchesView, UiState) {
     let mut state = session_state();
-    state.session.as_mut().expect("session").download_dir = Some(dir.to_path_buf());
+    state.session.download_dir = Some(dir.to_path_buf());
     let mut view = SearchesView::new().having_sent("alpha");
     fold(
         &mut state,

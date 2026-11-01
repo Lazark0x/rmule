@@ -284,15 +284,14 @@ impl NetworksView {
             }
             (None, _) => format!(" Servers ({}) · not connected ", rows.len()),
         };
-        // `c` is hinted only where it can act (No dead UI): a selected row
-        // and a core to log in with, or the row to disconnect from.
+        // `c` is hinted only where it can act (No dead UI): a selected row.
         let toggle = match self.selected(state) {
             Some(row) if crate::views::is_remaking(state, &row.server.endpoint) => {
                 "c stop reconnecting · "
             }
             Some(row) if crate::views::is_ours(state, &row.server.endpoint) => "c disconnect · ",
-            Some(_) if state.session.is_some() => "c connect · ",
-            _ => "",
+            Some(_) => "c connect · ",
+            None => "",
         };
         let hint = if state.server_list_updating {
             " updating… ".to_string()

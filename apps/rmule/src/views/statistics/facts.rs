@@ -252,8 +252,7 @@ mod tests {
     use super::*;
     use crate::fixture::*;
 
-    /// A UI-only run (or the window before the first tick) has observed no
-    /// counter: every metered figure reads as absence, not as zero.
+    /// The window before the first tick has observed no counter: every metered figure reads as absence, not as zero.
     #[test]
     fn an_unmetered_run_dashes_every_figure_it_never_observed() {
         let rendered = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {

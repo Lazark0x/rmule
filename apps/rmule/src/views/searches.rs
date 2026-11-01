@@ -278,11 +278,7 @@ impl SearchesView {
         }
         // A search names no server: core sends each leg where it can
         // — Kad at once, the server leg on the operator's session — so a
-        // Kad-only operator searches too. Only a run with no session config
-        // (no core to speak for) cannot.
-        if state.session.is_none() {
-            return ViewOutcome::Emit(Action::Flash(crate::words::app::CORE_NOT_ATTACHED));
-        }
+        // Kad-only operator searches too.
         let query = match KeywordQuery::new(Ed2kText::from_utf8(phrase)) {
             Ok(query) => query,
             Err(error) => {

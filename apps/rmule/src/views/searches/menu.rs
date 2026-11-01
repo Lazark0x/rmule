@@ -1,9 +1,9 @@
 //! The per-result action menu: download the file, copy its eD2k link, or
 //! search for files related to it.
 //!
-//! Download needs a core, which a UI-only run lacks, so without one it says so
-//! instead of emitting a command nothing would take. *Search related* is dimmed with its reason while the connected
-//! server cannot answer it, read off the level on every frame.
+//! Download is greyed until a download directory is set. *Search related* is
+//! dimmed with its reason while the connected server cannot answer it, read off
+//! the level on every frame.
 
 use std::cell::Cell;
 
@@ -55,12 +55,7 @@ impl MenuItem {
     fn reason(self, state: &UiState) -> Option<&'static str> {
         match self {
             MenuItem::SearchRelated => crate::views::related::unavailable(state),
-            MenuItem::Download
-                if state
-                    .session
-                    .as_ref()
-                    .is_some_and(|session| session.download_dir.is_none()) =>
-            {
+            MenuItem::Download if state.session.download_dir.is_none() => {
                 Some(crate::words::download::SET_DOWNLOAD_DIR_FIRST)
             }
             _ => None,
@@ -188,9 +183,7 @@ mod tests {
     fn download_is_greyed_with_the_way_on_until_a_directory_is_set() {
         let mut state = session_state();
         assert_eq!(MenuItem::Download.reason(&state), None);
-        if let Some(session) = &mut state.session {
-            session.download_dir = None;
-        }
+        state.session.download_dir = None;
         assert_eq!(
             MenuItem::Download.reason(&state),
             Some("set a download dir first: press 6")
@@ -225,24 +218,13 @@ mod tests {
         );
     }
 
+    /// The real StartDownload, the file named, the folder left to core.
     #[test]
-    fn the_download_menu_item_degrades_without_a_session_and_emits_with_one() {
-        let mut no_session = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
+    fn the_download_menu_item_emits_the_start() {
+        let mut state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
+        state.session = session_state().session;
         let mut view = SearchesView::new();
-        view.handle_key(press(KeyCode::Char('g')), &no_session);
-        view.handle_key(press(KeyCode::Char('m')), &no_session);
-        match view.handle_key(press(KeyCode::Enter), &no_session) {
-            ViewOutcome::Emit(Action::Flash(text)) => {
-                assert!(text.contains("core not attached"), "got {text:?}");
-            }
-            other => panic!("Download degrades to a flash, got {other:?}"),
-        }
-        assert_eq!(view.menu, None, "activating closes the menu");
-
-        // With a session: the real StartDownload, the file named, the
-        // folder left to core.
-        no_session.session = session_state().session;
-        let state = no_session;
+        view.handle_key(press(KeyCode::Char('g')), &state);
         view.handle_key(press(KeyCode::Char('m')), &state);
         match view.handle_key(press(KeyCode::Enter), &state) {
             ViewOutcome::Emit(Action::Command(CoreCommand::Download(

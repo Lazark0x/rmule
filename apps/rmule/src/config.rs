@@ -404,10 +404,10 @@ pub struct Preferences {
     /// for a restart to dial first. Live — core's next write keeps that many.
     pub remember_peers: rmule_core::RememberPeers,
     /// Minted once from OS entropy and never editable (ADR-0041/0043).
-    /// `None` on a UI-only run, where no store was opened.
+    /// `None` until the store is read.
     pub user_hash: Option<UserHash>,
     /// Minted with the user hash and just as permanent; `None` likewise
-    /// means no store was opened.
+    /// until the store is read.
     pub kad_node_id: Option<KadId>,
 }
 
@@ -420,7 +420,7 @@ pub struct Preferences {
 /// `nodes.dat` opt-in is the app's own ADR-0067 amendment. What a store would
 /// have told us and did not — where the databases live, which User Hash and
 /// Kad ID were minted, where downloads go — reads as `None` and renders as a
-/// dash, so a UI-only run cannot be mistaken for a configured one.
+/// dash.
 impl Default for Preferences {
     fn default() -> Self {
         Self {

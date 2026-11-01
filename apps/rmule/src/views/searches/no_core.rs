@@ -1,6 +1,5 @@
-//! The Search tab with no core to send through: a UI-only run,
-//! where the core failed to attach, or a run whose core has stopped. A search
-//! asked for then is held as an entry that says, at once and in words, that
+//! The Search tab with no core to send through: a run whose core has stopped.
+//! A search asked for then is held as an entry that says, at once and in words, that
 //! nothing was sent and why — never one that waits for an answer nobody will
 //! give — and the typed query stays in the input. A search that was running
 //! when the core stopped says so instead of running for ever.
@@ -8,15 +7,14 @@
 use super::SearchesView;
 use crate::state::UiState;
 
-/// Why nothing can be sent now, in the words the entry shows; `None` while a
-/// core is attached and running.
+/// Why nothing can be sent now, in the words the entry shows; `None` while the
+/// core runs.
 pub(super) fn absent(state: &UiState) -> Option<String> {
-    (state.ui_only.is_some() || !state.core_alive)
-        .then(|| crate::words::search::no_core_words(state.ui_only))
+    (!state.core_alive).then(|| crate::words::search::ENGINE_STOPPED.to_string())
 }
 
 /// What a held entry shows when the core stopped under it while it ran.
-pub(super) const STOPPED_WITH_THE_CORE: &str = "stopped with the core";
+pub(super) const STOPPED_WITH_THE_CORE: &str = "stopped with the engine";
 
 impl SearchesView {
     /// Why the current entry was never sent, if it was not.

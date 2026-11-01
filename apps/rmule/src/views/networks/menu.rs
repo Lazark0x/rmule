@@ -17,7 +17,7 @@ use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
 use super::NetworksView;
-use super::form::{FORM_W, NOT_ATTACHED, ServerForm};
+use super::form::{FORM_W, ServerForm};
 use super::servers::{next_priority, priority_word, row_name};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
@@ -251,8 +251,6 @@ impl NetworksView {
             MenuItem::enabled("Stop reconnecting (c)", MenuAction::Disconnect)
         } else if crate::views::is_ours(state, &row.server.endpoint) {
             MenuItem::enabled("Disconnect (c)", MenuAction::Disconnect)
-        } else if state.session.is_none() {
-            MenuItem::greyed("Connect (c)", MenuAction::Connect, NOT_ATTACHED)
         } else {
             MenuItem::enabled("Connect (c)", MenuAction::Connect)
         };
@@ -334,7 +332,7 @@ impl NetworksView {
         };
         let server = row.server.endpoint.clone();
         match action {
-            MenuAction::Connect => ViewOutcome::Emit(connect_action(state, server)),
+            MenuAction::Connect => ViewOutcome::Emit(connect_action(server)),
             MenuAction::Disconnect => {
                 ViewOutcome::Emit(Action::Command(CoreCommand::DisconnectFromServer))
             }

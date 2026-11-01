@@ -515,10 +515,7 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     let dir = rmule_testkit::absolute_path("tmp/rmule-dl");
     app.reduce(Action::Preference(PrefEdit::DownloadDir(dir.clone())), now);
     assert_eq!(
-        app.state
-            .session
-            .as_ref()
-            .and_then(|s| s.download_dir.clone()),
+        app.state.session.download_dir.clone(),
         Some(dir.clone()),
         "the next download reads the new directory, not the startup one"
     );
@@ -607,26 +604,6 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     assert!(servers.contains("Address ▼") && !servers.contains("Name ▲"));
 }
 
-/// Without a store there is nothing to write to, and the app says exactly
-/// that instead of pretending the edit took.
-#[test]
-fn a_settings_edit_on_a_ui_only_run_degrades_to_the_honest_flash() {
-    use crate::config::{PrefEdit, ThemeChoice};
-
-    let mut app = App::new(Theme::default_dark());
-    let now = Instant::now();
-    app.reduce(Action::Preference(PrefEdit::Theme(ThemeChoice::Light)), now);
-    assert_eq!(
-        app.chrome.flash_text(now),
-        Some("no config store (UI-only run)")
-    );
-    assert_eq!(
-        app.theme.bg,
-        Theme::default_dark().bg,
-        "nothing was applied"
-    );
-}
-
 /// A value Core Settings refuses is told by why it was refused, not as a
 /// store failure, and nothing is applied.
 #[test]
@@ -687,7 +664,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
         )
     );
     assert_eq!(
-        app.state.session.and_then(|session| session.download_dir),
+        app.state.session.download_dir,
         Some(before)
     );
 }
