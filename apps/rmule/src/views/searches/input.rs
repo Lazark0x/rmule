@@ -42,6 +42,8 @@ impl SearchesView {
         };
         let hint = if editing {
             " Tab field  ←→ type  Enter search  Esc close "
+        } else if focused {
+            " Enter search  Esc leave "
         } else {
             " / focus  o options "
         };

@@ -113,9 +113,10 @@ eD2k server until you say so.
    in Networks. If rmule knows no Kad contacts yet, it fetches `nodes.dat` from
    `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)
    and an off switch (*Fetch seeds*).
-5. **Search and download.** Press `2`, type a query and press `Enter`. One search goes to the connected server, to other servers over
-   UDP and to Kad, and the results merge. Press `Enter` or `m` on a result and
-   choose *Download*. Or press `L` on Transfers to paste an `ed2k://` link.
+5. **Search and download.** Press `2`, type a query and press `Enter`. One
+   search goes to the connected server, to other servers over UDP and to Kad,
+   and the results merge. Press `Enter` or `m` on a result and choose
+   *Download*. Or press `L` on Transfers to paste an `ed2k://` link.
 
 ![The Networks tab: one server connected with a Low ID, verified parts in the log, and Kad running with one contact](assets/screenshots/networks.png)
 

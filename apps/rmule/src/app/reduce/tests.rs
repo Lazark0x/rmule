@@ -132,6 +132,17 @@ fn a_paste_is_text_or_nothing_and_never_keys() {
     assert_eq!(app.chrome.active, ViewId::SharedFiles);
 }
 
+/// `h` / `l` pass through the tab on the way to another.
+#[test]
+fn cycling_through_searches_leaves_the_query_alone() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('l')), now);
+    app.reduce(key_action(KeyCode::Char('l')), now);
+    assert_eq!(app.chrome.active, ViewId::Transfers);
+    assert_eq!(app.views.searches.query_text(), "");
+}
+
 #[test]
 fn input_routes_through_mapping_into_chrome_state() {
     let mut app = App::new(Theme::default_dark());

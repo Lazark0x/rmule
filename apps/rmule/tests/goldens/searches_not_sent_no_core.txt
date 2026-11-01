@@ -1,4 +1,4 @@
-┌ Search ──────────────────────────────────────────────────────────── / focus  o options ┐
+┌ Search ─────────────────────────────────────────────────────── Enter search  Esc leave ┐
 │❯ big buck bunny▮                                                                       │
 │Asks: nobody yet; a search waits for a server or Kad                                    │
 │Filters: none   o edit                                                                  │

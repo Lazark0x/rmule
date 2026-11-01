@@ -271,7 +271,11 @@ impl App {
             | Action::Flash(_)) => {
                 let from = self.chrome.active;
                 self.dirty |= self.chrome.update(&chrome_action, now);
-                if self.chrome.active == crate::view::ViewId::Searches && from != self.chrome.active
+                // `h` / `l` pass through a tab: only the tab's own digit or
+                // click means the operator came to use it.
+                if matches!(chrome_action, Action::SwitchView(_))
+                    && self.chrome.active == crate::view::ViewId::Searches
+                    && from != self.chrome.active
                 {
                     self.views.searches.arrive(&self.state);
                 }

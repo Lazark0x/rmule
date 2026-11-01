@@ -127,16 +127,12 @@ impl SearchesView {
         ViewOutcome::Redraw
     }
 
-    /// The operator arrived on the tab. With no results to act on the one
-    /// thing to do here is type, and a typed letter must not reach the
-    /// globals, where `q` quits.
+    /// The operator came to the tab. With no search held the one thing to do
+    /// here is type, and a typed letter must not reach the globals, where `q`
+    /// quits.
     pub(crate) fn arrive(&mut self, state: &UiState) {
         self.held.bind(state);
-        let has_results = self
-            .held
-            .current_pane(state)
-            .is_some_and(|pane| !pane.results.is_empty());
-        if !has_results && self.menu.is_none() && !self.filters_open && self.readd.is_none() {
+        if self.held.is_empty() && self.menu.is_none() && !self.filters_open {
             self.input_focused = true;
         }
     }
