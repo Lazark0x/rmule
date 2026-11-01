@@ -44,6 +44,18 @@ _Avoid_: page, screen, window
 A bounded region *inside* one view's content rect: the server table, the log and the Kad panel in Networks; the files and upload-peers halves of Shared Files. Focus inside a view lives at pane granularity — the focused pane takes the navigation keys, everything else bubbles to the globals. A view caches each pane's rect at draw time, so a click is hit-tested against the layout that was actually drawn rather than one recomputed from a stale width. A pane's title and its key hint share its top border and give way whole when it is narrow — the hint's keys first, last first, then the title's clauses, last first — never cut mid-word.
 _Avoid_: section, widget, subview
 
+**Key gate**:
+The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path from every surface, and Ctrl with Alt on a character is AltGr, which is text. A view reads key codes alone.
+_Avoid_: per-view key filter
+
+**Quit Confirm**:
+The chrome modal that asks before `q` or Ctrl-C stops a running download: `y` or a second Ctrl-C quits, `n` or `Esc` stays. With nothing running neither asks, and an OS stop never does.
+_Avoid_: exit prompt
+
+**Revision**:
+A number on the UI state that moves whenever a fold changed something. A table's order and row heights stand on it, with the table's own sort and filter, so a wheel notch over ten thousand rows rebuilds nothing.
+_Avoid_: generation, dirty flag
+
 **Flash**:
 A transient one-line message the app loop shows and expires — how a view reports something it could not do. Distinct from the status bar's info feed, which carries the last notable *core* fact and is folded into `UiState`. One caller is not a view: `App::graceful_quit` fires it directly and event-driven, never on a timer — the opening "Shutting down…" before any step starts, then one redraw per `CoreEvent::Quitting { step }` action naming the step actually running, and, if the bridge's `CORE_SHUTDOWN_GRACE` elapses before the core's flush confirms, one more naming that.
 _Avoid_: toast, alert, error message

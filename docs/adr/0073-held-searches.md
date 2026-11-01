@@ -20,8 +20,8 @@ says what the operator looks for, and the Run Log never carries it (ADR-0075).
   carries query text.
 - Each entry keeps its own cursor; the Table Sort (ADR-0070) is shared. A Related-Files Search opens
   as an entry like any other.
-- An entry with no core to send through says so at once: on a UI-only run or after the
-  core stopped, a new query opens an entry reading "not sent" and why, and the typed
+- An entry with no core to send through says so at once: after the core stopped, a new
+  query opens an entry reading "not sent" and why, and the typed
   query stays in the input; a search running when the core stopped reads "stopped with
   the core".
 - `[` / `]` move between a tab's sub-entries and mean nothing else: the Held Searches in

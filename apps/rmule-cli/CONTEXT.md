@@ -41,6 +41,10 @@ download-coupled, and a join-only diagnostic does not fit it. Any *product* Kad
 behaviour still goes through the core.
 _Avoid_: kad daemon, node command
 
+**Exit code**:
+The one way a script reads how a run ended: 0 done, 1 anything else, 2 unreadable command line or link, 3 refused by the engine, 4 failed or cancelled, 5 nothing to reach, 6 `--timeout` ran out, 7 stopped by a signal. `--help` lists them.
+_Avoid_: status, return value
+
 ## Relationships
 
 - `rmule-cli` depends on `rmule-core` (and, for the join exception, on
