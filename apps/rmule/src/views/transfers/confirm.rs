@@ -81,7 +81,7 @@ impl TransfersView {
         let question = Question {
             title: labels::CANCEL_TITLE,
             asks: &asks,
-            does: rows::cancel_does(targets.len()),
+            does: &rows::cancel_does(targets.len()),
         };
         draw_question(frame, area, &question, theme, &self.confirm_viewport);
     }

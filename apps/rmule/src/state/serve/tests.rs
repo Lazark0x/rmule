@@ -2,10 +2,10 @@
 
 use std::path::PathBuf;
 
-/// The finished pass says how many files it carried to a new path,
-/// in its place between kept and hashed.
+/// A finished pass says what it added and the exceptions: a file found as
+/// it was left, and a count of none, are not news.
 #[test]
-fn the_scan_finished_line_counts_what_it_carried() {
+fn a_finished_scan_says_what_changed_and_only_that() {
     let line = crate::words::scan::line(&ScanEvent::Finished {
         dir: PathBuf::from("/downloads"),
         summary: rmule_core::ScanSummary {
@@ -19,7 +19,8 @@ fn the_scan_finished_line_counts_what_it_carried() {
     });
     assert_eq!(
         line,
-        "/downloads scanned: 4 kept, 3 carried, 2 hashed, 1 dropped, 0 skipped, 2 unreadable"
+        "/downloads: 2 files added, 3 files moved, 1 file no longer shared, \
+         2 files could not be read"
     );
 }
 

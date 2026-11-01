@@ -12,7 +12,7 @@
 //! else cannot reach those surfaces.
 
 pub use rmule_words::{
-    Sentence, download, event, kad, login, os, peer, plain, portmap, reach, serve, severity,
+    Sentence, download, event, kad, login, os, peer, plain, plural, portmap, reach, serve, severity,
     software, store, units,
 };
 

@@ -26,6 +26,7 @@ pub mod kad;
 pub mod login;
 pub mod os;
 pub mod peer;
+pub mod plural;
 pub mod portmap;
 pub mod reach;
 pub mod scan;

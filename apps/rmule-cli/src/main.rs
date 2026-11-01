@@ -290,7 +290,7 @@ fn no_run_log(failure: RunLogFailure) -> String {
 fn open_store(data_dir: &std::path::Path) -> Result<Arc<DurableStore>> {
     open_durable_store(data_dir).map_err(|error| match error {
         CoreError::StoreRefused { refusal, .. } => {
-            anyhow::anyhow!(rmule_words::store::open_refusal(refusal))
+            anyhow::anyhow!(rmule_words::store::open_refusal(refusal, data_dir))
         }
         other => anyhow::Error::new(other).context(format!("open store in {}", data_dir.display())),
     })

@@ -5,7 +5,7 @@
 use rmule_primitives::PrimitiveError;
 
 use super::super::Sentence;
-use super::super::units::count;
+use super::super::plural::Plural;
 
 /// A re-add of a file already downloading.
 #[must_use]
@@ -117,10 +117,6 @@ pub fn link_fields_skipped(fields: &[String]) -> Option<Sentence> {
 pub fn link_sources_added(name: &str, new: usize) -> Sentence {
     Sentence::owned(format!(
         "already downloading {name}; {} from the link",
-        count(
-            u64::try_from(new).unwrap_or(u64::MAX),
-            "new source",
-            "new sources"
-        )
+        Plural::new("{n} new source", "{n} new sources").of(new)
     ))
 }

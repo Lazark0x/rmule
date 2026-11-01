@@ -12,7 +12,8 @@ use rmule_core::{
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint};
 
 use super::super::Sentence;
-use super::super::units::{address, count};
+use super::super::plural::Plural;
+use super::super::units::address;
 
 /// The Connection Ceiling a binary lowered at its start because the
 /// process's open-file limit left no room for the configured one (ADR-0116):
@@ -24,10 +25,10 @@ pub fn ceiling_lowered(lowered: rmule_core::CeilingLowered) -> Sentence {
         configured,
         ceiling,
     } = lowered;
-    let held = count(ceiling as u64, "peer connection", "peer connections");
+    let held = Plural::new("{n} peer connection", "{n} peer connections").of(ceiling);
     Sentence::owned(format!(
         "this process may hold {} open at once, so downloads hold at most {held}, not {configured}",
-        count(descriptors, "file", "files"),
+        Plural::new("{n} file", "{n} files").of(descriptors),
     ))
 }
 
@@ -259,7 +260,7 @@ pub const fn link_turn_words(turn: LinkTurn) -> &'static str {
 pub fn remember_peers_receipt(peers: rmule_core::RememberPeers) -> String {
     format!(
         "remember {} per download",
-        count(u64::from(peers.get().get()), "peer", "peers")
+        Plural::new("{n} peer", "{n} peers").of(peers.get().get())
     )
 }
 
@@ -275,11 +276,7 @@ pub const REMEMBER_PEERS_NOTE: &str = "per download, dialled first after a resta
 #[must_use]
 pub fn seeds_loaded(downloads: usize, seeds: usize, expired: usize) -> String {
     let peers = |n: usize| {
-        count(
-            u64::try_from(n).unwrap_or(u64::MAX),
-            "remembered peer",
-            "remembered peers",
-        )
+        Plural::new("{n} remembered peer", "{n} remembered peers").of(n)
     };
     let dropped = format!("{} older than a day dropped", peers(expired));
     match (downloads, expired) {
@@ -287,11 +284,7 @@ pub fn seeds_loaded(downloads: usize, seeds: usize, expired: usize) -> String {
         (_, 0) => format!(
             "dialling {} for {} first",
             peers(seeds),
-            count(
-                u64::try_from(downloads).unwrap_or(u64::MAX),
-                "download",
-                "downloads"
-            )
+            Plural::new("{n} download", "{n} downloads").of(downloads)
         ),
         _ => format!("{}; {dropped}", seeds_loaded(downloads, seeds, 0)),
     }

@@ -66,15 +66,6 @@ pub fn seconds(wait: Duration) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// "1 part" / "N parts", with the noun given.
-#[must_use]
-pub fn count(n: u64, one: &str, many: &str) -> String {
-    match n {
-        1 => format!("1 {one}"),
-        n => format!("{n} {many}"),
-    }
-}
-
 /// Bytes → a compact binary-unit size (KB/MB/GB, 1 decimal), matching the
 /// status bar's `KB/s` convention (÷1024).
 ///

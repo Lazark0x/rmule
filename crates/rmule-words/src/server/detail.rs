@@ -11,6 +11,7 @@ use rmule_primitives::{
 };
 
 use super::super::Sentence;
+use super::super::plural::Plural;
 use super::server_label;
 
 /// A named `SRV_TCPFLG_*` grant as the operator reads it.
@@ -165,11 +166,7 @@ pub fn detail_pane(
 
 /// `n try` or `n tries`.
 fn tries(count: u32) -> String {
-    if count == 1 {
-        "1 try".to_string()
-    } else {
-        format!("{count} tries")
-    }
+    Plural::new("{n} try", "{n} tries").of(count)
 }
 
 /// The server's **Server Health** (ADR-0052) in words, and for a row listed

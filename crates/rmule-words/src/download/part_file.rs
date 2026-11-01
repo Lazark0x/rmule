@@ -8,7 +8,8 @@ use std::path::Path;
 use rmule_core::{PartFault, PartFileChange, PartsLost, RestartOutcome, VolumeStop};
 
 use super::super::Sentence;
-use super::super::units::{count, human_size};
+use super::super::plural::Plural;
+use super::super::units::human_size;
 use super::failure::os_clause;
 use super::{integrity_fault_words, part_fault_words};
 
@@ -79,14 +80,17 @@ pub fn parts_lost_words(lost: PartsLost) -> String {
 pub fn parts_to_fetch_again(parts: u32, bytes: u64) -> String {
     match parts {
         0 => "no verified part was lost".to_string(),
-        1 => format!("1 verified part ({}) to fetch again", human_size(bytes)),
-        n => format!("{n} verified parts ({}) to fetch again", human_size(bytes)),
+        n => format!(
+            "{} ({}) to fetch again",
+            Plural::new("{n} verified part", "{n} verified parts").of(n),
+            human_size(bytes)
+        ),
     }
 }
 
 /// "1 checked part" / "N checked parts".
 fn checked_parts(parts: u32) -> String {
-    count(u64::from(parts), "checked part", "checked parts")
+    Plural::new("{n} checked part", "{n} checked parts").of(parts)
 }
 
 /// What a Restart did: continued from what holds, or started over with

@@ -8,11 +8,12 @@ use std::time::SystemTime;
 
 use rmule_core::{
     DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryState, ScanEvent, ScanPhase,
-    WatchFault,
+    ScanSummary, WatchFault,
 };
 
 use super::Sentence;
 use super::os::{kind_words, refusal_words};
+use super::plural::Plural;
 use super::units::human_size;
 
 /// Why a watch does not hold, as a clause: "… not watched: {this}".
@@ -137,16 +138,9 @@ pub fn line(event: &ScanEvent) -> Sentence {
             offer.files,
             dir.display()
         ),
-        ScanEvent::Finished { dir, summary } => format!(
-            "{} scanned: {} kept, {} carried, {} hashed, {} dropped, {} skipped, {} unreadable",
-            dir.display(),
-            summary.trusted,
-            summary.carried,
-            summary.hashed,
-            summary.dropped,
-            summary.skipped,
-            summary.unreadable
-        ),
+        ScanEvent::Finished { dir, summary } => {
+            format!("{}: {}", dir.display(), scan_receipt(summary))
+        }
         ScanEvent::Declined { dir } => format!("{} not shared (declined)", dir.display()),
         ScanEvent::DirectoryAdded { dir, replaced } if replaced.is_empty() => {
             format!("{} is shared", dir.display())
@@ -287,13 +281,41 @@ pub const fn role_words(role: DirectoryRole) -> Option<&'static str> {
     }
 }
 
+/// What a finished pass changed, in the operator's terms: the files it added
+/// and only the exceptions beside them. A file it found as it was left is
+/// not news.
+fn scan_receipt(summary: &ScanSummary) -> String {
+    let said: Vec<String> = [
+        (summary.hashed, Plural::new("{n} file added", "{n} files added")),
+        (summary.carried, Plural::new("{n} file moved", "{n} files moved")),
+        (
+            summary.dropped,
+            Plural::new("{n} file no longer shared", "{n} files no longer shared"),
+        ),
+        (
+            summary.skipped,
+            Plural::new("{n} file left out", "{n} files left out"),
+        ),
+        (
+            summary.unreadable,
+            Plural::new("{n} file could not be read", "{n} files could not be read"),
+        ),
+    ]
+    .into_iter()
+    .filter(|(count, _)| *count > 0)
+    .map(|(count, phrase)| phrase.of(count))
+    .collect();
+    if said.is_empty() {
+        "no change".to_string()
+    } else {
+        said.join(", ")
+    }
+}
+
 /// A count of files, in words.
 #[must_use]
 pub fn files(count: usize) -> String {
-    match count {
-        1 => "1 file".to_string(),
-        count => format!("{count} files"),
-    }
+    Plural::new("{n} file", "{n} files").of(count)
 }
 
 /// The share confirm: its title, its question, and what a yes discloses.

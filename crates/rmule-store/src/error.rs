@@ -130,6 +130,8 @@ pub enum OpenRefusal {
     Damaged,
     /// The disk said no. `os_code` is the system's own, when it gave one.
     Disk {
+        /// What the system refused for.
+        kind: std::io::ErrorKind,
         /// The system's code.
         os_code: Option<i32>,
     },
@@ -152,6 +154,7 @@ impl StoreError {
                 error
                     .raw_os_error()
                     .map_or(OpenRefusal::Damaged, |os_code| OpenRefusal::Disk {
+                        kind: error.kind(),
                         os_code: Some(os_code),
                     })
             }

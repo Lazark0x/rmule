@@ -10,6 +10,7 @@ use rmule_core::{
 use super::Sentence;
 use super::kad::kad_unavailable_words;
 use super::os::refusal_words;
+use super::plural::Plural;
 
 /// The quit path's opening flash, up before the core names its
 /// first step.
@@ -74,25 +75,27 @@ impl QuitCost {
 /// back at the next start, that place does not.
 #[must_use]
 pub fn quit_confirm(cost: QuitCost) -> String {
-    let count = |n: usize, one: &str, many: &str| super::units::count(n as u64, one, many);
     let parts: Vec<String> = [
         (
             cost.running,
-            count(cost.running, "download", "downloads") + " running",
+            Plural::new("{n} download running", "{n} downloads running"),
         ),
         (
             cost.waiting,
-            count(cost.waiting, "download", "downloads") + " waiting",
+            Plural::new("{n} download waiting", "{n} downloads waiting"),
         ),
         (
             cost.uploads,
-            count(cost.uploads, "upload", "uploads") + " running",
+            Plural::new("{n} upload running", "{n} uploads running"),
         ),
-        (cost.queued, count(cost.queued, "peer", "peers") + " queued"),
+        (
+            cost.queued,
+            Plural::new("{n} peer queued", "{n} peers queued"),
+        ),
     ]
     .into_iter()
     .filter(|(n, _)| *n > 0)
-    .map(|(_, part)| part)
+    .map(|(n, part)| part.of(n))
     .collect();
     let parts = parts.join(", ");
     if cost.uploads + cost.queued > 0 {

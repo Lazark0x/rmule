@@ -145,7 +145,7 @@ fn opening_on_the_terminal() -> OpeningWatch {
 /// Trace why attaching failed, for the Run Log, and hand back the step.
 fn attach_failed(failure: AttachFailure, error: &dyn std::fmt::Display) -> AttachFailure {
     tracing::warn!(
-        step = %crate::words::app::attach_failure_words(failure),
+        step = %crate::words::app::attach_failure_words(&failure),
         %error,
         "the core could not be attached"
     );
@@ -178,7 +178,7 @@ pub async fn attach<D: Deployment>(
                 CoreError::StoreRefused { refusal, .. } => *refusal,
                 _ => OpenRefusal::Damaged,
             };
-            attach_failed(AttachFailure::OpenStore(refusal), &error)
+            attach_failed(AttachFailure::OpenStore(refusal, data_dir.clone()), &error)
         })?;
     let store = DurableAppConfig::new(Arc::clone(&durable));
 

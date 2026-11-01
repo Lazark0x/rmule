@@ -44,10 +44,6 @@ pub const REMOVE_TITLE: &str = " Remove server ";
 pub const SERVER_LIST: &str = "Server list";
 /// A shared file's unshare, which asks first.
 pub const UNSHARE: &str = "Unshare…";
-/// A shared file's comments, which rmule holds none of.
-pub const COMMENTS: &str = "Comments";
-/// Why a shared file offers no comments.
-pub const COMMENTS_REASON: &str = "rmule keeps none";
 /// The server list's update.
 pub const UPDATE_LIST: &str = "Update list from URL…";
 /// The server list's add.

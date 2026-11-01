@@ -2,6 +2,7 @@
 //! the Row Filter counts, and how a pane counts its Tags.
 
 use super::Sentence;
+use super::plural::Plural;
 
 /// What a sentence calls a file whose name has not landed yet.
 pub const UNNAMED_FILE: &str = "a file whose name is not known yet";
@@ -24,12 +25,12 @@ pub fn cancel_many(count: usize) -> String {
 
 /// What a yes to the cancel confirm does.
 #[must_use]
-pub const fn cancel_does(count: usize) -> &'static str {
-    if count == 1 {
-        "This deletes the part file. It cannot be undone."
-    } else {
-        "This deletes their part files. It cannot be undone."
-    }
+pub fn cancel_does(count: usize) -> String {
+    Plural::new(
+        "This deletes the part file. It cannot be undone.",
+        "This deletes their part files. It cannot be undone.",
+    )
+    .of(count)
 }
 
 /// What the unshare confirm asks of one file, by name.

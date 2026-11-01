@@ -12,7 +12,8 @@ use std::path::Path;
 use rmule_core::{DownloadEvent, DownloadId, DownloadLifecycle, DownloadMetadata};
 
 use super::Sentence;
-use super::units::{address, count};
+use super::plural::Plural;
+use super::units::address;
 
 mod completion;
 mod failure;
@@ -179,22 +180,27 @@ pub fn cancelled_file_left(part_path: &Path) -> Sentence {
 /// Part files the store had no row for, taken back paused.
 #[must_use]
 pub fn part_files_adopted(parts: u32) -> Sentence {
-    Sentence::owned(format!(
-        "{} the store had lost {} back, paused; resume to check what each holds",
-        crate::units::count(u64::from(parts), "part file", "part files"),
-        if parts == 1 { "is" } else { "are" }
-    ))
+    Sentence::owned(
+        Plural::new(
+            "{n} part file the store had lost is back, paused; resume to check what it holds",
+            "{n} part files the store had lost are back, paused; resume to check what each holds",
+        )
+        .of(parts),
+    )
 }
 
 /// Rows of the download table that would not read at attach.
 #[must_use]
 pub fn rows_unreadable(rows: u32) -> Sentence {
-    Sentence::owned(format!(
-        "{} could not be read from the store and {} not listed; keep rmule.redb, the part \
-         files still stand",
-        crate::units::count(u64::from(rows), "download", "downloads"),
-        if rows == 1 { "is" } else { "are" }
-    ))
+    Sentence::owned(
+        Plural::new(
+            "{n} download could not be read from the store and is not listed; keep rmule.redb, \
+             the part files still stand",
+            "{n} downloads could not be read from the store and are not listed; keep rmule.redb, \
+             the part files still stand",
+        )
+        .of(rows),
+    )
 }
 
 /// A download event's line in the Networks log: terse, no ids or hashes.
@@ -268,11 +274,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             ..
         } => format!(
             "a second link named {} ({admitted} admitted, {new} new)",
-            count(
-                u64::try_from(*named).unwrap_or(u64::MAX),
-                "source",
-                "sources"
-            )
+            Plural::new("{n} source", "{n} sources").of(*named)
         ),
         D::SeedsLoaded {
             downloads,
@@ -283,11 +285,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             dialled, answered, ..
         } => format!(
             "{answered} of {} answered",
-            count(
-                u64::try_from(*dialled).unwrap_or(u64::MAX),
-                "remembered peer",
-                "remembered peers"
-            )
+            Plural::new("{n} remembered peer", "{n} remembered peers").of(*dialled)
         ),
         D::SourcesExchanged {
             peer,
@@ -389,10 +387,7 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             ..
         } => format!(
             "end game: {} of part {part_index} asked of {} as well",
-            match blocks {
-                1 => "1 block".to_string(),
-                n => format!("{n} blocks"),
-            },
+            Plural::new("{n} block", "{n} blocks").of(*blocks),
             address(*peer)
         ),
         D::KadAichRootContested { .. } => "its sources agree on another AICH root than the Kad \
@@ -408,11 +403,15 @@ pub fn log_line(event: &DownloadEvent) -> Sentence {
             match (*named, *writers) {
                 (0, writers) => format!(
                     "which of its {} sent bad data is not known yet",
-                    count(u64::from(writers), "source", "sources")
+                    Plural::new("{n} source", "{n} sources").of(writers)
                 ),
                 (1, 1) => "its only source sent bad data".to_string(),
-                (1, writers) => format!("1 of its {writers} sources is held to blame"),
-                (named, writers) => format!("{named} of its {writers} sources are held to blame"),
+                (named, writers) => Plural::new(
+                    "{n} of its {writers} sources is held to blame",
+                    "{n} of its {writers} sources are held to blame",
+                )
+                .of(named)
+                .replace("{writers}", &writers.to_string()),
             }
         ),
         D::PartReleased {

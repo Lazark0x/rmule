@@ -5,6 +5,7 @@
 use rmule_words::download::{FAILURE_NOT_RECORDED, download_failure_words};
 use rmule_words::serve::withheld_words;
 
+use super::plural::Plural;
 use crate::state::KnownFileMark;
 
 /// How a line of the confirm is drawn: as plain text, or as the name or path
@@ -92,16 +93,19 @@ pub fn mark_lines(
 /// The question that clears `count` completed downloads from the list.
 #[must_use]
 pub fn clear_question(count: usize) -> String {
-    let noun = if count == 1 { "download" } else { "downloads" };
-    format!("Clear {count} completed {noun} from the list?")
+    Plural::new(
+        "Clear {n} completed download from the list?",
+        "Clear {n} completed downloads from the list?",
+    )
+    .of(count)
 }
 
 /// What clearing leaves alone.
 #[must_use]
-pub const fn clear_keeps(count: usize) -> &'static str {
-    if count == 1 {
-        "The file stays on disk and shared."
-    } else {
-        "The files stay on disk and shared."
-    }
+pub fn clear_keeps(count: usize) -> String {
+    Plural::new(
+        "The file stays on disk and shared.",
+        "The files stay on disk and shared.",
+    )
+    .of(count)
 }

@@ -188,6 +188,12 @@ pub fn open_durable_store_watched(
 ) -> Result<Arc<Store>, CoreError> {
     std::fs::create_dir_all(data_dir).map_err(|error| CoreError::StoreRefused {
         refusal: OpenRefusal::Disk {
+            // The system says only that something exists there: what stands
+            // in the way is a file, or the directory would have done.
+            kind: match error.kind() {
+                std::io::ErrorKind::AlreadyExists => std::io::ErrorKind::NotADirectory,
+                kind => kind,
+            },
             os_code: error.raw_os_error(),
         },
         reason: format!("create data dir {}: {error}", data_dir.display()),

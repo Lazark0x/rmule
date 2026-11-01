@@ -58,12 +58,12 @@ pub use session::SessionConfig;
 /// Which step of attaching the core failed — why a run ended before it began. What the
 /// store or the web client said is for the Run Log; the operator reads the
 /// step, worded by [`crate::words::app`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AttachFailure {
     /// Neither `RMULE_DATA` nor `HOME` names a data directory.
     NoDataDir,
-    /// The Durable Store would not open, and why.
-    OpenStore(rmule_core::OpenRefusal),
+    /// The Durable Store in the directory would not open, and why.
+    OpenStore(rmule_core::OpenRefusal, std::path::PathBuf),
     /// The port-mapping secret could not be read or made.
     PortMapSecret,
     /// The server list could not be read.

@@ -78,7 +78,7 @@ impl TransfersView {
         let question = Question {
             title: labels::CLEAR_TITLE,
             asks: &readd_words::clear_question(count),
-            does: readd_words::clear_keeps(count),
+            does: &readd_words::clear_keeps(count),
         };
         draw_question(frame, area, &question, theme, &self.confirm_viewport);
     }

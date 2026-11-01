@@ -11,6 +11,7 @@ use rmule_core::{
 use rmule_primitives::{AddressFamily, ClientId, ServerEndpoint};
 
 use super::Sentence;
+use super::plural::Plural;
 use super::portmap::mapping_error_words;
 use super::units::{address, human_size, seconds, server_label};
 
@@ -118,8 +119,13 @@ pub fn auto_update_started(urls: usize) -> Sentence {
         0 => Sentence::fixed(
             "server list auto-update: no address is set — add one in Settings, Servers",
         ),
-        1 => Sentence::fixed("server list auto-update started: 1 address"),
-        n => Sentence::owned(format!("server list auto-update started: {n} addresses")),
+        n => Sentence::owned(
+            Plural::new(
+                "server list auto-update started: {n} address",
+                "server list auto-update started: {n} addresses",
+            )
+            .of(n),
+        ),
     }
 }
 

@@ -181,7 +181,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         Err(failure) => {
             say(&format!(
                 "rmule: {}",
-                rmule::words::app::attach_failure_words(failure)
+                rmule::words::app::attach_failure_words(&failure)
             ));
             return Ok(ExitCode::from(EXIT_FAILURE));
         }

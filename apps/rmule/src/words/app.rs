@@ -38,7 +38,6 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         }
         PrefEdit::ServerMetAutoUpdateUrls(urls) => match urls.len() {
             0 => "server list auto-update addresses → none".to_string(),
-            1 => "server list auto-update addresses → 1".to_string(),
             n => format!("server list auto-update addresses → {n}"),
         },
         PrefEdit::NodesDatUrl(url) => format!("nodes.dat URL → {url}"),
@@ -84,10 +83,12 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
 /// Why the core could not be attached, as a clause; what the store or the
 /// web client said is in the Run Log.
 #[must_use]
-pub fn attach_failure_words(failure: AttachFailure) -> String {
+pub fn attach_failure_words(failure: &AttachFailure) -> String {
     match failure {
         AttachFailure::NoDataDir => NO_DATA_DIR.to_string(),
-        AttachFailure::OpenStore(refusal) => crate::words::store::open_refusal(refusal),
+        AttachFailure::OpenStore(refusal, data_dir) => {
+            crate::words::store::open_refusal(*refusal, data_dir)
+        }
         AttachFailure::PortMapSecret => "the port-mapping secret could not be read".to_string(),
         AttachFailure::Servers => "the server list could not be read".to_string(),
         AttachFailure::Preferences => "the preferences could not be read".to_string(),
@@ -432,8 +433,11 @@ mod tests {
     /// after a downgrade sends them to delete the file instead.
     #[test]
     fn a_refused_store_is_told_by_its_cause() {
-        let words = |refusal| attach_failure_words(AttachFailure::OpenStore(refusal));
+        let words = |refusal| {
+            attach_failure_words(&AttachFailure::OpenStore(refusal, "/srv/rmule".into()))
+        };
         use rmule_core::OpenRefusal;
+        use std::io::ErrorKind;
         assert!(words(OpenRefusal::Busy).contains("another rmule"));
         let newer = words(OpenRefusal::Newer {
             found: 17,
@@ -447,12 +451,41 @@ mod tests {
             },
             OpenRefusal::TooOld { found: 1 },
             OpenRefusal::Damaged,
-            OpenRefusal::Disk { os_code: Some(28) },
+            OpenRefusal::Disk {
+                kind: ErrorKind::StorageFull,
+                os_code: Some(28),
+            },
             OpenRefusal::NotCopied { os_code: None },
         ] {
             let sentence = words(refusal);
             assert!(!sentence.contains("another rmule"), "{sentence}");
         }
         assert!(words(OpenRefusal::Damaged).contains("keep"));
+    }
+
+    /// A file where the directory should be is no disk fault: neither free
+    /// space nor permissions would help, and the operator may not know which
+    /// directory `RMULE_DATA` or `$HOME` meant.
+    #[test]
+    fn a_bad_data_dir_is_told_by_its_path_and_its_real_cause() {
+        use rmule_core::OpenRefusal;
+        use std::io::ErrorKind;
+        let refused = |kind, os_code| {
+            attach_failure_words(&AttachFailure::OpenStore(
+                OpenRefusal::Disk {
+                    kind,
+                    os_code: Some(os_code),
+                },
+                "/srv/rmule".into(),
+            ))
+        };
+        assert_eq!(
+            refused(ErrorKind::NotADirectory, 17),
+            "the data directory /srv/rmule cannot be used: a file stands in its path"
+        );
+        assert_eq!(
+            refused(ErrorKind::PermissionDenied, 13),
+            "the data directory /srv/rmule cannot be used: permission denied (system error 13)"
+        );
     }
 }

@@ -1,7 +1,8 @@
 //! The words only `rmule-cli` speaks: its exit codes, its lines for a one-shot
 //! `add`, and what its commands print.
 
-use super::units::{count, human_size};
+use super::plural::Plural;
+use super::units::human_size;
 
 /// `--help`'s last section: what a script reads from the exit code.
 pub const EXIT_CODES: &str = "\
@@ -33,7 +34,7 @@ pub const ENGINE_ENDED: &str = "the engine stopped before the download completed
 pub fn timed_out(seconds: u64) -> String {
     format!(
         "stopped after {}: the download has not completed; the part file stays for the next run",
-        count(seconds, "second", "seconds")
+        Plural::new("{n} second", "{n} seconds").of(seconds)
     )
 }
 
@@ -48,7 +49,7 @@ pub fn download_label(id: u64) -> String {
 pub fn starting_from_link(sources: usize) -> String {
     format!(
         "no server configured; starting from the {} the link names",
-        count(sources as u64, "source", "sources")
+        Plural::new("{n} source", "{n} sources").of(sources)
     )
 }
 
@@ -75,7 +76,7 @@ pub fn download_cancelled(label: &str) -> String {
 pub fn sources_found(total: usize, usable: usize) -> String {
     format!(
         "found {}, {usable} to dial",
-        count(total as u64, "source", "sources")
+        Plural::new("{n} source", "{n} sources").of(total)
     )
 }
 
@@ -90,7 +91,7 @@ pub fn part_verified(parts_done: u64, parts: Option<usize>, size: u64) -> String
         ),
         None => format!(
             "{} verified, of {}",
-            count(parts_done, "part", "parts"),
+            Plural::new("{n} part", "{n} parts").of(parts_done),
             human_size(size)
         ),
     }
