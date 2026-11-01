@@ -46,29 +46,34 @@ impl CompletionGate {
         Self(watch::Sender::new(Gate::Settling))
     }
 
-    /// The actor's stop: close the gate unless the file is in place, waiting
-    /// out a run that is settling.
+    /// The actor's stop: close the gate unless the file is in place. `None`
+    /// while the run is settling, when no answer is known yet.
+    pub(crate) fn try_stop(&self) -> Option<StopAnswer> {
+        let mut answer = Some(StopAnswer::Stopped);
+        self.0.send_if_modified(|gate| match *gate {
+            Gate::Open => {
+                *gate = Gate::Stopped;
+                true
+            }
+            Gate::Stopped => false,
+            Gate::InPlace => {
+                answer = Some(StopAnswer::InPlace);
+                false
+            }
+            Gate::Settling => {
+                answer = None;
+                false
+            }
+        });
+        answer
+    }
+
+    /// [`Self::try_stop`], waiting out a run that is settling: off the actor,
+    /// since a settling run may be waiting on its disk.
     pub(crate) async fn stop(&self) -> StopAnswer {
         let mut seen = self.0.subscribe();
         loop {
-            let mut settling = false;
-            let mut answer = StopAnswer::Stopped;
-            self.0.send_if_modified(|gate| match *gate {
-                Gate::Open => {
-                    *gate = Gate::Stopped;
-                    true
-                }
-                Gate::Stopped => false,
-                Gate::InPlace => {
-                    answer = StopAnswer::InPlace;
-                    false
-                }
-                Gate::Settling => {
-                    settling = true;
-                    false
-                }
-            });
-            if !settling {
+            if let Some(answer) = self.try_stop() {
                 return answer;
             }
             // The sender is ours, so the channel cannot close under us.

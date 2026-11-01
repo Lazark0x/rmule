@@ -91,13 +91,24 @@ where
     /// in [`Self::on_run_ended`], once its task has ended: `Ok(true)` says so,
     /// `Ok(false)` that the download has no run. A move whose file is in place
     /// is no longer the operator's to stop: it refuses with
-    /// [`CoreCommandRejectReason::DownloadCompleting`].
+    /// [`CoreCommandRejectReason::DownloadCompleting`]. A landing that has not
+    /// settled keeps the command until it has, as a stop under way does, and
+    /// the command runs again on the answer.
     pub(in crate::service::actor) async fn stop_run(
         &mut self,
         download_id: DownloadId,
         reason: StopReason,
     ) -> Result<bool, CoreCommandRejectReason> {
-        self.stop_completion(download_id).await?;
+        if let Some(gate) = self.stop_completion(download_id).await? {
+            let command = match reason {
+                StopReason::Cancel => DownloadCommand::CancelDownload { download_id },
+                StopReason::Pause | StopReason::Active => {
+                    DownloadCommand::PauseDownload { download_id }
+                }
+            };
+            self.stopping.await_gate(download_id, gate, command);
+            return Ok(true);
+        }
         let Some(active) = self.retire_download(download_id) else {
             return Ok(false);
         };
@@ -115,7 +126,9 @@ where
     /// A stopped run's task has ended: take back its Served Download, finish
     /// the act that stopped it, and take up what waited for it.
     pub(in crate::service::actor) async fn on_run_ended(&mut self, download_id: DownloadId) {
-        for command in self.finish_stop(download_id).await {
+        let mut commands = self.finish_stop(download_id).await;
+        commands.extend(self.stopping.take_settled(download_id));
+        for command in commands {
             self.on_download_command(command).await;
         }
     }

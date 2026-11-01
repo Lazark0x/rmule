@@ -5,14 +5,17 @@
 //! would hold every other command and could never end.
 //!
 //! A later command about a stopping download waits here, so a Pause and the
-//! Resume behind it still run in the order they were sent.
+//! Resume behind it still run in the order they were sent. So does a stop
+//! that met a landing with no answer yet: its gate is waited on here, off the
+//! command arm, and the command runs again on the answer.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use rmule_primitives::FileHash;
 use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 
-use crate::download::{RunNumber, StopReason};
+use crate::download::{CompletionGate, RunNumber, StopReason};
 use crate::service::{DownloadCommand, DownloadId};
 
 /// One run told to stop.
@@ -34,6 +37,8 @@ struct Entry {
 #[derive(Default)]
 pub(in crate::service::actor) struct Stopping {
     stops: HashMap<DownloadId, Entry>,
+    /// The commands waiting on a landing's answer, the stop that met it first.
+    settling: HashMap<DownloadId, Vec<DownloadCommand>>,
     ended: JoinSet<DownloadId>,
 }
 
@@ -46,6 +51,27 @@ impl Stopping {
             let _ = handle.await;
             download_id
         });
+    }
+
+    /// Keep the stop `command` until `gate` has its answer; [`Self::next_ended`]
+    /// names the download then. The wait closes the gate, so the command
+    /// reads a settled answer when it runs again.
+    pub(super) fn await_gate(
+        &mut self,
+        download_id: DownloadId,
+        gate: Arc<CompletionGate>,
+        command: DownloadCommand,
+    ) {
+        self.settling.insert(download_id, vec![command]);
+        self.ended.spawn(async move {
+            gate.stop().await;
+            download_id
+        });
+    }
+
+    /// The commands that waited on `download_id`'s landing.
+    pub(super) fn take_settled(&mut self, download_id: DownloadId) -> Vec<DownloadCommand> {
+        self.settling.remove(&download_id).unwrap_or_default()
     }
 
     /// Keep `command` for when the download it names has stopped; hand it
@@ -63,9 +89,16 @@ impl Stopping {
             | DownloadCommand::ClearDownload { download_id } => Some(*download_id),
             DownloadCommand::ClearDownloads { .. } => None,
         };
-        match stopping.and_then(|download_id| self.stops.get_mut(&download_id)) {
-            Some(entry) => {
-                entry.stop.held.push(command);
+        let Some(download_id) = stopping else {
+            return Some(command);
+        };
+        if let Some(entry) = self.stops.get_mut(&download_id) {
+            entry.stop.held.push(command);
+            return None;
+        }
+        match self.settling.get_mut(&download_id) {
+            Some(waiting) => {
+                waiting.push(command);
                 None
             }
             None => Some(command),
@@ -102,5 +135,42 @@ impl Stopping {
             entry.run_task.abort();
         }
         self.stops.keys().copied().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stop that met a landing holds what came behind it, and neither runs
+    /// until the landing has its answer: the answer is what the stop asks.
+    #[tokio::test]
+    async fn a_stop_waits_out_a_landing_with_the_commands_behind_it() {
+        let download_id = DownloadId::from_u64(7);
+        let gate = Arc::new(CompletionGate::settling());
+        let mut stopping = Stopping::default();
+        stopping.await_gate(
+            download_id,
+            Arc::clone(&gate),
+            DownloadCommand::PauseDownload { download_id },
+        );
+        let behind = DownloadCommand::ResumeDownload { download_id };
+        assert!(stopping.hold(behind).is_none());
+
+        let unsettled =
+            tokio::time::timeout(std::time::Duration::from_millis(50), stopping.next_ended());
+        assert!(unsettled.await.is_err(), "the landing has no answer yet");
+
+        gate.settle(false);
+        assert_eq!(stopping.next_ended().await, download_id);
+        let order = stopping.take_settled(download_id);
+        assert!(matches!(
+            order.as_slice(),
+            [
+                DownloadCommand::PauseDownload { .. },
+                DownloadCommand::ResumeDownload { .. }
+            ]
+        ));
+        assert!(!gate.begin(), "the wait closed the gate behind the stop");
     }
 }

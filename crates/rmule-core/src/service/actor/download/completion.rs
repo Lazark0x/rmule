@@ -9,7 +9,9 @@ use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::download::source_seeds::SourceSeed;
-use crate::download::{FinalFileInPlace, Recovered, StopAnswer, file_link_from_record};
+use crate::download::{
+    CompletionGate, FinalFileInPlace, Recovered, StopAnswer, file_link_from_record,
+};
 use crate::registry::SharedFileRegistry;
 use crate::service::{CoreCommandRejectReason, DownloadId};
 use crate::storage::DownloadRepository;
@@ -63,11 +65,13 @@ where
     /// `Completing` row with no run is given one first, whose look at the
     /// disk says whether its file is in place. Refused with
     /// [`CoreCommandRejectReason::DownloadCompleting`] once it is; otherwise
-    /// the gate is closed and the caller stops the run.
+    /// the gate is closed and the caller stops the run. A run still settling
+    /// has no answer yet: its gate comes back, for the stop to wait on off
+    /// the actor.
     pub(in crate::service::actor) async fn stop_completion(
         &mut self,
         download_id: DownloadId,
-    ) -> Result<(), CoreCommandRejectReason> {
+    ) -> Result<Option<Arc<CompletionGate>>, CoreCommandRejectReason> {
         let completing = self
             .wiring
             .store
@@ -85,11 +89,12 @@ where
             .download(download_id)
             .map(|active| Arc::clone(&active.completion))
         else {
-            return Ok(());
+            return Ok(None);
         };
-        match gate.stop().await {
-            StopAnswer::Stopped => Ok(()),
-            StopAnswer::InPlace => Err(CoreCommandRejectReason::DownloadCompleting),
+        match gate.try_stop() {
+            Some(StopAnswer::Stopped) => Ok(None),
+            Some(StopAnswer::InPlace) => Err(CoreCommandRejectReason::DownloadCompleting),
+            None => Ok(Some(gate)),
         }
     }
 
