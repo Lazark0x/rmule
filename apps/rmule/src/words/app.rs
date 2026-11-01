@@ -10,7 +10,7 @@ use std::path::Path;
 
 use super::Sentence;
 use crate::config::{PrefEdit, UnfitDirectory};
-use rmule_core::{OpenRefusal, Opening};
+use rmule_core::Opening;
 
 use crate::state::AttachFailure;
 
@@ -81,7 +81,7 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
 pub fn attach_failure_words(failure: AttachFailure) -> String {
     match failure {
         AttachFailure::NoDataDir => NO_DATA_DIR.to_string(),
-        AttachFailure::OpenStore(refusal) => store_refusal(refusal),
+        AttachFailure::OpenStore(refusal) => crate::words::store::open_refusal(refusal),
         AttachFailure::PortMapSecret => "the port-mapping secret could not be read".to_string(),
         AttachFailure::Servers => "the server list could not be read".to_string(),
         AttachFailure::Preferences => "the preferences could not be read".to_string(),
@@ -89,40 +89,6 @@ pub fn attach_failure_words(failure: AttachFailure) -> String {
             "the web client for server-list updates could not start".to_string()
         }
     }
-}
-
-/// Why the store would not open, and what to keep: the file is the only link
-/// from each part file to its download, so no sentence may read as leave to
-/// delete it.
-fn store_refusal(refusal: OpenRefusal) -> String {
-    match refusal {
-        OpenRefusal::Busy => "another rmule is running on this data directory".to_string(),
-        OpenRefusal::Newer { found, current } => format!(
-            "rmule.redb is store version {found}, and this build reads up to {current}: \
-             run the newer rmule, and keep the file"
-        ),
-        OpenRefusal::TooOld { found } => format!(
-            "rmule.redb is store version {found}, older than this build can upgrade: \
-             keep the file and open it with an older rmule first"
-        ),
-        OpenRefusal::Damaged => "rmule.redb is damaged: keep it, and any rmule.redb.v file \
-             beside it, since they hold your downloads"
-            .to_string(),
-        OpenRefusal::Disk { os_code } => format!(
-            "the disk refused rmule.redb{}: free some space or check the permissions, \
-             then start rmule again",
-            os_code_clause(os_code)
-        ),
-        OpenRefusal::NotCopied { os_code } => format!(
-            "rmule.redb needs an upgrade, and the copy kept before one could not be made{}: \
-             free some space, then start rmule again; the file is as it was",
-            os_code_clause(os_code)
-        ),
-    }
-}
-
-fn os_code_clause(os_code: Option<i32>) -> String {
-    os_code.map_or_else(String::new, |code| format!(" (system code {code})"))
 }
 
 /// What a slow store open is doing, on the plain terminal before the screen

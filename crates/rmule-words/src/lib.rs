@@ -19,6 +19,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 pub mod app;
+pub mod cli;
 pub mod download;
 pub mod event;
 pub mod kad;

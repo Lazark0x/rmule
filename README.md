@@ -239,9 +239,23 @@ rmule-cli add 'ed2k://|file|name.iso|734003200|<hash>|/'
 ```
 
 `add` connects to the first server in the list and runs until the download
-finishes or fails. A link that names its own sources needs no server. `add`
+finishes or fails, or for `--timeout <seconds>`. Progress goes to stderr and
+results to stdout. A link that names its own sources needs no server. `add`
 reads `ipfilter.dat` and `ipfilter_static.dat` from the data directory when
 they exist.
+
+Scripts can read the exit code; `rmule-cli --help` lists them.
+
+| Code | |
+| --- | --- |
+| 0 | done |
+| 1 | anything else: the store, the disk, an internal fault |
+| 2 | the command line or the link could not be read |
+| 3 | the engine refused the download: no download directory, a name taken |
+| 4 | the download failed or was cancelled |
+| 5 | nothing to reach: no server and no source, or no connection |
+| 6 | `--timeout` ran out |
+| 7 | stopped by a signal |
 
 `rmule-cli kad join --bootstrap <ip:port>` joins the public Kad network and
 reports on the node, for 30 minutes unless `--duration <seconds>` says

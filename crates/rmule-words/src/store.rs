@@ -4,6 +4,42 @@
 
 use super::Sentence;
 
+/// Why the store would not open, and what to keep: the file is the only link
+/// from each part file to its download, so no sentence may read as leave to
+/// delete it.
+#[must_use]
+pub fn open_refusal(refusal: rmule_core::OpenRefusal) -> String {
+    use rmule_core::OpenRefusal;
+    match refusal {
+        OpenRefusal::Busy => "another rmule is running on this data directory".to_string(),
+        OpenRefusal::Newer { found, current } => format!(
+            "rmule.redb is store version {found}, and this build reads up to {current}: \
+             run the newer rmule, and keep the file"
+        ),
+        OpenRefusal::TooOld { found } => format!(
+            "rmule.redb is store version {found}, older than this build can upgrade: \
+             keep the file and open it with an older rmule first"
+        ),
+        OpenRefusal::Damaged => "rmule.redb is damaged: keep it, and any rmule.redb.v file \
+             beside it, since they hold your downloads"
+            .to_string(),
+        OpenRefusal::Disk { os_code } => format!(
+            "the disk refused rmule.redb{}: free some space or check the permissions, \
+             then start rmule again",
+            os_code_clause(os_code)
+        ),
+        OpenRefusal::NotCopied { os_code } => format!(
+            "rmule.redb needs an upgrade, and the copy kept before one could not be made{}: \
+             free some space, then start rmule again; the file is as it was",
+            os_code_clause(os_code)
+        ),
+    }
+}
+
+fn os_code_clause(os_code: Option<i32>) -> String {
+    os_code.map_or_else(String::new, |code| format!(" (system code {code})"))
+}
+
 /// A Settings edit on a run with no config store.
 pub const NO_CONFIG_STORE: Sentence = Sentence::fixed("no config store (UI-only run)");
 

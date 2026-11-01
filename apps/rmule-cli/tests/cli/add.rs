@@ -213,3 +213,94 @@ fn the_share_guards_refuse_the_data_dir_at_the_set_and_the_home_at_the_add() {
         ));
     assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
 }
+
+/// What a script reads: each way `add` can end short has its own code.
+#[test]
+fn each_way_an_add_ends_has_its_own_exit_code() {
+    let dir = tempdir().unwrap();
+    let downloads = tempdir().unwrap();
+    cli(dir.path())
+        .args(["add", "not a link"])
+        .assert()
+        .code(2)
+        .stderr(contains("rmule-cli: not a readable eD2k link"));
+    cli(dir.path())
+        .args(["add", LINK])
+        .assert()
+        .code(5)
+        .stderr(contains("no server configured"));
+    off_the_host(dir.path());
+    cli(dir.path())
+        .args(["add", SOURCED_LINK])
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .code(3)
+        .stderr(contains("no download directory configured"));
+    cli(dir.path())
+        .args(["config", "set-download-dir"])
+        .arg(downloads.path())
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["add", SOURCED_LINK])
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .code(4)
+        .stderr(contains("failed:"));
+}
+
+/// A server that accepts and never answers would hold an `add` for ever.
+#[test]
+fn add_stops_at_its_timeout_and_says_so() {
+    let dir = tempdir().unwrap();
+    let downloads = tempdir().unwrap();
+    off_the_host(dir.path());
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = silent.local_addr().unwrap().port();
+    cli(dir.path())
+        .args(["server", "add", &format!("127.0.0.1:{port}")])
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["config", "set-download-dir"])
+        .arg(downloads.path())
+        .assert()
+        .success();
+    cli(dir.path())
+        .args(["add", "--timeout", "2", LINK])
+        .timeout(std::time::Duration::from_secs(60))
+        .assert()
+        .code(6)
+        .stderr(contains("stopped after 2 seconds"));
+}
+
+#[test]
+fn version_and_the_exit_codes_are_on_the_front_door() {
+    let dir = tempdir().unwrap();
+    cli(dir.path())
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(contains("rmule-cli 0."));
+    cli(dir.path())
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("Exit codes:"))
+        .stdout(contains("ADR-").not())
+        .stdout(contains("6  --timeout ran out"));
+}
+
+/// The store's refusal reaches a script as the sentence the TUI says, not the
+/// engine's message.
+#[test]
+fn a_damaged_store_is_said_in_words() {
+    let dir = tempdir().unwrap();
+    std::fs::write(dir.path().join("rmule.redb"), b"not a store").unwrap();
+    cli(dir.path())
+        .args(["identity", "show"])
+        .assert()
+        .code(1)
+        .stderr(contains("rmule.redb is damaged: keep it"))
+        .stderr(contains("redb").and(contains("Error").not()));
+}

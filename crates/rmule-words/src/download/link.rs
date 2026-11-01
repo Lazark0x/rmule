@@ -2,6 +2,8 @@
 //! pasted, the fields a link carried that no client reads, and a link for a
 //! download already running.
 
+use rmule_primitives::PrimitiveError;
+
 use super::super::Sentence;
 use super::super::units::count;
 
@@ -35,6 +37,27 @@ pub enum LinkRefusal {
         /// The name the download runs under.
         name: String,
     },
+}
+
+impl LinkRefusal {
+    /// The refusal a reader error is: the classes an operator can act on
+    /// apart, everything else one "not readable".
+    #[must_use]
+    pub fn of(error: &PrimitiveError) -> Self {
+        match error {
+            PrimitiveError::InvalidHashLength { .. }
+            | PrimitiveError::InvalidHashEncoding { .. }
+            | PrimitiveError::InvalidPartHashSetCount { .. } => Self::BadHash,
+            PrimitiveError::FileTooLarge { .. } | PrimitiveError::FileSizeAboveLimit { .. } => {
+                Self::TooLarge
+            }
+            PrimitiveError::FileSizeZero => Self::ZeroSize,
+            PrimitiveError::DuplicateLinkField { field } => {
+                Self::DuplicateField((*field).to_string())
+            }
+            _ => Self::Unreadable,
+        }
+    }
 }
 
 /// The Add-link form's refusal, under its field.

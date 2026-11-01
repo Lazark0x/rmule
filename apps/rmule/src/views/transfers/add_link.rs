@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
-use rmule_primitives::{Ed2kFileLink, Ed2kLink, PrimitiveError, SafeFileName};
+use rmule_primitives::{Ed2kFileLink, Ed2kLink, SafeFileName};
 
 use super::TransfersView;
 use crate::action::Action;
@@ -71,28 +71,10 @@ fn read_link(text: &str) -> Result<(Ed2kFileLink, Vec<String>), LinkRefusal> {
     if text.is_empty() {
         return Err(LinkRefusal::Empty);
     }
-    let read = Ed2kLink::read(text).map_err(|error| refusal_of(&error))?;
+    let read = Ed2kLink::read(text).map_err(|error| LinkRefusal::of(&error))?;
     match read.link {
         Ed2kLink::File(file) => Ok((file, read.skipped_fields)),
         Ed2kLink::Server(_) | Ed2kLink::ServerList(_) => Err(LinkRefusal::NotAFileLink),
-    }
-}
-
-/// The refusal code a reader error is: the classes an operator can act on
-/// apart, everything else one "not readable".
-fn refusal_of(error: &PrimitiveError) -> LinkRefusal {
-    match error {
-        PrimitiveError::InvalidHashLength { .. }
-        | PrimitiveError::InvalidHashEncoding { .. }
-        | PrimitiveError::InvalidPartHashSetCount { .. } => LinkRefusal::BadHash,
-        PrimitiveError::FileTooLarge { .. } | PrimitiveError::FileSizeAboveLimit { .. } => {
-            LinkRefusal::TooLarge
-        }
-        PrimitiveError::FileSizeZero => LinkRefusal::ZeroSize,
-        PrimitiveError::DuplicateLinkField { field } => {
-            LinkRefusal::DuplicateField((*field).to_string())
-        }
-        _ => LinkRefusal::Unreadable,
     }
 }
 
