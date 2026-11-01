@@ -43,8 +43,10 @@ fn pty() -> (OwnedFd, File) {
     (master, terminal)
 }
 
-/// A data directory whose run touches no network, closed again before the
-/// run opens it.
+/// A data directory whose run reaches no host and no router, closed again
+/// before the run opens it. What is left is the interface listing's route
+/// lookup, a `connect` on a UDP socket to a non-routable address, which sends
+/// no datagram.
 fn offline_data_dir(home: &Path) {
     let data = home.join("data");
     std::fs::create_dir_all(&data).expect("the data directory");
