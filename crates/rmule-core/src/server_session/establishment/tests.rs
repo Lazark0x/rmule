@@ -163,7 +163,7 @@ async fn a_named_server_is_resolved_through_the_name_resolver() {
         true,
     );
     let shared_filter = SharedIpFilter::default();
-    *shared_filter.write().expect("ip filter lock") = filter;
+    *shared_filter.write() = filter;
     let shared = SharedServerSession::default();
     let resolver = crate::name_resolver::FakeNameResolver::knowing(&[(
         "srv.example.invalid",
