@@ -8,6 +8,7 @@
 //! cell that renders a dash has no value and sorts last either way.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use rmule_core::DownloadId;
 use rmule_primitives::ED2K_PART_SIZE;
@@ -204,26 +205,25 @@ impl SortedTable for DownloadsTable {
 
 impl TransfersView {
     /// Every download's line, in display order.
-    pub(super) fn sorted_lines(&self, state: &UiState) -> Vec<DownloadLine> {
-        let lines: Vec<DownloadLine> = state
-            .downloads
-            .keys()
-            .map(|id| DownloadLine::new(*id, state))
-            .collect();
-        let order = self.sort.order(&lines);
-        let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();
-        order
-            .into_iter()
-            .filter_map(|at| slots[at].take())
-            .collect()
+    pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[DownloadLine]> {
+        self.lines_memo.get((state.revision, self.sort), || {
+            let lines: Vec<DownloadLine> = state
+                .downloads
+                .keys()
+                .map(|id| DownloadLine::new(*id, state))
+                .collect();
+            let order = self.sort.order(&lines);
+            let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();
+            order
+                .into_iter()
+                .filter_map(|at| slots[at].take())
+                .collect()
+        })
     }
 
     /// Every download's id, in display order.
     pub(super) fn download_ids(&self, state: &UiState) -> Vec<DownloadId> {
-        self.sorted_lines(state)
-            .into_iter()
-            .map(|line| line.id)
-            .collect()
+        self.sorted_lines(state).iter().map(|line| line.id).collect()
     }
 
     /// Take up the downloads' sort as the durable preferences kept it.

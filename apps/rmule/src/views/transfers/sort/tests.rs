@@ -247,12 +247,14 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
         rmule_core::DownloadMetadataOrigin::Link,
     ));
     state.downloads.insert(download_id(4), early);
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(view.table_state.selected(), Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // The row above it leaves.
     state.downloads.remove(&download_id(1));
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
@@ -265,6 +267,7 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
 
     // Its own departure leaves the cursor as low as the table now goes.
     state.downloads.remove(&download_id(2));
+    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(selected(&mut view, &state), Some(download_id(4)));
 }

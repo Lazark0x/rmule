@@ -28,14 +28,14 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
-use rmule_core::{CoreCommand, SearchCommand};
+use rmule_core::{CoreCommand, SearchCommand, SearchId};
 use rmule_primitives::{Ed2kText, KeywordQuery};
 
 use super::ViewOutcome;
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
-use crate::table_sort::{RowMove, TableSort, TableSorts};
+use crate::table_sort::{Memo, RowMove, TableSort, TableSorts};
 use crate::theme::Theme;
 use filters::Filters;
 use held::HeldSearches;
@@ -71,6 +71,8 @@ pub struct SearchesView {
     menu_viewport: std::cell::Cell<Viewport>,
     /// The results' order. Per table and durable, not per search.
     sort: TableSort<ResultsTable>,
+    /// The current search's order under that sort.
+    order_memo: Memo<(u64, Option<SearchId>, TableSort<ResultsTable>), usize>,
     /// Every search of the run, each with its query and its own cursor.
     held: HeldSearches,
     /// `Some(cursor)` while the row-action menu is open; `cursor` indexes a

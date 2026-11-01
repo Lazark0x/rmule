@@ -61,7 +61,7 @@ use rmule_core::diagnostics::DownloadDiagnostics;
 use crate::action::Action;
 use crate::row_selection::viewport::{BAR_W, Viewport};
 use crate::state::{DownloadStatus, UiState};
-use crate::table_sort::{RowCursor, RowMove, TableSort};
+use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::views::{DrawnRows, ViewOutcome};
 use crate::wrap::{TableColumns, clamp_u16, greedy_widths, wrapped_lines};
@@ -132,6 +132,8 @@ enum Overlay {
 pub struct TransfersView {
     /// The downloads table's order.
     sort: TableSort<DownloadsTable>,
+    /// The table's lines under that sort.
+    lines_memo: Memo<(u64, TableSort<DownloadsTable>), sort::DownloadLine>,
     /// The selected download, by id; `table_state`'s index is its position
     /// in the current order, re-placed before every key and draw.
     cursor: RowCursor<DownloadId>,

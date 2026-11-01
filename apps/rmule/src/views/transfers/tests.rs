@@ -16,7 +16,10 @@ fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
     assert_eq!(view.table_state.selected(), Some(2));
 
     // Data shrinks to a single row: the next key clamps the stale index.
-    let mut small = UiState::default();
+    let mut small = UiState {
+        revision: 1,
+        ..UiState::default()
+    };
     small.downloads.insert(
         download_id(9),
         download_row(DownloadStatus::Waiting, 0x11, 1),

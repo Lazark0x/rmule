@@ -95,10 +95,15 @@ impl SearchesView {
         let Some(pane) = self.held.current_pane(state) else {
             return Vec::new();
         };
-        self.sort
-            .order(&pane.results)
-            .into_iter()
-            .map(|at| &pane.results[at])
+        let key = (
+            state.revision,
+            self.held.current().map(|entry| entry.id),
+            self.sort,
+        );
+        self.order_memo
+            .get(key, || self.sort.order(&pane.results))
+            .iter()
+            .map(|at| &pane.results[*at])
             .collect()
     }
 
@@ -323,6 +328,7 @@ mod tests {
         batch.push(server_result(0x44, "alpha.mkv", 10, 2, 0));
         batch.push(server_result(0x55, "beta.mkv", 10, 2, 0));
         state.searches.get_mut(&search_id).expect("pane").results = batch;
+        state.revision += 1;
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         assert_eq!(view.results_state.selected(), Some(3));
         assert_eq!(
@@ -344,6 +350,7 @@ mod tests {
             .expect("pane")
             .results
             .push(server_result(0x44, "alpha.mkv", 10, 2, 0));
+        state.revision += 1;
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         assert_eq!(view.results_state.selected(), Some(0));
         assert_eq!(
