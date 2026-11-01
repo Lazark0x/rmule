@@ -497,6 +497,37 @@ fn golden_transfers_narrow_headers_whole() {
 /// The Status column is floored at its widest word: no width splits or cuts
 /// `Downloading`, and from the canonical width up File keeps its room.
 #[test]
+fn a_fast_rate_scales_its_unit_and_keeps_the_speed_column_on_one_row() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut view = TransfersView::by_name();
+    let mut state = three_downloads();
+    // Past 999.9 KB/s the unit moves up, so the digits never outgrow the column.
+    state
+        .rates
+        .download_bps
+        .insert(download_id(1), 12_345.6 * 1024.0);
+    let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
+    terminal
+        .draw(|frame| view.draw(frame, frame.area(), &state, &Theme::default_dark(), now()))
+        .expect("draw");
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..GOLDEN_H)
+        .map(|y| {
+            (0..GOLDEN_W)
+                .map(|x| buffer.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                .collect::<String>()
+        })
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.contains("12.1 MB/s")),
+        "the rate left its row:\n{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
 fn no_width_cuts_a_status_word_and_the_name_keeps_its_room() {
     let state = three_downloads();
     for width in 60..=140 {
