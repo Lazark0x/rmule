@@ -6,6 +6,7 @@
 //! aMule draws `rand()` (stock 2.3.3 `PartFile.cpp:2025-2054`): the same
 //! inputs always give the same part.
 
+use rmule_peer::PartIndex;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -19,9 +20,9 @@ pub(super) struct RankInputs<'a> {
     /// The frequency at or under which a part is very rare.
     pub(super) very_rare_bound: u32,
     /// The **Preview Band**.
-    pub(super) band: &'a BTreeSet<u32>,
+    pub(super) band: &'a BTreeSet<PartIndex>,
     /// The **Streaming Window**.
-    pub(super) window: Range<u32>,
+    pub(super) window: Range<PartIndex>,
 }
 
 /// A candidate's rank; the minimum wins. Its fields compare in the order
@@ -37,14 +38,14 @@ pub(super) struct Rank {
     /// `0` inside the window, its frequency outside it.
     frequency: u32,
     /// Its index, so no two candidates tie.
-    part: u32,
+    part: PartIndex,
 }
 
 /// The rank of candidate `part`.
-pub(super) fn rank(part: u32, inputs: &RankInputs<'_>) -> Rank {
+pub(super) fn rank(part: PartIndex, inputs: &RankInputs<'_>) -> Rank {
     let frequency = inputs
         .frequency
-        .get(part as usize)
+        .get(part.value() as usize)
         .copied()
         .unwrap_or_default();
     let in_window = inputs.window.contains(&part);
@@ -71,7 +72,11 @@ pub(super) struct DuplicateRank {
 
 /// The [`DuplicateRank`] of a block of `part`, `finish` its expected arrival in
 /// seconds of its holder's rate.
-pub(super) fn duplicate_rank(part: u32, inputs: &RankInputs<'_>, finish: u64) -> DuplicateRank {
+pub(super) fn duplicate_rank(
+    part: PartIndex,
+    inputs: &RankInputs<'_>,
+    finish: u64,
+) -> DuplicateRank {
     let rank = rank(part, inputs);
     DuplicateRank {
         common: rank.common,
@@ -102,17 +107,17 @@ pub(super) fn very_rare_bound(known: u32) -> u32 {
 /// `PartFile.cpp:1958-1972`): the first, the last, and the last-but-one when
 /// the last part's length plus one is below `PARTSIZE / 3` — at most
 /// 3,242,664 bytes.
-pub(super) fn preview_band(file_size: u64) -> BTreeSet<u32> {
+pub(super) fn preview_band(file_size: u64) -> BTreeSet<PartIndex> {
     let parts = part_count(file_size);
     let mut band = BTreeSet::new();
     let Some(last) = parts.checked_sub(1) else {
         return band;
     };
-    band.insert(0);
-    band.insert(last);
+    band.insert(PartIndex::new(0));
+    band.insert(PartIndex::new(last));
     let last_len = file_size - u64::from(last) * ED2K_PART_SIZE;
     if last >= 1 && last_len + 1 < ED2K_PART_SIZE / 3 {
-        band.insert(last - 1);
+        band.insert(PartIndex::new(last - 1));
     }
     band
 }
@@ -126,15 +131,15 @@ mod tests {
     /// part's length plus one is under `PARTSIZE / 3`.
     #[test]
     fn the_preview_band_is_the_head_and_the_tail() {
-        assert_eq!(preview_band(ED2K_PART_SIZE), BTreeSet::from([0]));
-        assert_eq!(preview_band(2 * ED2K_PART_SIZE), BTreeSet::from([0, 1]));
-        assert_eq!(
-            preview_band(2 * ED2K_PART_SIZE + 3_242_664),
-            BTreeSet::from([0, 1, 2])
-        );
-        assert_eq!(
-            preview_band(2 * ED2K_PART_SIZE + 3_242_665),
-            BTreeSet::from([0, 2])
-        );
+        let band = |file_size| -> Vec<u32> {
+            preview_band(file_size)
+                .iter()
+                .map(|part| part.value())
+                .collect()
+        };
+        assert_eq!(band(ED2K_PART_SIZE), [0]);
+        assert_eq!(band(2 * ED2K_PART_SIZE), [0, 1]);
+        assert_eq!(band(2 * ED2K_PART_SIZE + 3_242_664), [0, 1, 2]);
+        assert_eq!(band(2 * ED2K_PART_SIZE + 3_242_665), [0, 2]);
     }
 }

@@ -326,7 +326,10 @@ fn scripted_worker(
         }
         match expectation {
             PlanExpectation::Count(expected) => assert_eq!(requested.len(), expected),
-            PlanExpectation::Indexes(expected) => assert_eq!(requested, expected),
+            PlanExpectation::Indexes(expected) => {
+                let requested: Vec<u32> = requested.iter().map(|part| part.value()).collect();
+                assert_eq!(requested, expected);
+            }
         }
     });
     PeerWorker::new(peer, command_tx, event_rx)

@@ -1,6 +1,7 @@
 //! Download-side byte accounting reaches the shared credit store: the download
 //! runner records bytes received from a peer, keyed by its UserHash. (Upload
 //! accounting over a real socket is covered in `serve_loopback`.)
+use rmule_peer::PartIndex;
 use std::sync::Arc;
 
 use rmule_core::DurableCreditStore;
@@ -66,7 +67,7 @@ impl PeerTransferService for CreditingPeerTransfer {
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = rmule_core::DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };

@@ -5,6 +5,8 @@
 //! (ADR-0112): very rare first, then the Preview Band, then the Streaming
 //! Window, then rarest.
 
+use rmule_peer::PartIndex;
+
 use rmule_peer::PartBitmap;
 use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE as B, Ipv4Endpoint, PeerEndpoint, part_count};
 
@@ -21,8 +23,17 @@ fn peer(last_octet: u8) -> PeerEndpoint {
 }
 
 /// A rarest-first scheduler over `file_size` bytes, `verified` already done.
+/// The set of parts numbered `indexes`.
+fn parts<const N: usize>(indexes: [u32; N]) -> BTreeSet<PartIndex> {
+    indexes.map(PartIndex::new).into()
+}
+
 fn rarest(file_size: u64, verified: impl IntoIterator<Item = u32>) -> DownloadScheduler {
-    DownloadScheduler::new(file_size, verified, PartOrder::Rarest)
+    DownloadScheduler::new(
+        file_size,
+        verified.into_iter().map(PartIndex::new),
+        PartOrder::Rarest,
+    )
 }
 
 /// Advertised Parts over `count` parts, holding `held`.
@@ -44,13 +55,13 @@ fn hand(scheduler: &mut DownloadScheduler, peer: PeerEndpoint, room: usize) -> V
 }
 
 /// What a part's Arrived Ranges show.
-struct Arrived(BTreeMap<u32, ByteRanges>);
+struct Arrived(BTreeMap<PartIndex, ByteRanges>);
 
 impl Progress for Arrived {
     fn rate(&self, _: PeerEndpoint) -> Option<u64> {
         None
     }
-    fn arrived(&self, part_index: u32) -> Option<&ByteRanges> {
+    fn arrived(&self, part_index: PartIndex) -> Option<&ByteRanges> {
         self.0.get(&part_index)
     }
 }
@@ -78,7 +89,7 @@ fn hands_unclaimed_blocks_on_each_parts_grid_one_worker_per_block() {
         (ED2K_PART_SIZE, ED2K_PART_SIZE + B),
         "the room carries on into the next-ranked part"
     );
-    assert_eq!(scheduler.parts_of(peer(2)), BTreeSet::from([0, 1]));
+    assert_eq!(scheduler.parts_of(peer(2)), parts([0, 1]));
 }
 
 #[test]
@@ -100,13 +111,13 @@ fn arrivals_settle_claims_and_off_grid_gaps_are_handed_exactly() {
     // Another worker's copy a byte short of the grid, and the second block.
     arrived.insert(0, B - 1);
     arrived.insert(B, 2 * B);
-    scheduler.settle(0, &arrived);
+    scheduler.settle(PartIndex::new(0), &arrived);
     assert_eq!(
         scheduler.parts_of(peer(1)),
-        BTreeSet::from([0]),
+        parts([0]),
         "block 0 is a byte short"
     );
-    let progress = Arrived(BTreeMap::from([(0, arrived.clone())]));
+    let progress = Arrived(BTreeMap::from([(PartIndex::new(0), arrived.clone())]));
     let parts = PartBitmap::all_present(1);
     let Handout::Blocks { blocks, .. } = scheduler.hand(peer(2), 2, &parts, &[], 0, &progress)
     else {
@@ -119,7 +130,7 @@ fn arrivals_settle_claims_and_off_grid_gaps_are_handed_exactly() {
         "block 0 is still claimed"
     );
     arrived.insert(B - 1, B);
-    scheduler.settle(0, &arrived);
+    scheduler.settle(PartIndex::new(0), &arrived);
     assert!(!scheduler.holds_claims(peer(1)));
 }
 
@@ -129,7 +140,7 @@ fn arrivals_settle_claims_and_off_grid_gaps_are_handed_exactly() {
 fn a_release_frees_every_block_and_a_loss_only_its_range() {
     let mut scheduler = rarest(ED2K_PART_SIZE, []);
     let first = hand(&mut scheduler, peer(1), 3);
-    assert_eq!(scheduler.release(peer(1)), vec![0]);
+    assert_eq!(scheduler.release(peer(1)), vec![PartIndex::new(0)]);
     assert_eq!(hand(&mut scheduler, peer(2), 3), first);
 
     scheduler.lose(peer(2), B + 10, 2 * B);
@@ -168,7 +179,7 @@ fn part_states_place_each_part_by_index_through_a_whole_download() {
     assert_eq!(scheduler.part_states()[0], PartState::Missing);
     // A part whose bytes are all in is in flight while it verifies, and never
     // handed meanwhile.
-    scheduler.verifying(0);
+    scheduler.verifying(PartIndex::new(0));
     assert_eq!(scheduler.part_states()[0], PartState::InFlight);
     assert_eq!(
         hand(&mut scheduler, peer(2), 1),
@@ -176,7 +187,7 @@ fn part_states_place_each_part_by_index_through_a_whole_download() {
     );
     scheduler.release(peer(2));
     for part in [0, 2, 3] {
-        assert!(scheduler.complete_verified(part).is_some());
+        assert!(scheduler.complete_verified(PartIndex::new(part)).is_some());
     }
     assert!(scheduler.is_complete());
     assert_eq!(scheduler.part_states(), vec![PartState::Verified; 4]);
@@ -195,7 +206,7 @@ fn fresh_order(
     (1..=u8::MAX)
         .map_while(
             |n| match scheduler.hand(peer(n), PART_BLOCKS, &parts, frequency, known, &()) {
-                Handout::Blocks { blocks, .. } => Some(blocks[0].part_index),
+                Handout::Blocks { blocks, .. } => Some(blocks[0].part_index.value()),
                 Handout::Nothing { .. } => None,
             },
         )
@@ -239,8 +250,11 @@ fn the_band_beats_the_window_which_ascends_before_the_rarest() {
 #[test]
 fn a_resumed_run_anchors_its_window_at_its_lowest_unverified_part() {
     let size = 6 * ED2K_PART_SIZE - 1;
-    let mut scheduler =
-        DownloadScheduler::new(size, [0, 1, 5], PartOrder::Streaming { window_parts: 2 });
+    let mut scheduler = DownloadScheduler::new(
+        size,
+        [0, 1, 5].map(PartIndex::new),
+        PartOrder::Streaming { window_parts: 2 },
+    );
     assert_eq!(
         fresh_order(&mut scheduler, size, &[0, 0, 9, 7, 5, 0], 20),
         vec![2, 3, 4]
@@ -252,8 +266,11 @@ fn a_resumed_run_anchors_its_window_at_its_lowest_unverified_part() {
 #[test]
 fn no_window_ranks_very_rare_then_frequency_then_index() {
     let size = 6 * ED2K_PART_SIZE - 1;
-    let mut scheduler =
-        DownloadScheduler::new(size, [0, 1, 5], PartOrder::Streaming { window_parts: 0 });
+    let mut scheduler = DownloadScheduler::new(
+        size,
+        [0, 1, 5].map(PartIndex::new),
+        PartOrder::Streaming { window_parts: 0 },
+    );
     assert_eq!(
         fresh_order(&mut scheduler, size, &[0, 0, 2, 7, 5, 0], 20),
         vec![2, 4, 3]
@@ -272,7 +289,7 @@ fn no_window_ranks_very_rare_then_frequency_then_index() {
 fn a_worker_is_handed_only_parts_it_advertised() {
     let mut scheduler = rarest(2 * ED2K_PART_SIZE + 1, []);
     let part = |handout: Handout| match handout {
-        Handout::Blocks { blocks, .. } => Some(blocks[0].part_index),
+        Handout::Blocks { blocks, .. } => Some(blocks[0].part_index.value()),
         Handout::Nothing { .. } => None,
     };
     let every = holding(3, &[0, 1, 2]);
@@ -293,7 +310,7 @@ fn a_worker_is_handed_only_parts_it_advertised() {
         scheduler.hand(peer(4), 1, &holding(3, &[]), &[], 0, &()),
         Handout::Nothing { lacked: false }
     );
-    scheduler.complete_verified(0);
+    scheduler.complete_verified(PartIndex::new(0));
     assert_eq!(
         scheduler.hand(peer(5), 1, &holding(3, &[0]), &[], 0, &()),
         Handout::Nothing { lacked: false },
@@ -311,7 +328,7 @@ impl Progress for Rates {
             .find(|(p, _)| *p == peer)
             .map(|&(_, rate)| rate)
     }
-    fn arrived(&self, _: u32) -> Option<&ByteRanges> {
+    fn arrived(&self, _: PartIndex) -> Option<&ByteRanges> {
         None
     }
 }
@@ -382,7 +399,10 @@ fn the_end_game_duplicates_only_within_its_bound() {
     for (start, end) in set {
         arrived.insert(start, end);
     }
-    scheduler.settle(0, &arrived);
-    assert_eq!(scheduler.parts_of(slow), BTreeSet::from([0]));
+    scheduler.settle(PartIndex::new(0), &arrived);
+    assert_eq!(
+        scheduler.parts_of(slow),
+        BTreeSet::from([PartIndex::new(0)])
+    );
     assert!(!scheduler.holds_claims(worker), "its set settled");
 }

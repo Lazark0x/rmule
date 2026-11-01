@@ -3,6 +3,8 @@
 //! distinct IPs agree, and the provisional hash-set authority a set that is
 //! not the file's own is refused against.
 
+use rmule_peer::PartIndex;
+
 use super::super::aich::{AichVote, AichVoter, MAX_VOTERS, masked_ip};
 use super::*;
 
@@ -31,7 +33,7 @@ fn part_awaiting_recovery(granted_two: Instant) -> (DownloadState, AichRootHash)
             granted_two,
             at,
             PeerWorkerEvent::BlockReceived {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset,
                 bytes: vec![0_u8; EMBLOCKSIZE as usize],
             },
@@ -51,7 +53,7 @@ fn recovery_asked(decisions: &[Decision]) -> Vec<PeerEndpoint> {
 fn part_fails(state: &mut DownloadState, now: Instant) -> Vec<Decision> {
     state.on_persist_result(
         now,
-        0,
+        PartIndex::new(0),
         peer(2),
         Err(DownloadFailure::PartVerificationFailed),
     )
@@ -114,7 +116,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: true_bytes[..emb].to_vec(),
         },
@@ -123,7 +125,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: EMBLOCKSIZE,
             bytes: corrupt_block1,
         },
@@ -132,7 +134,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 2 * EMBLOCKSIZE,
             bytes: true_bytes[2 * emb..3 * emb].to_vec(),
         },
@@ -141,15 +143,15 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
         t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 3 * EMBLOCKSIZE,
             bytes: true_bytes[3 * emb..].to_vec(),
         },
     );
     assert!(
-        completing
-            .iter()
-            .any(|d| matches!(d, Decision::PersistPart { part_index: 0, .. })),
+        completing.iter().any(
+            |d| matches!(d, Decision::PersistPart { part_index, .. } if part_index.value() == 0)
+        ),
         "the completed prefix round-trips through PersistPart: {completing:?}"
     );
 
@@ -157,7 +159,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
     // recovery data rather than retiring everyone up front.
     let failed = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
-        0,
+        PartIndex::new(0),
         peer(2),
         Err(DownloadFailure::PartVerificationFailed),
     );
@@ -216,7 +218,7 @@ fn aich_recovery_retires_only_the_corrupt_blocks_peer_and_hands_only_that_block(
             peer(2),
             PeerWorkerCommand::RequestBlocks {
                 blocks: vec![crate::BlockPlan {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     start: EMBLOCKSIZE,
                     end: 2 * EMBLOCKSIZE,
                 }],
@@ -376,7 +378,7 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: corrupt_block0,
         },
@@ -385,14 +387,14 @@ fn an_aich_attributed_corrupt_block_distrusts_only_its_sender() {
         t0(),
         peer(2),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: EMBLOCKSIZE,
             bytes: true_bytes[emb..].to_vec(),
         },
     );
     let _ = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
-        0,
+        PartIndex::new(0),
         peer(2),
         Err(DownloadFailure::PartVerificationFailed),
     );

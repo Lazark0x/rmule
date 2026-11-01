@@ -1,6 +1,8 @@
 //! A block's packets on their way to core: gathered to the block, handed over
 //! within their wait, and never behind what the peer said after them.
 
+use rmule_peer::PartIndex;
+
 use std::time::Duration;
 
 use rmule_peer::{PeerEvent, RequesterEvent};
@@ -83,7 +85,7 @@ async fn a_block_framed_in_packets_reaches_core_as_one() {
             .filter(|event| matches!(event, PeerWorkerEvent::BlockReceived { .. }))
             .collect::<Vec<_>>(),
         vec![&PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes,
         }]

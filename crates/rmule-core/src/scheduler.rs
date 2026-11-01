@@ -59,7 +59,7 @@ impl PartOrder {
     }
 
     /// The Preview Band of a `file_size`-byte file in this order.
-    fn band(self, file_size: u64) -> BTreeSet<u32> {
+    fn band(self, file_size: u64) -> BTreeSet<PartIndex> {
         match self {
             Self::Rarest => BTreeSet::new(),
             Self::Streaming { .. } => preview_band(file_size),
@@ -83,10 +83,10 @@ pub(crate) trait Progress {
     /// `peer`'s Delivery Rate in bytes per second, `None` until measured.
     fn rate(&self, peer: PeerEndpoint) -> Option<u64>;
     /// The Arrived Ranges of `part_index`; `None` when nothing of it arrived.
-    fn arrived(&self, part_index: u32) -> Option<&ByteRanges>;
+    fn arrived(&self, part_index: PartIndex) -> Option<&ByteRanges>;
     /// The Failed Cells `part_index` keeps from an attempt that failed with
     /// no root; `None` for a part that has not failed so.
-    fn failed_cells(&self, _part_index: u32) -> Option<&Attempt> {
+    fn failed_cells(&self, _part_index: PartIndex) -> Option<&Attempt> {
         None
     }
 }
@@ -95,7 +95,7 @@ impl Progress for () {
     fn rate(&self, _: PeerEndpoint) -> Option<u64> {
         None
     }
-    fn arrived(&self, _: u32) -> Option<&ByteRanges> {
+    fn arrived(&self, _: PartIndex) -> Option<&ByteRanges> {
         None
     }
 }
@@ -132,11 +132,11 @@ pub(crate) struct DownloadScheduler {
     /// How many parts the file has, so the scheduler answers for every index.
     total_parts: u32,
     /// Every part not yet verified.
-    missing: BTreeSet<u32>,
+    missing: BTreeSet<PartIndex>,
     /// The missing parts whose bytes have all arrived, awaiting their check.
-    verifying: BTreeSet<u32>,
+    verifying: BTreeSet<PartIndex>,
     /// Every Claimed Block, by part.
-    claims: BTreeMap<u32, Vec<Claim>>,
+    claims: BTreeMap<PartIndex, Vec<Claim>>,
     /// Moves with every change [`Self::part_states`] could read, and only
     /// those: a block that settles short of a part leaves it standing.
     parts_generation: u64,
@@ -144,7 +144,7 @@ pub(crate) struct DownloadScheduler {
     /// the order it asks them in.
     next_seq: u64,
     /// The **Preview Band**, empty outside Streaming Priority.
-    band: BTreeSet<u32>,
+    band: BTreeSet<PartIndex>,
     /// The **Streaming Window**'s width; `0` for none.
     window_parts: u32,
 }
@@ -157,15 +157,18 @@ impl DownloadScheduler {
     #[must_use]
     pub(crate) fn new(
         file_size: u64,
-        verified_parts: impl IntoIterator<Item = u32>,
+        verified_parts: impl IntoIterator<Item = PartIndex>,
         order: PartOrder,
     ) -> Self {
         let total_parts = rmule_primitives::part_count(file_size);
-        let verified: HashSet<u32> = verified_parts.into_iter().collect();
+        let verified: HashSet<PartIndex> = verified_parts.into_iter().collect();
         Self {
             file_size,
             total_parts,
-            missing: (0..total_parts).filter(|p| !verified.contains(p)).collect(),
+            missing: (0..total_parts)
+                .map(PartIndex::new)
+                .filter(|p| !verified.contains(p))
+                .collect(),
             verifying: BTreeSet::new(),
             claims: BTreeMap::new(),
             parts_generation: 0,
@@ -195,7 +198,7 @@ impl DownloadScheduler {
             band: &self.band,
             window: self.window(),
         };
-        let held = |part: u32| parts.has(PartIndex::new(part));
+        let held = |part: PartIndex| parts.has(part);
         let fresh = self.fresh_blocks(peer, room, &held, &inputs, progress);
         let (blocks, duplicate) = if fresh.is_empty() {
             (
@@ -230,7 +233,7 @@ impl DownloadScheduler {
 
     /// The blocks of `part_index` that have arrived are done: every claim its
     /// Arrived Ranges `arrived` now cover ends, whoever delivered it.
-    pub(crate) fn settle(&mut self, part_index: u32, arrived: &ByteRanges) {
+    pub(crate) fn settle(&mut self, part_index: PartIndex, arrived: &ByteRanges) {
         if let Some(claims) = self.claims.get_mut(&part_index) {
             claims.retain(|claim| !arrived.covers(claim.start, claim.end));
             if claims.is_empty() {
@@ -243,7 +246,7 @@ impl DownloadScheduler {
     /// Free every block `peer` holds — its worker ended or was requeued — for
     /// the next worker with room. Answers the parts it held blocks of, in
     /// order.
-    pub(crate) fn release(&mut self, peer: PeerEndpoint) -> Vec<u32> {
+    pub(crate) fn release(&mut self, peer: PeerEndpoint) -> Vec<PartIndex> {
         let mut parts = Vec::new();
         self.claims.retain(|&part, claims| {
             let before = claims.len();
@@ -273,7 +276,7 @@ impl DownloadScheduler {
 
     /// Every byte of `part_index` has arrived: it is verifying, and no block
     /// of it is claimed any more.
-    pub(crate) fn verifying(&mut self, part_index: u32) {
+    pub(crate) fn verifying(&mut self, part_index: PartIndex) {
         if self.missing.contains(&part_index) {
             self.parts_generation += 1;
             self.verifying.insert(part_index);
@@ -283,7 +286,7 @@ impl DownloadScheduler {
 
     /// `part_index` verified: it is done. Answers its plan, or `None` when it
     /// was not missing.
-    pub(crate) fn complete_verified(&mut self, part_index: u32) -> Option<PartPlan> {
+    pub(crate) fn complete_verified(&mut self, part_index: PartIndex) -> Option<PartPlan> {
         self.parts_generation += 1;
         self.verifying.remove(&part_index);
         self.claims.remove(&part_index);
@@ -294,7 +297,7 @@ impl DownloadScheduler {
 
     /// `part_index` failed its check, or its corrupt blocks were dropped: it
     /// is fetched again, from what its Arrived Ranges still hold.
-    pub(crate) fn failed(&mut self, part_index: u32) {
+    pub(crate) fn failed(&mut self, part_index: PartIndex) {
         self.parts_generation += 1;
         self.verifying.remove(&part_index);
     }
@@ -302,7 +305,7 @@ impl DownloadScheduler {
     /// Return a verified part to the missing set: its record was disproved,
     /// and it is fetched again. `false` when the part was not verified.
     pub(crate) fn repend_verified(&mut self, plan: PartPlan) -> bool {
-        if plan.part_index >= self.total_parts || !self.is_part_verified(plan.part_index) {
+        if !self.is_part_verified(plan.part_index) {
             return false;
         }
         self.parts_generation += 1;
@@ -312,8 +315,8 @@ impl DownloadScheduler {
 
     /// Drop every claim for a teardown that has to release what workers were
     /// holding: each worker and a part it held blocks of, by part.
-    pub(crate) fn take_in_flight(&mut self) -> Vec<(PeerEndpoint, u32)> {
-        let mut held: Vec<(PeerEndpoint, u32)> = Vec::new();
+    pub(crate) fn take_in_flight(&mut self) -> Vec<(PeerEndpoint, PartIndex)> {
+        let mut held: Vec<(PeerEndpoint, PartIndex)> = Vec::new();
         for (&part, claims) in &self.claims {
             for claim in claims {
                 if !held.contains(&(claim.holder, part)) {
@@ -341,8 +344,8 @@ impl DownloadScheduler {
     /// Whether part `part_index` is verified — the query for our own
     /// availability bitfield in a source-reask ping (ADR-0057).
     #[must_use]
-    pub(crate) fn is_part_verified(&self, part_index: u32) -> bool {
-        part_index < self.total_parts && !self.missing.contains(&part_index)
+    pub(crate) fn is_part_verified(&self, part_index: PartIndex) -> bool {
+        part_index.value() < self.total_parts && !self.missing.contains(&part_index)
     }
 
     /// Whether `peer` holds a Claimed Block.
@@ -357,7 +360,7 @@ impl DownloadScheduler {
 
     /// The parts `peer` holds a Claimed Block of.
     #[must_use]
-    pub(crate) fn parts_of(&self, peer: PeerEndpoint) -> BTreeSet<u32> {
+    pub(crate) fn parts_of(&self, peer: PeerEndpoint) -> BTreeSet<PartIndex> {
         self.claims
             .iter()
             .filter(|(_, claims)| claims.iter().any(|claim| claim.holder == peer))
@@ -373,14 +376,15 @@ impl DownloadScheduler {
     pub(crate) fn lacks_any_of(&self, parts: &PartBitmap) -> bool {
         parts
             .iter_present()
-            .any(|part| !self.is_part_verified(part.value()))
+            .any(|part| !self.is_part_verified(part))
     }
 
     /// The **Streaming Window**: `window_parts` parts from the lowest
     /// unverified one, so it slides as its anchor verifies.
-    fn window(&self) -> std::ops::Range<u32> {
-        self.missing.first().map_or(0..0, |&anchor| {
-            anchor..anchor.saturating_add(self.window_parts)
+    fn window(&self) -> std::ops::Range<PartIndex> {
+        let empty = PartIndex::new(0)..PartIndex::new(0);
+        self.missing.first().map_or(empty, |&anchor| {
+            anchor..PartIndex::new(anchor.value().saturating_add(self.window_parts))
         })
     }
 
@@ -392,6 +396,7 @@ impl DownloadScheduler {
     #[must_use]
     pub(crate) fn part_states(&self) -> Vec<PartState> {
         (0..self.total_parts)
+            .map(PartIndex::new)
             .map(|index| {
                 if !self.missing.contains(&index) {
                     PartState::Verified

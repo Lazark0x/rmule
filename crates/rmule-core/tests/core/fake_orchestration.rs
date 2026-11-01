@@ -3,6 +3,7 @@
 //! crypt-capable source dialed obfuscated, and the peer hello dropping the
 //! tags that belong only to a server login.
 use parking_lot::Mutex;
+use rmule_peer::PartIndex;
 use rmule_testkit::HANG_GUARD;
 use std::sync::Arc;
 
@@ -42,7 +43,7 @@ async fn fake_adapters_drive_happy_path_download_events() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -346,7 +347,7 @@ impl PeerTransferService for FirstPartThenBlocked {
                             .await;
                         let _ = event_tx
                             .send(PeerWorkerEvent::BlockReceived {
-                                part_index: 0,
+                                part_index: PartIndex::new(0),
                                 offset: 0,
                                 bytes: first_part.clone(),
                             })
@@ -464,7 +465,7 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
     let transfer = CapturePeerCrypt {
         captured: captured.clone(),
         part: DownloadedPart {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: bytes.clone(),
         },

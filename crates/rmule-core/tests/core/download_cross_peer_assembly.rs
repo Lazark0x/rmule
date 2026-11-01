@@ -4,6 +4,8 @@
 //! AICH root keeps every worker, and its verified refetch names the sender of
 //! the cell that changed.
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -235,7 +237,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                             // bytes core kept are what the next peer is spared.
                             let _ = event_tx
                                 .send(PeerWorkerEvent::BlockReceived {
-                                    part_index: 0,
+                                    part_index: PartIndex::new(0),
                                     offset: 0,
                                     bytes: bytes[..drop_at].to_vec(),
                                 })
@@ -244,7 +246,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                             break;
                         }
                         let part = rmule_core::DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };
@@ -304,7 +306,7 @@ impl PeerTransferService for CorruptOnceTransfer {
                             bytes[blocks[0].start as usize] ^= 0xFF;
                         }
                         let part = rmule_core::DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes,
                         };

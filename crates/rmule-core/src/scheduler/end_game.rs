@@ -4,6 +4,7 @@
 //! first. A block is asked of at most two workers, and a worker holds one
 //! unsettled set at a time, so each set wastes at most 3 × `EMBLOCKSIZE`.
 
+use rmule_peer::PartIndex;
 use rmule_primitives::PeerEndpoint;
 
 use super::claims::Claim;
@@ -20,7 +21,7 @@ impl DownloadScheduler {
         &self,
         peer: PeerEndpoint,
         room: usize,
-        held: &impl Fn(u32) -> bool,
+        held: &impl Fn(PartIndex) -> bool,
         inputs: &RankInputs<'_>,
         progress: &impl Progress,
     ) -> Vec<BlockPlan> {

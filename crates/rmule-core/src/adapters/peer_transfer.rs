@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use rmule_net::peer::Connection as PeerConnection;
 use rmule_peer::{
-    PartBitmap, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand, WireStatus,
+    PartBitmap, PartIndex, PeerCommand, PeerHandshakeContext, PeerIdentity, SideCommand, WireStatus,
 };
 use rmule_primitives::{
     AichRootHash, ClientId, Ed2kFileLink, Ipv4Endpoint, PartHash, PeerCrypt, PeerEndpoint,
@@ -42,7 +42,7 @@ use download_road::DownloadRoad;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadedPart {
     /// The zero-based part index the bytes fall in.
-    pub part_index: u32,
+    pub part_index: PartIndex,
     /// The absolute file offset of the first byte — not an offset within the
     /// part.
     pub offset: u64,
@@ -172,7 +172,7 @@ pub enum PeerWorkerEvent {
     /// decides no completion.
     BlockReceived {
         /// The zero-based part the block belongs to.
-        part_index: u32,
+        part_index: PartIndex,
         /// The block's absolute file offset.
         offset: u64,
         /// The block's contents.

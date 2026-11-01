@@ -3,6 +3,8 @@
 //! any lookup answers; a stale set is dropped unread; a finished download
 //! keeps none; and the operator's count bounds the write.
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex;
 use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
@@ -386,7 +388,7 @@ async fn a_completed_download_keeps_no_seeds() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes,
                 }],

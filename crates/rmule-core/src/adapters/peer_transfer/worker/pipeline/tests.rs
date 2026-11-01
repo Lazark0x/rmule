@@ -17,7 +17,7 @@ fn handed(start: u64, end: u64) -> Vec<BlockPlan> {
             ((at % ED2K_PART_SIZE) / BLOCK + 1) * BLOCK + (at / ED2K_PART_SIZE) * ED2K_PART_SIZE;
         let stop = stop.min(part_end).min(end);
         blocks.push(BlockPlan {
-            part_index: (at / ED2K_PART_SIZE) as u32,
+            part_index: rmule_peer::PartIndex::new((at / ED2K_PART_SIZE) as u32),
             start: at,
             end: stop,
         });

@@ -4,6 +4,8 @@
 //! and the two ways a peer's claimed hashes are rejected — mismatching the
 //! link, or mismatching an authority an earlier run already committed.
 
+use rmule_peer::PartIndex;
+
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
 
@@ -40,7 +42,7 @@ async fn small_file_without_part_hash_set_rejects_corrupt_bytes_on_arrival() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: corrupt,
                 }],
@@ -95,12 +97,12 @@ async fn multipart_link_part_hash_set_verifies_each_part() {
                 peer_hashes: hashes.clone(),
                 parts: vec![
                     DownloadedPart {
-                        part_index: 0,
+                        part_index: PartIndex::new(0),
                         offset: 0,
                         bytes: first,
                     },
                     DownloadedPart {
-                        part_index: 1,
+                        part_index: PartIndex::new(1),
                         offset: ED2K_PART_SIZE,
                         bytes: second,
                     },
@@ -161,12 +163,12 @@ async fn a_link_hash_set_that_is_not_the_files_own_is_dropped_and_the_peers_set_
                 peer_hashes: honest,
                 parts: vec![
                     DownloadedPart {
-                        part_index: 0,
+                        part_index: PartIndex::new(0),
                         offset: 0,
                         bytes: bytes[..ED2K_PART_SIZE as usize].to_vec(),
                     },
                     DownloadedPart {
-                        part_index: 1,
+                        part_index: PartIndex::new(1),
                         offset: ED2K_PART_SIZE,
                         bytes: bytes[ED2K_PART_SIZE as usize..].to_vec(),
                     },
@@ -256,12 +258,12 @@ async fn first_peer_hash_set_without_link_parts_is_persisted_as_provisional_auth
                 peer_hashes: hashes.clone(),
                 parts: vec![
                     DownloadedPart {
-                        part_index: 0,
+                        part_index: PartIndex::new(0),
                         offset: 0,
                         bytes: first,
                     },
                     DownloadedPart {
-                        part_index: 1,
+                        part_index: PartIndex::new(1),
                         offset: ED2K_PART_SIZE,
                         bytes: second,
                     },
@@ -427,7 +429,7 @@ impl PeerTransferService for MismatchedThenSuccess {
                             })
                             .await;
                         let part = DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };

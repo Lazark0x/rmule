@@ -2,6 +2,8 @@
 //! the range before the next decision, a set that arrives late or disproves
 //! a part, and the identity a pause leaves.
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex;
 use std::collections::{HashSet, VecDeque};
 use std::net::Ipv4Addr;
@@ -213,7 +215,7 @@ where
 
 fn persist(bytes: &[u8], part_index: u32) -> Decision {
     Decision::PersistPart {
-        part_index,
+        part_index: PartIndex::new(part_index),
         peer: PeerEndpoint::V4(SOURCE),
         offset: u64::from(part_index) * ED2K_PART_SIZE,
         bytes: part_bytes(bytes, part_index).to_vec(),

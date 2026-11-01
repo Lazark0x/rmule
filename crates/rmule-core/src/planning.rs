@@ -3,6 +3,7 @@
 //! as `part_count` counts them — an exact multiple of the part size has no
 //! trailing empty part — so every consumer sees the same geometry.
 
+use rmule_peer::PartIndex;
 use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE};
 
 /// One part's geometry: which part it is and the byte range it covers. Derived
@@ -11,7 +12,7 @@ use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PartPlan {
     /// The zero-based part index within the file.
-    pub part_index: u32,
+    pub part_index: PartIndex,
     /// The part's first byte offset in the file — `part_index * ED2K_PART_SIZE`.
     pub offset: u64,
     /// Its length in bytes: the full part size except for the file's last part,
@@ -47,7 +48,7 @@ impl PartPlan {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockPlan {
     /// The zero-based part the block lies in.
-    pub part_index: u32,
+    pub part_index: PartIndex,
     /// Its first byte's offset in the file.
     pub start: u64,
     /// The offset just past its last byte.
@@ -57,8 +58,8 @@ pub struct BlockPlan {
 /// The byte range of a single ED2K part within a file of `file_size`. The
 /// last part is short when the file size is not a whole multiple of
 /// `ED2K_PART_SIZE`.
-pub(crate) fn part_plan(file_size: u64, part_index: u32) -> PartPlan {
-    let offset = u64::from(part_index) * ED2K_PART_SIZE;
+pub(crate) fn part_plan(file_size: u64, part_index: PartIndex) -> PartPlan {
+    let offset = u64::from(part_index.value()) * ED2K_PART_SIZE;
     let remaining = file_size.saturating_sub(offset);
     PartPlan {
         part_index,
@@ -79,15 +80,15 @@ mod tests {
         let exact = ED2K_PART_SIZE * 2;
         assert_eq!(part_count(exact), 2);
         assert_eq!(
-            part_plan(exact, 1),
+            part_plan(exact, PartIndex::new(1)),
             PartPlan {
-                part_index: 1,
+                part_index: PartIndex::new(1),
                 offset: ED2K_PART_SIZE,
                 len: ED2K_PART_SIZE,
             }
         );
         let short = ED2K_PART_SIZE * 2 + 12_345;
         assert_eq!(part_count(short), 3);
-        assert_eq!(part_plan(short, 2).len, 12_345);
+        assert_eq!(part_plan(short, PartIndex::new(2)).len, 12_345);
     }
 }

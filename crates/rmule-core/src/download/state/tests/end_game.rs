@@ -2,6 +2,8 @@
 //! handed a Duplicate Set of a slower worker's blocks instead of giving its
 //! slot back; the first copy to arrive wins and the other is dropped.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 use rmule_primitives::EMBLOCKSIZE as B;
 
@@ -20,7 +22,7 @@ fn deliver(
         at,
         from,
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset,
             bytes: vec![0x5A; len as usize],
         },
@@ -120,8 +122,9 @@ fn a_drained_fast_worker_doubles_the_slow_workers_last_blocks_within_the_bound()
         last = deliver(&mut state, at, fast, start, end - start);
     }
     assert!(
-        last.iter()
-            .any(|d| matches!(d, Decision::PersistPart { part_index: 0, .. })),
+        last.iter().any(
+            |d| matches!(d, Decision::PersistPart { part_index, .. } if part_index.value() == 0)
+        ),
         "the fast worker's copies complete the part: {last:?}"
     );
     let late = deliver(&mut state, at, slow, 3 * B + 2_000, 1_000);

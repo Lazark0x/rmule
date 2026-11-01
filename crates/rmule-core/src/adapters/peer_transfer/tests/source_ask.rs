@@ -1,6 +1,8 @@
 //! What a dialed worker reports about the source ask, the legacy block clock, the
 //! whole-file holder, a probe left unanswered, and the findbuddy posture.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 
 /// Every event a dialed worker reports to a peer whose hello advertised the
@@ -188,7 +190,7 @@ async fn a_dialed_worker_reports_a_peer_that_holds_the_whole_file() {
     worker
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![crate::BlockPlan {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 start: 0,
                 end: file.size(),
             }],

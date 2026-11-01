@@ -19,6 +19,7 @@
 //! floor and a path that names nothing over a whole file end the run as a
 //! pause, keep every verified part and reach no verdict.
 
+use rmule_peer::PartIndex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -326,7 +327,7 @@ pub(super) async fn persist_streamed_part<S, P>(
     download_id: DownloadId,
     file: &Ed2kFileLink,
     resolved: &ResolvedHashSet,
-    part_index: u32,
+    part_index: PartIndex,
     offset: u64,
     bytes: Vec<u8>,
 ) -> Result<Landed, PersistError>
@@ -334,7 +335,7 @@ where
     S: Send,
     P: Send,
 {
-    let expected = part_hash_on_arrival(resolved, file, part_index);
+    let expected = part_hash_on_arrival(resolved, file, part_index.value());
     if expected.is_none() && !resolved.hashes.is_empty() {
         return Err(PersistError::Rejected(
             DownloadFailure::PartVerificationFailed,
@@ -343,7 +344,7 @@ where
     let (hashed, bytes) = on_pool(move || hash_part(expected, bytes)).await;
     let (part_hash, landed) = hashed.map_err(PersistError::Rejected)?;
     let record = VerifiedPartRecord {
-        part_index,
+        part_index: part_index.value(),
         offset,
         len: bytes.len() as u64,
         part_hash,
@@ -352,14 +353,14 @@ where
     if landed == Landed::Verified {
         tracing::info!(
             download_id = download_id.as_u64(),
-            part_index,
+            part_index = part_index.value(),
             "part verified",
         );
         send_download_event(
             &runner.rt.evt_tx,
             DownloadEvent::PartVerified {
                 download_id,
-                part_index,
+                part_index: part_index.value(),
             },
         );
     }

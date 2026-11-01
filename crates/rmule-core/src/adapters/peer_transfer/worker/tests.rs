@@ -3,6 +3,8 @@
 //! wait between handouts hears on the link, and how handed blocks are asked
 //! and reported (ADR-0117).
 
+use rmule_peer::PartIndex;
+
 use rmule_peer::{FileProbeStatus, NoticeEvent, PeerError, PeerEvent, RequesterEvent};
 use tokio::sync::mpsc;
 
@@ -13,7 +15,7 @@ use crate::BlockPlan;
 /// Part 0's block `start..end`.
 fn block(start: u64, end: u64) -> BlockPlan {
     BlockPlan {
-        part_index: 0,
+        part_index: PartIndex::new(0),
         start,
         end,
     }

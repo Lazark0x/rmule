@@ -1,6 +1,8 @@
 //! `enact_drain` driven directly against hand-built runtime scaffolding: no
 //! store, network or worker beyond what the exercised decisions touch.
 
+use rmule_peer::PartIndex;
+
 use tokio::time::Duration;
 
 use super::*;
@@ -741,7 +743,7 @@ mod republish_gate {
         offset: u64,
     ) {
         let block = PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset,
             bytes: vec![0; 10],
         };

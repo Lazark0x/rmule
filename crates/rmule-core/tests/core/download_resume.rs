@@ -3,6 +3,8 @@
 //! recovers that same progress — as `Paused`, before any source lookup runs —
 //! and the finished download promotes its `.part` file to `final_path`.
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex as BlockingMutex;
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
@@ -69,7 +71,7 @@ async fn resume_skips_verified_parts() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: hashes,
                 parts: vec![DownloadedPart {
-                    part_index: 1,
+                    part_index: PartIndex::new(1),
                     offset: ED2K_PART_SIZE,
                     bytes: second,
                 }],
@@ -132,7 +134,7 @@ async fn completes_to_final_path() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.clone(),
                 }],
@@ -247,7 +249,7 @@ async fn restart_resume_completes_from_verified_parts() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: hashes,
                 parts: vec![DownloadedPart {
-                    part_index: 1,
+                    part_index: PartIndex::new(1),
                     offset: rmule_primitives::ED2K_PART_SIZE,
                     bytes: second,
                 }],

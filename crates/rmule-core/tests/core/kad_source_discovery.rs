@@ -3,6 +3,8 @@
 //! download's candidate pool and the scheduler dials them — no socket, no
 //! eD2k server login (the lookup fails and the download waits on Kad).
 
+use rmule_peer::PartIndex;
+
 use rmule_testkit::HANG_GUARD;
 use std::time::Duration;
 
@@ -92,7 +94,7 @@ async fn kad_fed_sources_fill_the_pool_and_the_scheduler_dials_them() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -204,7 +206,7 @@ async fn with_no_server_at_all_a_kad_search_row_downloads_over_kad() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],

@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use rmule_peer::PeerIdentity;
+use rmule_peer::{PartIndex, PeerIdentity};
 use rmule_primitives::{PartHash, PeerEndpoint, UserHash};
 
 use crate::DownloadFailure;
@@ -238,7 +238,12 @@ impl DownloadState {
             PeerWorkerEvent::AichAnswerReceived {
                 part,
                 recovery_data,
-            } => self.on_aich_answer(now, u32::from(part), &recovery_data, &mut out),
+            } => self.on_aich_answer(
+                now,
+                PartIndex::new(u32::from(part)),
+                &recovery_data,
+                &mut out,
+            ),
             PeerWorkerEvent::AichFileHashReceived { root } => {
                 self.on_aich_file_hash_proposal(peer, root, &mut out);
             }
@@ -272,7 +277,7 @@ impl DownloadState {
     pub(crate) fn on_persist_result(
         &mut self,
         now: Instant,
-        part_index: u32,
+        part_index: PartIndex,
         peer: PeerEndpoint,
         result: Result<(), DownloadFailure>,
     ) -> Vec<Decision> {
@@ -306,12 +311,14 @@ impl DownloadState {
                 // its provenance) until `on_aich_answer`, the part still
                 // verifying so none of its blocks is handed meanwhile. With
                 // none, its refetch attributes it (ADR-0117 §1).
+                let wire = u16::try_from(part_index.value());
                 let asker = self
                     .aich_root
                     .trusted()
+                    .filter(|_| wire.is_ok())
                     .and_then(|root| Some((root, self.recovery_asker(now, root, peer)?)));
-                match asker {
-                    Some((root, asker)) => {
+                match (asker, wire) {
+                    (Some((root, asker)), Ok(part)) => {
                         if let Some(place) = self.sources.dial_place(asker) {
                             self.standings.asked_recovery(&place.names, now);
                         }
@@ -319,13 +326,10 @@ impl DownloadState {
                             .insert(part_index, (asker, assembled));
                         out.push(Decision::Send {
                             peer: asker,
-                            command: PeerWorkerCommand::RequestAich {
-                                part: part_index as u16,
-                                root,
-                            },
+                            command: PeerWorkerCommand::RequestAich { part, root },
                         });
                     }
-                    None => self.refetch_rootless(now, part_index, &assembled, &mut out),
+                    _ => self.refetch_rootless(now, part_index, &assembled, &mut out),
                 }
             }
         }
@@ -339,7 +343,7 @@ impl DownloadState {
         &mut self,
         now: Instant,
         peer: PeerEndpoint,
-        part_index: u32,
+        part_index: PartIndex,
         offset: u64,
         bytes: &[u8],
         out: &mut Vec<Decision>,
@@ -388,7 +392,7 @@ impl DownloadState {
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::ReceivingPart {
-                    part_index,
+                    part_index: part_index.value(),
                     bytes_received: delivered,
                 },
             });
@@ -406,7 +410,9 @@ impl DownloadState {
         if let Some(slot) = self.worker_slots.get(&peer).copied() {
             out.push(Decision::Phase {
                 slot,
-                phase: WorkerPhase::VerifyingPart { part_index },
+                phase: WorkerPhase::VerifyingPart {
+                    part_index: part_index.value(),
+                },
             });
         }
         let bytes = assembled.bytes();
@@ -471,7 +477,7 @@ impl DownloadState {
     /// The store dropped `parts`, verified before the part hash set arrived
     /// and disproved by it (ADR-0113): they are fetched again, handed to the
     /// next grants.
-    pub(crate) fn refetch(&mut self, now: Instant, parts: &[u32]) -> Vec<Decision> {
+    pub(crate) fn refetch(&mut self, now: Instant, parts: &[PartIndex]) -> Vec<Decision> {
         let mut out = Vec::new();
         let plans = parts
             .iter()

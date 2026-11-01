@@ -340,7 +340,7 @@ async fn a_shutdown_mid_part_stops_the_stream_at_once() {
     worker
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![crate::BlockPlan {
-                part_index: 0,
+                part_index: rmule_peer::PartIndex::new(0),
                 start: 0,
                 end: file.size(),
             }],

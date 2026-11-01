@@ -3,6 +3,8 @@
 //! part's blocks, a freed block handed from its first missing byte, backfill
 //! on retirement, and what a stop does to the blocks still in flight.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 
 /// A one-part file of five blocks, two workers' worth: the first grant takes
@@ -233,12 +235,12 @@ fn a_grant_with_nothing_unclaimed_gives_its_slot_back() {
         Decision::EndWorker { peer: p, cancel: true } if *p == peer(2)
     )));
 
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    let part = crate::planning::part_plan(ONE_PART, PartIndex::new(0));
     let completing = state.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: part.offset,
             bytes: vec![0u8; part.len as usize],
         },
@@ -246,11 +248,11 @@ fn a_grant_with_nothing_unclaimed_gives_its_slot_back() {
     assert!(
         completing.iter().any(|d| matches!(
             d,
-            Decision::PersistPart { part_index: 0, peer: p, .. } if *p == peer(1)
+            Decision::PersistPart { part_index, peer: p, .. } if part_index.value() == 0 && *p == peer(1)
         )),
         "a whole part round-trips through PersistPart: {completing:?}"
     );
-    let resumed = state.on_persist_result(t0(), 0, peer(1), Ok(()));
+    let resumed = state.on_persist_result(t0(), PartIndex::new(0), peer(1), Ok(()));
     assert!(
         resumed.iter().any(|d| matches!(d, Decision::Finalize)),
         "the last verified part finalizes the download: {resumed:?}"
@@ -263,12 +265,12 @@ fn a_grant_with_nothing_unclaimed_gives_its_slot_back() {
 fn a_freed_block_is_handed_from_its_first_missing_byte() {
     let mut state = two_peer_state();
     let _ = connect(&mut state, t0(), peer(1));
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    let part = crate::planning::part_plan(ONE_PART, PartIndex::new(0));
     let _ = state.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: part.offset,
             bytes: vec![0u8; 400],
         },
@@ -411,12 +413,12 @@ fn an_armed_download_waits_instead_of_failing_when_its_pool_exhausts() {
 #[test]
 fn every_retirement_ends_its_worker() {
     let mut state = shared_part_state();
-    let part = crate::planning::part_plan(FIVE_BLOCKS, 0);
+    let part = crate::planning::part_plan(FIVE_BLOCKS, PartIndex::new(0));
     let _ = state.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: part.offset,
             bytes: vec![0u8; part.len as usize],
         },
@@ -424,7 +426,7 @@ fn every_retirement_ends_its_worker() {
 
     let failed = state.on_persist_result(
         t0(),
-        0,
+        PartIndex::new(0),
         peer(1),
         Err(DownloadFailure::PartVerificationFailed),
     );
@@ -473,7 +475,7 @@ fn handed_blocks(decisions: &[Decision], to: PeerEndpoint) -> Vec<(u32, u64, u64
             PeerWorkerCommand::RequestBlocks { blocks, .. } => blocks,
             _ => Vec::new(),
         })
-        .map(|block| (block.part_index, block.start, block.end))
+        .map(|block| (block.part_index.value(), block.start, block.end))
         .collect()
 }
 
@@ -516,7 +518,7 @@ fn two_workers_share_one_parts_blocks() {
             t0(),
             from,
             PeerWorkerEvent::BlockReceived {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: start,
                 bytes: vec![0x5A; (end - start) as usize],
             },
@@ -531,7 +533,7 @@ fn two_workers_share_one_parts_blocks() {
     assert!(
         last.iter().any(|d| matches!(
             d,
-            Decision::PersistPart { part_index: 0, offset: 0, bytes, .. } if bytes.len() as u64 == size
+            Decision::PersistPart { part_index, offset: 0, bytes, .. } if part_index.value() == 0 && bytes.len() as u64 == size
         )),
         "the part is whole once both workers' blocks are in: {last:?}"
     );
@@ -562,7 +564,7 @@ fn a_want_sent_before_the_latest_handout_is_set_aside() {
             t0(),
             peer(1),
             PeerWorkerEvent::BlockReceived {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: n * B,
                 bytes: vec![0; B as usize],
             },

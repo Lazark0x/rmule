@@ -30,6 +30,8 @@
 //! adds, and what nothing else can, is that the adopted worker's bytes really
 //! crossed a punched UDP path.
 
+use rmule_peer::PartIndex;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
@@ -234,7 +236,7 @@ async fn take_part(worker: &mut PeerWorker, file: &Ed2kFileLink) -> Vec<u8> {
     worker
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![crate::BlockPlan {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 start: 0,
                 end: file.size(),
             }],

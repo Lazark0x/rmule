@@ -5,6 +5,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use rmule_peer::PartIndex;
 use rmule_primitives::{Ed2kFileLink, Ipv4Endpoint, PeerEndpoint};
 use tokio::sync::mpsc;
 
@@ -536,7 +537,7 @@ pub(super) fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing)
         }
         Ok(landed) => {
             if landed == Landed::FileHashOnly {
-                ctx.file_hash_only_parts.push(part_index);
+                ctx.file_hash_only_parts.push(part_index.value());
             }
             ctx.state.on_persist_result(now(), part_index, peer, Ok(()))
         }
@@ -607,7 +608,8 @@ fn refetch_disproved<S, P>(
         parts: u32::try_from(lost.len()).unwrap_or(u32::MAX),
         bytes: disproved.iter().map(|part| part.len).sum(),
     }));
-    queue.extend(ctx.state.refetch(now(), &lost));
+    let parts: Vec<PartIndex> = lost.iter().copied().map(PartIndex::new).collect();
+    queue.extend(ctx.state.refetch(now(), &parts));
 }
 
 /// The Peer Roster's `Queued` leg (ADR-0059): this run

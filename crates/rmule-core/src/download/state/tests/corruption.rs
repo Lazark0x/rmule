@@ -3,6 +3,8 @@
 //! failures point to and the verified part proves it, and a part whose
 //! recovery ask is never answered is fetched again rather than stranded.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 use rmule_primitives::EMBLOCKSIZE as B;
 
@@ -35,7 +37,7 @@ fn deliver(
         t0(),
         from,
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: start,
             bytes: bytes_of(start, end, bad),
         },
@@ -71,7 +73,7 @@ fn first_attempt_fails(state: &mut DownloadState, bad: &[PeerEndpoint]) -> Vec<D
     }
     state.on_persist_result(
         t0(),
-        0,
+        PartIndex::new(0),
         peer(3),
         Err(DownloadFailure::PartVerificationFailed),
     )
@@ -163,9 +165,9 @@ fn a_shared_part_failing_with_no_root_keeps_every_workers_slot() {
     );
     let (again, _) = refetch(&mut state, &[peer(1), peer(2), peer(3)], &[]);
     assert!(
-        again
-            .iter()
-            .any(|d| matches!(d, Decision::PersistPart { part_index: 0, .. })),
+        again.iter().any(
+            |d| matches!(d, Decision::PersistPart { part_index, .. } if part_index.value() == 0)
+        ),
         "{again:?}"
     );
 }
@@ -195,7 +197,7 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
     assert!(!retired_for_bad_data(&second, bad));
     let failed = state.on_persist_result(
         t0(),
-        0,
+        PartIndex::new(0),
         peer(3),
         Err(DownloadFailure::PartVerificationFailed),
     );
@@ -215,7 +217,7 @@ fn a_writer_whose_cells_fail_again_on_the_refetch_is_retired() {
     );
 
     let (_, _) = refetch(&mut state, &honest, &[]);
-    let verified = state.on_persist_result(t0(), 0, peer(3), Ok(()));
+    let verified = state.on_persist_result(t0(), PartIndex::new(0), peer(3), Ok(()));
     assert!(
         verified
             .iter()
@@ -257,7 +259,7 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
     );
     let failed = state.on_persist_result(
         t0() + MIN_REQUEST_TIME,
-        0,
+        PartIndex::new(0),
         peer(1),
         Err(DownloadFailure::PartVerificationFailed),
     );
@@ -275,9 +277,9 @@ fn an_unshared_part_whose_recovery_ask_goes_unanswered_is_fetched_again() {
     );
     let (again, _) = refetch(&mut state, &[peer(2)], &[]);
     assert!(
-        again
-            .iter()
-            .any(|d| matches!(d, Decision::PersistPart { part_index: 0, .. })),
+        again.iter().any(
+            |d| matches!(d, Decision::PersistPart { part_index, .. } if part_index.value() == 0)
+        ),
         "{again:?}"
     );
 }

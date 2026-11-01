@@ -3,6 +3,8 @@
 //! `.part` file and makes `Cancelled` terminal even mid-workflow, after which
 //! the download can no longer be resumed.
 
+use rmule_peer::PartIndex;
+
 use rmule_core::DownloadRepository;
 use std::sync::Arc;
 
@@ -120,7 +122,7 @@ async fn pause_preserves_verified_parts_and_releases_only_in_flight() {
             part_hashes: hashes,
             completing_peer: loopback_peer(1),
             completed_part: DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes[..ED2K_PART_SIZE as usize].to_vec(),
             },
@@ -210,7 +212,7 @@ async fn cancel_deletes_part_file_and_keeps_cancelled_terminal_state() {
             part_hashes: hashes,
             completing_peer: loopback_peer(1),
             completed_part: DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes[..ED2K_PART_SIZE as usize].to_vec(),
             },

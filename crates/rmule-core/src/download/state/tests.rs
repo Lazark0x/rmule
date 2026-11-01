@@ -24,6 +24,8 @@ mod seeds;
 mod slot_ask;
 mod sources;
 
+use rmule_peer::PartIndex;
+
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{AichHashSet, EMBLOCKSIZE, Informant, Ipv4Endpoint, SourceSighting};
@@ -506,17 +508,17 @@ fn deliver_verified(
     peer: PeerEndpoint,
     part_index: u32,
 ) -> Vec<Decision> {
-    let part = crate::planning::part_plan(state.file_size, part_index);
+    let part = crate::planning::part_plan(state.file_size, PartIndex::new(part_index));
     let _ = state.on_worker_event(
         t0(),
         peer,
         PeerWorkerEvent::BlockReceived {
-            part_index,
+            part_index: PartIndex::new(part_index),
             offset: part.offset,
             bytes: vec![0u8; part.len as usize],
         },
     );
-    state.on_persist_result(t0(), part_index, peer, Ok(()))
+    state.on_persist_result(t0(), PartIndex::new(part_index), peer, Ok(()))
 }
 
 /// A two-part file's true ED2K identity, hashed from its bytes: its file hash

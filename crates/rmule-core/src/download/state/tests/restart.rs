@@ -3,6 +3,8 @@
 //! other part missing, on the same grid a first run cuts — and a verified part
 //! is never asked again.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 use rmule_primitives::{ED2K_PART_SIZE, EMBLOCKSIZE as B};
 
@@ -35,7 +37,7 @@ fn handed_from_the_start(verified: Vec<u32>) -> (DownloadState, Vec<(u32, u64, u
             PeerWorkerCommand::RequestBlocks { blocks, .. } => blocks,
             _ => Vec::new(),
         })
-        .map(|block| (block.part_index, block.start, block.end))
+        .map(|block| (block.part_index.value(), block.start, block.end))
         .collect();
     (state, handed)
 }
@@ -44,22 +46,22 @@ fn handed_from_the_start(verified: Vec<u32>) -> (DownloadState, Vec<(u32, u64, u
 fn a_restart_resumes_every_block_of_each_unverified_part_and_none_of_a_verified_one() {
     // The first run: part 1 verifies, part 0 gets two blocks in, part 2 none.
     let (mut first, every_block) = handed_from_the_start(Vec::new());
-    let part_1 = crate::planning::part_plan(THREE_PARTS, 1);
+    let part_1 = crate::planning::part_plan(THREE_PARTS, PartIndex::new(1));
     let _ = first.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 1,
+            part_index: PartIndex::new(1),
             offset: part_1.offset,
             bytes: vec![0x5A; part_1.len as usize],
         },
     );
-    let _ = first.on_persist_result(t0(), 1, peer(1), Ok(()));
+    let _ = first.on_persist_result(t0(), PartIndex::new(1), peer(1), Ok(()));
     let _ = first.on_worker_event(
         t0(),
         peer(1),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: vec![0x5A; 2 * B as usize],
         },

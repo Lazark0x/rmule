@@ -3,6 +3,8 @@
 //! in the Shared File Registry — and a download that has not completed cannot
 //! be cleared.
 
+use rmule_peer::PartIndex;
+
 use std::sync::Arc;
 
 use rmule_core::{
@@ -71,7 +73,7 @@ async fn a_cleared_download_leaves_its_file_on_disk_and_in_the_registry() {
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.clone(),
                 }],
@@ -218,7 +220,7 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.clone(),
                 }],

@@ -41,7 +41,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
-use rmule_peer::WireStatus;
+use rmule_peer::{PartIndex, WireStatus};
 use rmule_primitives::{
     AichRootHash, ClientId, FileHash, Ipv4Endpoint, PartHash, PartHashSet, PeerCrypt, PeerEndpoint,
     UserHash,
@@ -114,7 +114,7 @@ pub(crate) enum Decision {
     /// by `peer`). A fallible effect: the runner reports the outcome back
     /// through [`DownloadState::on_persist_result`].
     PersistPart {
-        part_index: u32,
+        part_index: PartIndex,
         peer: PeerEndpoint,
         offset: u64,
         bytes: Vec<u8>,
@@ -430,7 +430,7 @@ pub(crate) struct DownloadState {
     /// One assembly per part holding an arrived byte (ADR-0029, ADR-0117),
     /// keyed by part index. Blocks from every contributing peer feed the
     /// same Arrived Ranges, so a mid-part drop keeps every arrived byte.
-    assembly: HashMap<u32, PartAssembly>,
+    assembly: HashMap<PartIndex, PartAssembly>,
     /// Each granted worker's room it reported and the brain has not yet
     /// answered (`BlocksWanted`, ADR-0117).
     wants: HashMap<PeerEndpoint, handout::Want>,
@@ -439,21 +439,21 @@ pub(crate) struct DownloadState {
     handouts: HashMap<PeerEndpoint, u32>,
     /// The part each worker last delivered bytes of and how many: its
     /// `ReceivingPart` row (ADR-0117 "What the operator reads").
-    delivered: HashMap<PeerEndpoint, (u32, u64)>,
+    delivered: HashMap<PeerEndpoint, (PartIndex, u64)>,
     /// Assemblies removed from `assembly` when their `PersistPart` was
     /// emitted, held until `on_persist_result` so a verification failure can
     /// attribute its cells (ADR-0117 §1).
-    pending_persist: HashMap<u32, PartAssembly>,
+    pending_persist: HashMap<PartIndex, PartAssembly>,
     /// Completed-but-MD4-failed assemblies awaiting an AICH recovery answer
     /// (ADR-0038), with the worker asked. Held here (with their per-block
     /// provenance) between the `OP_AICHREQUEST` and `on_aich_answer`, where the
     /// corruption is localized; the part stays verifying meanwhile, and the
     /// asked worker's end stands for an empty answer.
-    awaiting_recovery: HashMap<u32, (PeerEndpoint, PartAssembly)>,
+    awaiting_recovery: HashMap<PartIndex, (PeerEndpoint, PartAssembly)>,
     /// The **Failed Cells** of each part refetched after failing its check
     /// with no root (ADR-0117 §1): its latest failed attempt, until it
     /// verifies.
-    failed_cells: HashMap<u32, Attempt>,
+    failed_cells: HashMap<PartIndex, Attempt>,
     /// Peer → the diagnostics slot its worker occupies. The live command
     /// channel for each peer stays in the runner, whether it has completed its
     /// handshake in the **Source Book**; the brain owns only the slot number.
@@ -586,7 +586,11 @@ impl DownloadState {
             download_id,
             file_hash,
             file_size,
-            scheduler: DownloadScheduler::new(file_size, verified_parts, order),
+            scheduler: DownloadScheduler::new(
+                file_size,
+                verified_parts.into_iter().map(PartIndex::new),
+                order,
+            ),
             assembly: HashMap::new(),
             wants: HashMap::new(),
             handouts: HashMap::new(),
@@ -695,7 +699,7 @@ impl DownloadState {
             Err(_) => false,
         };
         WireStatus::downloader(self.file_size, |part| {
-            set_held && self.scheduler.is_part_verified(part.value())
+            set_held && self.scheduler.is_part_verified(part)
         })
     }
 
@@ -811,7 +815,7 @@ impl DownloadState {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
                 peer,
-                part_index,
+                part_index: part_index.value(),
                 reason: release_reason,
             }));
         }

@@ -350,7 +350,7 @@ impl DownloadState {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
                 peer,
-                part_index,
+                part_index: part_index.value(),
                 reason: PartReleaseReason::PeerRetired(reason),
             }));
         }
@@ -485,7 +485,7 @@ impl DownloadState {
             out.push(Decision::Emit(DownloadEvent::PartReleased {
                 download_id: self.download_id,
                 peer,
-                part_index,
+                part_index: part_index.value(),
                 reason: PartReleaseReason::BackOnQueue,
             }));
         }

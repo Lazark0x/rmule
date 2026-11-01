@@ -4,6 +4,7 @@
 //! unshare of a gone file joins and a completed download leaves, and the
 //! refusal that withholds a download completed under a refused folder until
 //! the refusal lifts.
+use rmule_peer::PartIndex;
 use rmule_testkit::HANG_GUARD;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -250,7 +251,7 @@ async fn completed_download_auto_registers_into_the_shared_file_registry() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -338,12 +339,12 @@ async fn auto_share_persists_the_link_authority_part_hash_set() {
             peer_hashes: Vec::new(), // peer sends no hash set -> LinkPartHashSet authority
             parts: vec![
                 DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes[..part].to_vec(),
                 },
                 DownloadedPart {
-                    part_index: 1,
+                    part_index: PartIndex::new(1),
                     offset: part as u64,
                     bytes: bytes[part..].to_vec(),
                 },
@@ -436,7 +437,7 @@ async fn a_had_file_downloaded_again_leaves_the_had_set_when_it_is_whole() {
         outcome: PeerDownloadOutcome {
             peer_hashes: Vec::new(),
             parts: vec![DownloadedPart {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 offset: 0,
                 bytes: bytes.clone(),
             }],
@@ -521,7 +522,7 @@ fn refused_home_core(
             outcome: PeerDownloadOutcome {
                 peer_hashes: Vec::new(),
                 parts: vec![DownloadedPart {
-                    part_index: 0,
+                    part_index: PartIndex::new(0),
                     offset: 0,
                     bytes: bytes.to_vec(),
                 }],

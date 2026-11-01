@@ -7,6 +7,8 @@
 //! The scripted transfer's `expected_peer` assert doubles as the negative
 //! proof: any dial to the filtered endpoint panics the worker spawn.
 
+use rmule_peer::PartIndex;
+
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadedPart, PeerDownloadOutcome, PeerTransferService, PeerWorker, PeerWorkerCommand,
@@ -51,7 +53,7 @@ fn serving_outcome(bytes: &[u8]) -> PeerDownloadOutcome {
     PeerDownloadOutcome {
         peer_hashes: Vec::new(),
         parts: vec![DownloadedPart {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: bytes.to_vec(),
         }],

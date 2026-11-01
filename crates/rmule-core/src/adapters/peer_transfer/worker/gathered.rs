@@ -8,6 +8,7 @@
 use std::time::Duration;
 
 use rmule_peer::EMBLOCKSIZE;
+use rmule_peer::PartIndex;
 use rmule_primitives::ED2K_PART_SIZE;
 use tokio::time::Instant;
 
@@ -66,7 +67,8 @@ impl Gathered {
         if self.bytes.is_empty() {
             return None;
         }
-        let part_index = u32::try_from(self.offset / ED2K_PART_SIZE).unwrap_or(u32::MAX);
+        let part_index =
+            PartIndex::new(u32::try_from(self.offset / ED2K_PART_SIZE).unwrap_or(u32::MAX));
         Some(PeerWorkerEvent::BlockReceived {
             part_index,
             offset: self.offset,

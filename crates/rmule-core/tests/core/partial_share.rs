@@ -3,6 +3,8 @@
 //! completion hands the file to its one registry row or a cancel ends it —
 //! and never while its folder is one rmule will not share.
 
+use rmule_peer::PartIndex;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -73,7 +75,7 @@ impl PeerTransferService for Gated {
                 tokio::select! {
                     command = command_rx.recv() => match command {
                         Some(PeerWorkerCommand::RequestBlocks { blocks, handout }) => {
-                            let mut parts: Vec<u32> = blocks.iter().map(|b| b.part_index).collect();
+                            let mut parts: Vec<u32> = blocks.iter().map(|b| b.part_index.value()).collect();
                             parts.dedup();
                             if this.first_served.swap(true, Ordering::SeqCst) {
                                 held.extend(parts);
@@ -112,7 +114,7 @@ async fn serve(
     for &part_index in parts {
         let _ = event_tx
             .send(PeerWorkerEvent::BlockReceived {
-                part_index,
+                part_index: PartIndex::new(part_index),
                 offset: u64::from(part_index) * ED2K_PART_SIZE,
                 bytes: part(bytes, part_index),
             })

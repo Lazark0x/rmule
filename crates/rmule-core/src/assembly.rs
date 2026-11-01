@@ -170,6 +170,7 @@ impl PartAssembly {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rmule_peer::PartIndex;
     use rmule_primitives::{Ipv4Endpoint, PeerEndpoint};
     use std::collections::BTreeSet;
     use std::net::Ipv4Addr;
@@ -190,7 +191,7 @@ mod tests {
     /// Part 0 of `len` bytes.
     fn part(len: u64) -> PartPlan {
         PartPlan {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             len,
         }
@@ -261,7 +262,7 @@ mod tests {
     #[test]
     fn an_arrival_outside_its_part_lands_nowhere() {
         let plan = PartPlan {
-            part_index: 2,
+            part_index: PartIndex::new(2),
             offset: 2 * rmule_primitives::ED2K_PART_SIZE,
             len: 100,
         };

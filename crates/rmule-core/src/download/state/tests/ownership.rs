@@ -6,6 +6,8 @@
 //! without its hash is retired at its hello. The book's own invariants are
 //! asserted in its tests.
 
+use rmule_peer::PartIndex;
+
 use std::net::Ipv4Addr;
 
 use rmule_primitives::{Informant, Ipv4Endpoint, PeerSource, SourceSighting, UserHash};
@@ -101,17 +103,22 @@ fn hello(state: &mut DownloadState, at: PeerEndpoint, user_hash: UserHash) -> Ve
 /// `at`, the part's sole contributor, streams all of it and the part fails
 /// its hash.
 fn serve_bad_part(state: &mut DownloadState, at: PeerEndpoint) {
-    let part = crate::planning::part_plan(ONE_PART, 0);
+    let part = crate::planning::part_plan(ONE_PART, PartIndex::new(0));
     let _ = state.on_worker_event(
         t0(),
         at,
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: part.offset,
             bytes: vec![0u8; part.len as usize],
         },
     );
-    let failed = state.on_persist_result(t0(), 0, at, Err(DownloadFailure::PartVerificationFailed));
+    let failed = state.on_persist_result(
+        t0(),
+        PartIndex::new(0),
+        at,
+        Err(DownloadFailure::PartVerificationFailed),
+    );
     assert!(
         failed
             .iter()

@@ -4,6 +4,8 @@
 //! --nocapture`. Every speed change on this path lands with this rig's number
 //! before and after it.
 
+use rmule_peer::PartIndex;
+
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
@@ -166,7 +168,7 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
         let (part, within) = (walked / per_part, walked % per_part);
         let peer = source(QUEUED + usize::try_from(arrival).unwrap() % LIVE);
         let event = PeerWorkerEvent::BlockReceived {
-            part_index: u32::try_from(part).unwrap(),
+            part_index: PartIndex::new(u32::try_from(part).unwrap()),
             offset: part * rmule_primitives::ED2K_PART_SIZE + within,
             bytes: bytes.clone(),
         };

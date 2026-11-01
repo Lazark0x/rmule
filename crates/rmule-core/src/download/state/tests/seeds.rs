@@ -2,6 +2,8 @@
 //! merely held; a peer whose dial failed and that earned nothing is no seed;
 //! and the one report of how many seed dials answered.
 
+use rmule_peer::PartIndex;
+
 use super::*;
 use crate::download::source_seeds::SeedRank;
 
@@ -23,7 +25,7 @@ fn the_ranking_puts_bytes_before_a_rank_before_held_and_drops_a_failed_dial() {
         t0(),
         peer(3),
         PeerWorkerEvent::BlockReceived {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: vec![0x5A; 16],
         },

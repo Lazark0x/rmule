@@ -5,6 +5,7 @@
 //! bytes prove the old copies that differ. Only a writer the evidence names is
 //! retired, and only a proven one distrusted (ADR-0090 invariant 4).
 
+use rmule_peer::PartIndex;
 use std::time::Instant;
 
 use rmule_primitives::PeerEndpoint;
@@ -22,7 +23,7 @@ impl DownloadState {
     pub(super) fn refetch_rootless(
         &mut self,
         now: Instant,
-        part_index: u32,
+        part_index: PartIndex,
         assembled: &PartAssembly,
         out: &mut Vec<Decision>,
     ) {
@@ -33,7 +34,7 @@ impl DownloadState {
         let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
         out.push(Decision::Emit(DownloadEvent::PartCorrupt {
             download_id: self.download_id,
-            part_index,
+            part_index: part_index.value(),
             writers: count(attempt.writers().len()),
             named: count(verdict.named.len()),
         }));
@@ -49,7 +50,7 @@ impl DownloadState {
     pub(super) fn judge_failed_cells(
         &mut self,
         now: Instant,
-        part_index: u32,
+        part_index: PartIndex,
         assembled: &PartAssembly,
         out: &mut Vec<Decision>,
     ) {
@@ -69,7 +70,7 @@ impl DownloadState {
         peer: PeerEndpoint,
         out: &mut Vec<Decision>,
     ) {
-        let mut parts: Vec<u32> = self
+        let mut parts: Vec<PartIndex> = self
             .awaiting_recovery
             .iter()
             .filter(|(_, (asked, _))| *asked == peer)

@@ -4,6 +4,8 @@
 //! names the file only, so no front end can send a download where the guards
 //! would refuse to share it.
 
+use rmule_peer::PartIndex;
+
 use rmule_testkit::HANG_GUARD;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -218,7 +220,7 @@ impl Machine {
                 outcome: PeerDownloadOutcome {
                     peer_hashes: Vec::new(),
                     parts: vec![DownloadedPart {
-                        part_index: 0,
+                        part_index: PartIndex::new(0),
                         offset: 0,
                         bytes: bytes.to_vec(),
                     }],

@@ -3,6 +3,7 @@
 //! failed. Trust is a tally over masked proposing IPs, as aMule's
 //! `SHAHashSet` counts it.
 
+use rmule_peer::PartIndex;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
@@ -226,7 +227,7 @@ impl DownloadState {
     pub(super) fn on_aich_answer(
         &mut self,
         now: Instant,
-        part_index: u32,
+        part_index: PartIndex,
         recovery_data: &[u8],
         out: &mut Vec<Decision>,
     ) {

@@ -3,6 +3,7 @@
 //! parts it advertised, or a Duplicate Set in the End Game — and what a worker
 //! that can be handed nothing comes to.
 
+use rmule_peer::PartIndex;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -135,7 +136,7 @@ impl DownloadState {
             };
         };
         self.wants.remove(&peer);
-        let mut opened: Vec<u32> = Vec::new();
+        let mut opened: Vec<PartIndex> = Vec::new();
         for block in &blocks {
             if !held_before.contains(&block.part_index) && !opened.contains(&block.part_index) {
                 opened.push(block.part_index);
@@ -145,7 +146,7 @@ impl DownloadState {
             out.push(Decision::Emit(DownloadEvent::PartAssigned {
                 download_id: self.download_id,
                 peer,
-                part_index,
+                part_index: part_index.value(),
             }));
         }
         if duplicate {
@@ -155,7 +156,7 @@ impl DownloadState {
             out.push(Decision::Phase {
                 slot,
                 phase: WorkerPhase::RequestingPart {
-                    part_index: blocks[0].part_index,
+                    part_index: blocks[0].part_index.value(),
                 },
             });
         }
@@ -175,14 +176,14 @@ impl DownloadState {
 impl DownloadState {
     /// Say the Duplicate Set `blocks` handed to `peer`, one line per part.
     fn said_end_game(&self, peer: PeerEndpoint, blocks: &[BlockPlan], out: &mut Vec<Decision>) {
-        let mut parts: Vec<u32> = blocks.iter().map(|block| block.part_index).collect();
+        let mut parts: Vec<PartIndex> = blocks.iter().map(|block| block.part_index).collect();
         parts.dedup();
         for part_index in parts {
             let of_part = blocks.iter().filter(|block| block.part_index == part_index);
             out.push(Decision::Emit(DownloadEvent::EndGameBlocks {
                 download_id: self.download_id,
                 peer,
-                part_index,
+                part_index: part_index.value(),
                 blocks: u32::try_from(of_part.clone().count()).unwrap_or(u32::MAX),
                 bytes: of_part.map(|block| block.end - block.start).sum(),
             }));
@@ -195,8 +196,8 @@ impl DownloadState {
 /// of each part refetched after failing with no root.
 struct Measured<'a> {
     delivery: &'a HashMap<PeerEndpoint, DeliveryRate>,
-    assembly: &'a HashMap<u32, PartAssembly>,
-    failed_cells: &'a HashMap<u32, Attempt>,
+    assembly: &'a HashMap<PartIndex, PartAssembly>,
+    failed_cells: &'a HashMap<PartIndex, Attempt>,
 }
 
 impl Progress for Measured<'_> {
@@ -204,11 +205,11 @@ impl Progress for Measured<'_> {
         self.delivery.get(&peer)?.bytes_per_sec()
     }
 
-    fn arrived(&self, part_index: u32) -> Option<&ByteRanges> {
+    fn arrived(&self, part_index: PartIndex) -> Option<&ByteRanges> {
         self.assembly.get(&part_index).map(PartAssembly::arrived)
     }
 
-    fn failed_cells(&self, part_index: u32) -> Option<&Attempt> {
+    fn failed_cells(&self, part_index: PartIndex) -> Option<&Attempt> {
         self.failed_cells.get(&part_index)
     }
 }

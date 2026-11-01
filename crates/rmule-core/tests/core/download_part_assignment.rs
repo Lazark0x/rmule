@@ -4,6 +4,8 @@
 //! (ADR-0030), and a shared part survives one worker's disconnect because the
 //! blocks it held go to the other (ADR-0117).
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -41,12 +43,12 @@ async fn scheduler_assignment_events_are_emitted_before_part_verification() {
                 peer_hashes: hashes,
                 parts: vec![
                     DownloadedPart {
-                        part_index: 0,
+                        part_index: PartIndex::new(0),
                         offset: 0,
                         bytes: first,
                     },
                     DownloadedPart {
-                        part_index: 1,
+                        part_index: PartIndex::new(1),
                         offset: ED2K_PART_SIZE,
                         bytes: second,
                     },
@@ -334,7 +336,7 @@ impl PeerTransferService for GatedConnectTransfer {
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };
@@ -371,7 +373,7 @@ impl PeerTransferService for MultiPeerTransfer {
             .parts
             .iter()
             .map(|(&part_index, bytes)| DownloadedPart {
-                part_index,
+                part_index: PartIndex::new(part_index),
                 offset: u64::from(part_index) * ED2K_PART_SIZE,
                 bytes: bytes.clone(),
             })
@@ -390,7 +392,7 @@ impl PeerTransferService for MultiPeerTransfer {
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         for block in &blocks {
                             let mut assignments = assignments.lock();
-                            let peers = assignments.entry(block.part_index).or_default();
+                            let peers = assignments.entry(block.part_index.value()).or_default();
                             if !peers.contains(&peer) {
                                 peers.push(peer);
                             }
@@ -454,7 +456,7 @@ impl PeerTransferService for DisconnectThenSuccess {
                             })
                             .await;
                         let part = DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };

@@ -5,6 +5,8 @@
 //! and that port is watched for the second link aMule answers by dropping the
 //! first (`ClientList.cpp:400-403`).
 
+use rmule_peer::PartIndex;
+
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
@@ -644,7 +646,7 @@ async fn a_grant_its_link_carries_is_answered_with_blocks_and_no_ask() {
     worker
         .send(PeerWorkerCommand::RequestBlocks {
             blocks: vec![crate::BlockPlan {
-                part_index: 0,
+                part_index: PartIndex::new(0),
                 start: 0,
                 end: 1024,
             }],

@@ -10,6 +10,8 @@
 //! queues the slot ask past that clock, the test's clock jumping the wait,
 //! before it grants.
 
+use rmule_peer::PartIndex;
+
 use std::time::Duration;
 
 use rmule_core::{
@@ -48,7 +50,7 @@ impl PeerTransferService for CorruptingPeer {
         let mut corrupt = self.bytes.clone();
         corrupt[0] ^= 0xFF;
         let parts = vec![DownloadedPart {
-            part_index: 0,
+            part_index: PartIndex::new(0),
             offset: 0,
             bytes: corrupt,
         }];

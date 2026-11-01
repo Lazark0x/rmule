@@ -6,6 +6,7 @@
 //! [`MOST_WAITING`] parts behind the one it works on, and past that the drain
 //! waits, which stops the workers and, through them, the sockets.
 
+use rmule_peer::PartIndex;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -22,7 +23,7 @@ const MOST_WAITING: usize = 2;
 
 /// One finished part on its way to the store.
 pub(super) struct PartToLand {
-    pub(super) part_index: u32,
+    pub(super) part_index: PartIndex,
     pub(super) peer: PeerEndpoint,
     pub(super) offset: u64,
     pub(super) bytes: Vec<u8>,
@@ -30,7 +31,7 @@ pub(super) struct PartToLand {
 
 /// How a part's landing ended, for the brain.
 pub(super) struct Landing {
-    pub(super) part_index: u32,
+    pub(super) part_index: PartIndex,
     pub(super) peer: PeerEndpoint,
     pub(super) result: Result<Landed, PersistError>,
 }

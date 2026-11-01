@@ -3,6 +3,8 @@
 //! batch lost instead of aborting the download (ADR-0030), and a snapshot
 //! holding no usable High-ID source fails before any peer transfer starts.
 
+use rmule_peer::PartIndex;
+
 use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
@@ -197,7 +199,7 @@ impl PeerTransferService for BackfillTransfer {
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         let part = DownloadedPart {
-                            part_index: 0,
+                            part_index: PartIndex::new(0),
                             offset: 0,
                             bytes: bytes.clone(),
                         };

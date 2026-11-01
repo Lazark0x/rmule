@@ -4,6 +4,7 @@
 //! where the gap it fills does; and the fresh handout that takes them from the
 //! first-ranked part on, a refetched part's cells asked of someone else first.
 
+use rmule_peer::PartIndex;
 use std::collections::HashMap;
 
 use rmule_primitives::PeerEndpoint;
@@ -56,11 +57,11 @@ impl DownloadScheduler {
         &self,
         peer: PeerEndpoint,
         room: usize,
-        held: &impl Fn(u32) -> bool,
+        held: &impl Fn(PartIndex) -> bool,
         inputs: &RankInputs<'_>,
         progress: &impl Progress,
     ) -> Vec<BlockPlan> {
-        let mut candidates: Vec<u32> = self
+        let mut candidates: Vec<PartIndex> = self
             .missing
             .iter()
             .copied()
@@ -112,7 +113,7 @@ impl DownloadScheduler {
     /// The unarrived, unclaimed blocks of `part_index`, in order.
     pub(super) fn unclaimed_blocks(
         &self,
-        part_index: u32,
+        part_index: PartIndex,
         progress: &impl Progress,
     ) -> Vec<BlockPlan> {
         let plan = part_plan(self.file_size, part_index);
