@@ -226,8 +226,13 @@ async fn a_download_completed_in_an_earlier_run_is_listed_at_attach_until_cleare
         })
         .build();
     let id = start(&mut core, link, "earlier.bin").await;
-    next_expected(&mut core, "the completed download shared", |event| {
-        matches!(event, CoreEvent::Serve(ServeEvent::FileShared { .. }))
+    // Not its share: a row is still Completing when that lands, and a quit
+    // there leaves it Completing for the next attach to finish.
+    next_expected(&mut core, "the download completed", |event| {
+        matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
+        )
     })
     .await;
     core.shutdown().await;
