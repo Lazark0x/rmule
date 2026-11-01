@@ -720,8 +720,10 @@ mod tests {
         ] {
             actions_tx.send(action).await.expect("the bus is open");
         }
-        let mut surface = RecordingSurface::default();
-        surface.suspend_refused = Some(crate::tui::NoStop::NoShell);
+        let mut surface = RecordingSurface {
+            suspend_refused: Some(crate::tui::NoStop::NoShell),
+            ..RecordingSurface::default()
+        };
         let app = App::new(Theme::default_dark());
 
         app.run(&mut surface, actions_rx).await;
