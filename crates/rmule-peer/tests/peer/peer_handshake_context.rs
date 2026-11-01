@@ -537,7 +537,7 @@ fn the_direct_udp_callback_advert_lights_misc_options2_bit_12() {
     assert!(lit.supports_direct_udp_callback());
     assert_eq!(
         lit,
-        MiscOptions2::from_bits(0x1000 | 0x420),
-        "bit 12 beside ExtMultiPacket (5) and SourceExchange2 (10), nothing else"
+        MiscOptions2::from_bits(0x1000 | 0x430),
+        "bit 12 beside large files (4), ExtMultiPacket (5) and SourceExchange2 (10), nothing else"
     );
 }

@@ -1,5 +1,5 @@
 # Large-file capture — genuine stock aMule 2.3.3 wire bytes, tcpdump tap on rmule's
-# container. Hand-staged in bench window w44 under `~/Projects/rmule-bench-runs/w44-fix/`:
+# container. Hand-staged in bench window w44, whose run directories the `run` keys name:
 # stock serving rmule a 4,400,000,000-byte file across the 4 GiB offset, and stock
 # downloading the same file whole from rmule. Only counterparty bytes are kept.
 

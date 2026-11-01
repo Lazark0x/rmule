@@ -100,7 +100,7 @@ pub struct PeerIdentity {
     source_exchange: SourceExchangeSupport,
     /// Whether its hello claims large files (`MiscOptions2` bit 4).
     large_files: bool,
-    unknown_tags: Vec<Tag>,
+    unknown_tags: Box<[Tag]>,
 }
 
 impl PeerIdentity {
