@@ -138,6 +138,9 @@ pub(crate) struct DownloadScheduler {
     verifying: BTreeSet<u32>,
     /// Every Claimed Block, by part.
     claims: BTreeMap<u32, Vec<Claim>>,
+    /// Moves with every change [`Self::part_states`] could read, and only
+    /// those: a block that settles short of a part leaves it standing.
+    parts_generation: u64,
     /// The next handout's order stamp: a worker's claims in stamp order are
     /// the order it asks them in.
     next_seq: u64,
@@ -166,6 +169,7 @@ impl DownloadScheduler {
             missing: (0..total_parts).filter(|p| !verified.contains(p)).collect(),
             verifying: BTreeSet::new(),
             claims: BTreeMap::new(),
+            parts_generation: 0,
             next_seq: 0,
             band: order.band(file_size),
             window_parts: order.window_parts(),
@@ -210,6 +214,7 @@ impl DownloadScheduler {
         let seq = self.next_seq;
         self.next_seq += 1;
         for block in &blocks {
+            self.parts_generation += u64::from(!self.claims.contains_key(&block.part_index));
             self.claims
                 .entry(block.part_index)
                 .or_default()
@@ -232,6 +237,7 @@ impl DownloadScheduler {
             claims.retain(|claim| !arrived.covers(claim.start - offset, claim.end - offset));
             if claims.is_empty() {
                 self.claims.remove(&part_index);
+                self.parts_generation += 1;
             }
         }
     }
@@ -249,6 +255,7 @@ impl DownloadScheduler {
             }
             !claims.is_empty()
         });
+        self.parts_generation += 1;
         parts
     }
 
@@ -263,12 +270,14 @@ impl DownloadScheduler {
                 .collect();
         }
         self.claims.retain(|_, claims| !claims.is_empty());
+        self.parts_generation += 1;
     }
 
     /// Every byte of `part_index` has arrived: it is verifying, and no block
     /// of it is claimed any more.
     pub(crate) fn verifying(&mut self, part_index: u32) {
         if self.missing.contains(&part_index) {
+            self.parts_generation += 1;
             self.verifying.insert(part_index);
             self.claims.remove(&part_index);
         }
@@ -277,6 +286,7 @@ impl DownloadScheduler {
     /// `part_index` verified: it is done. Answers its plan, or `None` when it
     /// was not missing.
     pub(crate) fn complete_verified(&mut self, part_index: u32) -> Option<PartPlan> {
+        self.parts_generation += 1;
         self.verifying.remove(&part_index);
         self.claims.remove(&part_index);
         self.missing
@@ -287,6 +297,7 @@ impl DownloadScheduler {
     /// `part_index` failed its check, or its corrupt blocks were dropped: it
     /// is fetched again, from what its Arrived Ranges still hold.
     pub(crate) fn failed(&mut self, part_index: u32) {
+        self.parts_generation += 1;
         self.verifying.remove(&part_index);
     }
 
@@ -296,6 +307,7 @@ impl DownloadScheduler {
         if plan.part_index >= self.total_parts || !self.is_part_verified(plan.part_index) {
             return false;
         }
+        self.parts_generation += 1;
         self.missing.insert(plan.part_index);
         true
     }
@@ -312,7 +324,14 @@ impl DownloadScheduler {
             }
         }
         self.claims.clear();
+        self.parts_generation += 1;
         held
+    }
+
+    /// What [`Self::part_states`] stands at: the same number, the same answer.
+    #[must_use]
+    pub(crate) fn parts_generation(&self) -> u64 {
+        self.parts_generation
     }
 
     /// Whether no part is left to fetch: every part has verified.

@@ -22,6 +22,7 @@ mod lanes;
 mod peer_standing;
 mod purge;
 mod record;
+mod records;
 mod road;
 mod run_tier;
 mod sighting;
@@ -30,7 +31,7 @@ mod standing;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::time::Instant;
 
 use rmule_peer::PeerIdentity;
@@ -50,6 +51,7 @@ pub(crate) use self::purge::{
 pub(crate) use self::purge::{PurgeKind, Purged};
 pub(crate) use self::record::Lane;
 use self::record::{DialRoad, Record, RecordId, Stage, stated_crypt};
+use self::records::Records;
 pub(crate) use self::road::Deadline;
 #[cfg(test)]
 pub(crate) use self::run_tier::CLIENT_LIST_CLEANUP;
@@ -176,7 +178,7 @@ pub(crate) enum Adopted {
 /// One download's sources. See the module docs.
 #[derive(Debug)]
 pub(crate) struct SourceBook {
-    records: HashMap<RecordId, Record>,
+    records: Records,
     minted: u64,
     aliases: Aliases,
     lanes: Lanes,
@@ -200,7 +202,7 @@ impl SourceBook {
     /// it as a sighting.
     pub(crate) fn new(distrusted: HashSet<UserHash>, part_count: u32) -> Self {
         Self {
-            records: HashMap::new(),
+            records: Records::default(),
             minted: 0,
             aliases: Aliases::default(),
             lanes: Lanes::default(),
@@ -432,6 +434,11 @@ impl SourceBook {
             .values()
             .filter(|record| record.stage.holds_slot())
             .count()
+    }
+
+    /// The **Book Generation**: it stands while no record changed.
+    pub(crate) fn generation(&self) -> u64 {
+        self.records.generation()
     }
 
     fn record_at(&self, endpoint: PeerEndpoint) -> Option<&Record> {

@@ -38,6 +38,7 @@ use super::callbacks::CallbackContext;
 use super::enact::{LoopCtx, enact_drain};
 use super::intake;
 use super::reply_sink::ReaskSinkLease;
+use super::republish::WakeReading;
 use super::{CallbackFacts, RunnerContext, now, stop_reason, wait_until_stop};
 
 /// How often the runner re-reads the facts the brain holds samples of and no
@@ -342,6 +343,7 @@ where
         queued_relations: std::collections::HashSet::new(),
         awaited_grants,
         held_places: runner.rt.held_places.seat(download_id),
+        republished: None,
     };
 
     // Enact the initial fill: one `Spawn` per candidate the Connection Budget
@@ -415,10 +417,11 @@ where
     // is a cache of Self Reach, re-derived on every move of it.
     let mut reach_generation = ctx.callbacks.facts.reach.changes();
     let mut stop_rx = runner.stop_rx.clone();
+    let mut wake = WakeReading::default();
     while !ctx.state.is_complete() {
         // When the brain next has something due (ADR-0026): it names the
         // instant, the runner only sleeps until it.
-        let next_wake = ctx.state.next_wake().map(tokio::time::Instant::from_std);
+        let next_wake = wake.read(&ctx.state).map(tokio::time::Instant::from_std);
         let (worker, peer, event) = tokio::select! {
             biased;
             _ = wait_until_stop(&mut stop_rx) => {
@@ -651,6 +654,9 @@ where
                 .rt
                 .peer_roster
                 .mark_known(PeerRelation::Download(ctx.download_id), v4);
+        }
+        if matches!(event, PeerWorkerEvent::BlockReceived { .. }) {
+            wake.block_turn();
         }
         let mut q: VecDeque<Decision> = if let PeerWorkerEvent::SourcesReceived { sources } = event
         {

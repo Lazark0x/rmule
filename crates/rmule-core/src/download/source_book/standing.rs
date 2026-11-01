@@ -555,6 +555,14 @@ impl SourceBook {
     /// The standing of the record at `endpoint` ends: a grant or transfer on
     /// its worker, or a retirement that keeps none.
     pub(crate) fn end_standing(&mut self, endpoint: PeerEndpoint) {
+        // Read first: every delivered block lands here, and a book it changed
+        // nothing in must stand at its generation.
+        let stands = self
+            .record_at(endpoint)
+            .is_some_and(|record| record.standing.is_some() && record.live_at(endpoint).is_some());
+        if !stands {
+            return;
+        }
         if let Some(record) = self.live_record_mut(endpoint) {
             record.standing = None;
         }

@@ -111,16 +111,23 @@ impl DownloadState {
         WorkerSlot::from_usize(highest.map_or(0, |highest| highest + 1))
     }
 
+    /// What everything the runner republishes from this brain stands at: it
+    /// moves when a record or a part's state may have, and a block that moved
+    /// neither leaves it.
+    pub(crate) fn generation(&self) -> u64 {
+        self.sources.generation() + self.scheduler.parts_generation()
+    }
+
     /// Republish the connections this run holds to the node's **Connection
     /// Budget**: every dial, worker and callback road its book holds
-    /// (ADR-0116 invariant 5). The runner calls it after every drain.
+    /// (ADR-0116 invariant 5). The runner calls it from a drain that moved.
     pub(crate) fn hold_connections(&self) {
         self.budget.hold(self.sources.slots_in_use());
     }
 
     /// Republish the places this run's records hold in the node's **Queue
     /// Standings** (ADR-0107): every record holding a standing. The runner
-    /// calls it after every drain.
+    /// calls it from a drain that moved.
     pub(crate) fn hold_standings(&self) {
         self.standings.publish(self.sources.places());
     }

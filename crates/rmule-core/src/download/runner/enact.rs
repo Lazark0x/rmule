@@ -23,6 +23,7 @@ use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
+use super::republish::Republished;
 use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served};
 
 /// Everything one download run carries across loop turns, owned as one value so
@@ -50,9 +51,12 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// The sources this run awaits an uploader's grant from, filed in the
     /// Peer Links and held to the same stage (ADR-0057).
     pub(super) awaited_grants: super::awaited_grants::AwaitedGrants,
-    /// This run's **Held Places**, republished after every drain and
+    /// This run's **Held Places**, republished after a drain that moved them
+    /// (see [`Republished`]) and
     /// withdrawn when the run ends (ADR-0116).
     pub(super) held_places: crate::held_places::HeldPlacesSeat,
+    /// The generation the drain's tail last republished at.
+    pub(super) republished: Option<Republished>,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
@@ -502,11 +506,16 @@ where
             }
         }
     }
-    // The diagnostics refresh rides inside every successful drain:
-    // each of the seven enact sites bundled an identical refresh before, so
-    // folding it here means a new site cannot forget it. `Fail` returns above
-    // without refreshing — matching the stop path's prior behaviour (the
-    // diagnostics row is removed on teardown regardless).
+    // The diagnostics refresh rides inside every successful drain that moved
+    // the brain: each of the seven enact sites bundled an identical refresh
+    // before, so folding it here means a new site cannot forget it. `Fail`
+    // returns above without refreshing — matching the stop path's prior
+    // behaviour (the diagnostics row is removed on teardown regardless).
+    let at = now();
+    if !Republished::due(ctx.republished, &ctx.state, at) {
+        return Ok(());
+    }
+    ctx.republished = Some(Republished::of(&ctx.state, at));
     refresh_parts(&ctx.runner.rt.diagnostics, ctx.download_id, &ctx.state);
     ctx.state.hold_connections();
     ctx.state.hold_standings();
@@ -563,7 +572,7 @@ fn refetch_disproved<S, P>(
 /// The Peer Roster's `Queued` leg (ADR-0059): this run
 /// holds the relation on exactly the endpoints its Source Book records stand
 /// at in their RemoteQueued stage — aMule's `DS_ONQUEUE` clients, known after
-/// their sockets closed. Held to the stage after every drain, so however a
+/// their sockets closed. Held to the stage by the drain's tail, so however a
 /// record leaves it — the TCP full ask, a `0x92`, a merge into the record
 /// that proved it the same peer, an endpoint another record took — its
 /// relation goes with it; the run's lease ends whatever is left.

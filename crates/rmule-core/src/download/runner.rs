@@ -38,6 +38,7 @@ mod intake;
 mod link_sources;
 mod lookup;
 mod reply_sink;
+mod republish;
 mod served;
 mod server_leg;
 #[cfg(test)]

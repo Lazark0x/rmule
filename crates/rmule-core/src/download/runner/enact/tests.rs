@@ -511,7 +511,7 @@ mod queued_roster {
         }
     }
 
-    fn file() -> Ed2kFileLink {
+    pub(super) fn file() -> Ed2kFileLink {
         Ed2kFileLink {
             name: Ed2kText::from_utf8("queued-roster"),
             size: 1_000,
@@ -524,7 +524,7 @@ mod queued_roster {
     }
 
     /// A one-part, one-slot download dialing from [`dual_stack`].
-    fn download_state() -> DownloadState {
+    pub(super) fn download_state() -> DownloadState {
         let mut state = DownloadState::new(
             DownloadId::from_u64(1),
             ContentFacts {
@@ -557,7 +557,7 @@ mod queued_roster {
     }
 
     /// `rows` taken from a link behind an open gate.
-    fn sighted(state: &mut DownloadState, rows: Vec<SourceSighting>) {
+    pub(super) fn sighted(state: &mut DownloadState, rows: Vec<SourceSighting>) {
         let filter = IpFilter::default();
         let gate = Gate {
             filter: &filter,
@@ -568,7 +568,7 @@ mod queued_roster {
     }
 
     /// The worker at `peer` completes its handshake.
-    fn connected(state: &mut DownloadState, peer: PeerEndpoint) {
+    pub(super) fn connected(state: &mut DownloadState, peer: PeerEndpoint) {
         let _ = state.on_worker_event(std::time::Instant::now(), peer, PeerWorkerEvent::Connected);
     }
 
@@ -703,5 +703,147 @@ mod queued_roster {
             !runner.rt.peer_links.offer_grant(&names),
             "a source whose worker opened awaits no grant"
         );
+    }
+}
+
+/// A block that moved no record and no part's state republishes nothing: the
+/// drain's tail walks the whole Source Book, once per arrival otherwise.
+mod republish_gate {
+    use std::time::Duration;
+
+    use rmule_primitives::{Ipv4Endpoint, PeerEndpoint, PeerSource, SourceSighting};
+
+    use super::queued_roster::{connected, download_state, file, sighted};
+    use super::*;
+    use crate::diagnostics::{DiagnosticsState, SourceActivity};
+    use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
+    use crate::service::DownloadId;
+
+    const AT: Ipv4Endpoint = Ipv4Endpoint::new(std::net::Ipv4Addr::new(45, 55, 200, 1), 4662);
+
+    /// The record at `AT` connected and advertising, its first block in.
+    async fn one_block_in<'a>(
+        ctx: &mut LoopCtx<'a, NeverLooksUp, NeverTransfers>,
+        peer: PeerEndpoint,
+    ) {
+        sighted(
+            &mut ctx.state,
+            vec![SourceSighting::plain(
+                PeerSource::HighId(AT),
+                rmule_primitives::Informant::Own,
+            )],
+        );
+        connected(&mut ctx.state, peer);
+        let now = std::time::Instant::now();
+        let _ = ctx
+            .state
+            .on_worker_event(now, peer, PeerWorkerEvent::every_part(1_000));
+        arrival(ctx, peer, 0).await;
+    }
+
+    async fn arrival(
+        ctx: &mut LoopCtx<'_, NeverLooksUp, NeverTransfers>,
+        peer: PeerEndpoint,
+        offset: u64,
+    ) {
+        let block = PeerWorkerEvent::BlockReceived {
+            part_index: 0,
+            offset,
+            bytes: vec![0; 10],
+        };
+        let mut queue: VecDeque<Decision> = ctx
+            .state
+            .on_worker_event(std::time::Instant::now(), peer, block)
+            .into();
+        enact_drain(&mut queue, ctx).await.expect("a block's drain");
+    }
+
+    /// Mark the row so a republish shows: the drain writes the book's count
+    /// over it.
+    fn mark(diagnostics: &DiagnosticsState) {
+        let file = file();
+        diagnostics.ensure_download(
+            DownloadId::from_u64(1),
+            file.file_hash,
+            crate::DownloadMetadata::from_link(&file),
+        );
+        diagnostics.set_part_map(
+            DownloadId::from_u64(1),
+            Vec::new(),
+            0,
+            7_777,
+            SourceActivity::default(),
+        );
+    }
+
+    fn marked(diagnostics: &DiagnosticsState) -> bool {
+        let snapshot = diagnostics.snapshot();
+        snapshot.downloads[&DownloadId::from_u64(1)].known_sources == 7_777
+    }
+
+    #[tokio::test]
+    async fn a_block_that_moved_nothing_republishes_nothing() {
+        let diagnostics = DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics.clone(),
+        );
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let peer = PeerEndpoint::V4(AT);
+        one_block_in(&mut ctx, peer).await;
+        mark(&diagnostics);
+
+        arrival(&mut ctx, peer, 10).await;
+
+        assert!(marked(&diagnostics), "the book stands, so no republish");
+    }
+
+    #[tokio::test]
+    async fn a_moved_record_republishes_in_its_own_drain() {
+        let diagnostics = DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics.clone(),
+        );
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let peer = PeerEndpoint::V4(AT);
+        one_block_in(&mut ctx, peer).await;
+        mark(&diagnostics);
+
+        let now = std::time::Instant::now();
+        let mut queue: VecDeque<Decision> = ctx
+            .state
+            .on_worker_event(now, peer, PeerWorkerEvent::Queued { rank: 3 })
+            .into();
+        enact_drain(&mut queue, &mut ctx).await.expect("the rank");
+
+        assert!(!marked(&diagnostics), "a moved record is republished");
+    }
+
+    /// A held fact also reads the node's other runs, which move nothing here:
+    /// a standing republish is read again a second on.
+    #[tokio::test]
+    async fn a_standing_republish_goes_out_again_after_a_second() {
+        let diagnostics = DiagnosticsState::default();
+        let (runner, _held) = crate::download::runner::test_context::runner_context(
+            NeverLooksUp,
+            NeverTransfers,
+            diagnostics.clone(),
+        );
+        let file = file();
+        let mut ctx = loop_ctx(&runner, &file, download_state());
+        let peer = PeerEndpoint::V4(AT);
+        one_block_in(&mut ctx, peer).await;
+        let a_second_ago = std::time::Instant::now() - Duration::from_secs(1);
+        ctx.republished = Some(Republished::of(&ctx.state, a_second_ago));
+        mark(&diagnostics);
+
+        arrival(&mut ctx, peer, 10).await;
+
+        assert!(!marked(&diagnostics), "a second on, the drain reads again");
     }
 }

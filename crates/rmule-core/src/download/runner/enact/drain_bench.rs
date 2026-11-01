@@ -16,6 +16,7 @@ use super::enact_drain;
 use crate::VerificationAuthority;
 use crate::adapters::PeerWorkerEvent;
 use crate::dialable::DialPosition;
+use crate::download::runner::republish::WakeReading;
 use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
 use crate::download::source_book::Gate;
 use crate::download::state::{
@@ -35,8 +36,8 @@ const QUEUED: usize = 200;
 const DIALING: usize = 90;
 /// Workers delivering, the rest of the 300 records.
 const LIVE: usize = 10;
-/// The bytes one rig turn walks: 400 MiB, none of it finishing a part.
-const WALKED: u64 = 400 * 1024 * 1024;
+/// The bytes one rig turn walks: 300 MiB, none of it finishing a part.
+const WALKED: u64 = 300 * 1024 * 1024;
 
 fn source(index: usize) -> PeerEndpoint {
     let [_, _, high, low] = u32::try_from(index).unwrap().to_be_bytes();
@@ -130,7 +131,7 @@ fn popular_book() -> DownloadState {
 /// What one arrival of `chunk` bytes costs, in nanoseconds per MiB: `WALKED`
 /// bytes, split over the live workers as the fleet loop would take them,
 /// through the brain, the drain and the next wake.
-async fn nanos_per_mib(chunk: u64) -> u64 {
+async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
     let diagnostics = crate::diagnostics::DiagnosticsState::default();
     let (runner, _held) = crate::download::runner::test_context::runner_context(
         NeverLooksUp,
@@ -146,7 +147,13 @@ async fn nanos_per_mib(chunk: u64) -> u64 {
         ipv6_sources: Vec::new(),
         sources: Default::default(),
     };
+    runner.rt.diagnostics.ensure_download(
+        DownloadId::from_u64(1),
+        file.file_hash,
+        crate::DownloadMetadata::from_link(&file),
+    );
     let mut ctx = loop_ctx(&runner, &file, popular_book());
+    let mut wake = WakeReading::default();
     enact_drain(&mut VecDeque::new(), &mut ctx)
         .await
         .expect("nothing to enact");
@@ -167,11 +174,23 @@ async fn nanos_per_mib(chunk: u64) -> u64 {
             bytes: bytes.clone(),
         };
         let at = Instant::now();
+        runner
+            .rt
+            .diagnostics
+            .add_received_bytes(ctx.download_id, chunk);
         let mut queue: VecDeque<Decision> = ctx.state.on_worker_event(at, peer, event).into();
+        if !gated {
+            ctx.republished = None;
+        }
         enact_drain(&mut queue, &mut ctx)
             .await
             .expect("no arrival fails the run");
-        std::hint::black_box(ctx.state.next_wake());
+        if gated {
+            wake.block_turn();
+            std::hint::black_box(wake.read(&ctx.state));
+        } else {
+            std::hint::black_box(ctx.state.next_wake());
+        }
     }
     let elapsed = u64::try_from(started.elapsed().as_nanos()).unwrap();
     elapsed / (WALKED / (1024 * 1024))
@@ -181,8 +200,10 @@ async fn nanos_per_mib(chunk: u64) -> u64 {
 #[ignore = "by hand, in release: prints what the brain costs per MiB"]
 async fn drain_bench() {
     for (label, chunk) in [("packet 10,240", 10_240), ("block 184,320", 184_320)] {
-        let nanos = nanos_per_mib(chunk).await;
-        let ceiling = 1_000_000_000 / nanos.max(1);
-        println!("{label}: {nanos} ns per MiB, the brain alone tops at {ceiling} MiB/s");
+        for (gate, gated) in [("every drain republishes", false), ("gated", true)] {
+            let nanos = nanos_per_mib(chunk, gated).await;
+            let ceiling = 1_000_000_000 / nanos.max(1);
+            println!("{label}, {gate}: {nanos} ns per MiB, tops at {ceiling} MiB/s");
+        }
     }
 }

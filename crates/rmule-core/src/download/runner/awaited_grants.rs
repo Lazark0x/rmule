@@ -6,7 +6,7 @@
 //! dial-back is taken") wherever the peer came back from, and a grant on the
 //! peer's **Queue Standing** calls this run's record to the holder's link.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rmule_primitives::PeerEndpoint;
 use tokio::sync::mpsc;
@@ -50,7 +50,7 @@ impl AwaitedGrants {
     /// however a record left the stage — its grant, a call, a TCP full ask, a
     /// `0x92`, a merge, a purge — its wait goes with it.
     pub(super) fn hold(&mut self, state: &DownloadState) {
-        let waiting: Vec<PeerEndpoint> = state.remote_queued().collect();
+        let waiting: HashSet<PeerEndpoint> = state.remote_queued().collect();
         self.filed.retain(|at, _| waiting.contains(at));
         for at in waiting {
             let holds = state.holds_standing(at);
