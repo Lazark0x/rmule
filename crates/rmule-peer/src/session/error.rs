@@ -18,8 +18,7 @@ pub enum SecureIdentFailure {
 }
 
 /// Typed peer-protocol errors surfaced through `NoticeEvent::CommandRejected`
-/// or out-of-band reporting. Decode errors live in the per-packet
-/// error enums (`PeerHelloDecodeError`, `WireFault`, ...).
+/// or out-of-band reporting. Decode errors are a [`crate::PeerPacketDecodeError`].
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PeerError {
     /// Second `RequestParts` issued while a slot context is already

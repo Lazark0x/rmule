@@ -213,8 +213,8 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// What `$err` makes of a [`WrongFrame`](crate::WrongFrame), or
-            /// `InvalidPayload` if this codec checks the empty body and it is not.
+            /// The crate error's reading of a wrong frame, or `InvalidPayload`
+            /// if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 packet.body_of($crate::PacketProtocol::Edonkey, $opcode)?;
                 ::core::result::Result::Ok(Self)
@@ -243,8 +243,8 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// What `$err` makes of a [`WrongFrame`](crate::WrongFrame), or
-            /// `InvalidPayload` if this codec checks the empty body and it is not.
+            /// The crate error's reading of a wrong frame, or `InvalidPayload`
+            /// if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 let opcode = $opcode;
                 if !packet.body_of($crate::PacketProtocol::Edonkey, opcode)?.is_empty() {

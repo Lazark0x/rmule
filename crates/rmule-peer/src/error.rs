@@ -12,7 +12,7 @@ use std::net::Ipv6Addr;
 use rmule_primitives::{PrimitiveError, WireTruncated, WrongFrame};
 use thiserror::Error;
 
-pub use crate::file::PartBitmapDecodeError;
+use crate::file::PartBitmapDecodeError;
 pub use crate::parts::PartsEncodeError;
 pub use crate::peer_udp::ReaskDecodeError;
 pub use crate::source_exchange::{AnswerSources2DecodeError, AnswerSourcesDecodeError};

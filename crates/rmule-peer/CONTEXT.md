@@ -16,6 +16,14 @@ _Avoid_: download session, leech side
 The half of a **Peer Session** that answers the remote peer's intent to download *from us*: reply to an inbound hello, answer file/hash-set probes for files we share, admit or queue the remote peer, and send part bytes on a granted slot. The **upload-slot queue policy** (who to admit, ranking, slot budget) is NOT owned here — it lives in the **Core Orchestrator**; the **Server Capability** only carries per-connection grant mechanics and reports inbound requests as events.
 _Avoid_: upload session, seed side, served session
 
+**Wire Fault**:
+Why a frame's body is not the packet its opcode names: truncated, the wrong size, a declared length its bytes deny. Every leg of the `PeerPacket` umbrella raises this one type. A leg the session treats differently from a malformed frame keeps its own: the hello's refusal (**Hello Refusal**) and a source answer's non-terminal skip. The session reads a fault by the frame that carried it, so a malformed slot ask stays open as `Unknown` and every other plain leg closes the link.
+_Avoid_: per-leg decode error (one reason for every leg that merely refuses)
+
+**Event Row**:
+A peer event as tools read it: its name and fields, with the reach of each. The `peer …` line `rmule-tools` prints and the table a capture's `events.toml` keeps both render from it, and harness parsers read those bytes, so each format's names stay put when a variant is renamed.
+_Avoid_: event display, TUI line (the TUI renders from codes, never from this)
+
 **Vocabulary Group**:
 The group a **Peer Session**'s event or command belongs to, by the side of the conversation aMule's handler for it serves. *Connection*: the hello, the peer's identity and its revisions, the Secure User Identification verdict, ID and IPv6 changes, the close, and our `Disconnect`. *Requester*: the **Requester Capability**'s asks and what answers them, including the file comment an uploader sends about the file we pull. *Server*: the **Server Capability**'s inbound asks and our answers, grants, ranks and blocks. *Side*: node-wide services riding the link, the Kad firewall checks, the buddy relay and the public-IP ask. *Notice*, events only: what the session counted or dropped and no capability acts on, such as unknown and unsolicited frames, rejected commands, chat and browse. `PeerEvent` and `PeerCommand` nest one sub-enum per group on one ordered stream, so an owner routes a whole group at once and a new variant reaches the compiler inside its group. `OP_CANCELTRANSFER` is split by direction (ADR-0056): ours is a Requester command, the peer's a Server event.
 _Avoid_: capability (Connection, Side and Notice are not capabilities), channel, role
