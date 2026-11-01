@@ -52,7 +52,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: fuzz
-      - run: cargo fuzz --version || cargo install --locked cargo-fuzz@0.13.1
+      # Built on stable: its locked dependencies do not compile on a nightly.
+      - run: |
+          cargo fuzz --version || {
+            rustup toolchain install stable --profile minimal
+            cargo +stable install --locked cargo-fuzz@0.13.1
+          }
       # Restored from the latest pass and saved as a new entry: a cache key
       # never takes a second write.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
