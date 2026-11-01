@@ -6,9 +6,10 @@
 //! [`RECIPROCITY_FACTOR`] — what we upload to it raises our credit where we
 //! wait.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use rmule_primitives::UserHash;
 
@@ -35,8 +36,8 @@ pub(crate) struct HeldPlace {
 pub(crate) struct SharedHeldPlaces(Arc<Mutex<HashMap<DownloadId, HashSet<HeldPlace>>>>);
 
 impl SharedHeldPlaces {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<DownloadId, HashSet<HeldPlace>>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, HashMap<DownloadId, HashSet<HeldPlace>>> {
+        self.0.lock()
     }
 
     /// Whether some download stands queued at the peer `user_hash` names at

@@ -5,12 +5,12 @@ use super::*;
 /// Records the order of a move's syncs and its rename.
 #[derive(Default)]
 struct Synced {
-    steps: std::sync::Mutex<Vec<&'static str>>,
+    steps: parking_lot::Mutex<Vec<&'static str>>,
 }
 
 impl Synced {
     fn step(&self, step: &'static str) {
-        self.steps.lock().unwrap().push(step);
+        self.steps.lock().push(step);
     }
 }
 
@@ -48,7 +48,7 @@ async fn the_rename_road_syncs_the_file_before_it_and_the_directory_after() {
     );
     result.unwrap();
     assert_eq!(
-        *fs.steps.lock().unwrap(),
+        *fs.steps.lock(),
         ["file", "rename", "directory"],
         "the bytes before the name, the name before the row"
     );

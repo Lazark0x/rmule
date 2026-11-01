@@ -11,9 +11,9 @@
 //! own decoder vectors are, and the aMule-authored golden remains a documented
 //! missing asset (see the crate-level evidence note).
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Mutex;
 
 use rmule_ed2k::{ServerMet, ServerMetEntry};
 use rmule_primitives::{
@@ -184,17 +184,12 @@ impl FakeFetcher {
 
     /// Total [`Fetcher::get`] calls across every URL.
     pub(crate) fn call_count(&self) -> usize {
-        self.call_counts.lock().unwrap().values().sum()
+        self.call_counts.lock().values().sum()
     }
 
     /// [`Fetcher::get`] calls for one URL.
     pub(crate) fn call_count_for(&self, url: &str) -> usize {
-        self.call_counts
-            .lock()
-            .unwrap()
-            .get(url)
-            .copied()
-            .unwrap_or(0)
+        self.call_counts.lock().get(url).copied().unwrap_or(0)
     }
 }
 
@@ -204,12 +199,7 @@ impl Fetcher for FakeFetcher {
         url: &str,
         max_bytes: usize,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        *self
-            .call_counts
-            .lock()
-            .unwrap()
-            .entry(url.to_owned())
-            .or_insert(0) += 1;
+        *self.call_counts.lock().entry(url.to_owned()).or_insert(0) += 1;
 
         let canned = self
             .responses

@@ -226,7 +226,6 @@ pub(super) async fn budget_admits<S, P>(runner: &RunnerContext<S, P>) -> u64 {
             .rt
             .source_asks
             .lock()
-            .expect("source ask budget mutex")
             .admit(generation, tokio::time::Instant::now());
         let Err(room_at) = verdict else {
             return generation;

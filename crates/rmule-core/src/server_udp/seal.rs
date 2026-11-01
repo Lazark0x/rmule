@@ -132,7 +132,6 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
         let heard = self
             .capabilities
             .lock()
-            .expect("server capabilities store")
             .get(&server)
             .and_then(|caps| Some((caps.udp_crypt?, caps.udp_flags)));
         heard.or_else(|| self.facts.saved_udp_crypt_of(server))
@@ -180,7 +179,7 @@ impl<T: ServerUdpTransport> ServerUdpSeal<T> {
     ) -> Option<(Ipv4Endpoint, Option<u32>)> {
         let own = self.own.public_ip();
         let heard = {
-            let store = self.capabilities.lock().expect("server capabilities store");
+            let store = self.capabilities.lock();
             store.iter().find_map(|(server, caps)| {
                 let crypt = caps.udp_crypt?;
                 (server.ip == udp_src.ip && crypt.obfuscation_udp_port == udp_src.port)

@@ -33,7 +33,7 @@
 //! Sends are `try_send` fire-and-forget: aMule's `SendPacket` queues into the
 //! socket buffer and drops what it cannot deliver; a refused send here (driver
 //! gone, inbox full) drops the relay the same way, and the close/staleness
-//! paths recycle the slot. Short `std::sync::Mutex` sections, no awaits under
+//! paths recycle the slot. Short `parking_lot::Mutex` sections, no awaits under
 //! the lock.
 //!
 //! [`SharedBanStore`]: crate::ban_store::SharedBanStore
@@ -45,7 +45,8 @@
 //! [`on_link_closed`]: BuddySlot::on_link_closed
 //! [`consume_callback`]: BuddySlot::consume_callback
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_kad::KadId;
@@ -173,8 +174,8 @@ impl BuddySlot {
         self.lock().diagnostics = Some(diagnostics);
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().expect("buddy slot mutex")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Inner> {
+        self.inner.lock()
     }
 
     /// Fresh service, no held link — the Kad pump resets on start so a

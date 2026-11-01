@@ -13,12 +13,7 @@ fn syn() -> Vec<u8> {
 }
 
 fn slot(harness: &Harness, peer: PeerEndpoint) -> Option<rmule_net::natt::TunnelSlot> {
-    harness
-        .front
-        .registry
-        .lock()
-        .expect("the registry is never poisoned")
-        .slot(peer)
+    harness.front.registry.lock().slot(peer)
 }
 
 /// A stranger's opener opens nothing; the same address opens a slot once an

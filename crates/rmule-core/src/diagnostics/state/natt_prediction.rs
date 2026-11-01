@@ -7,7 +7,7 @@ impl DiagnosticsState {
     /// One prediction attempt fired, in either role, sending `probes` extra
     /// `0xA1`.
     pub fn record_natt_prediction_attempt(&self, probes: u64) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let session = &mut inner.session;
         session.natt_prediction_attempts_total =
             session.natt_prediction_attempts_total.saturating_add(1);
@@ -17,7 +17,7 @@ impl DiagnosticsState {
 
     /// One pairing met.
     pub fn count_natt_prediction_hit(&self) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.natt_prediction_hits_total =
             inner.session.natt_prediction_hits_total.saturating_add(1);
     }
@@ -28,7 +28,7 @@ impl DiagnosticsState {
         &self,
         refusal: crate::diagnostics::NattPredictionRefusal,
     ) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         inner.session.natt_prediction_refusals_total = inner
             .session
             .natt_prediction_refusals_total

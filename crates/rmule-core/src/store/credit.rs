@@ -5,9 +5,10 @@
 //! every question the seam asks is "what does this peer's row say", which the
 //! primary key already answers.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rmule_primitives::UserHash;
@@ -245,7 +246,7 @@ impl DurableCreditStore {
 
 impl Ring {
     fn books(&self) -> MutexGuard<'_, Books> {
-        self.books.lock().unwrap_or_else(PoisonError::into_inner)
+        self.books.lock()
     }
 
     /// Add what moved to the store's rows in one flushed transaction, each

@@ -8,8 +8,9 @@
 //! restart loses them, as stock's. Time is an argument, and a name past its
 //! window simply reads unspent: no timer runs.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::FileHash;
@@ -101,8 +102,8 @@ impl SpentSeat {
         Self::new(SpentNames::shared(), FileHash::from_bytes([0; 16]))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, SpentNames> {
-        self.names.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, SpentNames> {
+        self.names.lock()
     }
 
     /// Spend `name` from `now`; a window already running longer stays.

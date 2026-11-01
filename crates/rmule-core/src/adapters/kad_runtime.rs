@@ -386,7 +386,7 @@ type KadShutdownParts = (oneshot::Receiver<()>, oneshot::Sender<()>);
 /// `EnableKad`; `KadShutdownSlot::take` hands the pump task its half at
 /// start, [`KadShutdownHandle::request_and_wait`] is the caller's half.
 #[derive(Clone, Default)]
-pub struct KadShutdownSlot(Arc<std::sync::Mutex<Option<KadShutdownParts>>>);
+pub struct KadShutdownSlot(Arc<parking_lot::Mutex<Option<KadShutdownParts>>>);
 
 impl std::fmt::Debug for KadShutdownSlot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -403,7 +403,9 @@ impl KadShutdownSlot {
         let (stop_tx, stop_rx) = oneshot::channel();
         let (stopped_tx, stopped_rx) = oneshot::channel();
         (
-            Self(Arc::new(std::sync::Mutex::new(Some((stop_rx, stopped_tx))))),
+            Self(Arc::new(parking_lot::Mutex::new(Some((
+                stop_rx, stopped_tx,
+            ))))),
             KadShutdownHandle {
                 stop: Some(stop_tx),
                 stopped: Some(stopped_rx),
@@ -417,7 +419,7 @@ impl KadShutdownSlot {
     /// `start` never called, or one a node already took — finds it empty and
     /// runs with no external lever, same as `None`.
     pub(crate) fn take(&self) -> Option<KadShutdownParts> {
-        self.0.lock().ok()?.take()
+        self.0.lock().take()
     }
 }
 

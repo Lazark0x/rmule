@@ -3,9 +3,10 @@
 //! a row whose file goes or changes moves to without a read, and dropped —
 //! never Had — when they go or change themselves.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::FileHashSummary;
 

@@ -2,10 +2,11 @@
 //! the range before the next decision, a set that arrives late or disproves
 //! a part, and the identity a pause leaves.
 
+use parking_lot::Mutex;
 use std::collections::{HashSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_peer::{PartBitmap, PartIndex, PeerHandshakeContext};
@@ -73,7 +74,7 @@ impl PeerTransferService for RecordsAtDial {
         brief: WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
         let range = self.cell.served(self.file).expect("an entry").range;
-        self.seen.lock().unwrap().push((brief.own_status, range));
+        self.seen.lock().push((brief.own_status, range));
         Err(DownloadFailure::NoUsableSources)
     }
 }
@@ -263,7 +264,7 @@ async fn a_persisted_part_is_in_the_range_before_the_next_decision_is_enacted() 
     ]);
     enact_drain(&mut queue, &mut ctx).await.unwrap();
 
-    let seen = seen.lock().unwrap();
+    let seen = seen.lock();
     let (status, range) = seen.first().expect("the dial was enacted");
     assert!(
         status.has(PartIndex::new(part)),

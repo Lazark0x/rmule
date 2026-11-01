@@ -1,10 +1,11 @@
 //! The pass against a scripted directory: the trust rule, the diff, the skip
 //! rules and the disclosure guard, with every open counted at the seam.
 
+use parking_lot::Mutex;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use rmule_primitives::{FileHash, FileHashSummary};
@@ -284,15 +285,11 @@ fn the_guard_hashes_nothing_before_the_operator_answers() {
         &dir,
         &[],
         Consent::Ask(Box::new(move |files| {
-            *seen.lock().unwrap() = Some((files.files, probe.opens()));
+            *seen.lock() = Some((files.files, probe.opens()));
             false
         })),
     );
-    assert_eq!(
-        *asked.lock().unwrap(),
-        Some((1, 0)),
-        "asked with nothing opened"
-    );
+    assert_eq!(*asked.lock(), Some((1, 0)), "asked with nothing opened");
     assert_eq!(outcome.end, PassEnd::Declined);
     assert!(outcome.reports.is_empty());
     assert_eq!(dir.opens(), 0);

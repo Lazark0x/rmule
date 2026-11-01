@@ -251,7 +251,7 @@ async fn disable_kad_stops_a_node_whose_caller_holds_its_own_lever() {
 
 /// A runtime that keeps the TCP port the node was started to present.
 struct PortRecordingKad {
-    presented: std::sync::Arc<std::sync::Mutex<Option<u16>>>,
+    presented: std::sync::Arc<parking_lot::Mutex<Option<u16>>>,
     killed: Option<oneshot::Receiver<()>>,
 }
 
@@ -265,7 +265,7 @@ impl KadRuntimeFactory for PortRecordingKad {
         _bind: ClientUdpBind,
         _cells: &crate::KadCells,
     ) -> Result<KillableChannel, CoreError> {
-        *self.presented.lock().unwrap() = Some(node.peer_credentials.tcp_port());
+        *self.presented.lock() = Some(node.peer_credentials.tcp_port());
         Ok(KillableChannel(Mutex::new(self.killed.take())))
     }
 }
@@ -299,12 +299,12 @@ async fn a_kad_start_with_no_listener_up_listens_first_and_presents_the_bound_po
         unreachable!("filtered for ServingStarted")
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while presented.lock().unwrap().is_none() {
+    while presented.lock().is_none() {
         assert!(tokio::time::Instant::now() < deadline, "Kad never started");
         tokio::task::yield_now().await;
     }
     assert_ne!(listen_addr.port(), 0);
-    assert_eq!(*presented.lock().unwrap(), Some(listen_addr.port()));
+    assert_eq!(*presented.lock(), Some(listen_addr.port()));
     core.shutdown().await;
 }
 
@@ -340,7 +340,7 @@ async fn a_kad_start_after_a_listener_restart_presents_the_port_the_listener_fir
     core.send(CoreCommand::Serve(crate::ServeCommand::StopServing))
         .await
         .expect("core alive");
-    *presented.lock().unwrap() = None;
+    *presented.lock() = None;
     core.send(CoreCommand::EnableKad(enable_config()))
         .await
         .expect("core alive");
@@ -354,7 +354,7 @@ async fn a_kad_start_after_a_listener_restart_presents_the_port_the_listener_fir
         unreachable!("filtered for ServingStarted")
     };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while presented.lock().unwrap().is_none() {
+    while presented.lock().is_none() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "Kad never restarted"
@@ -362,7 +362,7 @@ async fn a_kad_start_after_a_listener_restart_presents_the_port_the_listener_fir
         tokio::task::yield_now().await;
     }
     assert_eq!(second.port(), first.port());
-    assert_eq!(*presented.lock().unwrap(), Some(first.port()));
+    assert_eq!(*presented.lock(), Some(first.port()));
     core.shutdown().await;
 }
 
@@ -422,6 +422,6 @@ async fn a_kad_start_whose_listener_cannot_bind_is_refused_for_want_of_a_tcp_por
         reason,
         CoreCommandRejectReason::KadUnavailable(KadUnavailableReason::TcpPortUnbound)
     );
-    assert_eq!(*presented.lock().unwrap(), None, "no node started");
+    assert_eq!(*presented.lock(), None, "no node started");
     core.shutdown().await;
 }

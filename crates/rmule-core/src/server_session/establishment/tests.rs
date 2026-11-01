@@ -88,7 +88,7 @@ async fn connect_refuses_a_filtered_server_without_dialing() {
         true,
     );
     let shared_filter = SharedIpFilter::default();
-    *shared_filter.write().expect("ip filter lock") = filter;
+    *shared_filter.write() = filter;
 
     let refused = connect_to_server(
         &SharedServerSession::default(),
@@ -110,7 +110,7 @@ async fn connect_refuses_a_filtered_server_without_dialing() {
         true,
         false,
     );
-    *shared_filter.write().expect("ip filter lock") = servers_off;
+    *shared_filter.write() = servers_off;
     let dialed = connect_to_server(
         &SharedServerSession::default(),
         ServerEndpoint::new("127.0.0.1", 1).unwrap(),
@@ -137,7 +137,7 @@ async fn connect_refuses_a_dns_named_server_whose_resolved_ip_is_filtered() {
         true,
     );
     let shared_filter = SharedIpFilter::default();
-    *shared_filter.write().expect("ip filter lock") = filter;
+    *shared_filter.write() = filter;
 
     let refused = connect_to_server(
         &SharedServerSession::default(),

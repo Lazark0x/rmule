@@ -6,9 +6,10 @@
 //! resumed run's part check take it too before they re-read a download's
 //! parts (ADR-0113, ADR-0094).
 
+use parking_lot::{Condvar, Mutex};
 use std::io::{self, Read};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use rmule_primitives::FileHashSummary;
@@ -34,12 +35,12 @@ impl HashTurn {
     /// it is raised. The turn is given back when the guard drops.
     pub(crate) fn take(&self, stop: &AtomicBool) -> Option<TurnGuard> {
         let (taken, freed) = &*self.0;
-        let mut held = taken.lock().expect("hash turn");
+        let mut held = taken.lock();
         while *held {
             if stop.load(Ordering::Relaxed) {
                 return None;
             }
-            held = freed.wait_timeout(held, TURN_TICK).expect("hash turn").0;
+            freed.wait_for(&mut held, TURN_TICK);
         }
         if stop.load(Ordering::Relaxed) {
             return None;
@@ -56,7 +57,7 @@ pub(crate) struct TurnGuard(HashTurn);
 impl Drop for TurnGuard {
     fn drop(&mut self) {
         let (taken, freed) = &*(self.0).0;
-        *taken.lock().expect("hash turn") = false;
+        *taken.lock() = false;
         freed.notify_one();
     }
 }

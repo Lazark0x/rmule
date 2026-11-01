@@ -226,7 +226,7 @@ async fn an_ip_filtered_peer_is_never_dialed() {
     let bound = SocketAddrV4::new(Ipv4Addr::LOCALHOST, listener.local_port());
 
     let ip_filter = SharedIpFilter::default();
-    *ip_filter.write().expect("ip filter lock") = loopback_blocking_ip_filter();
+    *ip_filter.write() = loopback_blocking_ip_filter();
 
     let mut transfer =
         RuntimePeerTransferService::new(crate::DEFAULT_SLOT_WAIT_TIMEOUT).with_ip_filter(ip_filter);

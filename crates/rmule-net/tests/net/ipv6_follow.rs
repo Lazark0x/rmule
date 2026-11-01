@@ -2,8 +2,9 @@
 //! hellos reaches the peer as one `OP_CHANGE_CLIENT_IP`, which its session
 //! reads as a revision of who we are.
 
+use parking_lot::Mutex;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_net::peer::{ConnectOptions, Connection, Ipv6Follow, PeerStreamRole};
@@ -51,7 +52,7 @@ async fn a_move_of_our_ipv6_reaches_the_identified_peer() {
     let (wake, changed) = watch::channel(0u64);
     let read = {
         let current = Arc::clone(&current);
-        Arc::new(move || Some(*current.lock().expect("the address cell")))
+        Arc::new(move || Some(*current.lock()))
     };
     let (ours_io, theirs_io) = tokio::io::duplex(64 * 1024);
     let mut ours = Connection::over_stream(
@@ -74,7 +75,7 @@ async fn a_move_of_our_ipv6_reaches_the_identified_peer() {
     );
     tokio::join!(identified(&mut ours), identified(&mut theirs));
 
-    *current.lock().expect("the address cell") = moved;
+    *current.lock() = moved;
     wake.send_replace(1);
     let revised = tokio::time::timeout(Duration::from_secs(5), async {
         loop {

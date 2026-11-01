@@ -75,7 +75,7 @@ pub(crate) const UDP_SEARCH_SPACING: Duration = Duration::from_millis(300);
 #[derive(Clone, Default)]
 pub(crate) struct UdpSearchPacer(
     std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<ServerEndpoint, tokio::time::Instant>>,
+        parking_lot::Mutex<std::collections::HashMap<ServerEndpoint, tokio::time::Instant>>,
     >,
 );
 
@@ -83,7 +83,7 @@ impl UdpSearchPacer {
     /// Book the next slot for `server`: when the datagram may go.
     fn book(&self, server: &ServerEndpoint) -> tokio::time::Instant {
         let now = tokio::time::Instant::now();
-        let mut last = self.0.lock().expect("udp search pacer");
+        let mut last = self.0.lock();
         let at = last
             .get(server)
             .map_or(now, |previous| (*previous + UDP_SEARCH_SPACING).max(now));

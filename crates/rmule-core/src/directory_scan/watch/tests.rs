@@ -3,12 +3,13 @@
 //! rename, skipped names, lost events, and the watch's lifetime inside the
 //! scan. Every open and every look at a path is counted at the seam.
 
+use parking_lot::Mutex;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rmule_primitives::{FileHash, FileHashSummary};
@@ -346,7 +347,7 @@ fn a_file_that_never_holds_still_is_never_hashed_and_shows_as_settling() {
     harness.run(script, ms(21_000));
     assert!(harness.shares().is_empty());
     assert_eq!(harness.world.opens(), 0);
-    let progress = harness.progress.lock().unwrap().clone().unwrap();
+    let progress = harness.progress.lock().clone().unwrap();
     assert_eq!(progress.phase, ScanPhase::Watching { settling: 1 });
 }
 
@@ -587,7 +588,7 @@ fn the_first_pass_is_reported_before_the_watch_starts() {
             .borrow()
             .iter()
             .any(|(_, report)| matches!(report, ScanReport::Finished(s) if s.hashed == 1));
-        let phase = harness.progress.lock().unwrap().clone().unwrap().phase;
+        let phase = harness.progress.lock().clone().unwrap().phase;
         seen_at_start = Some((finished, phase));
         Err(WatchFault::Backend)
     });
@@ -608,7 +609,7 @@ fn a_watch_that_cannot_start_leaves_the_pass_standing_and_says_why() {
     assert_eq!(end, ScanEnd::Unwatched(WatchFault::Limit));
     assert_eq!(harness.shares().len(), 1, "the first pass holds");
     assert_eq!(
-        harness.progress.lock().unwrap().clone().unwrap().phase,
+        harness.progress.lock().clone().unwrap().phase,
         ScanPhase::Unwatched {
             reason: WatchFault::Limit
         }

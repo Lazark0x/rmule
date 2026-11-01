@@ -4,6 +4,7 @@
 //! AICH root keeps every worker, and its verified refetch names the sender of
 //! the cell that changed.
 
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     PeerRetirementReason, PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent,
@@ -19,7 +20,7 @@ use rmule_testkit::{
     plain_sources, two_high_id_sources,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
@@ -32,7 +33,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
     let drop_at = 40u64;
     let dropping_peer = loopback_peer(1);
     let resuming_peer = loopback_peer(2);
-    let first_handed = Arc::new(StdMutex::new(HashMap::new()));
+    let first_handed = Arc::new(BlockingMutex::new(HashMap::new()));
 
     let mut core = Core::builder(
         CoreConfig {
@@ -77,7 +78,7 @@ async fn a_dropped_workers_bytes_stay_and_the_next_is_handed_only_the_rest() {
         }
     }
 
-    let offsets = first_handed.lock().unwrap();
+    let offsets = first_handed.lock();
     assert_eq!(
         offsets.get(&dropping_peer),
         Some(&0),
@@ -201,7 +202,7 @@ struct ResumeAfterDropTransfer {
     dropping_peer: PeerEndpoint,
     drop_at: u64,
     bytes: Vec<u8>,
-    first_handed: Arc<StdMutex<HashMap<PeerEndpoint, u64>>>,
+    first_handed: Arc<BlockingMutex<HashMap<PeerEndpoint, u64>>>,
 }
 
 impl PeerTransferService for ResumeAfterDropTransfer {
@@ -228,11 +229,7 @@ impl PeerTransferService for ResumeAfterDropTransfer {
                     }
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
-                        first_handed
-                            .lock()
-                            .unwrap()
-                            .entry(peer)
-                            .or_insert(blocks[0].start);
+                        first_handed.lock().entry(peer).or_insert(blocks[0].start);
                         if peer == dropping_peer {
                             // Deliver [0, drop_at) then drop mid-block; the
                             // bytes core kept are what the next peer is spared.

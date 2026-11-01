@@ -45,8 +45,8 @@ async fn fallback_toward(
     tokio::time::advance(Duration::from_secs(20)).await;
     sweep.ping_next(&mut state).await;
 
-    let plain = transport.sends.lock().unwrap().clone();
-    let mut obfuscated = transport.obfuscated.lock().unwrap().clone();
+    let plain = transport.sends.lock().clone();
+    let mut obfuscated = transport.obfuscated.lock().clone();
     let crypt_ping = obfuscated.remove(0);
     assert_eq!(
         crypt_ping.0,
@@ -85,7 +85,7 @@ fn sweep_toward(
 
 /// How many datagrams went out, plain and obfuscated.
 fn probes(transport: &ScriptedTransport) -> usize {
-    transport.sends.lock().unwrap().len() + transport.obfuscated.lock().unwrap().len()
+    transport.sends.lock().len() + transport.obfuscated.lock().len()
 }
 
 /// Ping the row and let its crypt fallback go, then walk it again at the

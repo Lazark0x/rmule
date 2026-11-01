@@ -11,9 +11,10 @@
 //! Live evidence — a punch through real gateways — is the interop harness's,
 //! not this file's.
 
+use parking_lot::Mutex;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -55,7 +56,7 @@ impl NattDatagramSink for FakeWire {
 
     fn try_send_to(&self, peer: PeerEndpoint, datagram: &[u8]) -> io::Result<usize> {
         let frame = (self.me, peer, datagram.to_vec());
-        self.log.lock().expect("wire log").push(frame.clone());
+        self.log.lock().push(frame.clone());
         let _ = self.tx.send(frame);
         Ok(datagram.len())
     }
@@ -126,13 +127,13 @@ impl SettableHash {
     }
 
     fn set(&self, hash: UserHash) {
-        *self.0.lock().expect("settable hash") = Some(hash);
+        *self.0.lock() = Some(hash);
     }
 }
 
 impl NattOwnHash for SettableHash {
     fn user_hash(&self) -> Option<UserHash> {
-        *self.0.lock().expect("settable hash")
+        *self.0.lock()
     }
 }
 
@@ -275,7 +276,7 @@ impl FakeNetwork {
 
     /// Every datagram either node has emitted, in order.
     fn wire(&self) -> Vec<Datagram> {
-        self.log.lock().expect("wire log").clone()
+        self.log.lock().clone()
     }
 }
 
@@ -376,7 +377,6 @@ async fn a_peer_session_runs_unchanged_inside_a_tunnel() {
         .sender()
         .registry()
         .lock()
-        .expect("registry")
         .identified(net.a_at, hash(0xAA), Instant::now());
     responder.shutdown().await.expect("shutdown");
     initiator.shutdown().await.expect("shutdown");
@@ -443,7 +443,7 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
     let dialed = dialed.expect("the v6 dial completed over the fake wire");
     let accepted = accepted.expect("the responder accepted the v6 SYN");
     assert_eq!(accepted.peer(), net.a_at);
-    let slot_at_b = || net.b_registry.lock().expect("registry").slot(net.a_at);
+    let slot_at_b = || net.b_registry.lock().slot(net.a_at);
     assert_eq!(slot_at_b(), Some(TunnelSlot::Held));
 
     // What core's `adopt` does with a tunnel on a path no punch opened.
@@ -452,7 +452,6 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
     assert_eq!(
         net.b_registry
             .lock()
-            .expect("registry")
             .admit(net.a_at, false, any_source, Instant::now()),
         Admission::Drop,
         "a late non-SYN from the closed source is a stranger's again"
@@ -460,7 +459,7 @@ async fn an_ipv6_tunnel_frees_its_registry_slot_when_it_is_dropped() {
 
     drop(dialed);
     assert_eq!(
-        net.a_registry.lock().expect("registry").slot(net.b_at),
+        net.a_registry.lock().slot(net.b_at),
         None,
         "a dialed tunnel's slot goes with it too"
     );
@@ -559,10 +558,7 @@ async fn an_opener_from_an_unexpected_ip_is_dropped_with_no_answer() {
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(net.wire().is_empty(), "nothing left the gated node");
-    assert_eq!(
-        net.b_registry.lock().expect("registry").slot(net.a_at),
-        None
-    );
+    assert_eq!(net.b_registry.lock().slot(net.a_at), None);
 
     assert_eq!(
         net.b
@@ -702,10 +698,7 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
         )
         .await;
     assert_eq!(before, NattDisposition::CapsBeforeIdentity);
-    assert!(
-        log.lock().expect("wire log").is_empty(),
-        "no answer while identity is unknown"
-    );
+    assert!(log.lock().is_empty(), "no answer while identity is unknown");
 
     own_hash.set(acquired);
 
@@ -724,7 +717,7 @@ async fn a_caps_probe_is_silent_before_identity_and_answered_once_it_arrives() {
             transport: Some(NattTransport::Utp),
         }
     );
-    let answers = log.lock().expect("wire log").clone();
+    let answers = log.lock().clone();
     assert_eq!(answers.len(), 1, "exactly one CAPS-ACK");
     let decoded = match NattFrame::decode(&answers[0].2).expect("our own frame decodes") {
         NattFrame::CapsAck(caps) => caps,
@@ -931,7 +924,7 @@ async fn a_stranger_key_or_caps_leaves_no_row_and_draws_no_answer() {
     net.b
         .on_datagram(stranger, &null_caps(), &nobody, now)
         .await;
-    assert!(net.log.lock().expect("wire log").is_empty(), "no CAPS-ACK");
+    assert!(net.log.lock().is_empty(), "no CAPS-ACK");
 }
 
 /// An expected address is still a claimed one, so CAPS frames from it draw
@@ -946,7 +939,7 @@ async fn a_caps_flood_from_one_endpoint_draws_one_answer_per_window() {
             .on_datagram(source, &null_caps(), &any_source, now)
             .await;
     }
-    let answers = || net.log.lock().expect("wire log").len();
+    let answers = || net.log.lock().len();
     assert_eq!(answers(), 1);
     net.b
         .on_datagram(source, &null_caps(), &any_source, now + KEY_FRAME_INTERVAL)

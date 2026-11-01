@@ -253,7 +253,7 @@ pub(crate) fn send_download_event(evt_tx: &Outbox, event: DownloadEvent) {
 /// **Download Set**, installed for its run, and the one `0x90` in flight per
 /// peer endpoint. The quartet names no file, so a reply goes to the download
 /// whose ping it answers and to no other; a reply nothing asked for drops.
-pub(crate) type SharedReaskReplySink = Arc<std::sync::Mutex<crate::download::ReaskRoutes>>;
+pub(crate) type SharedReaskReplySink = Arc<parking_lot::Mutex<crate::download::ReaskRoutes>>;
 
 /// Who this client says it is on a wire-touching command: the presentation
 /// half of its eD2k identity — nickname, listen port, protocol version and

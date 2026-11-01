@@ -3,9 +3,10 @@
 //! its set-aside rows still describe, and an add asks even when nothing
 //! would be read.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::{FileHashSummary, PartHash};
 
@@ -75,13 +76,13 @@ fn a_directory_added_again_shares_its_set_aside_rows_unread() {
         &dir,
         &known,
         Consent::Confirm(Box::new(move |offer| {
-            *seen.lock().unwrap() = Some(offer);
+            *seen.lock() = Some(offer);
             true
         })),
     );
     assert_eq!(dir.opens(), 0, "nothing read");
     assert_eq!(
-        *asked.lock().unwrap(),
+        *asked.lock(),
         Some(DirectoryOffer {
             files: 2,
             bytes: 20,
@@ -119,10 +120,10 @@ fn an_added_directory_is_asked_about_even_when_it_would_read_nothing() {
         &dir,
         &Known::default(),
         Consent::Confirm(Box::new(move |offer| {
-            *seen.lock().unwrap() = Some(offer);
+            *seen.lock() = Some(offer);
             false
         })),
     );
-    assert_eq!(*asked.lock().unwrap(), Some(DirectoryOffer::default()));
+    assert_eq!(*asked.lock(), Some(DirectoryOffer::default()));
     assert_eq!(end, PassEnd::Declined);
 }

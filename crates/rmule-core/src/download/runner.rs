@@ -145,11 +145,7 @@ impl DiscoveryLiveness {
     }
 
     fn sweep_armed(&self) -> bool {
-        !self
-            .global_servers
-            .lock()
-            .expect("global source server list")
-            .is_empty()
+        !self.global_servers.lock().is_empty()
     }
 }
 
@@ -182,7 +178,7 @@ pub(crate) struct RunnerContext<S, P> {
     pub(crate) repair: std::sync::atomic::AtomicBool,
     /// Set when the volume stopped the run (ADR-0094): its end pauses the
     /// download and says why.
-    pub(crate) volume_stop: std::sync::Mutex<Option<VolumeStop>>,
+    pub(crate) volume_stop: parking_lot::Mutex<Option<VolumeStop>>,
     /// Set once the run's **Hole Probe** has run (ADR-0111): a run that
     /// holds its part file again after a repair probes nothing and tells
     /// nothing again, so the probe and its `HoleLess` notice come once per
@@ -210,16 +206,13 @@ impl<S, P> RunnerContext<S, P> {
     /// The volume stopped the run: answers the failure that ends it, a pause
     /// in all but the telling.
     pub(crate) fn stop_for_volume(&self, stop: VolumeStop) -> DownloadFailure {
-        *self.volume_stop.lock().expect("the run's volume stop") = Some(stop);
+        *self.volume_stop.lock() = Some(stop);
         DownloadFailure::Paused
     }
 
     /// What the volume stopped the run for, clearing it.
     pub(crate) fn take_volume_stop(&self) -> Option<VolumeStop> {
-        self.volume_stop
-            .lock()
-            .expect("the run's volume stop")
-            .take()
+        self.volume_stop.lock().take()
     }
 
     /// Whether the run that just ended was marked for repair, clearing it.

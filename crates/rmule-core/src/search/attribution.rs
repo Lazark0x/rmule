@@ -9,8 +9,9 @@
 //! may not echo), and every other live search must see the row prove its query.
 //! A row that reaches nobody is dropped and counted, never shown.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_primitives::{Ipv4Endpoint, SearchQuery, SearchResult};
 use tokio::sync::{mpsc, watch};
@@ -80,10 +81,7 @@ struct Registration {
 
 impl Drop for Registration {
     fn drop(&mut self) {
-        self.searches
-            .lock()
-            .expect("live searches")
-            .remove(&self.search_id);
+        self.searches.lock().remove(&self.search_id);
     }
 }
 
@@ -109,11 +107,7 @@ impl AttributedRows {
     /// Stop being live, as a search does at completion: rows that would have
     /// been its are counted instead, until [`Self::renew`].
     pub(crate) fn lapse(&mut self) {
-        self.live
-            .searches
-            .lock()
-            .expect("live searches")
-            .remove(&self.live.search_id);
+        self.live.searches.lock().remove(&self.live.search_id);
     }
 
     /// Live again under `query` — a completed search asking its server for
@@ -124,7 +118,6 @@ impl AttributedRows {
         self.live
             .searches
             .lock()
-            .expect("live searches")
             .insert(self.live.search_id, Live { query, rows: tx });
         self.rows = rows;
     }
@@ -169,7 +162,6 @@ impl LiveSearches {
         let (tx, rows) = mpsc::unbounded_channel();
         self.searches
             .lock()
-            .expect("live searches")
             .insert(search_id, Live { query, rows: tx });
         AttributedRows {
             rows,
@@ -203,7 +195,7 @@ impl LiveSearches {
     ) {
         let mut unattributed = 0u64;
         {
-            let searches = self.searches.lock().expect("live searches");
+            let searches = self.searches.lock();
             let mut shares: HashMap<SearchId, Vec<SearchResult>> = HashMap::new();
             for row in batch {
                 let mut reached = false;

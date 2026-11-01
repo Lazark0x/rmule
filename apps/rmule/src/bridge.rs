@@ -24,8 +24,9 @@
 //! a core that never finishes draining still lets the caller's `.await`
 //! return.
 
+use parking_lot::Mutex;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
@@ -202,7 +203,7 @@ impl BridgeHandle {
     /// by this clone or another — or the bridge task had already ended on
     /// its own.
     pub async fn graceful_shutdown(&self) -> bool {
-        let request = self.shutdown.lock().expect("shutdown mutex").take();
+        let request = self.shutdown.lock().take();
         let Some(request) = request else {
             return false;
         };

@@ -2,10 +2,11 @@
 //! directory: the same core `main` builds, with the one swap a test needs — a
 //! canned fetch and no router backends, so nothing here reaches past the host.
 
+use parking_lot::Mutex;
 use rmule_testkit::HANG_GUARD;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule::attach::{Attachment, Deployment, attach};
@@ -31,7 +32,7 @@ struct CannedFetch {
 
 impl CannedFetch {
     fn asked(&self) -> Vec<String> {
-        self.asked.lock().expect("asked").clone()
+        self.asked.lock().clone()
     }
 }
 
@@ -41,7 +42,7 @@ impl Fetcher for CannedFetch {
         url: &str,
         _max_bytes: usize,
     ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        self.asked.lock().expect("asked").push(url.to_owned());
+        self.asked.lock().push(url.to_owned());
         let answer = match &self.body {
             Some(body) => Ok(body.to_vec()),
             None => Err(FetchError::Timeout {

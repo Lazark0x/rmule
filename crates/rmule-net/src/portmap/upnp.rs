@@ -39,8 +39,9 @@
 //! names this host's internal address and port (ADR-0086, "A release takes
 //! down only rmule's own mapping").
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use igd_next::{AddPortError, PortMappingProtocol, SearchOptions};
@@ -90,14 +91,13 @@ impl UpnpMappingBackend {
     fn cached(&self, gateway: Gateway) -> Option<igd_next::Gateway> {
         self.device
             .lock()
-            .expect("upnp device cache")
             .as_ref()
             .filter(|(found_at, _)| *found_at == gateway)
             .map(|(_, device)| device.clone())
     }
 
     fn remember(&self, gateway: Gateway, device: &igd_next::Gateway) {
-        *self.device.lock().expect("upnp device cache") = Some((gateway, device.clone()));
+        *self.device.lock() = Some((gateway, device.clone()));
     }
 
     /// Find the IGD, or answer from the cache.

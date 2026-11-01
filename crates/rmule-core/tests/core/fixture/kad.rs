@@ -4,7 +4,8 @@
 //! scripted sources when it has any. And the wait the legs that run a real
 //! node share: until its routing table holds a contact.
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use rmule_core::{
     ClientUdpBind, Core, CoreError, KadEnableConfig, KadKeywordSink, KadRuntimeFactory,
@@ -77,10 +78,7 @@ impl KadSourceChannel for StubKad {
     }
 
     async fn search_keyword(&self, query: KeywordQuery, results: KadKeywordSink) {
-        self.walks
-            .lock()
-            .unwrap()
-            .push(query.phrase().to_display_string());
+        self.walks.lock().push(query.phrase().to_display_string());
         if let Some(rows) = &self.keyword_rows {
             let _ = results.send(rows.clone()).await;
         }

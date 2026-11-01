@@ -254,13 +254,11 @@ where
                 // handed back to the brain, until the first is answered or
                 // lapses.
                 let at = now();
-                let claimed = ctx
-                    .runner
-                    .rt
-                    .reask_reply_sink
-                    .lock()
-                    .expect("reask reply sink mutex")
-                    .claim_ping(answered_from, ctx.download_id, at);
+                let claimed = ctx.runner.rt.reask_reply_sink.lock().claim_ping(
+                    answered_from,
+                    ctx.download_id,
+                    at,
+                );
                 if !claimed {
                     ctx.state.on_ping_held(at, peer);
                     continue;

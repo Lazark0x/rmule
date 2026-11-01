@@ -2,10 +2,11 @@
 //! rows"): the scan skips the paths the download rows
 //! name, never a suffix.
 
+use parking_lot::Mutex;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 
 use super::super::scripted::{ROOT, Scripted, World};
 use super::super::{

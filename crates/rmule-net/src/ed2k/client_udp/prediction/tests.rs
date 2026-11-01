@@ -2,7 +2,7 @@
 //! part-way leaves nothing behind, only the punch target's own endpoint is a
 //! hit, and a socket lives exactly as long as its Fan or its Route does.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use super::*;
@@ -72,9 +72,7 @@ fn recording_binder(
         let socket = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
         socket.set_nonblocking(true)?;
         let socket = Arc::new(UdpSocket::from_std(socket)?);
-        seen.lock()
-            .expect("recorded sockets")
-            .push(Arc::downgrade(&socket));
+        seen.lock().push(Arc::downgrade(&socket));
         Ok(socket)
     }
 }
@@ -94,14 +92,14 @@ async fn a_bind_that_fails_part_way_leaves_no_socket_and_no_reader() {
     assert!(opened.is_err(), "the fan does not open");
     // Let any reader that was (wrongly) spawned get scheduled once.
     tokio::task::yield_now().await;
-    let seen = seen.lock().expect("recorded sockets");
+    let seen = seen.lock();
     assert_eq!(seen.len(), 3, "three binds succeeded before the failure");
     assert!(
         seen.iter().all(|socket| socket.upgrade().is_none()),
         "no reader task holds a socket the failed fan bound"
     );
     assert_eq!(fans.open_sockets(), 0);
-    assert!(fans.fans.lock().expect("fans").is_empty());
+    assert!(fans.fans.lock().is_empty());
 }
 
 /// The Fan is for one endpoint. A datagram from the peer's address on another
@@ -167,12 +165,7 @@ async fn a_socket_lives_as_long_as_its_fan_or_its_route() {
     fans.close(fan, true);
     tokio::task::yield_now().await;
     assert_eq!(fans.open_sockets(), 1, "only the routed socket survives");
-    let alive: Vec<Arc<UdpSocket>> = seen
-        .lock()
-        .expect("recorded sockets")
-        .iter()
-        .filter_map(Weak::upgrade)
-        .collect();
+    let alive: Vec<Arc<UdpSocket>> = seen.lock().iter().filter_map(Weak::upgrade).collect();
     assert_eq!(alive.len(), 1);
     assert_eq!(
         alive[0].local_addr().expect("addr").port(),
@@ -192,10 +185,7 @@ async fn a_socket_lives_as_long_as_its_fan_or_its_route() {
     assert_eq!(fans.open_sockets(), 0);
     assert!(fans.route(v4(peer_addr)).is_none());
     assert!(
-        seen.lock()
-            .expect("recorded sockets")
-            .iter()
-            .all(|socket| socket.upgrade().is_none()),
+        seen.lock().iter().all(|socket| socket.upgrade().is_none()),
         "no reader survives the route's release"
     );
 }
@@ -216,7 +206,7 @@ async fn fans_share_one_socket_budget() {
         .expect("the second fan opens what is left");
     assert_eq!(fans.open_sockets(), PREDICTION_SOCKET_BUDGET);
     assert_eq!(
-        fans.fans.lock().expect("fans")[&second.0].sockets.len(),
+        fans.fans.lock()[&second.0].sockets.len(),
         3,
         "the second fan is cut to the room left"
     );
@@ -244,15 +234,11 @@ async fn a_receive_error_leaves_the_fan_reader_listening() {
         socket.connect(peer_addr)?;
         socket.set_nonblocking(true)?;
         let socket = Arc::new(UdpSocket::from_std(socket)?);
-        *kept.lock().expect("fan socket") = Some(Arc::clone(&socket));
+        *kept.lock() = Some(Arc::clone(&socket));
         Ok(socket)
     })
     .expect("open the fan");
-    let socket = fan_socket
-        .lock()
-        .expect("fan socket")
-        .clone()
-        .expect("the binder ran");
+    let socket = fan_socket.lock().clone().expect("the binder ran");
     let SocketAddr::V4(fan_addr) = socket.local_addr().expect("fan addr") else {
         unreachable!("loopback is IPv4")
     };

@@ -34,7 +34,7 @@ impl DiagnosticsState {
                 }
             })
             .collect();
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let row = inner
             .downloads
             .entry(download_id)
@@ -71,7 +71,7 @@ impl DiagnosticsState {
     /// part file"): the picture shows them missing at once, so what
     /// the operator reads is what the file holds.
     pub fn parts_lost(&self, download_id: DownloadId, parts: &[u32]) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let Some(row) = inner.downloads.get_mut(&download_id) else {
             return;
         };
@@ -92,7 +92,7 @@ impl DiagnosticsState {
     /// completion move's level leaves with the run (ADR-0115). The row
     /// itself stays — only a cancel removes it.
     pub fn end_run(&self, download_id: DownloadId, completed: bool) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         let Some(row) = inner.downloads.get_mut(&download_id) else {
             return;
         };

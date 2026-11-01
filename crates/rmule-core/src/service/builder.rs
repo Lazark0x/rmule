@@ -456,7 +456,7 @@ where
                 node.config.ip_filter_clients,
                 node.config.ip_filter_servers,
             );
-            *node.cells.ip_filter.write().expect("ip filter lock") = loaded;
+            *node.cells.ip_filter.write() = loaded;
         }
         // The node's hash, fixed before anything can read it:
         // every reader — the peer-UDP crypt layer, NAT-T, the Kad node, each
@@ -581,7 +581,7 @@ impl Core {
         // `CoreBuilder::build` loads the dat files into it (before the actor
         // spawns, so no connection can ever precede the loaded table) when
         // `ip_filter_dir` names a directory.
-        let ip_filter: SharedIpFilter = Arc::new(std::sync::RwLock::new(IpFilter::empty(
+        let ip_filter: SharedIpFilter = Arc::new(parking_lot::RwLock::new(IpFilter::empty(
             config.ip_filter_clients,
             config.ip_filter_servers,
         )));

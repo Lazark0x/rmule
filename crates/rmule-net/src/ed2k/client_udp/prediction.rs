@@ -36,12 +36,13 @@
 //! task behind. And the sockets alive across every Fan and Route
 //! are held under [`PREDICTION_SOCKET_BUDGET`].
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use rmule_peer::natt::{PREDICTION_ATTEMPTS, PREDICTION_FAN_SOCKETS};
 use rmule_primitives::PeerEndpoint;
@@ -145,12 +146,8 @@ impl Drop for PredictionFans {
     fn drop(&mut self) {
         // The readers hold the route table, so the table must let go of the
         // sockets — and so of the readers — before it can die with them.
-        if let Ok(mut fans) = self.fans.lock() {
-            fans.clear();
-        }
-        if let Ok(mut routes) = self.routes.lock() {
-            routes.clear();
-        }
+        self.fans.lock().clear();
+        self.routes.lock().clear();
     }
 }
 
@@ -222,10 +219,7 @@ impl PredictionFans {
             })
             .collect();
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        self.fans
-            .lock()
-            .expect("prediction fans")
-            .insert(id, Fan { sockets });
+        self.fans.lock().insert(id, Fan { sockets });
         Ok(PredictionFanId(id))
     }
 
@@ -252,7 +246,6 @@ impl PredictionFans {
         let sockets = self
             .fans
             .lock()
-            .expect("prediction fans")
             .get(&fan.0)
             .map_or(0, |fan| fan.sockets.len());
         (0..sockets)
@@ -273,7 +266,6 @@ impl PredictionFans {
         let socket = self
             .fans
             .lock()
-            .expect("prediction fans")
             .get(&leg.fan)
             .and_then(|fan| fan.sockets.get(leg.socket))
             .map(|held| Arc::clone(&held.socket))
@@ -293,18 +285,15 @@ impl PredictionFans {
     /// them. Either way every other socket of the Fan closes here, reader
     /// included.
     pub(super) fn close(&self, fan: PredictionFanId, keep_routes: bool) {
-        let Some(fan) = self.fans.lock().expect("prediction fans").remove(&fan.0) else {
+        let Some(fan) = self.fans.lock().remove(&fan.0) else {
             return;
         };
         if !keep_routes {
-            self.routes
-                .lock()
-                .expect("prediction routes")
-                .retain(|_, route| {
-                    !fan.sockets
-                        .iter()
-                        .any(|held| Arc::ptr_eq(&route.socket, held))
-                });
+            self.routes.lock().retain(|_, route| {
+                !fan.sockets
+                    .iter()
+                    .any(|held| Arc::ptr_eq(&route.socket, held))
+            });
         }
         drop(fan);
     }
@@ -312,11 +301,7 @@ impl PredictionFans {
     /// Drop the route for `remote`, and its socket once nothing else holds
     /// it.
     pub(super) fn release(&self, remote: SocketAddrV4) {
-        let released = self
-            .routes
-            .lock()
-            .expect("prediction routes")
-            .remove(&remote);
+        let released = self.routes.lock().remove(&remote);
         drop(released);
     }
 
@@ -325,7 +310,7 @@ impl PredictionFans {
         let PeerEndpoint::V4(peer) = peer else {
             return None;
         };
-        let routes = self.routes.lock().expect("prediction routes");
+        let routes = self.routes.lock();
         if routes.is_empty() {
             return None;
         }
@@ -386,7 +371,7 @@ async fn read_fan_socket(
             continue;
         }
         let routed_here = {
-            let mut routes = routes.lock().expect("prediction routes");
+            let mut routes = routes.lock();
             match routes.entry(from) {
                 Entry::Occupied(_) => false,
                 Entry::Vacant(slot) => {

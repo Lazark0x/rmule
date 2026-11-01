@@ -3,8 +3,9 @@
 //! recovers that same progress — as `Paused`, before any source lookup runs —
 //! and the finished download promotes its `.part` file to `final_path`.
 
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::DownloadRepository;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::fixture::next_matching;
@@ -187,7 +188,7 @@ async fn restart_resume_completes_from_verified_parts() {
     let store = open_durable_store(dir.path()).unwrap();
     let output_path = dir.path().join("restart.bin");
     let paths = DownloadPaths::from_final_path(output_path.clone());
-    let lookup_calls = Arc::new(StdMutex::new(Vec::new()));
+    let lookup_calls = Arc::new(BlockingMutex::new(Vec::new()));
 
     let mut first_core = Core::builder(CoreConfig::default(), Arc::clone(&store))
         .settings(rmule_testkit::in_download_dir(
@@ -232,7 +233,7 @@ async fn restart_resume_completes_from_verified_parts() {
         .unwrap();
     drop(first_core);
 
-    lookup_calls.lock().unwrap().clear();
+    lookup_calls.lock().clear();
     let repo = DurableDownloadRepository::new(Arc::clone(&store));
     assert_eq!(
         repo.load_download(download_id).unwrap().lifecycle(),
@@ -292,7 +293,7 @@ async fn restart_resume_completes_from_verified_parts() {
         "expected DownloadProgressRestored(verified_parts=1, verified_bytes={expected_bytes}) but saw {restored:?}",
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(lookup_calls.lock().unwrap().is_empty());
+    assert!(lookup_calls.lock().is_empty());
 
     restarted
         .send(CoreCommand::Download(DownloadCommand::ResumeDownload {
@@ -319,11 +320,11 @@ async fn restart_resume_completes_from_verified_parts() {
 /// *absence* of one: recovery must not re-ask a server before a resume asks.
 #[derive(Clone)]
 struct RecordingSourceLookup {
-    calls: Arc<StdMutex<Vec<SourceLookupTarget>>>,
+    calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>,
 }
 
 impl RecordingSourceLookup {
-    fn new(calls: Arc<StdMutex<Vec<SourceLookupTarget>>>) -> Self {
+    fn new(calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>) -> Self {
         Self { calls }
     }
 }
@@ -333,7 +334,7 @@ impl SourceLookupService for RecordingSourceLookup {
         &mut self,
         target: SourceLookupTarget,
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
-        self.calls.lock().unwrap().push(target);
+        self.calls.lock().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![SourceSighting::plain(

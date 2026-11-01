@@ -45,7 +45,7 @@ pub enum CoreError {
     /// so either the record or the size is wrong and neither can be trusted.
     #[error("verified part is outside the declared file size")]
     PartOutOfBounds,
-    /// The store itself failed (I/O, a SQL error, a poisoned lock). The string
+    /// The store itself failed (I/O, a SQL error). The string
     /// is the backend's own message and is for a log, not for matching on.
     #[error("download repository error: {0}")]
     Repository(String),

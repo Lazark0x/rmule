@@ -25,9 +25,10 @@
 //! ([`RunLease::take_askers`]) and the actor closes when it takes the lease
 //! back.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use rmule_peer::PartBitmap;
 use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, SourceSighting};
@@ -240,7 +241,7 @@ pub(crate) enum OfferChange {
 }
 
 /// The cell itself — cloned into the actor and every run's lease. A plain
-/// `std::sync::Mutex`: every section is a map update that never crosses an
+/// `parking_lot::Mutex`: every section is a map update that never crosses an
 /// `.await`.
 #[derive(Clone)]
 pub(crate) struct ServedDownloads {
@@ -259,7 +260,7 @@ impl Default for ServedDownloads {
 
 impl ServedDownloads {
     fn lock(&self) -> MutexGuard<'_, Book> {
-        self.book.lock().expect("served downloads mutex")
+        self.book.lock()
     }
 
     /// The offer generation, bumped by every run's write that changes

@@ -241,7 +241,7 @@ pub(crate) struct SharedServerPunch {
 
 #[derive(Debug, Default)]
 struct SharedInner {
-    ledger: std::sync::Mutex<ServerPunch>,
+    ledger: parking_lot::Mutex<ServerPunch>,
     client_udp: std::sync::OnceLock<tokio::sync::mpsc::Sender<ClientUdpSend>>,
     /// The session an introduction is asked through, while it can be.
     session: CoordinatorSession,
@@ -323,8 +323,8 @@ impl SharedServerPunch {
         }
     }
 
-    pub(crate) fn ledger(&self) -> std::sync::MutexGuard<'_, ServerPunch> {
-        self.inner.ledger.lock().expect("server punch ledger")
+    pub(crate) fn ledger(&self) -> parking_lot::MutexGuard<'_, ServerPunch> {
+        self.inner.ledger.lock()
     }
 
     /// Decide one introduction and, on a punch, put the whole burst on the

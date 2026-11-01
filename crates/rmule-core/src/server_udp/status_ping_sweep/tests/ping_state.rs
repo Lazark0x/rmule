@@ -101,7 +101,6 @@ async fn a_login_only_row_gets_a_first_contact_at_the_next_start() {
         .transport()
         .sends
         .lock()
-        .unwrap()
         .iter()
         .map(|(to, _)| *to)
         .collect();

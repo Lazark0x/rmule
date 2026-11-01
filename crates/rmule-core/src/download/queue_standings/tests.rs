@@ -216,7 +216,7 @@ fn a_name_learned_late_reads_the_peers_score() {
     let polite = last + MIN_REQUEST_TIME;
     run.asked(&both, polite);
 
-    let locked = standings.lock().expect("registry");
+    let locked = standings.lock();
     assert_eq!(locked.score(&[hash]), 8);
     assert_eq!(locked.score(&[peer()]), 8);
 }
@@ -232,7 +232,7 @@ fn a_recovery_ask_takes_nothing_off_the_score() {
 
     let recovery = last + MIN_REQUEST_TIME;
     run.asked_recovery(&[peer()], recovery);
-    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 9);
+    assert_eq!(standings.lock().score(&[peer()]), 9);
     assert_eq!(run.last_ask(&place(None, true)), Some(recovery));
 }
 
@@ -284,9 +284,9 @@ fn a_scored_stamp_stays_until_the_uploaders_purge() {
     )))];
     run.asked(&elsewhere, last + STAMP_KEPT + Duration::from_secs(1));
     run.publish(Vec::new());
-    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 3);
+    assert_eq!(standings.lock().score(&[peer()]), 3);
 
     run.asked(&elsewhere, last + SCORE_KEPT + Duration::from_secs(1));
     run.publish(Vec::new());
-    assert_eq!(standings.lock().expect("registry").score(&[peer()]), 0);
+    assert_eq!(standings.lock().score(&[peer()]), 0);
 }

@@ -117,7 +117,7 @@ impl ServerHealthLevel {
         let Some((swept, ip_filter)) = &self.swept else {
             return;
         };
-        let filter = ip_filter.read().expect("ip filter lock");
+        let filter = ip_filter.read();
         let live = rows
             .iter()
             .filter(|row| !self.policy.is_dead(row))
@@ -141,7 +141,7 @@ impl ServerHealthLevel {
                 ServerEndpoint::new(reached.ip.to_string(), reached.port).ok()
             })
             .collect();
-        *swept.lock().expect("global source server list") = live;
+        *swept.lock() = live;
     }
 }
 
@@ -159,7 +159,7 @@ pub(crate) struct ServerHalf<'a> {
 
 impl DiagnosticsState {
     fn with_health<T>(&self, act: impl FnOnce(&mut DiagnosticsInner) -> T) -> T {
-        act(&mut self.inner.lock().expect("diagnostics mutex poisoned"))
+        act(&mut self.inner.lock())
     }
 
     /// A write to the server half landed: wake every subscriber, after the
@@ -363,7 +363,8 @@ impl DiagnosticsState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     use super::*;
 
@@ -380,7 +381,7 @@ mod tests {
 
     fn blocking(texts: &[&[u8]]) -> SharedIpFilter {
         let (filter, _) = crate::ip_filter::IpFilter::from_texts(texts, 127, true, true);
-        Arc::new(std::sync::RwLock::new(filter))
+        Arc::new(parking_lot::RwLock::new(filter))
     }
 
     /// The swept list is the published list as it stands: a server added
@@ -396,7 +397,7 @@ mod tests {
             swept.clone(),
             blocking(&[b"203.0.113.0-203.0.113.255,0,blocked servers\n".as_slice()]),
         );
-        let read = || swept.lock().unwrap().clone();
+        let read = || swept.lock().clone();
 
         level.set_servers(vec![failed("192.0.2.10", 0)]);
         assert_eq!(read(), vec![endpoint("192.0.2.10")]);
@@ -491,7 +492,7 @@ mod tests {
         level.set_servers(vec![row.clone()]);
 
         assert_eq!(
-            swept.lock().unwrap().clone(),
+            swept.lock().clone(),
             vec![ServerEndpoint::new("192.0.2.10", 4661).unwrap()]
         );
         assert_eq!(
@@ -516,7 +517,7 @@ mod tests {
             swept.clone(),
             blocking(&[b"203.0.113.0-203.0.113.255,0,blocked servers\n".as_slice()]),
         );
-        let read = || swept.lock().unwrap().clone();
+        let read = || swept.lock().clone();
         let named = ServerEndpoint::new("dyn.example.org", 4661).unwrap();
         level.set_servers(vec![ManagedServer::listed(named.clone())]);
         let published = || level.snapshot().servers[0].clone();

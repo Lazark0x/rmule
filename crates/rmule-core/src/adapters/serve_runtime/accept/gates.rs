@@ -90,11 +90,7 @@ impl AcceptGates {
         // IP-filtered address is refused before any hello — and before the ban
         // gate, aMule's own check order. The verdict is bound first so the read
         // guard never crosses an await.
-        let ip_filtered = self
-            .ip_filter
-            .read()
-            .expect("ip filter lock")
-            .is_filtered_peer(peer);
+        let ip_filtered = self.ip_filter.read().is_filtered_peer(peer);
         if ip_filtered {
             tracing::debug!(%peer, "refusing an inbound connection from an IP-filtered address");
             refuse(conn, awaited_server, PortTestEnd::IpFiltered).await;

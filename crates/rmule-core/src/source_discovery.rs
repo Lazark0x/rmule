@@ -15,9 +15,10 @@
 
 mod ask_clock;
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_primitives::{FileHash, SourceLookupTarget};
@@ -122,13 +123,12 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
             let downloads: Vec<(FileHash, u64)> = self
                 .registry
                 .lock()
-                .unwrap()
                 .iter()
                 .filter(|(_, download)| download.sources.under(self.source_gate))
                 .map(|(hash, download)| (*hash, download.file_size))
                 .collect();
             let now = Instant::now();
-            let mut asks = self.asks.lock().unwrap();
+            let mut asks = self.asks.lock();
             for (file_hash, file_size) in downloads {
                 if asks.take_ask(file_hash, now) {
                     due.push(SourceLookupTarget::new(file_hash, file_size));
@@ -147,7 +147,6 @@ impl<C: DiscoveryChannel> SourceDiscovery<C> {
         let sink = self
             .registry
             .lock()
-            .unwrap()
             .get(&file_hash)
             .map(|download| download.sink.clone());
         if let Some(sink) = sink {
@@ -166,10 +165,7 @@ pub(crate) struct DiscoveryGuard<A> {
 
 impl<A> Drop for DiscoveryGuard<A> {
     fn drop(&mut self) {
-        self.registry
-            .lock()
-            .expect("source discovery registry")
-            .remove(&self.file_hash);
+        self.registry.lock().remove(&self.file_hash);
     }
 }
 
@@ -182,7 +178,7 @@ pub(crate) fn register<A>(
     sink: DiscoverySink<A>,
     sources: SourceCount,
 ) -> DiscoveryGuard<A> {
-    registry.lock().unwrap().insert(
+    registry.lock().insert(
         file_hash,
         Discoverable {
             file_size,
@@ -246,7 +242,6 @@ mod tests {
         std::mem::forget(sink_rx);
         registry
             .lock()
-            .unwrap()
             .insert(file_hash, entry(file_size, sink_tx, SourceCount::default()));
         registry
     }
@@ -320,11 +315,9 @@ mod tests {
         let registry: DiscoveryRegistry<u8> = Arc::new(Mutex::new(HashMap::new()));
         registry
             .lock()
-            .unwrap()
             .insert(stuck, entry(1, stuck_tx, SourceCount::default()));
         registry
             .lock()
-            .unwrap()
             .insert(moving, entry(1, moving_tx, SourceCount::default()));
         let (answers_tx, answers) = mpsc::unbounded_channel();
         let channel = ScriptedAnswers {
@@ -379,13 +372,12 @@ mod tests {
             .expect("channel open");
         assert_eq!(first, vec![SourceLookupTarget::new(file_hash, 4096)]);
 
-        registry.lock().unwrap().remove(&file_hash);
+        registry.lock().remove(&file_hash);
         tokio::time::sleep(Duration::from_millis(40)).await;
         let (sink_tx, sink_rx) = mpsc::channel(1);
         std::mem::forget(sink_rx);
         registry
             .lock()
-            .unwrap()
             .insert(file_hash, entry(4096, sink_tx, SourceCount::default()));
         task.abort();
 
@@ -487,7 +479,6 @@ mod tests {
         let (sink_tx, mut sink_rx) = mpsc::channel(4);
         registry
             .lock()
-            .unwrap()
             .insert(wanted, entry(4096, sink_tx, SourceCount::default()));
 
         let (answers_tx, answers_rx) = mpsc::channel(4);
@@ -529,7 +520,6 @@ mod tests {
         let registry: DiscoveryRegistry<()> = Arc::new(Mutex::new(HashMap::new()));
         registry
             .lock()
-            .unwrap()
             .insert(file_hash, entry(4096, sink, sources.clone()));
 
         let task = tokio::spawn(

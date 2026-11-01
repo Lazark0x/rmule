@@ -9,6 +9,7 @@ homepage.workspace = true
 publish.workspace = true
 
 [dependencies]
+parking_lot.workspace = true
 rmule-ed2k = { path = "../rmule-ed2k" }
 rmule-kad = { path = "../rmule-kad" }
 # The Windows ICMP-reset switch `family::bind_udp` sets on every unconnected

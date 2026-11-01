@@ -2,9 +2,10 @@
 //! the callbacks servers relay back) and client-UDP (peer reask), each behind
 //! a trait so core drives datagrams without owning a socket.
 
+use parking_lot::Mutex;
 use std::future::Future;
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_net::family::{RECEIVE_ERROR_BACKOFF, ReceiveErrorBudget, ReceiveErrorOutcome};
 use rmule_primitives::Ipv4Endpoint;
@@ -105,10 +106,7 @@ impl ServerUdpTransport for RuntimeServerUdpTransport {
         loop {
             match self.socket.recv().await {
                 Ok((bytes, from)) => {
-                    self.receive_budget
-                        .lock()
-                        .expect("server-UDP receive budget mutex poisoned")
-                        .record_success();
+                    self.receive_budget.lock().record_success();
                     match from.as_v4() {
                         Some(from) => return Some((bytes, from)),
                         None => tracing::debug!(
@@ -125,11 +123,7 @@ impl ServerUdpTransport for RuntimeServerUdpTransport {
                 Err(error) => {
                     // The lock guard must not outlive this statement: it is
                     // not `Send`, and the arm below awaits.
-                    let outcome = self
-                        .receive_budget
-                        .lock()
-                        .expect("server-UDP receive budget mutex poisoned")
-                        .record_error(error.kind());
+                    let outcome = self.receive_budget.lock().record_error(error.kind());
                     match outcome {
                         ReceiveErrorOutcome::Tolerated => {
                             tracing::debug!(%error, "transient server-UDP receive error");
@@ -192,20 +186,13 @@ impl crate::client_udp::ClientUdpTransport for RuntimeClientUdpTransport {
         loop {
             match self.socket.recv().await {
                 Ok((bytes, src)) => {
-                    self.receive_budget
-                        .lock()
-                        .expect("client-UDP receive budget mutex poisoned")
-                        .record_success();
+                    self.receive_budget.lock().record_success();
                     return Some((src, bytes));
                 }
                 Err(error) => {
                     // The lock guard must not outlive this statement: it is
                     // not `Send`, and the arm below awaits.
-                    let outcome = self
-                        .receive_budget
-                        .lock()
-                        .expect("client-UDP receive budget mutex poisoned")
-                        .record_error(error.kind());
+                    let outcome = self.receive_budget.lock().record_error(error.kind());
                     match outcome {
                         ReceiveErrorOutcome::Tolerated => {
                             tracing::debug!(%error, "transient client-UDP receive error");

@@ -1,9 +1,10 @@
 //! A socket its peer stopped reading, on a paused clock: the driver keeps
 //! hearing the peer and the session, and ends the connection at its bound.
 
+use parking_lot::Mutex;
 use std::io;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -152,7 +153,7 @@ struct ScriptedSocket {
 
 impl SendSide for ScriptedSocket {
     fn send_progress(&self) -> Option<SendProgress> {
-        *self.reading.lock().unwrap()
+        *self.reading.lock()
     }
 }
 
@@ -210,7 +211,7 @@ impl StalledLink {
     }
 
     fn reads(&self, reading: Option<SendProgress>) {
-        *self.reading.lock().unwrap() = reading;
+        *self.reading.lock() = reading;
     }
 
     /// Run until the link ends: how long that took from `began`.

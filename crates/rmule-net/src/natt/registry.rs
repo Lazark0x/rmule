@@ -53,9 +53,10 @@
 //! same gate, and the rows it leaves behind go with the charge: those tables
 //! hold at most [`UNIDENTIFIED_MAX`] rows an unidentified source made.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::{PeerEndpoint, UserHash};
@@ -442,10 +443,7 @@ impl DialingSlot {
     /// Mark `peer` as dialing and hold the claim.
     #[must_use]
     pub fn open(registry: &Arc<Mutex<TunnelRegistry>>, peer: PeerEndpoint) -> Self {
-        registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .dialing(peer, Instant::now());
+        registry.lock().dialing(peer, Instant::now());
         Self {
             registry: Arc::clone(registry),
             peer,
@@ -458,10 +456,7 @@ impl DialingSlot {
     pub fn held(mut self) -> HeldSlot {
         self.release_on_drop = false;
         let slot = HeldSlot::hold(&self.registry, self.peer);
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .dial_completed(self.peer);
+        self.registry.lock().dial_completed(self.peer);
         slot
     }
 }
@@ -469,10 +464,7 @@ impl DialingSlot {
 impl Drop for DialingSlot {
     fn drop(&mut self) {
         if self.release_on_drop {
-            self.registry
-                .lock()
-                .expect("the NAT-T tunnel registry is never poisoned")
-                .release_dialing(self.peer);
+            self.registry.lock().release_dialing(self.peer);
         }
     }
 }
@@ -494,10 +486,7 @@ pub struct HeldSlot {
 impl HeldSlot {
     /// Hold `peer`'s slot for one tunnel.
     pub fn hold(registry: &Arc<Mutex<TunnelRegistry>>, peer: PeerEndpoint) -> Self {
-        registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .held(peer, Instant::now());
+        registry.lock().held(peer, Instant::now());
         Self {
             registry: Arc::clone(registry),
             peer,
@@ -507,10 +496,7 @@ impl HeldSlot {
 
 impl Drop for HeldSlot {
     fn drop(&mut self) {
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .release_held(self.peer);
+        self.registry.lock().release_held(self.peer);
     }
 }
 

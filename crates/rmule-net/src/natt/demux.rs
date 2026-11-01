@@ -12,7 +12,8 @@
 //! dual-path decrypt (ADR-0046) recovered it before the protocol demux ran — so
 //! this layer reads one form and the send path owns the other.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_peer::natt::{
@@ -216,9 +217,7 @@ impl<S: NattDatagramSink> NattDemux<S> {
 
     /// The registry, under its one lock.
     fn registry(&self) -> MutexGuard<'_, TunnelRegistry> {
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
+        self.registry.lock()
     }
 
     /// Learn the hash a KEY frame carried, if its endpoint may leave a row.

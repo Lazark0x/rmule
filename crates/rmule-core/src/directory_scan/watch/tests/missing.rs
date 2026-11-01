@@ -43,7 +43,7 @@ fn a_directory_missing_at_start_is_waited_for_and_passed_over_unread_once_back()
     ));
     let mut phase_at_start = None;
     let end = scan(&harness, Consent::Given, || {
-        phase_at_start = harness.progress.lock().unwrap().clone().map(|p| p.phase);
+        phase_at_start = harness.progress.lock().clone().map(|p| p.phase);
         Err(WatchFault::Backend)
     });
     assert_eq!(end, ScanEnd::Unwatched(WatchFault::Backend));
@@ -101,7 +101,7 @@ fn a_directory_gone_while_watched_is_missing_and_none_of_its_rows_is_had() {
         "no row gone, held or unshared: {reports:?}"
     );
     assert!(matches!(
-        harness.progress.lock().unwrap().clone().unwrap().phase,
+        harness.progress.lock().clone().unwrap().phase,
         ScanPhase::Missing { .. }
     ));
 }

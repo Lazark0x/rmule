@@ -193,13 +193,10 @@ fn a_dials_own_slot_outlives_the_window_a_forged_opener_buys() {
 fn a_dropped_dial_releases_its_slot_and_a_promoted_one_keeps_it() {
     let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
     drop(DialingSlot::open(&registry, endpoint(1)));
-    assert_eq!(registry.lock().unwrap().slot(endpoint(1)), None);
+    assert_eq!(registry.lock().slot(endpoint(1)), None);
 
     let _tunnel = DialingSlot::open(&registry, endpoint(2)).held();
-    assert_eq!(
-        registry.lock().unwrap().slot(endpoint(2)),
-        Some(TunnelSlot::Held)
-    );
+    assert_eq!(registry.lock().slot(endpoint(2)), Some(TunnelSlot::Held));
 }
 
 /// A dial that ends after somebody else's tunnel took the same endpoint
@@ -209,12 +206,9 @@ fn a_dropped_dial_releases_its_slot_and_a_promoted_one_keeps_it() {
 fn a_dial_ending_never_evicts_a_tunnel_that_took_its_endpoint() {
     let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
     let slot = DialingSlot::open(&registry, endpoint(1));
-    registry.lock().unwrap().held(endpoint(1), Instant::now());
+    registry.lock().held(endpoint(1), Instant::now());
     drop(slot);
-    assert_eq!(
-        registry.lock().unwrap().slot(endpoint(1)),
-        Some(TunnelSlot::Held)
-    );
+    assert_eq!(registry.lock().slot(endpoint(1)), Some(TunnelSlot::Held));
 }
 
 /// A released endpoint is a stranger again — so a late datagram for a
@@ -243,20 +237,14 @@ fn a_held_slot_lives_until_its_last_tunnel_drops() {
     drop(dialed);
     let now = Instant::now();
     assert_eq!(
-        registry
-            .lock()
-            .unwrap()
-            .admit(endpoint(1), false, expected, now),
+        registry.lock().admit(endpoint(1), false, expected, now),
         Admission::Inject,
         "the surviving tunnel is still admitted"
     );
     drop(accepted);
-    assert_eq!(registry.lock().unwrap().slot(endpoint(1)), None);
+    assert_eq!(registry.lock().slot(endpoint(1)), None);
     assert_eq!(
-        registry
-            .lock()
-            .unwrap()
-            .admit(endpoint(1), false, expected, now),
+        registry.lock().admit(endpoint(1), false, expected, now),
         Admission::Drop
     );
 }
@@ -269,10 +257,7 @@ fn a_dial_over_a_held_path_leaves_the_tunnel_admitted() {
     let registry = Arc::new(Mutex::new(TunnelRegistry::new()));
     let _tunnel = HeldSlot::hold(&registry, endpoint(1));
     drop(DialingSlot::open(&registry, endpoint(1)));
-    assert_eq!(
-        registry.lock().unwrap().slot(endpoint(1)),
-        Some(TunnelSlot::Held)
-    );
+    assert_eq!(registry.lock().slot(endpoint(1)), Some(TunnelSlot::Held));
 }
 
 /// `librqbit-utp` hands a stream over at the `ST_SYN`, so an accepted slot has
@@ -285,28 +270,18 @@ fn an_accepted_tunnel_keeps_its_charge() {
     let mut tunnels = Vec::new();
     for port in 1..=(UNIDENTIFIED_PER_IP as u16 * 3) {
         let peer = at(1, port);
-        let admission = registry
-            .lock()
-            .expect("registry")
-            .admit(peer, true, expected, now);
+        let admission = registry.lock().admit(peer, true, expected, now);
         if admission == Admission::Opened {
             tunnels.push(HeldSlot::hold(&registry, peer));
         }
     }
     assert_eq!(tunnels.len(), UNIDENTIFIED_PER_IP);
-    let admit = |port| {
-        registry
-            .lock()
-            .expect("registry")
-            .admit(at(1, port), true, expected, now)
-    };
+    let admit = |port| registry.lock().admit(at(1, port), true, expected, now);
     assert_eq!(admit(100), Admission::Drop, "the allowance is spent");
 
-    registry.lock().expect("registry").identified(
-        at(1, 1),
-        UserHash::from_bytes([0x11; 16]),
-        Instant::now(),
-    );
+    registry
+        .lock()
+        .identified(at(1, 1), UserHash::from_bytes([0x11; 16]), Instant::now());
     assert_eq!(admit(101), Admission::Opened, "a hello gave one back");
 
     tunnels.pop();
@@ -322,10 +297,7 @@ fn a_dialed_tunnel_spends_no_allowance() {
     let tunnels: Vec<HeldSlot> = (1..=(UNIDENTIFIED_PER_IP as u16 + 1))
         .map(|port| DialingSlot::open(&registry, at(1, port)).held())
         .collect();
-    let opened = registry
-        .lock()
-        .expect("registry")
-        .admit(at(1, 200), true, expected, now);
+    let opened = registry.lock().admit(at(1, 200), true, expected, now);
     assert_eq!(opened, Admission::Opened);
     drop(tunnels);
 }
@@ -364,21 +336,15 @@ fn an_identified_endpoints_rows_outlive_its_charge() {
     let peer = endpoint(1);
     let hash = UserHash::from_bytes([0x66; UserHash::BYTE_LEN]);
     let tunnel = {
-        let mut held = registry.lock().expect("registry");
+        let mut held = registry.lock();
         held.admit(peer, true, expected, now);
         held.learn_key(peer, hash, now);
         drop(held);
         HeldSlot::hold(&registry, peer)
     };
-    registry
-        .lock()
-        .expect("registry")
-        .identified(peer, hash, now);
+    registry.lock().identified(peer, hash, now);
     drop(tunnel);
-    assert_eq!(
-        registry.lock().expect("registry").key_for(peer, now),
-        Some(hash)
-    );
+    assert_eq!(registry.lock().key_for(peer, now), Some(hash));
 }
 
 /// Ten minutes into a tunnel its sends still key under the hash it rose with,
@@ -390,14 +356,11 @@ fn a_live_tunnels_key_outlasts_the_learned_window() {
     let peer = endpoint(1);
     let genuine = UserHash::from_bytes([0x66; UserHash::BYTE_LEN]);
     let forged = UserHash::from_bytes([0x99; UserHash::BYTE_LEN]);
-    registry
-        .lock()
-        .expect("registry")
-        .learn_key(peer, genuine, now);
+    registry.lock().learn_key(peer, genuine, now);
     let tunnel = DialingSlot::open(&registry, peer).held();
 
     let later = now + LEARNED_HASH_TTL * 3;
-    let mut held = registry.lock().expect("registry");
+    let mut held = registry.lock();
     held.prune(later);
     assert_eq!(held.key_for(peer, later), Some(genuine));
     assert!(!held.learn_key(peer, forged, later));
@@ -405,7 +368,7 @@ fn a_live_tunnels_key_outlasts_the_learned_window() {
     drop(held);
 
     drop(tunnel);
-    let held = registry.lock().expect("registry");
+    let held = registry.lock();
     assert_eq!(held.key_for(peer, later), None, "the window applies again");
 }
 

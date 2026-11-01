@@ -2,8 +2,9 @@
 //! event trail, a streamed part verified before its worker finishes, a
 //! crypt-capable source dialed obfuscated, and the peer hello dropping the
 //! tags that belong only to a server login.
+use parking_lot::Mutex;
 use rmule_testkit::HANG_GUARD;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
@@ -413,7 +414,7 @@ impl PeerTransferService for CapturePeerCrypt {
     ) -> Result<PeerWorker, DownloadFailure> {
         // The runner always dials through `start_download_worker`; reaching
         // the plaintext base means the target was dropped en route.
-        *self.captured.lock().unwrap() = Some(None);
+        *self.captured.lock() = Some(None);
         Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 
@@ -424,7 +425,7 @@ impl PeerTransferService for CapturePeerCrypt {
         file: Ed2kFileLink,
         brief: rmule_core::WorkerBrief,
     ) -> Result<PeerWorker, DownloadFailure> {
-        *self.captured.lock().unwrap() = Some(Some(brief.peer_crypt));
+        *self.captured.lock() = Some(Some(brief.peer_crypt));
         Ok(spawn_delivering_worker(peer, file.size, self.part.clone()))
     }
 }
@@ -494,7 +495,7 @@ async fn server_lookup_crypt_capable_source_is_obfuscate_dialed() {
     }
 
     assert_eq!(
-        *captured.lock().unwrap(),
+        *captured.lock(),
         Some(Some(PeerCrypt::from_record(
             Some(SourceCryptOptions::from_byte(0x01)),
             Some(dial_hash)

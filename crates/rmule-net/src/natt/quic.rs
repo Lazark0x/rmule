@@ -16,9 +16,10 @@
 
 mod tls;
 
+use parking_lot::Mutex;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -168,11 +169,7 @@ impl<S: NattDatagramSink> AsyncUdpSocket for InjectedQuicSocket<S> {
         let Some(buf) = bufs.first_mut() else {
             return Poll::Ready(Ok(0));
         };
-        let received = self
-            .inbound
-            .lock()
-            .expect("the NAT-T inject queue is never poisoned")
-            .poll_recv(cx);
+        let received = self.inbound.lock().poll_recv(cx);
         match received {
             Poll::Ready(Some((from, packet))) => {
                 let len = packet.len().min(buf.len());
@@ -276,7 +273,6 @@ impl<S: NattDatagramSink> QuicEngine<S> {
         let admission = self
             .registry
             .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
             .admit(peer, is_quic_long_header(packet), expects, now);
         if admission == Admission::Drop {
             return admission;

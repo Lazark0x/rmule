@@ -24,9 +24,10 @@
 //! ([`crossing`], ADR-0107 invariant 7). A name a link gives up goes back to
 //! the newest live link that proves it.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_peer::{ConnectionCommand, HelloGate, PeerCommand, PeerEvent, PeerIdentity};
@@ -326,7 +327,7 @@ impl SharedPeerLinks {
     /// The links open now, dials in flight included, and the ceiling over
     /// them: aMule's `GetOpenSockets` and `GetMaxConnections`.
     pub(crate) fn open_and_ceiling(&self) -> (usize, usize) {
-        let open = self.book.lock().expect("peer links lock").live.len();
+        let open = self.book.lock().live.len();
         (open, self.ceiling.unwrap_or(usize::MAX))
     }
 
@@ -367,7 +368,7 @@ impl SharedPeerLinks {
         remote: PeerEndpoint,
         names: Vec<LinkName>,
     ) -> (Filing, mpsc::UnboundedReceiver<LinkJoin>, Moving) {
-        let mut book = self.book.lock().expect("peer links lock");
+        let mut book = self.book.lock();
         self.file_in(&mut book, remote, names)
     }
 
@@ -377,7 +378,7 @@ impl SharedPeerLinks {
     /// out the dial yields to the peer's own link
     /// ([`DialInFlight::overtaken`]).
     pub(super) fn reach(&self, dial_at: PeerEndpoint, names: &[LinkName]) -> Reach {
-        let mut book = self.book.lock().expect("peer links lock");
+        let mut book = self.book.lock();
         if let Some(found) = Self::found_in(&book, names) {
             return Reach::Found(found);
         }
@@ -434,7 +435,7 @@ impl SharedPeerLinks {
 
     /// The link filed under the first of `names` that names one.
     pub(crate) fn find(&self, names: &[LinkName]) -> Option<FoundLink> {
-        let book = self.book.lock().expect("peer links lock");
+        let book = self.book.lock();
         Self::found_in(&book, names)
     }
 
@@ -585,9 +586,7 @@ impl Filing {
     /// nothing the peer's own link took during the dial (ADR-0107
     /// invariant 7).
     pub(super) fn refile(&mut self, names: Vec<LinkName>) {
-        let Ok(mut book) = self.links.book.lock() else {
-            return;
-        };
+        let mut book = self.links.book.lock();
         let Some(proven) = book.live.get_mut(&self.filing) else {
             return;
         };
@@ -616,9 +615,7 @@ impl Filing {
     /// hello of the peer's own link now waits for the far end's answer to it.
     /// `false` when it is no dial still yielding, overtaken or claimed.
     fn hello_out(&mut self) -> bool {
-        let Ok(mut book) = self.links.book.lock() else {
-            return false;
-        };
+        let mut book = self.links.book.lock();
         if book.yielding.remove(&self.filing).is_none() {
             return false;
         }
@@ -635,9 +632,7 @@ impl Filing {
     pub(super) async fn heard_answer(&mut self) -> AnswerHeard {
         self.given_up = None;
         let (crossed, verdict) = {
-            let Ok(mut book) = self.links.book.lock() else {
-                return AnswerHeard::Stands;
-            };
+            let mut book = self.links.book.lock();
             let Some(dial) = book.unanswered.remove(&self.filing) else {
                 return AnswerHeard::Stands;
             };
@@ -660,20 +655,19 @@ impl Filing {
 
     /// `far_end` is what the link's driver reads of it from now on.
     pub(super) fn read_through(&self, far_end: Option<&FarEnd>) {
-        if let Ok(mut book) = self.links.book.lock()
-            && let Some(proven) = book.live.get_mut(&self.filing)
-        {
+        if let Some(proven) = self.links.book.lock().live.get_mut(&self.filing) {
             proven.far_end = far_end.cloned();
         }
     }
 
     /// Whether a hello of the peer's own link waits on this dial.
     fn holds_a_hello(&self) -> bool {
-        self.links.book.lock().is_ok_and(|book| {
-            book.unanswered
-                .get(&self.filing)
-                .is_some_and(crossing::UnansweredDial::holds_a_hello)
-        })
+        self.links
+            .book
+            .lock()
+            .unanswered
+            .get(&self.filing)
+            .is_some_and(crossing::UnansweredDial::holds_a_hello)
     }
 
     /// Resolves if the dial was given up for the peer's own link; never
@@ -692,12 +686,11 @@ impl Filing {
 
 impl Drop for Filing {
     fn drop(&mut self) {
-        if let Ok(mut book) = self.links.book.lock() {
-            book.yielding.remove(&self.filing);
-            book.unanswered.remove(&self.filing);
-            if let Some(proven) = book.live.remove(&self.filing) {
-                release(&mut book, self.filing, &proven.names);
-            }
+        let mut book = self.links.book.lock();
+        book.yielding.remove(&self.filing);
+        book.unanswered.remove(&self.filing);
+        if let Some(proven) = book.live.remove(&self.filing) {
+            release(&mut book, self.filing, &proven.names);
         }
     }
 }

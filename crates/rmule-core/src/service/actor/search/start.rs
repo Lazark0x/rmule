@@ -168,11 +168,7 @@ where
         // (ADR-0051).
         let sweep = crate::search::GlobalSearchSweep {
             seal: ctx.seal.clone(),
-            servers: self
-                .global_source_servers
-                .lock()
-                .expect("global source server list")
-                .clone(),
+            servers: self.global_source_servers.lock().clone(),
             capabilities: Arc::clone(&ctx.capabilities),
             connected,
             query: query.clone(),

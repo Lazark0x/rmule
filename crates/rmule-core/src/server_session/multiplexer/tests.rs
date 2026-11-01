@@ -740,8 +740,9 @@ async fn the_server_high_id_level_follows_reassignment_and_ends_with_the_session
 /// server that took no update (ADR-0087).
 #[tokio::test]
 async fn an_advertised_ipv6_that_moves_is_told_only_to_a_server_that_takes_it() {
+    use parking_lot::Mutex;
     use std::net::Ipv6Addr;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     let (first, second): (Ipv6Addr, Ipv6Addr) = (
         "2001:db8::1".parse().unwrap(),
@@ -754,7 +755,7 @@ async fn an_advertised_ipv6_that_moves_is_told_only_to_a_server_that_takes_it() 
         let held = Arc::new(Mutex::new(Some(first)));
         let read = {
             let held = held.clone();
-            Arc::new(move || *held.lock().unwrap())
+            Arc::new(move || *held.lock())
         };
         let _handle = ServerSession::spawn(
             FakeLink {
@@ -775,7 +776,7 @@ async fn an_advertised_ipv6_that_moves_is_told_only_to_a_server_that_takes_it() 
             },
         );
         let wake = |address| {
-            *held.lock().unwrap() = address;
+            *held.lock() = address;
             changed_tx.send_modify(|generation| *generation += 1);
         };
         let quiet = Duration::from_millis(50);

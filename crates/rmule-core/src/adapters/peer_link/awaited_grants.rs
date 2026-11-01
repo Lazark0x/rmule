@@ -60,7 +60,7 @@ impl SharedPeerLinks {
         holds: bool,
         grants: GrantSender,
     ) -> AwaitedGrant {
-        let mut book = self.book.lock().expect("peer links lock");
+        let mut book = self.book.lock();
         book.filed += 1;
         let filing = book.filed;
         let awaiting = Awaiting {
@@ -87,7 +87,7 @@ impl SharedPeerLinks {
     /// holder first and then in filing order.
     fn awaiting(&self, names: &[LinkName]) -> Vec<Awaiting> {
         let mut awaiting: Vec<Awaiting> = {
-            let book = self.book.lock().expect("peer links lock");
+            let book = self.book.lock();
             names
                 .iter()
                 .filter_map(|name| book.awaited.get(name))
@@ -126,12 +126,11 @@ impl AwaitedGrant {
             return;
         }
         self.holds = holds;
-        if let Ok(mut book) = self.links.book.lock() {
-            for name in &self.names {
-                if let Some(waits) = book.awaited.get_mut(name) {
-                    for wait in waits.iter_mut().filter(|wait| wait.filing == self.filing) {
-                        wait.holds = holds;
-                    }
+        let mut book = self.links.book.lock();
+        for name in &self.names {
+            if let Some(waits) = book.awaited.get_mut(name) {
+                for wait in waits.iter_mut().filter(|wait| wait.filing == self.filing) {
+                    wait.holds = holds;
                 }
             }
         }
@@ -140,13 +139,12 @@ impl AwaitedGrant {
 
 impl Drop for AwaitedGrant {
     fn drop(&mut self) {
-        if let Ok(mut book) = self.links.book.lock() {
-            for name in &self.names {
-                if let Some(waits) = book.awaited.get_mut(name) {
-                    waits.retain(|wait| wait.filing != self.filing);
-                    if waits.is_empty() {
-                        book.awaited.remove(name);
-                    }
+        let mut book = self.links.book.lock();
+        for name in &self.names {
+            if let Some(waits) = book.awaited.get_mut(name) {
+                waits.retain(|wait| wait.filing != self.filing);
+                if waits.is_empty() {
+                    book.awaited.remove(name);
                 }
             }
         }

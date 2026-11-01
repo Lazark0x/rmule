@@ -15,8 +15,9 @@ mod weight;
 #[cfg(test)]
 mod tests;
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Weak};
 
 use tokio::sync::Notify;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -167,10 +168,8 @@ struct Shared {
 }
 
 impl Shared {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        // The queue is consistent between every two statements that touch
-        // it, and a panic elsewhere must not take the stream with it.
-        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Queue> {
+        self.queue.lock()
     }
 }
 

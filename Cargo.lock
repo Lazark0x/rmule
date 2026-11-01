@@ -2708,6 +2708,7 @@ dependencies = [
  "chrono",
  "data-encoding",
  "icu_normalizer",
+ "parking_lot",
  "predicates",
  "ratatui",
  "rmule-bootstrap",
@@ -2729,6 +2730,7 @@ dependencies = [
 name = "rmule-bootstrap"
 version = "0.2.0"
 dependencies = [
+ "parking_lot",
  "reqwest",
  "rmule-ed2k",
  "rmule-kad",
@@ -2767,6 +2769,7 @@ dependencies = [
  "ed2k",
  "getrandom 0.4.2",
  "notify",
+ "parking_lot",
  "postcard",
  "rmule-bootstrap",
  "rmule-ed2k",
@@ -2809,6 +2812,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "flate2",
+ "parking_lot",
  "predicates",
  "rmule-kad",
  "rmule-peer",
@@ -2842,6 +2846,7 @@ dependencies = [
  "librqbit-dualstack-sockets",
  "librqbit-utp",
  "netdev",
+ "parking_lot",
  "quinn",
  "quinn-proto",
  "rand 0.8.6",
@@ -2920,6 +2925,7 @@ version = "0.2.0"
 dependencies = [
  "ed2k",
  "flate2",
+ "parking_lot",
  "rmule-core",
  "rmule-ed2k",
  "rmule-kad",
@@ -2941,6 +2947,7 @@ dependencies = [
  "clap",
  "ed2k",
  "getrandom 0.4.2",
+ "parking_lot",
  "predicates",
  "rmule-bootstrap",
  "rmule-core",

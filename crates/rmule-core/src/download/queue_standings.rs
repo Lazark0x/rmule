@@ -25,9 +25,10 @@
 //! new run, and the book that held them is gone.
 //! Time is an argument, as everywhere in the download brain.
 
+use parking_lot::Mutex;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_primitives::FileHash;
@@ -484,10 +485,8 @@ impl StandingSeat {
         Self::new(QueueStandings::shared(), download, file)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, QueueStandings> {
-        self.standings
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, QueueStandings> {
+        self.standings.lock()
     }
 
     /// This run's role at the peer `place` names.

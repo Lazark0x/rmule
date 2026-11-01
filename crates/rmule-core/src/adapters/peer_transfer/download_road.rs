@@ -93,10 +93,7 @@ impl DownloadRoad {
         // dialed — reported like a connect failure so the runner backfills
         // the slot (the ban gate's exact shape, below). The verdict is bound
         // first so the read guard never crosses an await.
-        let ip_filtered = ip_filter
-            .read()
-            .expect("ip filter lock")
-            .is_filtered_peer(peer);
+        let ip_filtered = ip_filter.read().is_filtered_peer(peer);
         if ip_filtered {
             end_dial(&event_tx, DialEnd::IpFiltered).await;
             let _ = event_tx.send(PeerWorkerEvent::Disconnected).await;

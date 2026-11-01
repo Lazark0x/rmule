@@ -12,9 +12,10 @@
 //! hand-rolled `(byte0 >> 4) == 4`. The nibble test would be right today and
 //! silently wrong the day the header gains a version.
 
+use parking_lot::Mutex;
 use std::io;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Instant;
 
@@ -85,19 +86,14 @@ impl<S: NattDatagramSink> Transport for InjectedTransport<S> {
         buf: &'a mut [u8],
     ) -> impl Future<Output = io::Result<(usize, SocketAddr)>> + Send + Sync + 'a {
         async move {
-            let (from, packet) = std::future::poll_fn(|cx| {
-                self.inbound
-                    .lock()
-                    .expect("the NAT-T inject queue is never poisoned")
-                    .poll_recv(cx)
-            })
-            .await
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "the NAT-T demux closed the uTP inject queue",
-                )
-            })?;
+            let (from, packet) = std::future::poll_fn(|cx| self.inbound.lock().poll_recv(cx))
+                .await
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the NAT-T demux closed the uTP inject queue",
+                    )
+                })?;
             // A uTP packet cannot exceed a datagram and the caller's buffer is
             // a full datagram's worth, so this only ever truncates if the
             // library shrinks its read buffer — in which case a short read is
@@ -224,7 +220,6 @@ impl<S: NattDatagramSink> UtpEngine<S> {
         let admission = self
             .registry
             .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
             .admit(peer, is_utp_syn(packet), expects, now);
         if admission == Admission::Drop {
             return admission;
@@ -268,11 +263,7 @@ impl<S: NattDatagramSink> UtpEngine<S> {
     /// re-dialing, so a retry cannot raise a second tunnel on one path.
     #[must_use]
     pub fn holds(&self, peer: PeerEndpoint) -> bool {
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .slot(peer)
-            == Some(TunnelSlot::Held)
+        self.registry.lock().slot(peer) == Some(TunnelSlot::Held)
     }
 
     /// Await the next inbound tunnel — a peer whose `ST_SYN` we admitted and

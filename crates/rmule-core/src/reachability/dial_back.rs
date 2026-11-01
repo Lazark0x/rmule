@@ -25,10 +25,11 @@
 //! the broker's `busy` guard and cap the concurrent outbound dials a datagram
 //! flood can provoke.
 
+use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::hash::Hash;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::{Ipv4Endpoint, OutboundCrypt, PeerCrypt, PeerEndpoint, UserHash};
@@ -258,10 +259,7 @@ impl<K: Eq + Hash> Default for DialBackRegistry<K> {
 impl<K: Eq + Hash + Copy> DialBackRegistry<K> {
     /// Snapshot the engaged endpoints — the broker's `busy` guard feed.
     pub(crate) fn engaged(&self) -> HashSet<K> {
-        self.engaged
-            .lock()
-            .expect("dial-back registry lock")
-            .clone()
+        self.engaged.lock().clone()
     }
 
     /// Claim an enactment slot toward `requester`: `None` when that endpoint
@@ -269,7 +267,7 @@ impl<K: Eq + Hash + Copy> DialBackRegistry<K> {
     /// ([`MAX_CONCURRENT_DIAL_BACKS`]) is spent — the caller then refuses
     /// silently, exactly like a broker guard.
     pub(crate) fn begin(&self, requester: K) -> Option<DialBackTicket<K>> {
-        let mut engaged = self.engaged.lock().expect("dial-back registry lock");
+        let mut engaged = self.engaged.lock();
         if engaged.len() >= MAX_CONCURRENT_DIAL_BACKS || !engaged.insert(requester) {
             return None;
         }
@@ -288,9 +286,6 @@ pub(crate) struct DialBackTicket<K: Eq + Hash = Ipv4Endpoint> {
 
 impl<K: Eq + Hash> Drop for DialBackTicket<K> {
     fn drop(&mut self) {
-        self.engaged
-            .lock()
-            .expect("dial-back registry lock")
-            .remove(&self.requester);
+        self.engaged.lock().remove(&self.requester);
     }
 }

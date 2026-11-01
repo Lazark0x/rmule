@@ -21,11 +21,12 @@ mod source;
 mod watch;
 mod whereabouts;
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use rmule_primitives::FileHash;
@@ -236,7 +237,7 @@ pub(crate) enum Consent {
 pub(crate) type ProgressCell = Arc<Mutex<Option<DirectoryScanDiagnostics>>>;
 
 fn set_phase(progress: &ProgressCell, root: &Path, phase: ScanPhase) {
-    *progress.lock().expect("scan progress") = Some(DirectoryScanDiagnostics {
+    *progress.lock() = Some(DirectoryScanDiagnostics {
         dir: root.to_path_buf(),
         phase,
     });

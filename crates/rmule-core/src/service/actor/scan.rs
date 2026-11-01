@@ -7,9 +7,10 @@
 //! share-set triggers, and answers the worker's reads of the registry in
 //! channel order, so a read never misses a change the worker sent before it.
 
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::adapters::{

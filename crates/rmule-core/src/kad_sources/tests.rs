@@ -3,9 +3,10 @@
 //! offered file — a Partial Share included — withdrawal and re-publication,
 //! and a failed registry read.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_primitives::{
@@ -107,7 +108,7 @@ async fn asks_kad_and_routes_found_sources_to_the_matching_download() {
 
     let downloads: KadSourceRegistry = Arc::new(Mutex::new(HashMap::new()));
     let (sink_tx, mut sink_rx) = mpsc::channel(8);
-    downloads.lock().unwrap().insert(
+    downloads.lock().insert(
         file_hash,
         Discoverable {
             file_size: 4096,

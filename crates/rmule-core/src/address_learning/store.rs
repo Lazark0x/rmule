@@ -8,9 +8,10 @@
 //! which is the edge, exactly as the Kad driver is the edge that maps real
 //! time onto the sans-I/O node's explicit scale.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_net::family::{FamilyBinds, HalfBound};
@@ -715,7 +716,7 @@ const fn join(address: IpAddr, port: u16) -> Option<PeerEndpoint> {
 /// [`AddressLearning`] itself reads no clock: every rule takes `now` as a
 /// parameter, so a test drives thirty minutes of freshness in a microsecond.
 /// This wrapper is where real time enters, exactly as the Kad driver is where
-/// real time enters the sans-I/O node. A `std::sync::Mutex` guards it because
+/// real time enters the sans-I/O node. A `parking_lot::Mutex` guards it because
 /// every write is a point-in-time update that never crosses an `.await`.
 #[derive(Clone, Debug)]
 pub(crate) struct SharedAddressLearning {
@@ -954,7 +955,7 @@ impl SharedAddressLearning {
     }
 
     fn with<R>(&self, act: impl FnOnce(&mut AddressLearning, Instant) -> R) -> R {
-        let mut store = self.store.lock().expect("address-learning mutex poisoned");
+        let mut store = self.store.lock();
         act(&mut store, Instant::now())
     }
 }

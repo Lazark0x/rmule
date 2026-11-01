@@ -11,7 +11,7 @@ impl DiagnosticsState {
     /// The run read its part file's Allocated Bytes: `allocated`, or `None`
     /// when the reading failed. A no-op when the row is gone.
     pub fn part_file_read(&self, download_id: DownloadId, allocated: Option<u64>) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(row) = inner.downloads.get_mut(&download_id) {
             row.allocated_bytes = allocated;
         }
@@ -19,7 +19,7 @@ impl DiagnosticsState {
 
     /// The run's Hole Probe answered `verdict`. A no-op when the row is gone.
     pub fn hole_probed(&self, download_id: DownloadId, verdict: HoleVerdict) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(row) = inner.downloads.get_mut(&download_id) {
             row.hole_verdict = Some(verdict);
         }

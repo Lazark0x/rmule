@@ -4,6 +4,7 @@
 //! (ADR-0030), and a shared part survives one worker's disconnect because the
 //! blocks it held go to the other (ADR-0117).
 
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DownloadCommand, DownloadEvent, DownloadFailure,
     DownloadedPart, PartReleaseReason, PeerDownloadOutcome, PeerRetirementReason,
@@ -19,7 +20,7 @@ use rmule_testkit::{
     source_with_high_id, two_high_id_sources,
 };
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 #[tokio::test]
@@ -88,7 +89,7 @@ async fn fake_multi_peer_happy_path_hands_blocks_to_every_high_id_peer() {
     let second = bytes[ED2K_PART_SIZE as usize..].to_vec();
     let first_peer = loopback_peer(1);
     let second_peer = loopback_peer(2);
-    let assignments = Arc::new(StdMutex::new(HashMap::new()));
+    let assignments = Arc::new(BlockingMutex::new(HashMap::new()));
     let mut core = Core::builder(CoreConfig::default(), rmule_testkit::memory_store())
         .settings(rmule_testkit::in_download_dir(
             rmule_core::CoreSettings::default(),
@@ -172,7 +173,7 @@ async fn fake_multi_peer_happy_path_hands_blocks_to_every_high_id_peer() {
         CoreEvent::Download(DownloadEvent::DownloadCompleted { .. })
     )));
 
-    let assignments = assignments.lock().unwrap();
+    let assignments = assignments.lock();
     for part in [0, 1] {
         assert!(
             assignments
@@ -352,7 +353,7 @@ impl PeerTransferService for GatedConnectTransfer {
 struct MultiPeerTransfer {
     part_hashes: Vec<PartHash>,
     parts: HashMap<u32, Vec<u8>>,
-    assignments: Arc<StdMutex<HashMap<u32, Vec<PeerEndpoint>>>>,
+    assignments: Arc<BlockingMutex<HashMap<u32, Vec<PeerEndpoint>>>>,
 }
 
 impl PeerTransferService for MultiPeerTransfer {
@@ -388,7 +389,7 @@ impl PeerTransferService for MultiPeerTransfer {
                     PeerWorkerCommand::RequestHashSet => {}
                     PeerWorkerCommand::RequestBlocks { blocks, handout } => {
                         for block in &blocks {
-                            let mut assignments = assignments.lock().unwrap();
+                            let mut assignments = assignments.lock();
                             let peers = assignments.entry(block.part_index).or_default();
                             if !peers.contains(&peer) {
                                 peers.push(peer);

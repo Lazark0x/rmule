@@ -87,8 +87,8 @@ pub(crate) struct SharedServerSession {
     /// order, and an activity racing the connect rides the operator's session
     /// rather than the one the connect is about to end.
     ///
-    /// A `std::sync::Mutex`: one small value, never held across an await.
-    pending_connect: Arc<std::sync::Mutex<Option<watch::Receiver<()>>>>,
+    /// A `parking_lot::Mutex`: one small value, never held across an await.
+    pending_connect: Arc<parking_lot::Mutex<Option<watch::Receiver<()>>>>,
     /// How long a dialed server may leave the login unanswered.
     ///
     /// Late-bound like [`facts`](Self::facts), and for the same reason: the
@@ -336,10 +336,7 @@ impl SharedServerSession {
     pub(crate) fn claim_connect(&self) -> OperatorConnectClaim {
         self.dial_cancel.send_replace(false);
         let (tx, rx) = watch::channel(());
-        *self
-            .pending_connect
-            .lock()
-            .expect("pending connect lock poisoned") = Some(rx);
+        *self.pending_connect.lock() = Some(rx);
         OperatorConnectClaim {
             _resolved_on_drop: tx,
         }
@@ -379,7 +376,6 @@ impl SharedServerSession {
     pub(crate) fn operator_connect_pending(&self) -> bool {
         self.pending_connect
             .lock()
-            .expect("pending connect lock poisoned")
             .as_ref()
             .is_some_and(|rx| rx.has_changed().is_ok())
     }
@@ -391,10 +387,7 @@ impl SharedServerSession {
     pub(crate) async fn wait_for_operator_connect(&self) {
         loop {
             let live = {
-                let pending = self
-                    .pending_connect
-                    .lock()
-                    .expect("pending connect lock poisoned");
+                let pending = self.pending_connect.lock();
                 match pending.as_ref() {
                     // `has_changed` errors once the sender dropped — a
                     // resolved claim is the same as none.

@@ -3,12 +3,13 @@
 //! that applies each ruling to a registry and a withheld set, as the actor
 //! does.
 
+use parking_lot::Mutex;
 use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use rmule_primitives::FileHash;
@@ -56,7 +57,7 @@ impl FolderWatch for ScriptedWatch {
     }
 
     fn cover(&mut self, folders: &BTreeSet<PathBuf>) -> Result<(), WatchFault> {
-        self.covered.lock().unwrap().push(folders.clone());
+        self.covered.lock().push(folders.clone());
         self.refuse.map_or(Ok(()), Err)
     }
 }
@@ -174,12 +175,12 @@ fn run_on(
         withheld,
         log: Vec::new(),
     });
-    let withheld = actor.lock().unwrap().withheld.clone();
+    let withheld = actor.lock().withheld.clone();
     let joining = Mutex::new(joining);
     let mut rows_now = || {
         let at = Duration::from_millis(elapsed.load(Ordering::SeqCst));
-        let mut actor = actor.lock().unwrap();
-        let mut joining = joining.lock().unwrap();
+        let mut actor = actor.lock();
+        let mut joining = joining.lock();
         while joining.first().is_some_and(|(when, _)| *when <= at) {
             let (_, row) = joining.remove(0);
             actor.rows.push(row);
@@ -188,7 +189,7 @@ fn run_on(
     };
     let mut report = |report: CheckReport| {
         let at = Duration::from_millis(elapsed.load(Ordering::SeqCst));
-        let mut actor = actor.lock().unwrap();
+        let mut actor = actor.lock();
         match &report {
             CheckReport::Offer(file_hash) => {
                 actor.withheld.lift(*file_hash);
@@ -219,9 +220,9 @@ fn run_on(
         &withheld,
         &stop,
     );
-    let covered = covered.lock().unwrap().clone();
+    let covered = covered.lock().clone();
     Run {
-        actor: actor.into_inner().unwrap(),
+        actor: actor.into_inner(),
         covered,
     }
 }

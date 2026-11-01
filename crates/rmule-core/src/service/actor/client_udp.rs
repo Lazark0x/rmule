@@ -95,7 +95,6 @@ pub(super) fn spawn_client_udp_front(
         while let Some(datagram) = reask_reply_rx.recv().await {
             let sink = routes
                 .lock()
-                .expect("reask reply sink mutex")
                 .route_reply(datagram.0, std::time::Instant::now());
             match sink {
                 Some(tx) => {

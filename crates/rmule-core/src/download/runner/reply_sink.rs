@@ -25,19 +25,14 @@ impl ReaskSinkLease {
         download_id: DownloadId,
         reply_tx: mpsc::Sender<ClientUdpDatagram>,
     ) -> Self {
-        sink.lock()
-            .expect("reask reply sink mutex")
-            .install(download_id, reply_tx);
+        sink.lock().install(download_id, reply_tx);
         Self { sink, download_id }
     }
 }
 
 impl Drop for ReaskSinkLease {
     fn drop(&mut self) {
-        self.sink
-            .lock()
-            .expect("reask reply sink mutex")
-            .remove(self.download_id);
+        self.sink.lock().remove(self.download_id);
     }
 }
 
@@ -54,9 +49,9 @@ mod tests {
         let (second_tx, _second_rx) = mpsc::channel(1);
         let first = ReaskSinkLease::install(sink.clone(), DownloadId::from_u64(1), first_tx);
         let _second = ReaskSinkLease::install(sink.clone(), DownloadId::from_u64(2), second_tx);
-        assert_eq!(sink.lock().unwrap().installed(), 2);
+        assert_eq!(sink.lock().installed(), 2);
 
         drop(first);
-        assert_eq!(sink.lock().unwrap().installed(), 1);
+        assert_eq!(sink.lock().installed(), 1);
     }
 }

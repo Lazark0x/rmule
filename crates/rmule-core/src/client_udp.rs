@@ -157,7 +157,7 @@ pub(crate) type ClientUdpDatagram = (PeerEndpoint, Vec<u8>);
 /// is up. Filled with `try_send` and never awaited, the `natt` inbox's posture
 /// and for the same reason.
 ///
-/// A `std::sync::Mutex` because every use is a `try_send` that never crosses
+/// A `parking_lot::Mutex` because every use is a `try_send` that never crosses
 /// an `.await` — the front must not be able to block on a Kad lock.
 pub(crate) type SharedKadInlet = crate::mailbox::Mailbox<rmule_net::kad::KadDatagram>;
 

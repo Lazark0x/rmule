@@ -135,12 +135,12 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     // A UDP-bind failure disables discovery — downloads still work via the connected
     // server and peer source-exchange.
     let global_source_registry: GlobalSourceRegistry =
-        Arc::new(std::sync::Mutex::new(HashMap::new()));
-    let global_source_servers: SharedServerList = Arc::new(std::sync::Mutex::new(Vec::new()));
+        Arc::new(parking_lot::Mutex::new(HashMap::new()));
+    let global_source_servers: SharedServerList = Arc::new(parking_lot::Mutex::new(Vec::new()));
     // The level keeps it the managed list minus the dead and the IP-filtered
     // (ADR-0051, ADR-0052).
     diagnostics.install_swept_servers(Arc::clone(&global_source_servers), wiring.ip_filter.clone());
-    let kad_source_registry: KadSourceRegistry = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let kad_source_registry: KadSourceRegistry = Arc::new(parking_lot::Mutex::new(HashMap::new()));
     let kad_ask_clock = crate::source_discovery::AskClock::shared(wiring.config.kad_reask_interval);
     let own_identity = wiring.shared_server_session.own_identity().clone();
     // A late Kad helper test names no server to report through, so the

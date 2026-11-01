@@ -143,8 +143,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use parking_lot::Mutex;
     use std::future::Future;
-    use std::sync::Mutex;
 
     use rmule_bootstrap::FetchError;
 
@@ -159,14 +159,14 @@ mod tests {
 
     impl CoreClient for RecordingClient {
         fn send(&self, command: CoreCommand) -> Result<(), CoreClientError> {
-            self.sent.lock().unwrap().push(command);
+            self.sent.lock().push(command);
             Ok(())
         }
     }
 
     impl RecordingClient {
         fn kad_join(&self) -> KadEnableConfig {
-            let sent = self.sent.lock().unwrap();
+            let sent = self.sent.lock();
             match sent.iter().find_map(|c| match c {
                 CoreCommand::EnableKad(config) => Some(config.clone()),
                 _ => None,
@@ -188,7 +188,7 @@ mod tests {
             _url: &str,
             _max_bytes: usize,
         ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
-            *self.calls.lock().unwrap() += 1;
+            *self.calls.lock() += 1;
             let result = self.result.clone();
             async move { result }
         }
@@ -250,7 +250,7 @@ mod tests {
                 candidates: 0
             }
         );
-        assert_eq!(*fetcher.calls.lock().unwrap(), 0);
+        assert_eq!(*fetcher.calls.lock(), 0);
         assert_eq!(client.kad_join().contacts.len(), 4);
     }
 
@@ -321,11 +321,7 @@ mod tests {
                 .is_some_and(|joined| joined.is_ok())
             );
         }
-        assert_eq!(
-            client.sent.lock().unwrap().len(),
-            2,
-            "one EnableKad per start"
-        );
+        assert_eq!(client.sent.lock().len(), 2, "one EnableKad per start");
 
         drop(start); // the app quit
         assert!(
@@ -341,7 +337,7 @@ mod tests {
             .is_none(),
             "no start, no join"
         );
-        assert_eq!(*fetcher.calls.lock().unwrap(), 0);
-        assert_eq!(client.sent.lock().unwrap().len(), 2);
+        assert_eq!(*fetcher.calls.lock(), 0);
+        assert_eq!(client.sent.lock().len(), 2);
     }
 }

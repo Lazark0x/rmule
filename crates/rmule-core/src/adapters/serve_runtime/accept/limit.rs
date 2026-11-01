@@ -6,7 +6,8 @@
 //! sooner, and it dials again. Explicit time, one window; a serve restart
 //! opens a new one.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// aMule turns its accept interval every five seconds (`amule.cpp:1230-1232`).
@@ -33,7 +34,7 @@ impl AcceptLimit {
         if open > ceiling {
             return false;
         }
-        let mut window = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut window = self.0.lock();
         let open_window =
             window.filter(|window| now.saturating_duration_since(window.opened_at) < ACCEPT_WINDOW);
         let accepted = open_window.map_or(0, |window| window.accepted);

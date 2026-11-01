@@ -35,9 +35,10 @@
 //! PCP request per source port over IPv6 — is the crate's own behaviour: every
 //! logical request binds a fresh socket.
 
+use parking_lot::Mutex;
 use std::net::IpAddr;
 use std::num::NonZeroU16;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crab_nat::{
@@ -156,7 +157,7 @@ impl UdpMappingBackend {
     /// Run `f` on `gateway`'s family slot, re-anchoring it first when that
     /// family's next hop itself changed.
     fn with_state<T>(&self, gateway: Gateway, f: impl FnOnce(&mut GatewayState) -> T) -> T {
-        let mut states = self.state.lock().expect("portmap gateway state");
+        let mut states = self.state.lock();
         let state = &mut states[family_slot(gateway.family())];
         let next_hop = (gateway.address, gateway.scope_id);
         if state.next_hop != Some(next_hop) {

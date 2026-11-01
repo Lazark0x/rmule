@@ -363,15 +363,15 @@ async fn a_session_reassigned_a_low_id_re_races_the_mappers_on_the_reach_generat
 
 /// A preferences seam that holds the learned method in memory, so a test reads
 /// back what the runtime wrote.
-struct Remembering(std::sync::Mutex<Option<MappingProtocol>>);
+struct Remembering(parking_lot::Mutex<Option<MappingProtocol>>);
 
 impl PortMappingPreferences for Remembering {
     fn learned_method(&self) -> Option<MappingProtocol> {
-        *self.0.lock().expect("preferences mutex")
+        *self.0.lock()
     }
 
     fn set_learned_method(&self, method: Option<MappingProtocol>) {
-        *self.0.lock().expect("preferences mutex") = method;
+        *self.0.lock() = method;
     }
 }
 
@@ -424,7 +424,7 @@ async fn a_learned_method_that_wins_short_of_exact_is_cleared_from_the_store() {
     let pcp = Arc::new(
         ScriptedBackend::available(MappingProtocol::Pcp).granting(GrantPolicy::Shifted(1000)),
     );
-    let preferences = Arc::new(Remembering(std::sync::Mutex::new(Some(
+    let preferences = Arc::new(Remembering(parking_lot::Mutex::new(Some(
         MappingProtocol::Pcp,
     ))));
     let diagnostics = DiagnosticsState::new();

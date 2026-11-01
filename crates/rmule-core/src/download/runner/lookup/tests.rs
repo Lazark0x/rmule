@@ -235,11 +235,11 @@ async fn futures_poll_once<F: Future + Unpin>(future: F) -> Option<F::Output> {
 /// asked.
 #[derive(Clone, Default)]
 struct Recording(
-    std::sync::Arc<std::sync::Mutex<Vec<(tokio::time::Instant, rmule_primitives::FileHash)>>>,
+    std::sync::Arc<parking_lot::Mutex<Vec<(tokio::time::Instant, rmule_primitives::FileHash)>>>,
 );
 impl Recording {
     fn asks(&self) -> Vec<(tokio::time::Instant, rmule_primitives::FileHash)> {
-        self.0.lock().expect("recording").clone()
+        self.0.lock().clone()
     }
 }
 impl SourceLookupService for Recording {
@@ -249,7 +249,6 @@ impl SourceLookupService for Recording {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         self.0
             .lock()
-            .expect("recording")
             .push((tokio::time::Instant::now(), target.file_hash()));
         Ok(SourceLookupOutcome {
             client_id: rmule_primitives::ClientId::from_u32(0x0A0B_0C0D),

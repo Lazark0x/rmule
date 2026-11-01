@@ -342,13 +342,13 @@ async fn the_served_download_names_every_destination_the_move_stores() {
     struct Named {
         cell: ServedDownloads,
         hash: rmule_primitives::FileHash,
-        named: std::sync::Mutex<Vec<(PathBuf, PathBuf)>>,
+        named: parking_lot::Mutex<Vec<(PathBuf, PathBuf)>>,
         inner: CameToStand,
     }
     impl CompletionFs for Named {
         fn rename_exclusive(&self, from: &Path, to: &Path) -> Result<(), Refusal> {
             let served = self.cell.served(self.hash).unwrap().final_path;
-            self.named.lock().unwrap().push((served, to.to_path_buf()));
+            self.named.lock().push((served, to.to_path_buf()));
             self.inner.rename_exclusive(from, to)
         }
 
@@ -365,7 +365,7 @@ async fn the_served_download_names_every_destination_the_move_stores() {
     let fs = Arc::new(Named {
         cell: cell.clone(),
         hash,
-        named: std::sync::Mutex::default(),
+        named: parking_lot::Mutex::default(),
         inner: CameToStand {
             renames: AtomicUsize::new(0),
         },
@@ -381,7 +381,7 @@ async fn the_served_download_names_every_destination_the_move_stores() {
         answer(&mut rx, true, |_| {}),
     );
     result.unwrap();
-    let named = fs.named.lock().unwrap();
+    let named = fs.named.lock();
     assert_eq!(named.len(), 2, "the name taken, then the numbered one");
     for (served, destination) in named.iter() {
         assert_eq!(served, destination);

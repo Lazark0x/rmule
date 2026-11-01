@@ -400,7 +400,7 @@ pub(crate) struct NattFront<S> {
     demux: Arc<NattDemux<S>>,
     /// The engines' **Tunnel Registry**, kept here to prune its lapsed
     /// opening slots on the tick.
-    registry: Arc<std::sync::Mutex<TunnelRegistry>>,
+    registry: Arc<parking_lot::Mutex<TunnelRegistry>>,
     wiring: NattWiring,
     requester: RendezvousRequester,
     paths: PunchedPaths,
@@ -814,10 +814,7 @@ impl<S: NattDatagramSink> NattFront<S> {
             self.enact_dial(order, now).await;
         }
         self.expectations.prune(now);
-        self.registry
-            .lock()
-            .expect("the NAT-T tunnel registry is never poisoned")
-            .prune(now);
+        self.registry.lock().prune(now);
         self.requester.prune(now);
         // Silence is the dialect's only failure signal: fifteen seconds with
         // no hint spends one of the target's five attempts.

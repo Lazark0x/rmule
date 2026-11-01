@@ -16,12 +16,12 @@
 //! closes it whether the flow failed or not. A re-score of a retained run never
 //! rewrites it; [`rescored`] adds its time to the top-level `rescored_at` list.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -75,9 +75,7 @@ struct Open {
 static OPEN: Mutex<Option<Open>> = Mutex::new(None);
 
 fn with_open(change: impl FnOnce(&mut Open)) {
-    let mut guard = OPEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = OPEN.lock();
     if let Some(open) = guard.as_mut() {
         change(open);
         // Best effort: a record that cannot be written must not fail a flow.
@@ -137,9 +135,7 @@ pub fn begin(run_dir: &Path) -> Result<()> {
         expected_binary: None,
     };
     write(&open)?;
-    *OPEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(open);
+    *OPEN.lock() = Some(open);
     Ok(())
 }
 
@@ -195,9 +191,7 @@ pub fn note_image(docker: &Docker, tag: &str, as_rmule: bool) {
 /// tree was), and the binary hash prefix. Replaces a bare "this worktree".
 #[must_use]
 pub fn rmule_pin() -> String {
-    let guard = OPEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let guard = OPEN.lock();
     let Some(open) = guard.as_ref() else {
         return "rmule, build unrecorded".to_owned();
     };

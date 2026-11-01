@@ -109,12 +109,7 @@ impl KadRuntimeFactory for RuntimeKadFactory {
                 // Kad checks call `IsFiltered(ip)` with `isServer` defaulted false.
                 contact_admission: Some(rmule_kad::KadContactAdmission::new({
                     let ip_filter = adapters.ip_filter.clone();
-                    move |ip| {
-                        !ip_filter
-                            .read()
-                            .expect("ip filter lock")
-                            .is_filtered_client(ip)
-                    }
+                    move |ip| !ip_filter.read().is_filtered_client(ip)
                 })),
             },
             rmule_net::kad::KadInlet {

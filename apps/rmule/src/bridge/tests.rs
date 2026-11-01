@@ -1,8 +1,9 @@
 //! Unit tests for the in-process CoreClient bridge.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use rmule_core::diagnostics::{
     DownloadDiagnostics, SessionCounters, UploadDiagnostics, WorkerEntry, WorkerPhase, WorkerSlot,
@@ -24,6 +25,8 @@ struct FakeCore {
     /// A core whose quit never ends —
     /// `CORE_SHUTDOWN_GRACE` must still let the caller through.
     hang_on_shutdown: bool,
+    /// A defect on the data tick.
+    panic_on_snapshot: bool,
 }
 
 struct FakeCoreControls {
@@ -49,6 +52,7 @@ fn fake_core_with(hang_on_shutdown: bool) -> (FakeCore, FakeCoreControls) {
             sent: sent_tx,
             shutdown_calls: shutdown_calls.clone(),
             hang_on_shutdown,
+            panic_on_snapshot: false,
         },
         FakeCoreControls {
             events: event_tx,
@@ -80,7 +84,8 @@ impl CoreHandle for FakeCore {
     }
 
     fn diagnostics_snapshot(&self) -> DiagnosticsSnapshot {
-        self.snapshot.lock().expect("snapshot mutex").clone()
+        assert!(!self.panic_on_snapshot, "a defect on the data tick");
+        self.snapshot.lock().clone()
     }
 
     fn quit(self) -> mpsc::Receiver<CoreEvent> {
@@ -153,7 +158,7 @@ fn set_byte_levels(snapshot: &Arc<Mutex<DiagnosticsSnapshot>>, received: u64, se
             bytes_sent: sent,
         },
     );
-    let mut snapshot = snapshot.lock().expect("snapshot mutex");
+    let mut snapshot = snapshot.lock();
     snapshot.downloads = downloads;
     snapshot.uploads = uploads;
     snapshot.session = SessionCounters {
@@ -243,7 +248,7 @@ async fn the_kad_facts_ride_the_data_tick_of_the_sync_snapshot() {
     let (action_tx, mut action_rx) = mpsc::channel(64);
     let _handle = spawn(core, action_tx, BridgeConfig::default());
 
-    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(false));
+    controls.snapshot.lock().kad = Some(kad_diag(false));
     let mut seen = None;
     for _ in 0..8 {
         if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
@@ -260,7 +265,7 @@ async fn the_kad_facts_ride_the_data_tick_of_the_sync_snapshot() {
     );
 
     // Latest-state-wins: the next tick carries the newer level.
-    controls.snapshot.lock().expect("snapshot").kad = Some(kad_diag(true));
+    controls.snapshot.lock().kad = Some(kad_diag(true));
     let mut last = None;
     for _ in 0..8 {
         if let Action::Snapshot(frame) = action_rx.recv().await.expect("bus open")
@@ -464,17 +469,11 @@ async fn core_closed_arrives(actions: &mut mpsc::Receiver<Action>) -> bool {
     false
 }
 
-/// A panic in the bridge must not leave the UI showing a live core: the
-/// fake's poisoned snapshot lock stands in for any defect on the data tick.
+/// A panic in the bridge must not leave the UI showing a live core.
 #[tokio::test(start_paused = true)]
 async fn a_panicked_bridge_closes_the_core_on_the_bus() {
-    let (core, controls) = fake_core();
-    let poisoner = Arc::clone(&controls.snapshot);
-    let _ = std::thread::spawn(move || {
-        let _held = poisoner.lock().unwrap();
-        panic!("poison the fake's snapshot");
-    })
-    .join();
+    let (mut core, _controls) = fake_core();
+    core.panic_on_snapshot = true;
     let (action_tx, mut action_rx) = mpsc::channel(64);
     let _handle = spawn(core, action_tx, BridgeConfig::default());
     assert!(core_closed_arrives(&mut action_rx).await);

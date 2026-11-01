@@ -100,10 +100,7 @@ async fn establish_into(
     let resolved: Vec<Ipv4Addr> = match server.host().parse::<Ipv4Addr>() {
         Ok(ip) => vec![ip],
         Err(_) => {
-            let gate_armed = ip_filter
-                .read()
-                .expect("ip filter lock")
-                .has_server_blocks();
+            let gate_armed = ip_filter.read().has_server_blocks();
             if gate_armed {
                 let lookup = shared
                     .resolver()
@@ -119,7 +116,7 @@ async fn establish_into(
         }
     };
     let server_filtered = {
-        let filter = ip_filter.read().expect("ip filter lock");
+        let filter = ip_filter.read();
         resolved.iter().any(|ip| filter.is_filtered_server(*ip))
     };
     if server_filtered {

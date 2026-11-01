@@ -16,8 +16,9 @@
 //!
 //! Time is the caller's, so the rule is testable without sleeping.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_primitives::FileHash;

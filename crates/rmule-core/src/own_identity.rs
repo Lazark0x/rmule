@@ -72,7 +72,7 @@ pub(crate) struct SharedOwnIdentity(Arc<OwnIdentityCell>);
 struct OwnIdentityCell {
     /// Our own eD2k user hash, fixed by the builder; `None` only on an
     /// adapter-level test cell.
-    user_hash: std::sync::Mutex<Option<UserHash>>,
+    user_hash: parking_lot::Mutex<Option<UserHash>>,
     /// The live session's [`ConnectedSession`], or `None` between sessions.
     /// Written by establishment when the login is accepted, re-written by the
     /// session task on a mid-session re-assignment and cleared by it as it
@@ -107,13 +107,13 @@ impl SharedOwnIdentity {
     /// (`Preferences.cpp:925-953`). No command carries a hash, so nothing can
     /// ask to change it.
     pub(crate) fn set_user_hash(&self, user_hash: UserHash) {
-        *self.0.user_hash.lock().expect("own user-hash mutex") = Some(user_hash);
+        *self.0.user_hash.lock() = Some(user_hash);
     }
 
     /// Our own user hash, or `None` on an adapter-level test cell no builder
     /// fixed.
     pub(crate) fn user_hash(&self) -> Option<UserHash> {
-        *self.0.user_hash.lock().expect("own user-hash mutex")
+        *self.0.user_hash.lock()
     }
 
     /// Publish the live session's self-facts, or clear them as it ends.

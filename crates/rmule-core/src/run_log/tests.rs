@@ -440,11 +440,11 @@ fn a_level_changed_mid_run_governs_the_next_line() {
 
 /// What a mirror writes into a buffer the test reads.
 #[derive(Clone, Default)]
-struct Mirrored(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+struct Mirrored(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
 
 impl std::io::Write for Mirrored {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("mirror").extend_from_slice(bytes);
+        self.0.lock().extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -484,7 +484,7 @@ fn the_mirror_holds_the_free_form_lines_the_lean_file_leaves_out() {
     });
     file.drain();
     let file = read(&dir.path().join(FILE_NAME));
-    let mirror = String::from_utf8(mirrored.0.lock().expect("mirror").clone()).expect("utf-8");
+    let mirror = String::from_utf8(mirrored.0.lock().clone()).expect("utf-8");
     assert_eq!(untimed(&file).len(), 1, "{file}");
     assert!(!file.contains("a free-form line"), "{file}");
     assert_eq!(untimed(&mirror).len(), 2, "{mirror}");

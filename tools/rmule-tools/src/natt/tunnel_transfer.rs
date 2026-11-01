@@ -174,7 +174,7 @@ struct TransferRow {
 /// that vanished between lookups would retire the candidate for a reason the
 /// bench invented.
 #[derive(Clone, Default)]
-struct InjectedSource(std::sync::Arc<std::sync::Mutex<Option<Injected>>>);
+struct InjectedSource(std::sync::Arc<parking_lot::Mutex<Option<Injected>>>);
 
 /// One filled **Harness Source Record**.
 #[derive(Clone, Copy)]
@@ -185,11 +185,7 @@ struct Injected {
 
 impl InjectedSource {
     fn fill(&self, client_id: ClientId, source: SourceSighting) {
-        *self
-            .0
-            .lock()
-            .expect("the injected source cell is not poisoned") =
-            Some(Injected { client_id, source });
+        *self.0.lock() = Some(Injected { client_id, source });
     }
 }
 
@@ -200,10 +196,7 @@ impl SourceLookupService for InjectedSource {
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
         // An empty cell is a lookup the driver has not armed yet, and the only
         // honest answer is "no sources" — never a fabricated one.
-        let filled = *self
-            .0
-            .lock()
-            .expect("the injected source cell is not poisoned");
+        let filled = *self.0.lock();
         Ok(filled.map_or_else(
             || SourceLookupOutcome {
                 client_id: ClientId::from_u32(0),

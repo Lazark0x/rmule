@@ -6,11 +6,12 @@
 //! Anything a second crate would want belongs in `rmule-testkit` instead —
 //! `test_identity`, `file_link`, and the fakes already live there.
 
+use parking_lot::Mutex;
 use rmule_core::{DurableStore, open_durable_store};
 use rmule_testkit::HANG_GUARD;
 use std::net::SocketAddrV4;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_core::{
     ClientUdpBind, Core, CoreConfig, CoreError, CoreEvent, DurableAppConfig,
@@ -437,7 +438,7 @@ fn next_band_port() -> u16 {
     static CURSOR: std::sync::LazyLock<Mutex<u16>> =
         std::sync::LazyLock::new(|| Mutex::new(band_offset()));
 
-    let mut cursor = CURSOR.lock().expect("port cursor is never poisoned");
+    let mut cursor = CURSOR.lock();
     let candidate = *cursor;
     *cursor = if candidate + 1 >= PORT_BAND.end {
         PORT_BAND.start

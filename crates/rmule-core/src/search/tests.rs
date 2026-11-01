@@ -6,8 +6,8 @@
 //! module because every producer's rows are built by the same `result` helper.
 
 use crate::CoreEvent;
+use parking_lot::Mutex;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
 
 use rmule_ed2k::{GlobSearchReq, GlobSearchVariant, Opcode, SearchRequest, ServerUdpFlags};
 use rmule_primitives::{
@@ -75,8 +75,8 @@ impl RecordingTransport {
 
 impl ServerUdpTransport for &'static RecordingTransport {
     async fn send_to(&self, to: Ipv4Endpoint, datagram: Vec<u8>) {
-        self.sends.lock().unwrap().push((to, datagram[1]));
-        self.datagrams.lock().unwrap().push(datagram);
+        self.sends.lock().push((to, datagram[1]));
+        self.datagrams.lock().push(datagram);
     }
 
     async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -104,11 +104,11 @@ fn oversize_query() -> KeywordQuery {
 async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one() {
     let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
     let capabilities = SharedServerCapabilities::default();
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES | ServerUdpFlags::LARGEFILES),
     );
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 4), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES),
     );
@@ -130,7 +130,7 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
     .run()
     .await;
 
-    let sends = transport.sends.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
     assert_eq!(
         sends,
         vec![
@@ -150,7 +150,7 @@ async fn sweep_paces_one_variant_datagram_per_server_and_skips_the_connected_one
 async fn a_sweep_widens_a_large_bound_only_where_the_server_takes_it() {
     let transport: &'static RecordingTransport = Box::leak(Box::new(RecordingTransport::new()));
     let capabilities = SharedServerCapabilities::default();
-    capabilities.lock().unwrap().insert(
+    capabilities.lock().insert(
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661),
         caps_with_flags(ServerUdpFlags::EXT_GETFILES | ServerUdpFlags::LARGEFILES),
     );
@@ -175,7 +175,7 @@ async fn a_sweep_widens_a_large_bound_only_where_the_server_takes_it() {
     let clamped = GlobSearchReq::new(SearchRequest::from_query(oversize_query()))
         .encode_packet(GlobSearchVariant::Baseline)
         .encode_udp();
-    assert_eq!(*transport.datagrams.lock().unwrap(), vec![wide, clamped]);
+    assert_eq!(*transport.datagrams.lock(), vec![wide, clamped]);
 }
 
 /// Searches started together share each server's spacing: their datagrams
@@ -196,7 +196,7 @@ async fn sweeps_started_together_reach_one_server_spaced() {
     };
     let start = tokio::time::Instant::now();
     tokio::join!(sweep().run(), sweep().run(), sweep().run());
-    assert_eq!(transport.sends.lock().unwrap().len(), 3);
+    assert_eq!(transport.sends.lock().len(), 3);
     assert_eq!(start.elapsed(), 2 * UDP_SEARCH_SPACING);
 }
 
@@ -217,7 +217,6 @@ async fn a_sweep_seals_its_datagram_toward_a_keyed_server() {
     });
     capabilities
         .lock()
-        .unwrap()
         .insert(Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4661), keyed);
     let own = crate::own_identity::SharedOwnIdentity::default();
     own.addresses()
@@ -248,8 +247,8 @@ async fn a_sweep_seals_its_datagram_toward_a_keyed_server() {
     let baseline = GlobSearchReq::new(SearchRequest::from_query(abba()))
         .encode_packet(GlobSearchVariant::Baseline)
         .encode_udp();
-    let sends = transport.sends.lock().unwrap().clone();
-    let datagrams = transport.datagrams.lock().unwrap().clone();
+    let sends = transport.sends.lock().clone();
+    let datagrams = transport.datagrams.lock().clone();
     assert_eq!(
         sends[0].0,
         Ipv4Endpoint::new(Ipv4Addr::new(10, 0, 0, 2), 4675)

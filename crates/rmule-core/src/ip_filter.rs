@@ -75,10 +75,11 @@
 //! deferred), the HTTP auto-update (`IPFilterAutoLoad`/`IPFilterURL`), and the
 //! dummy-file creation courtesy of aMule's constructor.
 
+use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use rmule_primitives::PeerEndpoint;
 

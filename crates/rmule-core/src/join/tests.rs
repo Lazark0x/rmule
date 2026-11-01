@@ -5,8 +5,8 @@
 
 mod kad_seeds;
 
+use parking_lot::Mutex;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
 
 use rmule_bootstrap::FetchError;
 use rmule_primitives::{Ed2kText, Ipv4Endpoint, Tag, TagName, TagValue};
@@ -55,7 +55,7 @@ impl FakeFetcher {
         }
     }
     fn calls(&self) -> usize {
-        *self.calls.lock().unwrap()
+        *self.calls.lock()
     }
 }
 
@@ -65,7 +65,7 @@ impl Fetcher for FakeFetcher {
         _url: &str,
         _max_bytes: usize,
     ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        *self.calls.lock().unwrap() += 1;
+        *self.calls.lock() += 1;
         let result = self.result.clone();
         async move { result }
     }
@@ -80,13 +80,13 @@ struct RecordingSink {
 
 impl RecordingSink {
     fn commands(&self) -> Vec<CoreCommand> {
-        self.commands.lock().unwrap().clone()
+        self.commands.lock().clone()
     }
 }
 
 impl JoinCommandSink for RecordingSink {
     fn dispatch(&self, command: CoreCommand) -> impl Future<Output = Result<(), CoreError>> + Send {
-        self.commands.lock().unwrap().push(command);
+        self.commands.lock().push(command);
         async { Ok(()) }
     }
 }

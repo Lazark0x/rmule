@@ -27,7 +27,8 @@
 //! hello from anywhere else is a claim no socket backs, and meets no dial
 //! (ADR-0107, "What a link proves to take a dial").
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rmule_peer::{HelloGate, PeerIdentity};
@@ -121,11 +122,12 @@ impl HelloGate for DialGate {
     }
 
     fn may_open_dial(&self) -> bool {
-        self.links.book.lock().map_or(true, |book| {
-            book.unanswered
-                .get(&self.filing)
-                .is_none_or(|dial| !dial.crossed)
-        })
+        self.links
+            .book
+            .lock()
+            .unanswered
+            .get(&self.filing)
+            .is_none_or(|dial| !dial.crossed)
     }
 }
 
@@ -201,9 +203,7 @@ impl CrossedDial {
     /// The bound passed with the hello held: the far end read nothing on the
     /// dial and stays on its own link, so the dial is given up.
     pub(in crate::adapters) fn give_up(&self) {
-        let Ok(mut book) = self.links.book.lock() else {
-            return;
-        };
+        let mut book = self.links.book.lock();
         if let Some(dial) = book.unanswered.remove(&self.filing) {
             let _ = dial.give_up.send(());
         }
@@ -212,9 +212,8 @@ impl CrossedDial {
 
 impl Drop for CrossedDial {
     fn drop(&mut self) {
-        if let Ok(mut book) = self.links.book.lock() {
-            book.yielding.remove(&self.filing);
-        }
+        let mut book = self.links.book.lock();
+        book.yielding.remove(&self.filing);
     }
 }
 
@@ -249,7 +248,7 @@ impl SharedPeerLinks {
     }
 
     fn meet_until(&self, remote: PeerEndpoint, names: Vec<LinkName>, ends: Instant) -> Meeting {
-        let mut book = self.book.lock().expect("peer links lock");
+        let mut book = self.book.lock();
         if let Some((filing, answered)) = book.crossing(remote, &names) {
             return Meeting::Crossed(CrossedDial {
                 links: self.clone(),
@@ -269,7 +268,7 @@ impl SharedPeerLinks {
     /// What the hello read on the link from `remote` met, as its session's
     /// gate left it; `None` for a link with no gate of these Peer Links.
     pub(in crate::adapters) fn take_met(&self, remote: PeerEndpoint) -> Option<Meeting> {
-        let mut book = self.book.lock().ok()?;
+        let mut book = self.book.lock();
         book.met.remove(&remote)
     }
 }
@@ -333,16 +332,12 @@ impl HelloGate for MetHello {
         let names = LinkName::proven(peer, identity, None);
         let meeting = self.links.meet(peer, names, Some(self.own));
         let answer = matches!(meeting, Meeting::Clear(_));
-        if let Ok(mut remote) = self.remote.lock() {
+        {
+            let mut remote = self.remote.lock();
             *remote = Some(peer);
         }
         // Dropped outside the lock, as below.
-        let earlier = self
-            .links
-            .book
-            .lock()
-            .ok()
-            .and_then(|mut book| book.met.insert(peer, meeting));
+        let earlier = self.links.book.lock().met.insert(peer, meeting);
         drop(earlier);
         answer
     }
@@ -350,7 +345,7 @@ impl HelloGate for MetHello {
 
 impl Drop for MetHello {
     fn drop(&mut self) {
-        let remote = self.remote.get_mut().ok().and_then(|remote| remote.take());
+        let remote = self.remote.get_mut().take();
         if let Some(remote) = remote {
             // Dropped outside the lock: a filing gives its names up under it.
             let left = self.links.take_met(remote);

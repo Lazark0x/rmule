@@ -73,8 +73,8 @@ pub(crate) fn system_resolver() -> SharedNameResolver {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct FakeNameResolver {
-    answers: std::sync::Mutex<std::collections::HashMap<String, Ipv4Addr>>,
-    asked: std::sync::Mutex<Vec<String>>,
+    answers: parking_lot::Mutex<std::collections::HashMap<String, Ipv4Addr>>,
+    asked: parking_lot::Mutex<Vec<String>>,
 }
 
 #[cfg(test)]
@@ -85,14 +85,13 @@ impl FakeNameResolver {
         resolver
             .answers
             .lock()
-            .unwrap()
             .extend(answers.iter().map(|(name, ip)| ((*name).to_owned(), *ip)));
         Arc::new(resolver)
     }
 
     /// From now on `name` answers `ip`, or nothing for `None`.
     pub(crate) fn answer(&self, name: &str, ip: Option<Ipv4Addr>) {
-        let mut answers = self.answers.lock().unwrap();
+        let mut answers = self.answers.lock();
         match ip {
             Some(ip) => answers.insert(name.to_owned(), ip),
             None => answers.remove(name),
@@ -101,15 +100,15 @@ impl FakeNameResolver {
 
     /// Every name asked so far, in order.
     pub(crate) fn asked(&self) -> Vec<String> {
-        self.asked.lock().unwrap().clone()
+        self.asked.lock().clone()
     }
 }
 
 #[cfg(test)]
 impl NameResolver for FakeNameResolver {
     fn resolve_ipv4(&self, host: String) -> Resolution {
-        let answer = self.answers.lock().unwrap().get(&host).copied();
-        self.asked.lock().unwrap().push(host);
+        let answer = self.answers.lock().get(&host).copied();
+        self.asked.lock().push(host);
         Box::pin(async move { answer })
     }
 

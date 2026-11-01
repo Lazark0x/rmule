@@ -25,8 +25,9 @@
 //! than lost among strangers — a server's and a Kad helper's alike, the helper's on the event bus
 //! the core installs here, since it names no server to report through.
 
+use parking_lot::Mutex;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rmule_net::peer::AwaitedTesters;
@@ -148,7 +149,7 @@ impl Awaited {
 
 /// The cell itself — held by the session self-facts ([`SharedOwnIdentity`](crate::own_identity::SharedOwnIdentity)),
 /// so establishment, the Kad pump and the serve adapter reach the one set.
-/// A plain `std::sync::Mutex`: no section crosses an `.await`.
+/// A plain `parking_lot::Mutex`: no section crosses an `.await`.
 #[derive(Clone, Default)]
 pub(crate) struct SharedAwaitedTesters(Arc<Mutex<Awaited>>);
 
@@ -190,8 +191,8 @@ impl Drop for AwaitingLogin {
 }
 
 impl SharedAwaitedTesters {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Awaited> {
-        self.0.lock().expect("awaited-testers mutex")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, Awaited> {
+        self.0.lock()
     }
 
     /// A login to `endpoint`, reached at `server`, is sent and its answer

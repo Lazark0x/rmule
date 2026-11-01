@@ -80,8 +80,8 @@ async fn sent_after(
     engine
         .demux(reply, Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4665))
         .await;
-    let plain = transport.sends.lock().unwrap().clone();
-    let obfuscated = transport.obfuscated.lock().unwrap().clone();
+    let plain = transport.sends.lock().clone();
+    let obfuscated = transport.obfuscated.lock().clone();
     (plain, obfuscated)
 }
 
@@ -153,7 +153,7 @@ async fn the_sealed_answer_from_the_obfuscation_port_opens_under_the_stored_key(
             Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, 4665),
         )
         .await;
-    assert_eq!(transport.obfuscated.lock().unwrap().len(), 1, "sealed ask");
+    assert_eq!(transport.obfuscated.lock().len(), 1, "sealed ask");
 
     let answer = encrypt_datagram_server(
         &desc_res_datagram(0xABCD_F0FF),
@@ -169,7 +169,7 @@ async fn the_sealed_answer_from_the_obfuscation_port_opens_under_the_stored_key(
         .demux(answer, Ipv4Endpoint::new(Ipv4Addr::LOCALHOST, OBF_PORT))
         .await;
 
-    let store = engine.capabilities.lock().unwrap();
+    let store = engine.capabilities.lock();
     let display = &store.get(&server).expect("the 0x97 record").display;
     assert_eq!(display.name.as_deref(), Some("Lugdunum"));
 }

@@ -26,9 +26,10 @@
 //! so no coordinator's word alone can make this node send 256 datagrams at
 //! an address. Every refusal is counted.
 
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmule_net::ed2k::{ClientUdpSocket, PredictionFanId};
@@ -280,7 +281,7 @@ impl<S: NattDatagramSink> NattFront<S> {
         let Some(wiring) = &self.wiring.prediction else {
             return;
         };
-        let mut ledger = active.fans.lock().expect("prediction fan ledger");
+        let mut ledger = active.fans.lock();
         ledger.ended = Some(keep_routes);
         for fan in ledger.fans.drain(..) {
             wiring.socket.close_prediction_fan(fan, keep_routes);
@@ -376,7 +377,7 @@ fn fire(
                     }
                 };
                 {
-                    let mut ledger = ledger.lock().expect("prediction fan ledger");
+                    let mut ledger = ledger.lock();
                     if let Some(keep_routes) = ledger.ended {
                         socket.close_prediction_fan(fan, keep_routes);
                         return;

@@ -10,7 +10,8 @@
 //! reported before the install is lost; the prologue runs before any
 //! adapter can open a connection.
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use rmule_peer::HelloRefusal;
 
@@ -37,7 +38,7 @@ impl SharedHelloRefusals {
         diagnostics: DiagnosticsState,
         events: crate::service::WeakOutbox,
     ) {
-        *self.installed.lock().expect("hello refusal cell poisoned") = Some(Installed {
+        *self.installed.lock() = Some(Installed {
             diagnostics,
             events,
         });
@@ -45,11 +46,7 @@ impl SharedHelloRefusals {
 
     /// Count `refusal` and raise [`CoreEvent::PeerHelloRefused`] for it.
     pub(crate) async fn report(&self, refusal: HelloRefusal) {
-        let installed = self
-            .installed
-            .lock()
-            .expect("hello refusal cell poisoned")
-            .clone();
+        let installed = self.installed.lock().clone();
         let Some(installed) = installed else {
             return;
         };

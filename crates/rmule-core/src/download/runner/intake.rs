@@ -18,7 +18,7 @@ pub(super) fn sight<S, P>(
     channel: Channel,
     sightings: impl IntoIterator<Item = SourceSighting>,
 ) -> Taken {
-    let filter = runner.rt.ip_filter.read().expect("ip filter lock");
+    let filter = runner.rt.ip_filter.read();
     let gate = Gate {
         filter: &filter,
         dial: runner.dial_position(),
@@ -40,7 +40,7 @@ pub(super) fn any_admitted<S, P>(
     runner: &RunnerContext<S, P>,
     sightings: &[SourceSighting],
 ) -> bool {
-    let filter = runner.rt.ip_filter.read().expect("ip filter lock");
+    let filter = runner.rt.ip_filter.read();
     let gate = Gate {
         filter: &filter,
         dial: runner.dial_position(),

@@ -512,7 +512,7 @@ async fn a_forged_first_key_at_a_dialed_endpoint_is_refused() {
 
     harness.front.release_held(due).await;
 
-    let mut registry = harness.front.registry.lock().expect("registry");
+    let mut registry = harness.front.registry.lock();
     let endpoint = PeerEndpoint::V4(aimed);
     assert!(!registry.learn_key(endpoint, hash(0x99), due));
     assert!(registry.learn_key(endpoint, target, due));

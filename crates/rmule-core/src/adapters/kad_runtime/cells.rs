@@ -9,7 +9,8 @@
 //! [`KadRuntimeFactory::start`](super::KadRuntimeFactory::start), so the runtime is a function of its inputs and
 //! a fake of it states what it publishes through the same cells.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
@@ -27,12 +28,12 @@ pub(crate) struct HandoffSlot(Arc<Mutex<Option<JoinHandle<()>>>>);
 impl HandoffSlot {
     /// Keep the forwarder `start` spawned.
     pub(crate) fn put(&self, forwarder: JoinHandle<()>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(forwarder);
+        *self.0.lock() = Some(forwarder);
     }
 
     /// Take the forwarder back, if one was kept.
     pub(crate) fn take(&self) -> Option<JoinHandle<()>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+        self.0.lock().take()
     }
 }
 

@@ -3,6 +3,7 @@
 //! batch lost instead of aborting the download (ADR-0030), and a snapshot
 //! holding no usable High-ID source fails before any peer transfer starts.
 
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::{
     CoreConfig, CoreEvent, DownloadEvent, DownloadFailure, DownloadedPart, PeerDownloadOutcome,
     PeerTransferService, PeerWorker, PeerWorkerCommand, PeerWorkerEvent, SourceLookupOutcome,
@@ -18,12 +19,12 @@ use rmule_testkit::{
     two_high_id_sources,
 };
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 #[tokio::test]
 async fn source_exhaustion_fails_without_second_source_lookup() {
     let bytes = vec![0xAB; ED2K_PART_SIZE as usize];
-    let lookup_count = Arc::new(StdMutex::new(0));
+    let lookup_count = Arc::new(BlockingMutex::new(0));
 
     let events = run_download(
         file_link("example.bin", &bytes),
@@ -35,7 +36,7 @@ async fn source_exhaustion_fails_without_second_source_lookup() {
     )
     .await;
 
-    assert_eq!(*lookup_count.lock().unwrap(), 1);
+    assert_eq!(*lookup_count.lock(), 1);
     assert!(events.iter().any(|event| {
         matches!(
             event,
@@ -147,7 +148,7 @@ async fn no_usable_high_id_sources_fails_without_peer_transfer() {
 
 #[derive(Clone)]
 struct CountingSourceLookup {
-    calls: Arc<StdMutex<usize>>,
+    calls: Arc<BlockingMutex<usize>>,
     outcome: SourceLookupOutcome,
 }
 
@@ -156,7 +157,7 @@ impl SourceLookupService for CountingSourceLookup {
         &mut self,
         _target: SourceLookupTarget,
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
-        *self.calls.lock().unwrap() += 1;
+        *self.calls.lock() += 1;
         Ok(self.outcome.clone())
     }
 }

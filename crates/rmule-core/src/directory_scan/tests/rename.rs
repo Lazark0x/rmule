@@ -3,10 +3,11 @@
 //! size and time all match, and read, as before, in each case the model
 //! refuses.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
 
 use rmule_primitives::FileHashSummary;
 

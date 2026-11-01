@@ -11,8 +11,9 @@
 //! decremented by hand, and the seat's drop withdraws it. Time is an argument,
 //! as everywhere in the download brain.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::service::{DownloadId, PeerConnections};
@@ -133,8 +134,8 @@ impl BudgetSeat {
         Self { budget, download }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, ConnectionBudget> {
-        self.budget.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock(&self) -> parking_lot::MutexGuard<'_, ConnectionBudget> {
+        self.budget.lock()
     }
 
     /// Admit one road at `now` for a run holding `held` connections, or refuse

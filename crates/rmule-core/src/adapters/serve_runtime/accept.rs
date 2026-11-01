@@ -76,7 +76,7 @@ fn build_accept_options(
 /// this cell would keep that signal from ever firing — so serving could never
 /// release its port.
 #[derive(Clone, Default)]
-pub(crate) struct SharedTunnelAdmit(Arc<std::sync::Mutex<Option<TunnelAdmit>>>);
+pub(crate) struct SharedTunnelAdmit(Arc<parking_lot::Mutex<Option<TunnelAdmit>>>);
 
 /// Why a tunnel could not enter the serve pipeline. Both arms mean the same
 /// thing to the caller — close the tunnel — and differ only in what they say
@@ -206,7 +206,7 @@ impl SharedTunnelAdmit {
     {
         // The guard never crosses an await: it holds the pump's cell.
         let (accept_tx, gates, conn) = {
-            let held = self.0.lock().expect("tunnel admit cell");
+            let held = self.0.lock();
             let admit = held.as_ref().ok_or(TunnelAdmitRefusal::NotServing)?;
             let accept_tx = admit
                 .accept_tx
@@ -294,7 +294,6 @@ impl SharedTunnelAdmit {
     pub(crate) fn is_serving(&self) -> bool {
         self.0
             .lock()
-            .expect("tunnel admit cell")
             .as_ref()
             .is_some_and(|admit| admit.accept_tx.strong_count() > 0)
     }
@@ -303,7 +302,7 @@ impl SharedTunnelAdmit {
     /// by the adapter's release, so the refusal a tunnel meets between two
     /// serve activities names the node's state rather than the last pump's.
     pub(crate) fn clear(&self) {
-        *self.0.lock().expect("tunnel admit cell") = None;
+        *self.0.lock() = None;
     }
 
     /// Fill the cell without a listener — the wiring seam the NAT-T leg needs
@@ -320,7 +319,7 @@ impl SharedTunnelAdmit {
         ctx: rmule_peer::PeerHandshakeContext,
         adverts: HelloAdverts,
     ) {
-        *self.0.lock().expect("tunnel admit cell") = Some(TunnelAdmit {
+        *self.0.lock() = Some(TunnelAdmit {
             accept_tx: accept_tx.downgrade(),
             hello: HelloSource::Fixed(ctx),
             adverts,
@@ -400,7 +399,7 @@ pub(super) fn spawn_accept_pump(
     let (accept_tx, accept_rx) = mpsc::channel(16);
     // A risen NAT-T Tunnel joins this same channel (ADR-0091), answered with
     // this same context and these same per-accept options.
-    *tunnel_admit.0.lock().expect("tunnel admit cell") = Some(TunnelAdmit {
+    *tunnel_admit.0.lock() = Some(TunnelAdmit {
         accept_tx: accept_tx.downgrade(),
         hello: hello.clone(),
         adverts: adverts.clone(),

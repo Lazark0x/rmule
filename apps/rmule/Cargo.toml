@@ -21,6 +21,7 @@ name = "rmule"
 path = "src/main.rs"
 
 [dependencies]
+parking_lot.workspace = true
 # Wall-clock stamps in the Networks log gutter (local time at draw); the
 # state layer stays on injected `Instant`s.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

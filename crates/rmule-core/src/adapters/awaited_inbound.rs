@@ -43,7 +43,8 @@
 //! dropping a handle releases both of its keys synchronously, on every road a
 //! callback or its run can end, an aborted task included.
 
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::{Arc, OnceLock};
 
 use rmule_peer::PartBitmap;
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
@@ -195,9 +196,7 @@ impl AwaitedInbound {
     /// us back may open a Tunnel from an address nothing here knows, since a
     /// Low-ID callback names no address for it (ADR-0091, security rule 10).
     pub(crate) fn awaits_dial_back(&self) -> bool {
-        self.registrations
-            .lock()
-            .is_ok_and(|registrations| registrations.awaits_dial_back())
+        self.registrations.lock().awaits_dial_back()
     }
 
     /// Open a download's registration for the pending callback `callback` (the
@@ -293,9 +292,7 @@ impl AwaitedInbound {
     }
 
     fn lock(&self) -> MutexGuard<'_, Registrations> {
-        self.registrations
-            .lock()
-            .expect("the awaited-inbound registry is never poisoned")
+        self.registrations.lock()
     }
 
     /// A claim on `target` was dropped by its own download: count it, and

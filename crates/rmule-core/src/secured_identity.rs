@@ -11,8 +11,9 @@
 //! credit ledger and the event bus. The prologue runs before any adapter can
 //! open a connection; a cell never installed binds nothing.
 
+use parking_lot::Mutex;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_primitives::UserHash;
 
@@ -46,10 +47,7 @@ impl SharedSecuredIdentities {
     /// Bind the cell to the credit ledger and the event bus. The sender is
     /// weak so this cell never keeps the bus open past the actor.
     pub(crate) fn install(&self, credit: SharedCreditStore, events: crate::service::WeakOutbox) {
-        *self
-            .installed
-            .lock()
-            .expect("secured identity cell poisoned") = Some(Installed { credit, events });
+        *self.installed.lock() = Some(Installed { credit, events });
     }
 
     /// Bind `public_key`, which a link's session at `at` proved `user_hash`
@@ -64,11 +62,7 @@ impl SharedSecuredIdentities {
         public_key: &[u8],
         at: IpAddr,
     ) -> KeyProof {
-        let installed = self
-            .installed
-            .lock()
-            .expect("secured identity cell poisoned")
-            .clone();
+        let installed = self.installed.lock().clone();
         let Some(installed) = installed else {
             return KeyProof::Unsettled;
         };

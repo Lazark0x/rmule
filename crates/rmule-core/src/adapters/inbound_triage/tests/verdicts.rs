@@ -373,7 +373,7 @@ async fn a_banned_or_filtered_peers_path_is_refused_before_the_registry_is_asked
         (banned_loopback().await, SharedIpFilter::default()),
         (
             SharedBanStore::default(),
-            Arc::new(std::sync::RwLock::new(loopback_blocking_ip_filter())),
+            Arc::new(parking_lot::RwLock::new(loopback_blocking_ip_filter())),
         ),
     ] {
         let target = hash(0xAB);

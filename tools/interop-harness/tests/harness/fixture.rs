@@ -95,9 +95,9 @@ impl ReservedPort {
 /// scattered by the process id, so two test binaries running at once do not
 /// walk the same sequence.
 fn next_band_port() -> u16 {
-    static CURSOR: std::sync::LazyLock<std::sync::Mutex<u16>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(band_start(std::process::id())));
-    let mut cursor = CURSOR.lock().expect("port cursor is never poisoned");
+    static CURSOR: std::sync::LazyLock<parking_lot::Mutex<u16>> =
+        std::sync::LazyLock::new(|| parking_lot::Mutex::new(band_start(std::process::id())));
+    let mut cursor = CURSOR.lock();
     let candidate = *cursor;
     *cursor = if candidate + 1 >= PORT_BAND.end {
         PORT_BAND.start

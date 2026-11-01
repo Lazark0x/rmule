@@ -9,8 +9,9 @@
 //! arm, the dial-back seam the builder installs and the serve pipeline it
 //! enters — so only the counterparty is a fake: rmule's side, not interop.
 
+use parking_lot::Mutex;
 use std::net::{Ipv4Addr, SocketAddrV4};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_core::{Core, CoreCommand, CoreConfig, ServeCommand};
 use rmule_ed2k::{CallbackRequest, IdChange, LoginRequest};
@@ -82,7 +83,7 @@ fn keep_reading(mut core: Core) -> Arc<Mutex<Vec<String>>> {
     let log = Arc::clone(&said);
     tokio::spawn(async move {
         while let Some(event) = core.next_event().await {
-            log.lock().unwrap().push(brief(&event));
+            log.lock().push(brief(&event));
         }
     });
     said
@@ -218,7 +219,7 @@ async fn a_low_id_core_dials_back_the_relayed_requester_and_serves_it() {
         panic!(
             "the sharer never served the requester over the dialed link; the requester met \
              {requester_saw:#?}; the sharer's core said {:#?}",
-            core_said.lock().unwrap()
+            core_said.lock()
         );
     };
     assert_eq!(received, bytes);

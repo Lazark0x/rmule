@@ -40,7 +40,8 @@ pub(crate) type ServerUdpDatagram = (Vec<u8>, Ipv4Endpoint);
 /// to one gate.
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use rmule_ed2k::Opcode;
@@ -101,7 +102,7 @@ pub(crate) mod tests {
             } else {
                 &self.obfuscated
             };
-            list.lock().unwrap().push((to, datagram));
+            list.lock().push((to, datagram));
         }
 
         async fn recv(&self) -> Option<ServerUdpDatagram> {
@@ -421,7 +422,6 @@ pub(crate) mod tests {
             .transport()
             .sends
             .lock()
-            .unwrap()
             .iter()
             .filter(|(_, d)| d.get(1) == Some(&0x96))
             .count();
@@ -465,7 +465,7 @@ pub(crate) mod tests {
 
         sweep.ping_next(&mut SweepState::default()).await;
 
-        let sends = sweep.seal.transport().sends.lock().unwrap().clone();
+        let sends = sweep.seal.transport().sends.lock().clone();
         assert_eq!(sends.len(), 1);
         assert_eq!(
             sends[0].0,
@@ -531,7 +531,6 @@ pub(crate) mod tests {
                 .transport()
                 .sends
                 .lock()
-                .unwrap()
                 .iter()
                 .all(|(to, _)| to == &udp(&answers, 4)),
             "nothing is sent for a name without an address"
@@ -584,7 +583,6 @@ pub(crate) mod tests {
             .transport()
             .sends
             .lock()
-            .unwrap()
             .iter()
             .map(|(to, _)| *to)
             .collect::<Vec<_>>();

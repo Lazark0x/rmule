@@ -35,22 +35,19 @@ pub fn init_tracing() -> TracingGuard {
 /// Every line a test's subscriber wrote, held for the test to read back — how
 /// a test proves a `tracing` line fired, and under which spans.
 #[derive(Clone, Default)]
-pub struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+pub struct CapturedLog(std::sync::Arc<parking_lot::Mutex<Vec<u8>>>);
 
 impl CapturedLog {
     /// Everything captured so far, as text.
     #[must_use]
     pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.0.lock().expect("captured-log mutex poisoned")).into_owned()
+        String::from_utf8_lossy(&self.0.lock()).into_owned()
     }
 }
 
 impl std::io::Write for CapturedLog {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .expect("captured-log mutex poisoned")
-            .extend_from_slice(buf);
+        self.0.lock().extend_from_slice(buf);
         Ok(buf.len())
     }
 

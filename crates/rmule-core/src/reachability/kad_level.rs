@@ -15,7 +15,8 @@
 //! running as firewalled (`amule.cpp:1677-1681`, `4e8f2b3c`), and a verdict left
 //! over from a stopped node is exactly the stale snapshot Self Reach rules out.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::Arc;
 
 use tokio::sync::watch;
 
@@ -136,9 +137,7 @@ impl SharedKadVerdicts {
     }
 
     fn generation(&self) -> MutexGuard<'_, u64> {
-        self.generation
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.generation.lock()
     }
 
     /// Take the cell for one node's life: a new generation, reset now, and

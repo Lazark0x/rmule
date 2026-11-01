@@ -4,8 +4,9 @@
 //! everything that offers: the serve snapshot, the Kad publisher and the file
 //! history. Until the Registry Check's start look is done nothing is offered.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use rmule_primitives::FileHash;
@@ -65,8 +66,8 @@ impl WithheldRows {
         })))
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.0.lock().expect("withheld rows")
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.0.lock()
     }
 
     /// The start look is done: every row not withheld is offered.

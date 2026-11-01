@@ -5,6 +5,7 @@
 use crate::fixture::host_binds_ipv6;
 use crate::fixture::next_matching;
 use crate::fixture::stub_link;
+use parking_lot::Mutex as BlockingMutex;
 use rmule_core::DownloadRepository;
 use rmule_core::{
     Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, DownloadCommand,
@@ -18,7 +19,7 @@ use rmule_primitives::{
     SourceLookupTarget, SourceSighting,
 };
 use rmule_testkit::HANG_GUARD;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 use tokio::time::{Duration, timeout};
 
 fn file_link() -> Ed2kFileLink {
@@ -423,7 +424,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Active)
         .unwrap();
-    let lookups = Arc::new(StdMutex::new(Vec::new()));
+    let lookups = Arc::new(BlockingMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
         .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
@@ -458,7 +459,7 @@ async fn startup_recovery_emits_recovered_without_source_lookup() {
     );
     tokio::time::sleep(Duration::from_millis(20)).await;
 
-    assert!(lookups.lock().unwrap().is_empty());
+    assert!(lookups.lock().is_empty());
 }
 
 #[tokio::test]
@@ -529,7 +530,7 @@ async fn resume_performs_a_fresh_source_lookup() {
         .unwrap();
     repo.set_lifecycle(created.id(), DownloadLifecycle::Paused)
         .unwrap();
-    let lookups = Arc::new(StdMutex::new(Vec::new()));
+    let lookups = Arc::new(BlockingMutex::new(Vec::new()));
     let mut core = Core::builder(CoreConfig::default(), Arc::clone(&store))
         .settings(rmule_core::CoreSettings::default())
         .source_lookup(RecordingSourceLookup::new(Arc::clone(&lookups)))
@@ -578,7 +579,7 @@ async fn resume_performs_a_fresh_source_lookup() {
     .await;
 
     assert_eq!(
-        lookups.lock().unwrap().as_slice(),
+        lookups.lock().as_slice(),
         &[SourceLookupTarget::new(
             file_link().file_hash,
             file_link().size
@@ -726,11 +727,11 @@ impl SourceLookupService for FailingSourceLookup {
 
 #[derive(Clone)]
 struct RecordingSourceLookup {
-    calls: Arc<StdMutex<Vec<SourceLookupTarget>>>,
+    calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>,
 }
 
 impl RecordingSourceLookup {
-    fn new(calls: Arc<StdMutex<Vec<SourceLookupTarget>>>) -> Self {
+    fn new(calls: Arc<BlockingMutex<Vec<SourceLookupTarget>>>) -> Self {
         Self { calls }
     }
 }
@@ -740,7 +741,7 @@ impl SourceLookupService for RecordingSourceLookup {
         &mut self,
         target: SourceLookupTarget,
     ) -> Result<SourceLookupOutcome, DownloadFailure> {
-        self.calls.lock().unwrap().push(target);
+        self.calls.lock().push(target);
         Ok(SourceLookupOutcome {
             client_id: ClientId::from_u32(0x0100_007F),
             sources: vec![SourceSighting::plain(

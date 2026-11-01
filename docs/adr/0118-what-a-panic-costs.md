@@ -64,9 +64,9 @@ and where the record is.
 
 ### Locks
 
-No code panics on a poisoned lock: `parking_lot` holds no poison, and a `std` lock that stays is
-read with `PoisonError::into_inner`. A panic is the supervisor's to read, once. A second panic in
-every later task that takes the lock is a cascade with no information in it.
+Every blocking lock is `parking_lot`'s, which has no poison. A panic is the supervisor's to read,
+once. A second panic in every later task that takes the lock is a cascade with no information in
+it.
 
 ### Quit's reach
 

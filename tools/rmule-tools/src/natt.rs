@@ -32,8 +32,9 @@ pub(crate) use caps_utp::{NattCapsUtpArgs, run_caps_utp};
 pub(crate) use server_punch::{NattServerPunchArgs, run_server_punch};
 pub(crate) use tunnel_transfer::{NattTunnelTransferArgs, run_tunnel_transfer};
 
+use parking_lot::Mutex;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_net::natt::{NattCrypt, NattOwnHash};
 use rmule_primitives::{
@@ -154,18 +155,12 @@ pub(crate) struct Arrivals(Arc<Mutex<Vec<Seen>>>);
 impl Arrivals {
     /// Record one datagram.
     pub(crate) fn push(&self, seen: Seen) {
-        self.0
-            .lock()
-            .expect("the NAT-T arrival log is never poisoned")
-            .push(seen);
+        self.0.lock().push(seen);
     }
 
     /// Every datagram recorded so far, in arrival order.
     pub(crate) fn snapshot(&self) -> Vec<Seen> {
-        self.0
-            .lock()
-            .expect("the NAT-T arrival log is never poisoned")
-            .clone()
+        self.0.lock().clone()
     }
 
     /// How many recorded datagrams carry NAT-T frame type `frame_type`.

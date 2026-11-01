@@ -114,10 +114,7 @@ impl DialBackRoad {
         let DialBack { waiter, at, crypt } = dial;
         let failed = |cause| DialBackOutcome::Failed { waiter, cause };
         // The verdict is bound first so the read guard never crosses an await.
-        let filtered = ip_filter
-            .read()
-            .expect("ip filter lock")
-            .is_filtered_peer(at);
+        let filtered = ip_filter.read().is_filtered_peer(at);
         if filtered {
             let _ = outcomes.send(failed(DialEnd::IpFiltered)).await;
             return;

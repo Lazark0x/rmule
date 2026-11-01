@@ -5,10 +5,11 @@
 //! Its answers are shaped like miniupnpd 2.3.10's. It is a fake: what it
 //! proves is the order of rmule's questions, never a real gateway's answers.
 
+use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Where `AddAnyPortMapping` starts looking when the asked port is taken.
 const FIRST_SPARE_PORT: u16 = 53906;
@@ -77,13 +78,13 @@ impl FakeIgd {
 
     /// What TCP `external_port` forwards to now.
     pub(super) fn forwards(&self, external_port: u16) -> Option<SocketAddr> {
-        let state = self.state.lock().expect("fake gateway state");
+        let state = self.state.lock();
         state.table.get(&(external_port, "TCP".to_owned())).copied()
     }
 
     /// Every TCP mapping in the table.
     pub(super) fn rows(&self) -> Vec<(u16, SocketAddr)> {
-        let state = self.state.lock().expect("fake gateway state");
+        let state = self.state.lock();
         state
             .table
             .iter()
@@ -93,16 +94,12 @@ impl FakeIgd {
 
     /// The external port of every `DeletePortMapping` asked so far.
     pub(super) fn deletes(&self) -> Vec<u16> {
-        self.state
-            .lock()
-            .expect("fake gateway state")
-            .deletes
-            .clone()
+        self.state.lock().deletes.clone()
     }
 
     /// Answer every `GetSpecificPortMappingEntry` from now on with `code`.
     pub(super) fn fail_checks_with(&self, code: u16) {
-        self.state.lock().expect("fake gateway state").check_fault = Some(code);
+        self.state.lock().check_fault = Some(code);
     }
 }
 
@@ -142,11 +139,7 @@ fn answer(stream: TcpStream, state: &Mutex<State>) {
         return;
     }
     let body = String::from_utf8_lossy(&body);
-    let reply = act(
-        &action,
-        &body,
-        &mut state.lock().expect("fake gateway state"),
-    );
+    let reply = act(&action, &body, &mut state.lock());
     let (status, envelope) = match reply {
         Ok(arguments) => (
             "200 OK",

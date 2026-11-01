@@ -272,7 +272,7 @@ where
                 part_file: Mutex::new(None),
                 later_links: Mutex::new(later_inbox),
                 repair: std::sync::atomic::AtomicBool::new(false),
-                volume_stop: std::sync::Mutex::new(None),
+                volume_stop: parking_lot::Mutex::new(None),
                 hole_probed: std::sync::atomic::AtomicBool::new(false),
                 seeds_tx,
                 served,

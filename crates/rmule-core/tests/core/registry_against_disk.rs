@@ -5,8 +5,9 @@
 //! leaves the registry within seconds and joins the Had Set; one whose folder
 //! goes is withheld, drops out of the announce, and the file history says why.
 
+use parking_lot::Mutex;
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use rmule_core::{
     Core, CoreCommand, CoreConfig, CoreEvent, DurableSharedFileRegistry, DurableStore,
@@ -41,7 +42,7 @@ impl ServeRuntimeService for CountingServeRuntime {
         &mut self,
         files: Vec<OfferedFile>,
     ) -> Result<rmule_core::AnnounceOutcome, rmule_core::CoreError> {
-        self.announced.lock().unwrap().push(files.len());
+        self.announced.lock().push(files.len());
         Ok(rmule_core::AnnounceOutcome::Announced {
             file_count: files.len(),
         })

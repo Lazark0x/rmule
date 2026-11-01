@@ -227,7 +227,7 @@ async fn accept_refuses_a_connection_from_an_ip_filtered_address() {
     drop(accepted);
 
     // Swap in a table blocking loopback, then dial again.
-    *ip_filter.write().expect("ip filter lock") = loopback_blocking_ip_filter();
+    *ip_filter.write() = loopback_blocking_ip_filter();
     let mut filtered_client = TcpStream::connect(SocketAddr::V4(bound)).await.unwrap();
 
     assert!(
@@ -265,7 +265,7 @@ async fn a_burst_of_refused_peers_is_closed_at_the_gates_and_never_queued() {
     use tokio::net::TcpStream;
 
     let ip_filter = SharedIpFilter::default();
-    *ip_filter.write().expect("ip filter lock") = loopback_blocking_ip_filter();
+    *ip_filter.write() = loopback_blocking_ip_filter();
     let mut serve = RuntimeServeRuntimeService::new().with_ip_filter(ip_filter);
     let credentials = dialed_serve_ctx().identity;
     let bound = serve

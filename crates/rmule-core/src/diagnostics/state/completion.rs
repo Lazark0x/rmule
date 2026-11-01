@@ -11,7 +11,7 @@ impl DiagnosticsState {
     /// The move began `step`; the bytes copied so far stay. A no-op when the
     /// row is gone.
     pub fn completion_step(&self, download_id: DownloadId, step: CompletionStep) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(row) = inner.downloads.get_mut(&download_id) {
             let copied = row.completion.map_or(0, |progress| progress.copied);
             row.completion = Some(CompletionProgress { step, copied });
@@ -21,7 +21,7 @@ impl DiagnosticsState {
     /// The Completion Copy has written `copied` bytes. A no-op when the row
     /// is gone or its move has not begun.
     pub fn completion_copied(&self, download_id: DownloadId, copied: u64) {
-        let mut inner = self.inner.lock().expect("diagnostics mutex poisoned");
+        let mut inner = self.inner.lock();
         if let Some(progress) = inner
             .downloads
             .get_mut(&download_id)
