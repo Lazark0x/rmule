@@ -336,6 +336,10 @@ pub(crate) async fn route_dialed_connection(conn: PeerConnection, route: DialedR
                         }
                     }
                     Routed::Closed(reason) => {
+                        // Before the hello the dial's own end says why.
+                        if link.identity.is_some() {
+                            deps.hello_refusals.report_close(reason);
+                        }
                         closed = closed_before_hello(reason);
                         break;
                     }
@@ -541,7 +545,6 @@ impl Halves<'_> {
                 return Routed::Identified(identity);
             }
             ConnectionEvent::Disconnected { reason } => {
-                self.deps.hello_refusals.report_close(reason);
                 if let Some(rider) = rider {
                     let _ = rider
                         .requester_tx
