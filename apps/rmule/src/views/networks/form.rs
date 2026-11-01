@@ -486,7 +486,7 @@ mod tests {
             last.contains("Port") && last.contains("Esc cancel"),
             "{last}"
         );
-        view.handle_key(press(KeyCode::Home), &state);
+        view.handle_key(press(KeyCode::PageUp), &state);
         assert!(shown(&mut view).contains("Name"));
     }
 }

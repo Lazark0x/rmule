@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::KeyCode;
 use rmule_core::{
-    CoreEvent, DirectoryOffer, DirectoryRole, DirectoryState, ScanEvent, ScanPhase,
-    SharedDirectoryDiagnostics,
+    CoreEvent, DirectoryOffer, DirectoryRefusal, DirectoryRole, DirectoryState, ScanEvent,
+    ScanPhase, SharedDirectoryDiagnostics,
 };
 use rmule_primitives::FileHash;
 
@@ -259,4 +259,45 @@ fn golden_settings_remove_confirm_scrolls_in_a_short_frame() {
     );
     view.handle_key(press(KeyCode::Char('G')), &state);
     assert!(shown(&mut view).contains("keep it"), "{}", shown(&mut view));
+}
+
+/// Core's refusal of a path sent to be shared comes back after the field
+/// closed: the path returns to the row, the reason under it.
+#[test]
+fn a_directory_core_refuses_comes_back_to_its_row_with_the_reason() {
+    let mut state = UiState::default();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Char('G')), &state);
+    while view.focused_slot() != Some(&Slot::AddDir) {
+        view.handle_key(press(KeyCode::Char('k')), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    let dir = tempfile::tempdir().expect("a directory");
+    for c in dir.path().display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(!view.editing);
+    view.handle_key(press(KeyCode::Char('g')), &state);
+
+    crate::state::fold(
+        &mut state,
+        CoreEvent::Scan(ScanEvent::DirectoryRefused {
+            dir: dir.path().to_path_buf(),
+            reason: DirectoryRefusal::HomeDirectory,
+        }),
+    );
+    view.handle_key(press(KeyCode::Null), &state);
+    assert!(view.editing, "the row is open again");
+    assert_eq!(view.focused_slot(), Some(&Slot::AddDir));
+    assert_eq!(
+        view.form.text(view.form.focus),
+        dir.path().display().to_string()
+    );
+    assert!(view.form.error.is_some(), "with the reason under it");
+
+    // The same path sent again waits for a new answer.
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Null), &state);
+    assert!(!view.editing, "the old refusal is not this one's");
 }

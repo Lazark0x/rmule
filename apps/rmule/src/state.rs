@@ -110,6 +110,12 @@ pub struct UiState {
     /// Every **Related-Files Search** core refused before it started, by the
     /// id the Search tab gave it: a refused search has no pane.
     pub refused_searches: BTreeMap<SearchId, RelatedSearchRefusal>,
+    /// The last directory the share guards refused to add, and how many
+    /// refusals came before it, so an answer is told from an older one.
+    pub directory_refusal: (
+        u64,
+        Option<(std::path::PathBuf, rmule_core::DirectoryRefusal)>,
+    ),
     /// The results of the search closed last, for its one undo.
     pub closed_search: Option<(SearchId, SearchPane)>,
     /// Latest levels wholesale; superseded, never merged.
@@ -175,6 +181,7 @@ impl Default for UiState {
             upload_peers: BTreeMap::new(),
             searches: BTreeMap::new(),
             refused_searches: BTreeMap::new(),
+            directory_refusal: (0, None),
             closed_search: None,
             file_history: None,
             diagnostics: DiagnosticsSnapshot::default(),

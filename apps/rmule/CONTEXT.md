@@ -45,8 +45,16 @@ A bounded region *inside* one view's content rect: the server table, the log and
 _Avoid_: section, widget, subview
 
 **Key gate**:
-The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path from every surface, and Ctrl with Alt on a character is AltGr, which is text. A view reads key codes alone.
+The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone.
 _Avoid_: per-view key filter
+
+**Line Edit**:
+The one line editor under every text field: a caret on a grapheme boundary, the arrows, `Home`, `End`, word moves, delete both ways, readline's cut and yank keys, and paste at the caret. It scrolls sideways around the caret, measured in terminal cells, with `‹` and `›` where text lies past an edge, and the terminal's real cursor sits at the caret so an input method composes in place. A field holding the keyboard is one line; left alone it wraps whole. No input loses its text: a refused submit keeps it with the reason under the field, and a Settings field stays open, `Tab`, the arrows and the wheel staying on it, until the store has the value.
+_Avoid_: text input, input box, prompt
+
+**Directory Field**:
+A **Line Edit** that names a directory: a leading `~` is the operator's home, `Tab` completes from the disk and says what is left to choose from, and a path with nothing at it is said before it is set: a Download dir or Temp dir that core would make asks a second `Enter`, and a directory to share is refused.
+_Avoid_: path picker
 
 **Quit Confirm**:
 The chrome modal that asks before `q` or Ctrl-C stops a running download: `y` or a second Ctrl-C quits, `n` or `Esc` stays. With nothing running neither asks, and an OS stop never does.

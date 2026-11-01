@@ -217,6 +217,9 @@ pub struct SettingsView {
     /// download directory (ADR-0101), a Temp dir that does not exist yet — and
     /// waits for the second `Enter` that confirms it.
     warned_dir: Option<std::path::PathBuf>,
+    /// A directory sent to be shared and the count of refusals when it went:
+    /// a refusal of it after that brings the add row back with its text.
+    sent_dir: Option<(std::path::PathBuf, u64)>,
     /// What each form row stands for, in form order.
     slots: Vec<Slot>,
     /// A shared directory whose remove confirm is open.
@@ -238,6 +241,7 @@ impl Default for SettingsView {
             line_rows: Vec::new(),
             body: Rect::default(),
             warned_dir: None,
+            sent_dir: None,
             slots,
             removing: None,
             answered: std::collections::BTreeSet::new(),
@@ -418,6 +422,7 @@ impl SettingsView {
         fresh.error = self.form.error.take();
         self.form = fresh;
         self.slots = slots;
+        self.reopen_refused_add(state);
     }
 
     /// Validate the focused field into the edit it names, or the reason it is
@@ -534,7 +539,9 @@ impl SettingsView {
 
         if self.editing {
             return match self.form.field_key(key) {
-                FormKey::Commit if self.focused_slot() == Some(&Slot::AddDir) => self.send_add(),
+                FormKey::Commit if self.focused_slot() == Some(&Slot::AddDir) => {
+                    self.send_add(state)
+                }
                 FormKey::Commit => self.emit(&state.preferences),
                 FormKey::Cancel => {
                     // Restore: the next sync rebuilds from what is stored.

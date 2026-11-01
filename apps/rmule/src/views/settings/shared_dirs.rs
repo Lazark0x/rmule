@@ -90,11 +90,12 @@ impl SettingsView {
 
     /// The add row's commit: the typed path, sent for core to guard, count
     /// and ask about.
-    pub(super) fn send_add(&mut self) -> ViewOutcome {
+    pub(super) fn send_add(&mut self, state: &UiState) -> ViewOutcome {
         match directory_to_add(self.form.text(self.form.focus)) {
             Ok(path) => {
                 self.editing = false;
                 self.form.error = None;
+                self.sent_dir = Some((path.clone(), state.directory_refusal.0));
                 ViewOutcome::Emit(Action::Command(CoreCommand::Scan(
                     ScanCommand::AddSharedDirectory { path },
                 )))
@@ -103,6 +104,28 @@ impl SettingsView {
                 self.form.error = Some(reason);
                 ViewOutcome::Redraw
             }
+        }
+    }
+
+    /// Core refused the directory sent: the add row opens again with the
+    /// path in it and the reason under it, wherever the cursor went.
+    pub(super) fn reopen_refused_add(&mut self, state: &UiState) {
+        let Some((sent, before)) = &self.sent_dir else {
+            return;
+        };
+        let (count, Some((dir, reason))) = &state.directory_refusal else {
+            return;
+        };
+        if count == before || dir != sent {
+            return;
+        }
+        let text = sent.display().to_string();
+        self.sent_dir = None;
+        if let Some(row) = self.slots.iter().position(|slot| *slot == Slot::AddDir) {
+            self.form.focus = row;
+            self.form.set_focused_text(&text);
+            self.form.error = Some(words::shared_directory_refusal(reason));
+            self.editing = true;
         }
     }
 

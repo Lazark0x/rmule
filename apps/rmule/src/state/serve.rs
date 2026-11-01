@@ -247,6 +247,12 @@ pub(super) fn fold_scan(state: &mut UiState, event: ScanEvent) -> bool {
     let line = crate::words::scan::line(&event);
     let dir = scan_dir(&event).to_path_buf();
     state.scan_consents.retain(|consent| consent.dir != dir);
+    if let ScanEvent::DirectoryRefused { dir, reason } = &event {
+        state.directory_refusal = (
+            state.directory_refusal.0 + 1,
+            Some((dir.clone(), reason.clone())),
+        );
+    }
     if let ScanEvent::ConsentRequested {
         dir,
         offer,

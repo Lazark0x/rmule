@@ -268,7 +268,7 @@ fn golden_transfers_add_link_scrolls_in_a_short_frame() {
         view.draw(frame, area, &state, &Theme::default_dark(), Instant::now())
     });
     assert!(!shown(&mut view).contains("cancel"));
-    view.handle_key(press(KeyCode::End), &state);
+    view.handle_key(press(KeyCode::PageDown), &state);
     assert!(shown(&mut view).contains("cancel"));
     typed(&mut view, &state, "e");
     assert!(shown(&mut view).contains("Link"), "{}", shown(&mut view));

@@ -17,7 +17,9 @@ through `rmule-cli add` (ADR-0069).
   and started by the same `StartDownload` the Search tab sends, so the TUI and
   `rmule-cli add` accept, skip and refuse the same links. A refusal stays under the
   field with the typing kept; a field no client reads is named in the status feed once
-  the download is asked for.
+  the download is asked for. With no download dir the form refuses before it asks, and
+  since setting one means leaving the form, the link outlives it: `Esc` leaves the form and
+  `L` brings the link back.
 
 ## Consequences
 
