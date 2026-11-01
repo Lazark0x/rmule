@@ -88,7 +88,21 @@ pub(super) fn validate(setting: &Setting) -> Result<(), SettingRefusal> {
         Setting::ServerMetAutoUpdateUrls(urls) if urls.iter().any(|url| url.trim().is_empty()) => {
             Err(SettingRefusal::UrlBlank)
         }
-        _ => Ok(()),
+        Setting::DownloadDir { .. }
+        | Setting::TempDir(_)
+        | Setting::TcpPort(_)
+        | Setting::UdpPort(_)
+        | Setting::Obfuscation(_)
+        | Setting::PortMapping(_)
+        | Setting::RememberPeers(_)
+        | Setting::DeadServerRetries(_)
+        | Setting::WithholdShares(_)
+        | Setting::ServerMetUrl(_)
+        | Setting::AutoFetchServerMet(_)
+        | Setting::AutoUpdateServerMet(_)
+        | Setting::ServerMetAutoUpdateUrls(_)
+        | Setting::NodesDatUrl(_)
+        | Setting::AutoFetchNodesDat(_) => Ok(()),
     }
 }
 

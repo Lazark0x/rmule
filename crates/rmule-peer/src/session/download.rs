@@ -227,7 +227,7 @@ impl PeerSession {
         file_size: u64,
         own_status: PartBitmap,
     ) {
-        if !matches!(self.state, State::Identified) {
+        if !matches!(self.state, State::Identified(_)) {
             self.reject(PeerError::PeerProtocolViolation {
                 reason: "command before peer identified",
             });
@@ -449,7 +449,7 @@ impl PeerSession {
         file_size: u64,
         ranges: PartRanges,
     ) {
-        if !matches!(self.state, State::Identified) {
+        if !matches!(self.state, State::Identified(_)) {
             self.reject(PeerError::PeerProtocolViolation {
                 reason: "command before peer identified",
             });

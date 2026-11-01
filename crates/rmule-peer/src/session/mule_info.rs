@@ -74,7 +74,7 @@ impl PeerSession {
                 identity.revise_reask_contact(udp_port, udp_version)
             });
         }
-        if matches!(self.state, State::Identified) {
+        if matches!(self.state, State::Identified(_)) {
             // An old eMule starts Secure User Identification once hello and
             // block have both arrived (its `InfoPacketsReceived`).
             self.maybe_start_secure_ident();

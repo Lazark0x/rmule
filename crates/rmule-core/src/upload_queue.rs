@@ -290,7 +290,7 @@ pub enum Relinked {
 /// [`purge`]: Self::purge
 pub struct UploadSlotQueue {
     budget: usize,
-    max_queue_len: usize,
+    max_queue_len: u16,
     granted: Vec<GrantedSlot>,
     waiting: Vec<Queued>,
     /// Whether a waiter with the **Next-Connection Mark** may take one slot
@@ -331,13 +331,8 @@ struct GrantedSlot {
 impl UploadSlotQueue {
     /// Create a queue granting up to `budget` concurrent slots (clamped to a
     /// minimum of 1) and holding at most `max_queue_len` waiting peers.
-    /// `max_queue_len` must be `<= u16::MAX`, since queue ranks are `u16`.
     #[must_use]
-    pub fn new(budget: usize, max_queue_len: usize) -> Self {
-        debug_assert!(
-            max_queue_len <= usize::from(u16::MAX),
-            "max_queue_len {max_queue_len} exceeds u16::MAX; queue ranks would overflow"
-        );
+    pub fn new(budget: usize, max_queue_len: u16) -> Self {
         Self {
             budget: budget.max(1),
             max_queue_len,
@@ -352,7 +347,7 @@ impl UploadSlotQueue {
     /// uploader's `waiting + 50 > queue-size` `OP_QUEUEFULL` test reads
     /// (ADR-0057).
     #[must_use]
-    pub fn max_queue_len(&self) -> usize {
+    pub fn max_queue_len(&self) -> u16 {
         self.max_queue_len
     }
 
@@ -471,7 +466,7 @@ impl UploadSlotQueue {
             self.waiting[index].last_reask = now;
             self.waiting[index].file_hash = file_hash;
             return Admission::Queued {
-                rank: (index + 1) as u16,
+                rank: rank_at(index),
             };
         }
         if self.waiting_from(AccountingKey::of(peer.ip())) >= MAX_WAITING_PER_ADDRESS {
@@ -494,10 +489,10 @@ impl UploadSlotQueue {
             });
             return Admission::Granted;
         }
-        if self.waiting.len() >= self.max_queue_len {
+        if self.waiting.len() >= usize::from(self.max_queue_len) {
             return Admission::Refused;
         }
-        let rank = (self.waiting.len() + 1) as u16;
+        let rank = rank_at(self.waiting.len());
         self.waiting.push(Queued {
             peer,
             file_hash,
@@ -529,7 +524,7 @@ impl UploadSlotQueue {
             return None;
         }
         entry.file_hash = file_hash;
-        Some((index + 1) as u16)
+        Some(rank_at(index))
     }
 
     /// The rank a client holding `peer`'s standing is answered with on
@@ -541,7 +536,7 @@ impl UploadSlotQueue {
             return Some(1);
         }
         let index = self.waiting.iter().position(|q| q.peer == peer)?;
-        Some((index + 1) as u16)
+        Some(rank_at(index))
     }
 
     /// The file `peer` waits for, when it is on the wait list.
@@ -844,7 +839,7 @@ impl UploadSlotQueue {
     fn collect_rank_changes(&mut self) -> Vec<(PeerEndpoint, u16)> {
         let mut changed = Vec::new();
         for (index, entry) in self.waiting.iter_mut().enumerate() {
-            let new_rank = (index + 1) as u16;
+            let new_rank = rank_at(index);
             if entry.last_reported_rank != new_rank {
                 entry.last_reported_rank = new_rank;
                 changed.push((entry.peer, new_rank));
@@ -852,6 +847,12 @@ impl UploadSlotQueue {
         }
         changed
     }
+}
+
+/// The 1-based rank of place `index`. The wait list holds at most a `u16` of
+/// peers, so every place has its rank.
+fn rank_at(index: usize) -> u16 {
+    u16::try_from(index + 1).unwrap_or(u16::MAX)
 }
 
 /// `wait_seconds * modifier` for one waiting entry.

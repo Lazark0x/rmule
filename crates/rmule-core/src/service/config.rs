@@ -78,7 +78,7 @@ pub struct CoreConfig {
     /// Not aMule's: aMule queues up to 5000. The default `64` keeps the wait
     /// list, its re-ranking and the connections it holds small, which a node
     /// serving a handful of slots has no use to exceed.
-    pub max_upload_queue_len: usize,
+    pub max_upload_queue_len: u16,
     /// How often the serve activity re-ranks its idle waiters so a queued
     /// peer's reported `OP_QUEUERANKING` tracks elapsed wait and any credit it
     /// gained while waiting.

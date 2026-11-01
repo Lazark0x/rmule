@@ -505,16 +505,17 @@ async fn await_answer(
 /// Why a dial did not come up, as the login step names it.
 fn dial_failure(error: &rmule_net::ed2k::Ed2kNetError) -> DialFailure {
     use rmule_net::driver::DriverError;
+    use rmule_net::ed2k::Ed2kNetError;
     match error {
-        rmule_net::ed2k::Ed2kNetError::Driver(DriverError::ConnectTimeout) => DialFailure::TimedOut,
-        rmule_net::ed2k::Ed2kNetError::Driver(DriverError::Io(error)) => DialFailure::Os {
+        Ed2kNetError::Driver(DriverError::ConnectTimeout) => DialFailure::TimedOut,
+        Ed2kNetError::Driver(DriverError::Io(error)) => DialFailure::Os {
             kind: error.kind(),
             os_code: error.raw_os_error(),
         },
-        rmule_net::ed2k::Ed2kNetError::CryptHandshake(error) => {
-            DialFailure::CryptHandshake { kind: error.kind() }
+        Ed2kNetError::CryptHandshake(error) => DialFailure::CryptHandshake { kind: error.kind() },
+        Ed2kNetError::Driver(DriverError::DriverDied | DriverError::Closed) => {
+            DialFailure::DriverEnded
         }
-        _ => DialFailure::DriverEnded,
     }
 }
 

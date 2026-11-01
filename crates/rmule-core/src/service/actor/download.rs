@@ -546,6 +546,15 @@ fn start_refusal(error: &CoreError) -> CoreCommandRejectReason {
     match error {
         CoreError::DuplicateDownloadIdentity => CoreCommandRejectReason::DuplicateDownload,
         CoreError::PathConflict => CoreCommandRejectReason::DownloadPathConflict,
-        _ => CoreCommandRejectReason::DownloadStoreFailed,
+        CoreError::DownloadAlreadyExists
+        | CoreError::UnknownDownload
+        | CoreError::InvalidLifecycleTransition
+        | CoreError::PartOutOfBounds
+        | CoreError::Repository(_)
+        | CoreError::StoreRefused { .. }
+        | CoreError::ProvisionalAuthorityConflict
+        | CoreError::KadUnavailable(_)
+        | CoreError::ListenerBind(_)
+        | CoreError::ServiceStopped => CoreCommandRejectReason::DownloadStoreFailed,
     }
 }

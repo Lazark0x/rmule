@@ -92,7 +92,7 @@ impl ServeState {
         }
         let room = QueueRoom {
             waiting: self.queue.waiting_len(),
-            max: self.queue.max_queue_len(),
+            max: usize::from(self.queue.max_queue_len()),
         };
         let answer = responder::answer(&ping, &pinger, room, shared.as_ref());
 

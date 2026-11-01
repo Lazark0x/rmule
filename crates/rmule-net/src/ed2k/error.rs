@@ -11,9 +11,7 @@ use crate::driver::DriverError;
 /// Layered above `rmule_ed2k::SessionError`: protocol-level faults stay in
 /// the session crate; this enum carries runtime failures — the shared
 /// [`DriverError`]s, and the one failure the eD2k transport adds: an
-/// obfuscated dial whose crypt handshake did not complete. Non-exhaustive so
-/// a later transport can add its own.
-#[non_exhaustive]
+/// obfuscated dial whose crypt handshake did not complete.
 #[derive(Debug, Error)]
 pub enum Ed2kNetError {
     /// A failure of the shared driver harness (connect timeout, driver

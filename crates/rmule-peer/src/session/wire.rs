@@ -223,7 +223,7 @@ impl PeerSession {
             | PeerPacket::AichRequest(_)
             | PeerPacket::AichFileHashReq(_)
             | PeerPacket::MultiPacketRequest(_)
-                if !matches!(self.state, State::Identified) =>
+                if !matches!(self.state, State::Identified(_)) =>
             {
                 self.core
                     .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
@@ -260,10 +260,9 @@ impl PeerSession {
             PeerPacket::AnswerSources2(a) => self.on_answer_sources2(a),
             // Secure User Identification (ADR-0041). An SUI packet before the
             // hello exchange is out of order: preserve as Unknown, stay open
-            // (ADR-0018). The guard also guarantees `peer_user_hash` is set by
-            // the time the handlers run.
+            // (ADR-0018).
             PeerPacket::SecIdentState(_) | PeerPacket::PublicKey(_) | PeerPacket::Signature(_)
-                if !matches!(self.state, State::Identified) =>
+                if !matches!(self.state, State::Identified(_)) =>
             {
                 self.core
                     .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
@@ -293,7 +292,7 @@ impl PeerSession {
             | PeerPacket::ChangeClientId(_)
             | PeerPacket::ChatCaptchaReq
             | PeerPacket::ChatCaptchaRes
-                if !matches!(self.state, State::Identified) =>
+                if !matches!(self.state, State::Identified(_)) =>
             {
                 self.core
                     .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {

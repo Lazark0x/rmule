@@ -33,7 +33,6 @@ pub struct Ed2kSession {
     identity: ClientIdentity,
     capabilities: Capabilities,
     state: State,
-    client_id: Option<ClientId>,
     /// The server's `SRV_TCPFLG` grants, projected at `OP_IDCHANGE`
     /// (ADR-0047): every gated command path reads its own field. Default
     /// (nothing granted) before login or after a bare 4-byte reply.
@@ -60,7 +59,10 @@ pub struct Ed2kSession {
 enum State {
     BeforeStart,
     AwaitingIdChange,
-    LoggedIn,
+    /// The server gave an id, the last `OP_IDCHANGE`'s.
+    LoggedIn {
+        client_id: ClientId,
+    },
     Closed,
 }
 
@@ -110,7 +112,6 @@ impl Ed2kSession {
             identity,
             capabilities: Capabilities::shipped(CryptStance::disabled()),
             state: State::BeforeStart,
-            client_id: None,
             grants: ServerGrants::default(),
             facts: ServerAssignedFacts::default(),
             ipv6_advert: None,
@@ -250,7 +251,7 @@ impl Ed2kSession {
         }
         match command {
             Ed2kCommand::RequestServerList => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestServerList,
                         CommandRejectReason::NotLoggedIn,
@@ -261,7 +262,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::QueryMoreResults => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::QueryMoreResults,
                         CommandRejectReason::NotLoggedIn,
@@ -272,7 +273,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::Search { query } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(Ed2kCommandKind::Search, CommandRejectReason::NotLoggedIn);
                     return;
                 }
@@ -303,7 +304,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::RequestSources { target } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestSources {
                             file_hash: target.file_hash(),
@@ -345,7 +346,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(packet.encode()));
             }
             Ed2kCommand::RequestCallback { low_id } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestCallback,
                         CommandRejectReason::NotLoggedIn,
@@ -359,7 +360,7 @@ impl Ed2kSession {
                 target,
                 our_udp_port,
             } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::RequestHolepunch,
                         CommandRejectReason::NotLoggedIn,
@@ -384,7 +385,7 @@ impl Ed2kSession {
                 self.core.push_write(Arc::from(bytes));
             }
             Ed2kCommand::UpdateIpv6 { address } => {
-                if !matches!(self.state, State::LoggedIn) {
+                if !matches!(self.state, State::LoggedIn { .. }) {
                     self.reject_command(
                         Ed2kCommandKind::UpdateIpv6,
                         CommandRejectReason::NotLoggedIn,
@@ -407,13 +408,13 @@ impl Ed2kSession {
                 files,
                 presented_id,
             } => {
-                if !matches!(self.state, State::LoggedIn) {
+                let State::LoggedIn { client_id } = self.state else {
                     self.reject_command(
                         Ed2kCommandKind::OfferFiles,
                         CommandRejectReason::NotLoggedIn,
                     );
                     return;
-                }
+                };
                 // aMule offers a large file only to a large-file server
                 // (`SharedFileList.cpp:732`, `IsLargeFile`).
                 let needs_large_files = files
@@ -428,9 +429,6 @@ impl Ed2kSession {
                     );
                     return;
                 }
-                let client_id = self
-                    .client_id
-                    .expect("client_id is set at OP_IDCHANGE before reaching LoggedIn");
                 let packet = OfferFiles::announce(
                     self.grants,
                     client_id,
@@ -510,8 +508,9 @@ impl Ed2kSession {
             if id.client_id.as_u32() == 0 {
                 return;
             }
-            self.state = State::LoggedIn;
-            self.client_id = Some(id.client_id);
+            self.state = State::LoggedIn {
+                client_id: id.client_id,
+            };
             let event = Ed2kEvent::from_server_packet(&server_packet);
             self.core.push_event(event);
             return;
@@ -521,7 +520,7 @@ impl Ed2kSession {
             // stays, as aMule only logs it (stock 2.3.3
             // `ServerSocket.cpp:599-603`): closing would re-login and send
             // every offer and source ask again.
-            if matches!(self.state, State::LoggedIn) {
+            if matches!(self.state, State::LoggedIn { .. }) {
                 self.core.push_event(Ed2kEvent::ServerRejectedCommand);
                 return;
             }

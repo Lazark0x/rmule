@@ -8,7 +8,7 @@
 
 use rmule_primitives::SecureIdentPublicKey;
 
-use super::{PeerEvent, PeerSession, SecureIdentFailure};
+use super::{PeerEvent, PeerSession, SecureIdentFailure, State};
 use crate::ConnectionEvent;
 use crate::secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
@@ -231,7 +231,11 @@ impl PeerSession {
         if self.sui.verified || self.sui.judged {
             return;
         }
-        let verified = {
+        let State::Identified(identity) = &self.state else {
+            return;
+        };
+        let user_hash = identity.user_hash();
+        let (verified, public_key) = {
             let (Some(config), Some(peer_der), Some(our_challenge), Some(signature)) = (
                 self.secure_ident.as_ref(),
                 self.sui.peer_public_key_der.as_ref(),
@@ -260,21 +264,11 @@ impl PeerSession {
                 verify_input.extend_from_slice(&ip.to_le_bytes());
                 verify_input.push(kind);
             }
-            peer_key.verify(&verify_input, signature)
+            (peer_key.verify(&verify_input, signature), peer_der.clone())
         };
         self.sui.judged = true;
         if verified {
             self.sui.verified = true;
-            let public_key = self
-                .sui
-                .peer_public_key_der
-                .clone()
-                .expect("peer public key present in the verified branch");
-            let user_hash = self
-                .peer_identity
-                .as_ref()
-                .expect("peer identified before a signature can be verified")
-                .user_hash();
             self.core
                 .push_event(PeerEvent::Connection(ConnectionEvent::IdentityVerified {
                     user_hash,

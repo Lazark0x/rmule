@@ -52,7 +52,7 @@ impl PeerSession {
             }
             ConnectionCommand::AnnounceIpv6Change(address) => {
                 self.ipv6_advert = Some(address);
-                if matches!(self.state, State::Identified) && !self.answer_owed {
+                if matches!(self.state, State::Identified(_)) && !self.answer_owed {
                     self.announce_ipv6_change();
                 }
             }

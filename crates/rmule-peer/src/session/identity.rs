@@ -60,8 +60,7 @@ impl PeerSession {
 
     /// The peer is identified: enter the session and report it.
     pub(super) fn enter_identified(&mut self, identity: PeerIdentity) {
-        self.state = State::Identified;
-        self.peer_identity = Some(identity.clone());
+        self.state = State::Identified(identity.clone());
         self.core
             .push_event(PeerEvent::Connection(ConnectionEvent::Identified {
                 identity,
@@ -101,10 +100,7 @@ impl PeerSession {
         what: IdentityChange,
         apply: impl FnOnce(&mut PeerIdentity) -> bool,
     ) {
-        if !matches!(self.state, State::Identified) {
-            return;
-        }
-        let Some(identity) = self.peer_identity.as_mut() else {
+        let State::Identified(identity) = &mut self.state else {
             return;
         };
         if apply(identity) {
@@ -120,9 +116,10 @@ impl PeerSession {
     /// The peer's **Static Capability Claim** (`CT_MOD_MISCOPTIONS`,
     /// ADR-0087), `None` before it identified or when its hello sent none.
     pub(super) fn peer_mod_misc(&self) -> Option<ModMiscOptions> {
-        self.peer_identity
-            .as_ref()
-            .and_then(PeerIdentity::mod_misc_options)
+        match &self.state {
+            State::Identified(identity) => identity.mod_misc_options(),
+            _ => None,
+        }
     }
 
     /// `OP_CHANGE_CLIENT_IP` (`0xAC`): the peer's Known IPv6 changed

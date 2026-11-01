@@ -81,7 +81,13 @@ enum State {
     /// peer's `OP_HELLO` before we reply `OP_HELLOANSWER`.
     AwaitingHello,
     AwaitingHelloAnswer,
-    Identified,
+    /// The hello exchange is done. The peer's identity as its hello named it,
+    /// every later revision applied: the one copy every `Identified` and
+    /// `IdentityRevised` carries whole. Its User Hash names whom Secure User
+    /// Identification proved (ADR-0041); its **Static Capability Claim**
+    /// (`CT_MOD_MISCOPTIONS`, ADR-0087) gates what rmule may *write* this
+    /// peer: the ExtSX record form and its two optional identity tags.
+    Identified(crate::identity::PeerIdentity),
     Closed,
 }
 
@@ -136,13 +142,6 @@ pub struct PeerSession {
     /// (bit 5) alone decides whether a bundled request frames as the `0xA4`
     /// (with `size8`) or base `0x92` form (ADR-0054 emit).
     peer_misc_options2: Option<MiscOptions2>,
-    /// The peer's identity as its hello named it, every later revision
-    /// applied (`identity`): the one copy every `Identified` and
-    /// `IdentityRevised` carries whole. Its User Hash names whom Secure User
-    /// Identification proved (ADR-0041); its **Static Capability Claim**
-    /// (`CT_MOD_MISCOPTIONS`, ADR-0087) gates what rmule may *write* this
-    /// peer: the ExtSX record form and its two optional identity tags.
-    peer_identity: Option<crate::identity::PeerIdentity>,
     /// What the peer has said about its software on this connection: its
     /// hello and any legacy `OP_EMULEINFO`, folded in arrival order.
     peer_software: SoftwareEvidence,
@@ -226,7 +225,6 @@ impl PeerSession {
             served_multipacket: HashMap::new(),
             peer_misc_options: None,
             peer_misc_options2: None,
-            peer_identity: None,
             peer_software: SoftwareEvidence::default(),
             peer_legacy_reask: None,
             peer_hello_named_reask: false,
@@ -464,7 +462,7 @@ impl PeerSession {
     /// `CommandRejected` (matching the requester command guards) and
     /// returns `false`.
     fn require_identified(&mut self) -> bool {
-        if matches!(self.state, State::Identified) {
+        if matches!(self.state, State::Identified(_)) {
             return true;
         }
         // Commands are always locally issued, so a too-early one is core's
