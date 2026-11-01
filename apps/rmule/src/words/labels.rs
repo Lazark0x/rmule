@@ -24,20 +24,34 @@ pub const RESUME: &str = "Resume";
 pub const RESTART: &str = "Restart";
 /// A completed download's way out of the list.
 pub const CLEAR_FROM_LIST: &str = "Clear from list";
+/// A modal that only reads says how to leave it.
+pub const CLOSE_HINT: &str = " Esc close ";
+/// The cancel confirm's title.
+pub const CANCEL_TITLE: &str = " Cancel download ";
+/// The clear confirm's title.
+pub const CLEAR_TITLE: &str = " Clear completed ";
+/// The unshare confirm's title.
+pub const UNSHARE_TITLE: &str = " Unshare ";
+/// The remove confirm's title.
+pub const REMOVE_TITLE: &str = " Remove server ";
+/// A server menu's title with no server selected.
+pub const SERVER_LIST: &str = "Server list";
 /// A shared file's unshare, which asks first.
 pub const UNSHARE: &str = "Unshare…";
 /// A shared file's comments, which rmule holds none of.
 pub const COMMENTS: &str = "Comments";
+/// Why a shared file offers no comments.
+pub const COMMENTS_REASON: &str = "rmule keeps none";
 /// The server list's update.
-pub const UPDATE_LIST: &str = "Update list from URL… (U)";
+pub const UPDATE_LIST: &str = "Update list from URL…";
 /// The server list's add.
-pub const ADD_SERVER: &str = "Add server… (a)";
+pub const ADD_SERVER: &str = "Add server…";
 /// A server row's connect.
-pub const CONNECT: &str = "Connect (c)";
+pub const CONNECT: &str = "Connect";
 /// A server row's disconnect.
-pub const DISCONNECT: &str = "Disconnect (c)";
+pub const DISCONNECT: &str = "Disconnect";
 /// A server row's end of re-making a lost session.
-pub const STOP_RECONNECTING: &str = "Stop reconnecting (c)";
+pub const STOP_RECONNECTING: &str = "Stop reconnecting";
 /// Ends a dial still out.
 pub const STOP_CONNECTING: &str = "Stop connecting";
 /// A static server row's unpin.

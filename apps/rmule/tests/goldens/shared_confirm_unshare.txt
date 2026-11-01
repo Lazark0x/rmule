@@ -5,13 +5,13 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                ┌ Unshare? ────────────────────────────────┐                │
-│                │ Unshare 0101010101…?                     │                │
-│                │                                          │                │
-│Off-screen: Requ│ Stops serving it; peers lose the source. │.0 MB (4.0 MB)  │
-└ too narrow to s│                                          │───────── 1 / 2 ┘
-┌ Uploads · activ│ y confirm    Esc cancel                  │reverse  z zoom ┐
-│  Peer ▲        └──────────────────────────────────────────┘                │
+│      ┌ Unshare ─────────────────────────────────────────────────────┐      │
+│      │ Unshare a file whose name is not known yet?                  │      │
+│      │                                                              │      │
+│Off-sc│ Stops serving it; peers lose the source.                     │ MB)  │
+└ too n│                                                              │1 / 2 ┘
+┌ Uploa│ y yes    n no                                                │ zoom ┐
+│  Peer└──────────────────────────────────────────────────────────────┘      │
 │▸ 10.0.0.1:4662         Uploading             — 0101010101…                 │
 │                                                                            │
 │                                                                            │

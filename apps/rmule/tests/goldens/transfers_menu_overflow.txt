@@ -1,8 +1,8 @@
-┌ Downloads (┌ Actions — 0707070707… ───────────────────────────┐ink  z zoom ┐
-│  File ▲    │  Pause                                           │Status     █│
-│▸ bunny.mp4 │  Cancel…                                         │Downloading │
-│Off-screen: │  Show file details                               │            │
-└ too narrow │  Preview  details not known yet                  │───── 1 / 3 ┘
-┌ Sources · b│▸ Copy eD2k link                                  │rse  z zoom ┐
-│▸ 10.0.0.1:4│  Search related  not connected                   │  98.7 KB/s█│
-└────────────└─────────────────────────────────────────── 5 / 6 ┘───── 1 / 2 ┘
+┌ Downloads (3)┌ bunny.mp4 ───────────────────────────────────┐ link  z zoom ┐
+│  File ▲      │  Pause (p)                                   │d Status     █│
+│▸ bunny.mp4   │  Cancel… (x)                                 │s Downloading │
+│Off-screen: Si│  Show file details (d)                       │              │
+└ too narrow to│  Preview (v)  details not known yet          │─────── 1 / 3 ┘
+┌ Sources · bun│▸ Copy eD2k link                              │verse  z zoom ┐
+│▸ 10.0.0.1:466│  Search related  not connected               │    98.7 KB/s█│
+└──────────────└─────────────────────────────────────── 5 / 6 ┘─────── 1 / 2 ┘

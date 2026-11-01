@@ -8,7 +8,7 @@
 │ Share│ of them, and an upload in progress ends. The files stay on   │      │
 │      │ disk, and adding the directory again reads nothing.          │      │
 │ Share│                                                              │      │
-│ Share│ y stop sharing    n keep it                                  │      │
+│ Share│ y yes    n no                                                │      │
 │      └──────────────────────────────────────────────────────────────┘      │
 │Network                                                                     │
 │ Nickname     rmule  (on restart)                                           │

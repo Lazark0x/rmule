@@ -1,5 +1,5 @@
-┌ ┌ Unshare? ─────────────────────────────────┐e ┐
-│▸│ Unshare 0101010101…?                     ▲│ █│
-└ │                                          █│2 ┘
-┌ │ Stops serving it; peers lose the source. ▼│e ┐
-└─└──────────────────────────────────── 3 / 5 ┘──┘
+┌ Unshare ───────────────────────────────────────┐
+│ Unshare a file whose name is not known yet?   ▲│
+│                                               █│
+│ Stops serving it; peers lose the source.      ▼│
+└───────────────────────────────────────── 3 / 5 ┘

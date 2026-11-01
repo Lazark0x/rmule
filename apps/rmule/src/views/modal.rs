@@ -9,7 +9,7 @@ use std::ops::Range;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -18,13 +18,47 @@ use crate::form::ModalLines;
 use crate::row_selection::viewport::{BAR_W, Viewport, split};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
-use crate::wrap::clamp_u16;
+use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// What a modal's body lays out for one width.
 struct ModalLaid {
     lines: Vec<Line<'static>>,
     focus: Option<Range<usize>>,
     caret: Option<(usize, u16)>,
+}
+
+/// Where [`Modal::draw_list`] put a list, as the last draw laid it out.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ListPlaced {
+    modal: Rect,
+    text: Rect,
+    first: usize,
+    /// The lines each item takes.
+    heights: Vec<u16>,
+}
+
+impl ListPlaced {
+    /// Whether (`column`, `row`) lands on the panel, its border included.
+    #[must_use]
+    pub(crate) fn contains(&self, column: u16, row: u16) -> bool {
+        self.modal.contains(Position::new(column, row))
+    }
+
+    /// The item the text at (`column`, `row`) belongs to.
+    #[must_use]
+    pub(crate) fn item_at(&self, column: u16, row: u16) -> Option<usize> {
+        if !self.text.contains(Position::new(column, row)) {
+            return None;
+        }
+        let mut line = row - self.text.y;
+        for (index, height) in self.heights.iter().enumerate().skip(self.first) {
+            if line < *height {
+                return Some(index);
+            }
+            line -= height;
+        }
+        None
+    }
 }
 
 /// One modal's frame, drawn by [`Modal::draw_scrolled`].
@@ -34,6 +68,8 @@ pub(crate) struct Modal {
     title_style: Style,
     padded: bool,
     min_height: u16,
+    /// A hint on the bottom border, which gives way to the count.
+    foot: Option<&'static str>,
 }
 
 impl Modal {
@@ -45,7 +81,14 @@ impl Modal {
             title_style: theme.tab_active(),
             padded: false,
             min_height: 0,
+            foot: None,
         }
+    }
+
+    /// Say how to leave on the bottom border.
+    pub(crate) const fn closes(mut self) -> Self {
+        self.foot = Some(crate::words::labels::CLOSE_HINT);
+        self
     }
 
     /// The title in the flash's style rather than the active tab's.
@@ -79,7 +122,7 @@ impl Modal {
     /// row `cursor`, followed by `viewport` when the frame is too short for
     /// every row. Its bar's column then widens the panel when the frame has
     /// the room, else the rows are laid out for a panel one column narrower;
-    /// the count is on the bottom border.
+    /// the count is on the bottom border. Returns where the list landed.
     pub(crate) fn draw_list(
         self,
         frame: &mut Frame,
@@ -88,7 +131,7 @@ impl Modal {
         theme: &Theme,
         viewport: &Cell<Viewport>,
         rows: impl Fn(u16) -> Vec<Vec<Line<'static>>>,
-    ) {
+    ) -> ListPlaced {
         let mut laid = rows(width);
         let lines: usize = laid.iter().map(Vec::len).sum();
         let height = clamp_u16(lines + 2).max(self.min_height).min(area.height);
@@ -116,6 +159,12 @@ impl Modal {
             .collect();
         frame.render_widget(Paragraph::new(shown), text);
         place.draw(frame, modal, bar, theme);
+        ListPlaced {
+            modal,
+            text,
+            first,
+            heights,
+        }
     }
 
     /// Clear a panel centered in `area` and draw the frame and the lines
@@ -198,7 +247,15 @@ impl Modal {
         };
         viewport.set(place);
         frame.render_widget(Paragraph::new(laid.lines[shown.clone()].to_vec()), text);
-        place.draw(frame, modal, bar, theme);
+        let rest = place.draw(frame, modal, bar, theme);
+        if let Some(foot) = self.foot
+            && usize::from(rest.width) >= crate::wrap::display_width(foot)
+        {
+            frame.render_widget(
+                Paragraph::new(Span::styled(foot, theme.dim_text())).right_aligned(),
+                rest,
+            );
+        }
         crate::views::caret_in(text, shown, laid.caret)
     }
 
@@ -231,6 +288,57 @@ impl Modal {
             inner
         }
     }
+}
+
+/// One question a modal asks before an action that takes something back: its
+/// title, what it is about by name, and what a yes does.
+pub(crate) struct Question<'a> {
+    pub title: &'a str,
+    pub asks: &'a str,
+    pub does: &'a str,
+}
+
+/// The widest a question's panel is drawn, room for a file's name on a line.
+const QUESTION_W: u16 = 64;
+
+/// Clear a panel centered in `area` and ask `question`, with the one answer
+/// pair every confirm has: `y yes`, `n no`. Scrolled by `viewport` when the
+/// frame is too short for it.
+pub(crate) fn draw_question(
+    frame: &mut Frame,
+    area: Rect,
+    question: &Question<'_>,
+    theme: &Theme,
+    viewport: &Cell<Viewport>,
+) {
+    let width = QUESTION_W.min(area.width);
+    let lines = |width: u16| {
+        let text_w = usize::from(width).saturating_sub(4).max(1);
+        let text = Style::new().fg(theme.fg);
+        let mut lines = wrapped_lines(question.asks, text_w, text);
+        lines.push(Line::raw(""));
+        lines.extend(wrapped_lines(question.does, text_w, theme.dim_text()));
+        lines.push(Line::raw(""));
+        lines.push(answer_line(theme));
+        lines
+    };
+    Modal::new(question.title, theme)
+        .danger(theme)
+        .padded()
+        .at_least(6)
+        .draw_scrolled(frame, area, width, theme, viewport, lines);
+}
+
+/// The answers every confirm offers.
+pub(crate) fn answer_line(theme: &Theme) -> Line<'static> {
+    let key = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let text = Style::new().fg(theme.fg);
+    Line::from(vec![
+        Span::styled(crate::words::app::YES_KEY, key),
+        Span::styled(crate::words::app::YES_WORD, text),
+        Span::styled(crate::words::app::NO_KEY, key),
+        Span::styled(crate::words::app::NO_WORD, text),
+    ])
 }
 
 /// The one reading of a confirm's keys: `Some(true)` for `y`, `Some(false)` for

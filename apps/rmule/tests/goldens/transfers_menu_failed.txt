@@ -4,14 +4,14 @@
 │  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
 │  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
 │▸ 3C3C3C3C3C…                    ≈ 37.1 MB ░░░░░░░░░░          — Failed     │
-│            ┌ Actions — 3C3C3C3C3C… ───────────────────────────┐            │
-│            │▸ Restart                                         │            │
-│            │  Cancel…                                         │            │
-│            │  Show file details                               │            │
-│            │  Preview  details not known yet                  │            │
-│            │  Copy eD2k link  no metadata yet                 │            │
-│            │  Search related  not connected                   │            │
-│            └─────────────────────────────────────────── 1 / 6 ┘            │
+│              ┌ a file whose name is not known yet ──────────┐              │
+│              │▸ Restart (p)                                 │              │
+│              │  Cancel… (x)                                 │              │
+│              │  Show file details (d)                       │              │
+│              │  Preview (v)  details not known yet          │              │
+│              │  Copy eD2k link  no metadata yet             │              │
+│              │  Search related  not connected               │              │
+│              └─────────────────────────────────────── 1 / 6 ┘              │
 │                                                                            │
 │                                                                            │
 │Off-screen: Done — · ETA — · Src —                                          │

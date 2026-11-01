@@ -10,8 +10,8 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId, NameTaken};
 use rmule_primitives::{SafeFileName, SearchResult};
@@ -92,9 +92,9 @@ impl SearchesView {
             return;
         };
         let width = 56u16.min(area.width);
-        let (verb, title) = match readd.mark {
-            KnownFileMark::Failed { .. } => (" restart it    ", " Restart download? "),
-            _ => (" download again    ", " Download again? "),
+        let title = match readd.mark {
+            KnownFileMark::Failed { .. } => " Restart download? ",
+            _ => " Download again? ",
         };
         let lines = |width: u16| {
             let text_w = usize::from(width).saturating_sub(2).max(1);
@@ -121,14 +121,7 @@ impl SearchesView {
                 lines.extend(wrapped_lines(&said.text, text_w, style));
             }
             lines.push(Line::raw(""));
-            let key = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
-            lines.push(Line::from(vec![
-                Span::styled("y", key),
-                Span::styled(verb, text),
-                Span::styled("Esc", key),
-                Span::styled(" keep", text),
-            ]));
-
+            lines.push(crate::views::modal::answer_line(theme));
             lines
         };
         Modal::new(title, theme).draw_scrolled(frame, area, width, theme, &readd.viewport, lines);

@@ -237,6 +237,8 @@ impl NetworksView {
             }
             KeyCode::Char('f') if self.focus == Pane::Log => self.narrow_log(),
             KeyCode::Char('d') if self.focus == Pane::Servers => self.open_details(state),
+            // `x` is the row's way out everywhere; it asks first.
+            KeyCode::Char('x') if self.focus == Pane::Servers => self.ask_remove(state),
             KeyCode::Char('s') if self.focus == Pane::Servers && !servers(state).is_empty() => {
                 self.sort.key(true)
             }
@@ -289,13 +291,13 @@ impl NetworksView {
 
     /// Click routing (ADR-0072, Row Selection): server rows select + focus, the
     /// log pane focuses (its rows scroll, they don't select). The Kad panel
-    /// is display-only. Modals stay keyboard-only in v1.
+    /// is display-only. The row menu takes its clicks; other modals keep to
+    /// the keyboard.
     pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
-        if self.menu.is_some()
-            || self.confirm.is_some()
-            || self.form.is_some()
-            || self.details.is_some()
-        {
+        if self.confirm.is_none() && self.form.is_none() && self.menu.is_some() {
+            return self.click_menu(column, row, state);
+        }
+        if self.confirm.is_some() || self.form.is_some() || self.details.is_some() {
             return ViewOutcome::Ignored;
         }
         if let Some(outcome) = self.header_click(column, row) {

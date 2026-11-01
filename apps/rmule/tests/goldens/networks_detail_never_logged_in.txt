@@ -17,7 +17,7 @@
 │       │this run                                                      │       │
 │       │Health: not reached yet — no answer and no failed try so far  │       │
 │       │Shares: announced at its next login, as to every server       │       │
-│       └──────────────────────────────────────────────────────────────┘       │
+│       └─────────────────────────────────────────────────── Esc close ┘       │
 │Off-screen: Desc — · Static no                                                │
 │Health: not reached yet — no answer and no failed try so far                  │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 4 / 4 ┘

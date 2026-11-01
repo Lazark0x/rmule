@@ -57,7 +57,7 @@ fn a_failed_row_offers_restart_and_resumes_the_same_download() {
 }
 
 #[test]
-fn the_menu_cursor_skips_greyed_items_and_clamps() {
+fn the_menu_cursor_skips_greyed_items_and_wraps() {
     let mut view = TransfersView::by_name();
     let state = three_downloads();
     // download_id(2) carries no metadata, so Copy eD2k link stays greyed here too
@@ -71,14 +71,14 @@ fn the_menu_cursor_skips_greyed_items_and_clamps() {
             cursor: MenuAction::Resume
         }
     );
-    // Down walks the three enabled items and then clamps — never landing on
-    // a greyed item.
+    // Down walks the three enabled items and wraps past the end, never
+    // landing on a greyed item.
     use MenuAction::{Cancel, Details, Resume};
-    for expected in [Cancel, Details, Details, Details] {
+    for expected in [Cancel, Details, Resume, Cancel] {
         view.handle_key(press(KeyCode::Char('j')), &state);
         assert_eq!(view.overlay, Overlay::Menu { cursor: expected });
     }
-    for expected in [Cancel, Resume, Resume] {
+    for expected in [Resume, Details] {
         view.handle_key(press(KeyCode::Char('k')), &state);
         assert_eq!(view.overlay, Overlay::Menu { cursor: expected });
     }
@@ -151,9 +151,7 @@ fn menu_screen(view: &mut TransfersView, state: &UiState) -> String {
 fn choose_related(view: &mut TransfersView, state: &UiState, row: usize) -> ViewOutcome {
     view.select_row(state, row);
     view.handle_key(press(KeyCode::Char('m')), state);
-    for _ in 0..4 {
-        view.handle_key(press(KeyCode::Char('j')), state);
-    }
+    view.handle_key(press(KeyCode::Char('G')), state);
     view.handle_key(press(KeyCode::Enter), state)
 }
 

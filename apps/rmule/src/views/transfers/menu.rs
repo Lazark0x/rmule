@@ -7,22 +7,19 @@
 //! Preview Ready (ADR-0114), dimmed with the first reason it is not.
 
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId};
 
 use super::link::{copy_link_for, copy_link_reason};
+use super::confirm::download_name;
 use super::{Overlay, TransfersView};
 use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::Modal;
+use crate::views::menu::{self, Asked, Item};
 use crate::words::labels;
-use crate::words::units::short_hash_or_dash;
-use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MenuAction {
@@ -43,16 +40,10 @@ pub(super) enum MenuAction {
     Inert,
 }
 
-pub(super) struct MenuItem {
-    pub(super) label: String,
-    pub(super) action: MenuAction,
-    /// `Some` ⇒ greyed with this reason tag.
-    pub(super) reason: Option<&'static str>,
-}
+pub(super) type MenuItem = Item<MenuAction>;
 
 /// The row menu (spec §3.2 plus the degrade set). Order is stable, *Search
-/// related* directly under *Copy eD2k link* as in every row menu; `menu_step`
-/// skips whatever is greyed.
+/// related* directly under *Copy eD2k link* as in every row menu.
 pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState) -> Vec<MenuItem> {
     let row = state.downloads.get(&id);
     // A failed download holds its place with no run (ADR-0094, "Failed"):
@@ -60,11 +51,11 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
     // from what is on disk or starts over (ADR-0094, labels::RESTART).
     // A completed download has no run to pause and nothing to cancel: what
     // it offers is to leave the list (ADR-0094, "Clearing a completed download").
-    let (first, first_action) = match status {
-        DownloadStatus::Paused => (labels::RESUME, MenuAction::Resume),
-        DownloadStatus::Failed => (labels::RESTART, MenuAction::Restart),
-        DownloadStatus::Completed => (labels::CLEAR_FROM_LIST, MenuAction::Clear),
-        _ => (labels::PAUSE, MenuAction::Pause),
+    let first = match status {
+        DownloadStatus::Paused => Item::new(labels::RESUME, MenuAction::Resume).keyed('p'),
+        DownloadStatus::Failed => Item::new(labels::RESTART, MenuAction::Restart).keyed('p'),
+        DownloadStatus::Completed => Item::new(labels::CLEAR_FROM_LIST, MenuAction::Clear),
+        _ => Item::new(labels::PAUSE, MenuAction::Pause).keyed('p'),
     };
     let cancel_reason =
         (status == DownloadStatus::Completed).then_some("completed: the file is kept and shared");
@@ -78,83 +69,36 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
         Some(_) => crate::views::related::unavailable(state),
         None => Some("file hash not known yet"),
     };
-    let mut items = vec![MenuItem {
-        label: first.to_string(),
-        action: first_action,
-        reason: None,
-    }];
-    items.extend([
-        MenuItem {
-            label: labels::CANCEL.to_string(),
-            action: if cancel_reason.is_none() {
-                MenuAction::Cancel
-            } else {
-                MenuAction::Inert
-            },
-            reason: cancel_reason,
-        },
-        MenuItem {
-            label: labels::SHOW_DETAILS.to_string(),
-            action: MenuAction::Details,
-            reason: None,
-        },
-        MenuItem {
-            label: labels::PREVIEW.to_string(),
-            action: if preview_reason.is_none() {
-                MenuAction::Preview
-            } else {
-                MenuAction::Inert
-            },
-            reason: preview_reason,
-        },
-        MenuItem {
-            label: labels::COPY_LINK.to_string(),
-            action: if copy_reason.is_none() {
-                MenuAction::CopyLink
-            } else {
-                MenuAction::Inert
-            },
-            reason: copy_reason,
-        },
-        MenuItem {
-            label: labels::SEARCH_RELATED.to_string(),
-            action: if related_reason.is_none() {
-                MenuAction::SearchRelated
-            } else {
-                MenuAction::Inert
-            },
-            reason: related_reason,
-        },
-    ]);
-    items
+    let or_inert = |action, reason: Option<&'static str>| {
+        if reason.is_none() {
+            action
+        } else {
+            MenuAction::Inert
+        }
+    };
+    vec![
+        first,
+        Item::new(labels::CANCEL, or_inert(MenuAction::Cancel, cancel_reason))
+            .keyed('x')
+            .greyed(cancel_reason),
+        Item::new(labels::SHOW_DETAILS, MenuAction::Details).keyed('d'),
+        Item::new(labels::PREVIEW, or_inert(MenuAction::Preview, preview_reason))
+            .keyed('v')
+            .greyed(preview_reason),
+        Item::new(labels::COPY_LINK, or_inert(MenuAction::CopyLink, copy_reason))
+            .greyed(copy_reason),
+        Item::new(
+            labels::SEARCH_RELATED,
+            or_inert(MenuAction::SearchRelated, related_reason),
+        )
+        .greyed(related_reason),
+    ]
 }
 
 /// The place of the action the cursor names, `None` once the row's status no
 /// longer offers it.
 pub(super) fn menu_index(items: &[MenuItem], cursor: MenuAction) -> Option<usize> {
     items.iter().position(|item| item.action == cursor)
-}
-
-/// Move the menu cursor one enabled step, skipping greyed items and clamping
-/// at the ends. The cursor names an action, so a status change under an open
-/// menu can never hand Enter another action than the one shown.
-pub(super) fn menu_step(items: &[MenuItem], cursor: MenuAction, delta: i32) -> MenuAction {
-    let Some(start) = menu_index(items, cursor) else {
-        return cursor;
-    };
-    let len = items.len() as i32;
-    let mut probe = start as i32;
-    loop {
-        let candidate = probe + delta;
-        if candidate < 0 || candidate >= len {
-            return cursor;
-        }
-        let item = &items[candidate as usize];
-        if item.reason.is_none() {
-            return item.action;
-        }
-        probe = candidate;
-    }
 }
 
 /// The action a fresh menu rests on: the first item, always enabled.
@@ -196,80 +140,107 @@ impl TransfersView {
             return ViewOutcome::Redraw;
         };
         let items = menu_items(status, id, state);
-        if menu_index(&items, cursor).is_none() {
+        let Some(at) = menu_index(&items, cursor) else {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
+        };
+        let asked = menu::key(&items, at, key.code);
+        self.answer_menu(asked, &items, id, status, state)
+    }
+
+    /// A click on the open menu: an item runs, outside closes.
+    pub(super) fn click_menu(
+        &mut self,
+        (column, row): (u16, u16),
+        state: &UiState,
+        ids: &[DownloadId],
+    ) -> ViewOutcome {
+        let Some((id, status)) = self.selected_row_status(state, ids) else {
+            self.overlay = Overlay::None;
+            return ViewOutcome::Redraw;
+        };
+        let items = menu_items(status, id, state);
+        let asked = self.menu_place.click(&items, column, row);
+        self.answer_menu(asked, &items, id, status, state)
+    }
+
+    fn answer_menu(
+        &mut self,
+        asked: Asked,
+        items: &[MenuItem],
+        id: DownloadId,
+        status: DownloadStatus,
+        state: &UiState,
+    ) -> ViewOutcome {
+        match asked {
+            Asked::Close => self.overlay = Overlay::None,
+            Asked::Move(index) => {
+                self.overlay = Overlay::Menu {
+                    cursor: items[index].action,
+                };
+            }
+            Asked::Nothing => {}
+            Asked::Run(index) => return self.run_menu(items[index].action, id, status, state),
         }
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.overlay = Overlay::Menu {
-                    cursor: menu_step(&items, cursor, 1),
-                };
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.overlay = Overlay::Menu {
-                    cursor: menu_step(&items, cursor, -1),
-                };
-                ViewOutcome::Redraw
-            }
-            KeyCode::Enter => match cursor {
-                MenuAction::Pause | MenuAction::Resume | MenuAction::Restart => {
-                    self.overlay = Overlay::None;
-                    ViewOutcome::Emit(pause_toggle_action(status, id))
-                }
-                MenuAction::Clear => {
-                    self.overlay = Overlay::None;
-                    ViewOutcome::Emit(Action::Command(CoreCommand::Download(
-                        DownloadCommand::ClearDownload { download_id: id },
-                    )))
-                }
-                MenuAction::Cancel => {
-                    self.overlay = Overlay::ConfirmCancel;
-                    self.confirm_viewport.take();
-                    ViewOutcome::Redraw
-                }
-                MenuAction::Details => {
-                    self.overlay = Overlay::Details;
-                    self.details_viewport.take();
-                    ViewOutcome::Redraw
-                }
-                MenuAction::Preview => {
-                    self.overlay = Overlay::None;
-                    ViewOutcome::Emit(Action::Preview(id))
-                }
-                MenuAction::CopyLink => {
-                    self.overlay = Overlay::None;
-                    match copy_link_for(state.downloads.get(&id)) {
-                        Some(link) => ViewOutcome::Emit(Action::CopyLink(link)),
-                        // The menu already gates on this; a miss here would
-                        // mean the row changed shape between draw and Enter —
-                        // an honest no-op, not a fabricated link.
-                        None => ViewOutcome::Redraw,
-                    }
-                }
-                MenuAction::SearchRelated => {
-                    self.overlay = Overlay::None;
-                    let row = state.downloads.get(&id);
-                    let name = row
-                        .and_then(|row| row.metadata.as_ref())
-                        .map(|metadata| &metadata.name);
-                    match row
-                        .and_then(|row| row.file_hash)
-                        .and_then(|hash| crate::views::related::action(state, hash, name))
-                    {
-                        Some(action) => ViewOutcome::Emit(action),
-                        None => ViewOutcome::Redraw,
-                    }
-                }
-                MenuAction::Inert => ViewOutcome::Redraw,
-            },
-            KeyCode::Esc | KeyCode::Char('q') => {
+        ViewOutcome::Redraw
+    }
+
+    fn run_menu(
+        &mut self,
+        action: MenuAction,
+        id: DownloadId,
+        status: DownloadStatus,
+        state: &UiState,
+    ) -> ViewOutcome {
+        match action {
+            MenuAction::Pause | MenuAction::Resume | MenuAction::Restart => {
                 self.overlay = Overlay::None;
+                ViewOutcome::Emit(pause_toggle_action(status, id))
+            }
+            MenuAction::Clear => {
+                self.overlay = Overlay::None;
+                ViewOutcome::Emit(Action::Command(CoreCommand::Download(
+                    DownloadCommand::ClearDownload { download_id: id },
+                )))
+            }
+            MenuAction::Cancel => {
+                self.ask_cancel(vec![id]);
                 ViewOutcome::Redraw
             }
-            // A modal is exclusive: swallow everything else.
-            _ => ViewOutcome::Redraw,
+            MenuAction::Details => {
+                self.overlay = Overlay::Details;
+                self.details_viewport.take();
+                ViewOutcome::Redraw
+            }
+            MenuAction::Preview => {
+                self.overlay = Overlay::None;
+                ViewOutcome::Emit(Action::Preview(id))
+            }
+            MenuAction::CopyLink => {
+                self.overlay = Overlay::None;
+                match copy_link_for(state.downloads.get(&id)) {
+                    Some(link) => ViewOutcome::Emit(Action::CopyLink(link)),
+                    // The menu already gates on this; a miss here would
+                    // mean the row changed shape between draw and Enter —
+                    // an honest no-op, not a fabricated link.
+                    None => ViewOutcome::Redraw,
+                }
+            }
+            MenuAction::SearchRelated => {
+                self.overlay = Overlay::None;
+                let row = state.downloads.get(&id);
+                let name = row
+                    .and_then(|row| row.metadata.as_ref())
+                    .map(|metadata| &metadata.name);
+                match row
+                    .and_then(|row| row.file_hash)
+                    .and_then(|hash| crate::views::related::action(state, hash, name))
+                {
+                    Some(action) => ViewOutcome::Emit(action),
+                    None => ViewOutcome::Redraw,
+                }
+            }
+            MenuAction::Inert => ViewOutcome::Redraw,
         }
     }
 
@@ -286,56 +257,9 @@ impl TransfersView {
             return;
         };
         let items = menu_items(status, id, state);
-        let short = short_hash_or_dash(state.downloads.get(&id).and_then(|r| r.file_hash));
-        let title = format!(" Actions — {short} ");
-        // Greedy modal width: wide enough for every item whole, clamped to the
-        // frame; anything still too long wraps under its marker.
-        let natural = items
-            .iter()
-            .map(|item| {
-                2 + display_width(&item.label) + item.reason.map_or(0, |r| display_width(r) + 2)
-            })
-            .chain(std::iter::once(display_width(&title)))
-            .max()
-            .unwrap_or(0)
-            + 2;
-        let width = clamp_u16(natural.max(52)).min(area.width);
-        let at = items
-            .iter()
-            .position(|item| item.action == cursor)
-            .unwrap_or(0);
-        let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
-            let text_w = usize::from(width).saturating_sub(2 + 2).max(1);
-            items
-                .iter()
-                .map(|item| {
-                    let marker = if item.action == cursor { "▸ " } else { "  " };
-                    let label_style = if item.reason.is_some() {
-                        theme.dim_text()
-                    } else {
-                        Style::new().fg(theme.fg)
-                    };
-                    let text = match item.reason {
-                        Some(reason) => format!("{}  {reason}", item.label),
-                        None => item.label.clone(),
-                    };
-                    labeled_lines(
-                        Span::styled(marker.to_string(), Style::new().fg(theme.accent)),
-                        &text,
-                        label_style,
-                        text_w,
-                    )
-                })
-                .collect()
-        };
-        Modal::new(title, theme).flash_title(theme).draw_list(
-            frame,
-            area,
-            (width, at),
-            theme,
-            &self.menu_viewport,
-            rows,
-        );
+        let at = menu_index(&items, cursor).unwrap_or(0);
+        let name = download_name(state, id);
+        menu::draw(frame, area, (&name, &items, at), theme, &self.menu_place);
     }
 }
 

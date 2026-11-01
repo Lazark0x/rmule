@@ -6,10 +6,10 @@
 [ubuntu · 3]
 ┌ Results · Completed · 3 ────────── Enter menu  [ ] search  x close  s sort ┐
 │  Name ▲                                           Size    Sources Type     │
-│▸ clip_low.avi┌ Result actions ──────────────────────────────┐   5 Videos   │
+│▸ clip_low.avi┌ clip_low.avi ────────────────────────────────┐   5 Videos   │
 │  distro_hot.i│▸ Download                                    │900) CD-Images│
 │  song_mid.mp3│  Copy eD2k link                              │ (7) Audio    │
-│              │  Search related (not connected)              │              │
+│              │  Search related  not connected               │              │
 │              └─────────────────────────────────────── 1 / 3 ┘              │
 │                                                                            │
 │                                                                            │

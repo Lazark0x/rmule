@@ -77,7 +77,7 @@ pub struct SharedView {
     files_viewport: Viewport,
     peers_viewport: Viewport,
     strip_viewport: Viewport,
-    /// "Active uploads only" (spec §3.5): default on; `a` toggles.
+    /// "Active uploads only" (spec §3.5): default on; `f` toggles.
     active_only: bool,
     /// Row menu on the FILES table (spec §3.5), when open.
     menu: Option<FileMenu>,
@@ -216,7 +216,15 @@ impl SharedView {
                 self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
-            KeyCode::Char('a') => {
+            // `x` is the row's way out everywhere; it asks first.
+            KeyCode::Char('x') if files => match self.selected_row(state) {
+                Some(row) => {
+                    self.ask_unshare(vec![row.file_hash]);
+                    ViewOutcome::Redraw
+                }
+                None => ViewOutcome::Ignored,
+            },
+            KeyCode::Char('f') => {
                 self.active_only = !self.active_only;
                 self.clamp_selection(state);
                 ViewOutcome::Redraw
@@ -264,9 +272,12 @@ impl SharedView {
     /// Render the view (spec §3.5): files table over the upload-peers pane,
     /// with the row menu / confirm modal on top when open.
     /// Click routing (ADR-0072, Row Selection): rows select + focus in either
-    /// pane. Modals stay keyboard-only in v1.
+    /// pane. The row menu takes its clicks; a confirm keeps to the keyboard.
     pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
-        if self.menu.is_some() || self.confirm.is_some() {
+        if self.confirm.is_none() && self.menu.is_some() {
+            return self.click_menu(column, row, state);
+        }
+        if self.confirm.is_some() {
             return ViewOutcome::Ignored;
         }
         if let Some(outcome) = self.header_click(column, row) {
@@ -332,7 +343,7 @@ impl SharedView {
             self.draw_menu(frame, area, state, theme);
         }
         if let Some(confirm) = &self.confirm {
-            draw_confirm(frame, area, confirm, theme);
+            draw_confirm(frame, area, confirm, state, theme);
         }
         if let Some(consent) = self.pending_consent(state) {
             scan::draw_consent(frame, area, consent, theme, &self.consent_viewport);

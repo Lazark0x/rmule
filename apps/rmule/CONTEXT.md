@@ -61,7 +61,7 @@ The status bar's last notable fact, newest wins. It stands five minutes, saying 
 _Avoid_: status text, toast
 
 **Tab**:
-One of the six top-level surfaces the chrome switches between, named by `ViewId` and drawn in the tab bar. A tab is what the operator selects — a digit, `h`/`l`, or a click; the **view** is the component that draws it, and exactly one is active at a time. The tab left up is what the next run opens on. The bar names every tab down to 75 columns, two of them by a short title. What the chrome hands that view is a content rect, never the whole frame.
+One of the six top-level surfaces the chrome switches between, named by `ViewId` and drawn in the tab bar. A tab is what the operator selects — a digit, `h`/`l`, `←`/`→`, or a click; the **view** is the component that draws it, and exactly one is active at a time. The tab left up is what the next run opens on. The bar names every tab down to 75 columns, two of them by a short title. What the chrome hands that view is a content rect, never the whole frame.
 _Avoid_: page, screen, window
 
 **Pane**:
@@ -77,7 +77,7 @@ What a terminal under 60×20 shows in place of the tab: its size, the size rmule
 _Avoid_: minimum size error
 
 **Key gate**:
-The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path, Ctrl-Z the job stop and Ctrl-L the full repaint from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone.
+The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path, Ctrl-Z the job stop and Ctrl-L the full repaint from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone. Outside one `Ctrl-D` and `Ctrl-U` are read as `PgDn` and `PgUp`, so none reaches a view as its letter.
 _Avoid_: per-view key filter
 
 **Line Edit**:
@@ -85,7 +85,7 @@ The one line editor under every text field: a caret on a grapheme boundary, the 
 _Avoid_: text input, input box, prompt
 
 **Directory Field**:
-A **Line Edit** that names a directory: a leading `~` is the operator's home, `Tab` completes from the disk and says what is left to choose from, and a path with nothing at it is said before it is set: a Download dir or Temp dir that core would make asks a second `Enter`, and a directory to share is refused.
+A **Line Edit** that names a directory: a leading `~` is the operator's home, `Tab` completes from the disk and says what is left to choose from, and a path with nothing at it is said before it is set: a Download dir or Temp dir that core would make asks a second `Enter` under the warning's `!` mark, never the refusal's `✗`, and a directory to share is refused.
 _Avoid_: path picker
 
 **Stop**:
@@ -97,8 +97,16 @@ The one thread that writes to the terminal. A frame it is not ready for is held,
 _Avoid_: writer, render thread
 
 **Quit Confirm**:
-The chrome modal that asks before `q` or Ctrl-C stops a running download: `y` or a second Ctrl-C quits, `n` or `Esc` stays. With nothing running neither asks, and an OS stop never does.
+The chrome modal that asks before `q` or Ctrl-C stops what is under way, and counts it: a download moving bytes or waiting, an upload, a peer in the upload queue. `y` or a second Ctrl-C quits, `n` or `Esc` stays. A truly idle app, paused downloads at most, does not ask, and an OS stop never does.
 _Avoid_: exit prompt
+
+**Row Menu**:
+The one action list every table opens with `Enter` or `m` (`views::menu`): titled by the row it acts on, never a hash. An item is enabled, or greyed with its reason, which the cursor skips. The list wraps at its ends; `m`, `q` and `Esc` close it; an item shows the key that runs it from the table, and that key runs it from the open menu too. A click runs an item, a click outside closes the menu.
+_Avoid_: context menu, popup
+
+**Question**:
+The one confirm before an action that takes something back (`views::modal::draw_question`): what it is about by name, the file or the server, or by count; never a hash; what a yes does; and the one answer pair, `y yes` and `n no`. `x` is the row's way out in every table, a cancel, an unshare, a removal, and it asks one. `Esc` and `q` answer no, except a share question, which waits for `y` or `n`.
+_Avoid_: dialog, alert, prompt
 
 **Revision**:
 A number on the UI state that moves whenever a fold changed something. A table's order stands on it, with the table's own sort and filter, so a wheel notch over ten thousand rows rebuilds nothing.
@@ -117,7 +125,7 @@ What the Networks log, the **Note** and a flash hold: a line written from a code
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Off-screen line**:
-The one line at the bottom of a table that says what the selected row does not show: the value of every column that gave way and the whole of every value a cell cut or shortened, as `Label value`, above the border's note naming the hidden columns — every table the same way (`views::off_screen`), so a row on one line never loses a value (ADR-0119). It wraps, up to half the table.
+The one line at the bottom of a table that says what the selected row does not show: the value of every column that gave way and the whole of every value a cell cut or shortened, as `Label value`, above the border's note naming the hidden columns — every table the same way (`views::off_screen`), so a row on one line never loses a value (ADR-0119). It wraps, up to half the table, and holds as many lines as any row on screen would ask for, so the frame stands still as the cursor walks them.
 _Avoid_: detail row, tooltip, footer
 
 **Greedy width**:
@@ -141,7 +149,7 @@ The one column a table is ordered by, and its direction — view state, never co
 _Avoid_: ordering, ranking, sort mode, sort key (a key with no column)
 
 **Row Selection**:
-What selecting a row is in every table: the cursor on a row's identity (`RowCursor`), moved by `j`/`k`/arrows and `g`/`G`, and the one mark it wears — the `▸` gutter marker and the selection background across the row, bold in the focused pane and dimmed, never hidden, in a pane without the focus. A click selects and focuses; `Enter`/`m` open the menu on the selected row. Settings' form fields are not rows.
+What selecting a row is in every table: the cursor on a row's identity (`RowCursor`), moved by `j`/`k`/`↑`/`↓` and `g`/`G`, and the one mark it wears — the `▸` gutter marker and the selection background across the row, bold in the focused pane and dimmed, never hidden, in a pane without the focus. `PgUp`/`PgDn` and `Ctrl-U`/`Ctrl-D` move by the rows on screen and `Home`/`End` to the ends, in one place (`RowMove::of`), so every table, the log, the Settings rows and a modal that only reads move alike. A click selects and focuses; `Enter`/`m` open the **Row Menu** on the selected row. Settings' form fields are not rows.
 _Avoid_: highlight, cursor row, active row, current row
 
 **Viewport**:

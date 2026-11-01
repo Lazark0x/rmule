@@ -92,10 +92,10 @@ fn results_state(granted: Option<bool>) -> UiState {
 #[test]
 fn the_result_menu_dims_search_related_with_each_reason_and_sends_nothing() {
     for (state, reason) in [
-        (results_state(None), "Search related (not connected)"),
+        (results_state(None), "Search related  not connected"),
         (
             results_state(Some(false)),
-            "Search related (server does not offer it)",
+            "Search related  server does not offer it",
         ),
     ] {
         let mut view = SearchesView::by_name().having_sent("video");
@@ -138,7 +138,7 @@ fn the_item_follows_a_server_switch_under_the_open_menu() {
     // The next server does not grant it: the same open menu dims it, and
     // Enter sends nothing.
     let switched = results_state(Some(false));
-    assert!(render(&mut view, &switched, 78).contains("Search related (server does not offer it)"));
+    assert!(render(&mut view, &switched, 78).contains("Search related  server does not offer it"));
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &switched),
         ViewOutcome::Redraw

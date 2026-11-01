@@ -66,7 +66,7 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::panes::{self, Zoomed};
 use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
-use menu::{MenuAction, pause_toggle_action};
+use self::menu::{MenuAction, pause_toggle_action};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
 
@@ -116,8 +116,9 @@ enum Overlay {
     /// never landed on).
     Menu { cursor: MenuAction },
     /// The one destructive confirm in this view: cancel deletes the
-    /// part file.
-    ConfirmCancel,
+    /// part file. It holds the downloads it asks about, so a row that moves
+    /// under it stays the one the answer acts on.
+    ConfirmCancel { targets: Vec<DownloadId> },
     /// File-details modal (spec §3.2).
     Details,
     /// "Clear all completed": asks first, since it takes every completed row
@@ -149,8 +150,8 @@ pub struct TransfersView {
     source_selected: Option<usize>,
     /// What part of the sources pane is on screen.
     source_viewport: Viewport,
-    /// What part of the row menu is on screen, in a frame too short for it.
-    menu_viewport: std::cell::Cell<Viewport>,
+    /// Where the row menu is, and what part of it is on screen.
+    menu_place: crate::views::menu::Place,
     /// What part of the details modal is on screen, in a frame too short for
     /// it; back to its first line each time it opens.
     details_viewport: std::cell::Cell<Viewport>,
@@ -237,7 +238,7 @@ impl TransfersView {
         match self.overlay.clone() {
             Overlay::None => self.handle_base(key, state, &ids),
             Overlay::Menu { cursor } => self.handle_menu(key, state, &ids, cursor),
-            Overlay::ConfirmCancel => self.handle_confirm(key, &ids),
+            Overlay::ConfirmCancel { targets } => self.handle_confirm(key, &targets),
             Overlay::Details => self.handle_details(key),
             Overlay::ConfirmClearCompleted { counted } => self.handle_confirm_clear(key, &counted),
         }
@@ -274,6 +275,7 @@ impl TransfersView {
                 // the one it acts on.
                 match self.selected_row_status(state, ids) {
                     Some((_, status)) if self.cursor.pin(ids).is_some() => {
+                        self.menu_place.reset();
                         self.overlay = Overlay::Menu {
                             cursor: menu::first_action(status),
                         };
@@ -282,6 +284,28 @@ impl TransfersView {
                     _ => ViewOutcome::Ignored,
                 }
             }
+            // `x` is the row's way out everywhere: here, its cancel. Greyed
+            // in the menu, so a completed row asks nothing.
+            KeyCode::Char('x') => match self.selected_row_status(state, ids) {
+                Some((_, DownloadStatus::Completed)) => {
+                    ViewOutcome::Emit(Action::Flash(crate::words::download::NOTHING_TO_CANCEL))
+                }
+                Some((id, _)) => {
+                    self.cursor.pin(ids);
+                    self.ask_cancel(vec![id]);
+                    ViewOutcome::Redraw
+                }
+                None => ViewOutcome::Ignored,
+            },
+            KeyCode::Char('d') => match self.selected_row_status(state, ids) {
+                Some(_) => {
+                    self.cursor.pin(ids);
+                    self.overlay = Overlay::Details;
+                    self.details_viewport.take();
+                    ViewOutcome::Redraw
+                }
+                None => ViewOutcome::Ignored,
+            },
             KeyCode::Char('C') => self.clear_completed_key(state),
             KeyCode::Char('L') => self.open_add_link(state),
             KeyCode::Char('p') => match self.selected_row_status(state, ids) {
@@ -361,12 +385,16 @@ impl TransfersView {
     }
 
     /// Row-click select (ADR-0072, Row Selection), against the pane areas cached
-    /// by the last draw. Modals stay keyboard-only in v1.
+    /// by the last draw. The row menu takes its clicks; other modals keep to
+    /// the keyboard.
     pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let ids = self.download_ids(state);
+        if self.add_link.is_none() && matches!(self.overlay, Overlay::Menu { .. }) {
+            return self.click_menu((column, row), state, &ids);
+        }
         if !matches!(self.overlay, Overlay::None) || self.add_link.is_some() {
             return ViewOutcome::Ignored;
         }
-        let ids = self.download_ids(state);
         if let Some(outcome) = self.header_click(column, row) {
             self.focus = Pane::Table;
             return outcome;
@@ -440,7 +468,9 @@ impl TransfersView {
         match &self.overlay {
             Overlay::None => {}
             Overlay::Menu { cursor } => self.draw_menu(frame, area, state, theme, &ids, *cursor),
-            Overlay::ConfirmCancel => self.draw_confirm(frame, area, state, theme, &ids),
+            Overlay::ConfirmCancel { targets } => {
+                self.draw_confirm(frame, area, state, theme, targets);
+            }
             Overlay::Details => self.draw_details(frame, area, state, theme, &ids),
             Overlay::ConfirmClearCompleted { counted } => {
                 self.draw_confirm_clear(frame, area, counted, theme)

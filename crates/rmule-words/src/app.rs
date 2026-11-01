@@ -27,6 +27,24 @@ pub const LEAVE_KEY: &str = "Esc";
 /// Beside the status bar's [`LEAVE_KEY`].
 pub const LEAVE_HINT: &str = " leave";
 
+/// Every confirm's key for yes.
+pub const YES_KEY: &str = "y";
+
+/// Beside [`YES_KEY`].
+pub const YES_WORD: &str = " yes    ";
+
+/// Every confirm's key for no.
+pub const NO_KEY: &str = "n";
+
+/// Beside [`NO_KEY`].
+pub const NO_WORD: &str = " no";
+
+/// A menu item wearing the key that runs it.
+#[must_use]
+pub fn keyed_item(label: &str, key: char) -> String {
+    format!("{label} ({key})")
+}
+
 /// The quit confirm's title.
 pub const QUIT_TITLE: &str = " Quit rmule? ";
 
@@ -74,12 +92,6 @@ pub fn quit_confirm(cost: QuitCost) -> String {
         format!("{parts}. They stop now and carry on at the next start.")
     }
 }
-
-/// Beside the quit confirm's `y`.
-pub const QUIT_YES: &str = " quit    ";
-
-/// Beside the quit confirm's `Esc`.
-pub const QUIT_NO: &str = " keep running";
 
 /// `rmule-cli add` was asked to stop by the OS (ADR-0118); it still quits.
 pub const CLI_STOPPED: &str = "stopped by a signal before the download completed";

@@ -5,78 +5,44 @@
 //! dimmed with its reason while the connected server cannot answer it, read off
 //! the level on every frame.
 
-use std::cell::Cell;
-
 use ratatui::Frame;
+use ratatui::crossterm::event::KeyCode;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 
 use rmule_primitives::SearchResult;
 
 use super::SearchesView;
 use super::ViewOutcome;
 use crate::action::Action;
-use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
-use crate::views::modal::Modal;
+use crate::views::menu::{self, Asked, Item};
 use crate::words::labels;
-use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// One row-menu action (spec §3.3): Download · Copy eD2k link · Search
 /// related.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum MenuItem {
+pub(super) enum MenuAction {
     Download,
     CopyLink,
     SearchRelated,
 }
 
-impl MenuItem {
-    const ALL: [MenuItem; 3] = [
-        MenuItem::Download,
-        MenuItem::CopyLink,
-        MenuItem::SearchRelated,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            MenuItem::Download => labels::DOWNLOAD,
-            MenuItem::CopyLink => labels::COPY_LINK,
-            MenuItem::SearchRelated => labels::SEARCH_RELATED,
-        }
-    }
-
-    fn selectable(self, state: &UiState) -> bool {
-        self.reason(state).is_none()
-    }
-
-    /// Greyed-with-reason while the action cannot work now.
-    fn reason(self, state: &UiState) -> Option<&'static str> {
-        match self {
-            MenuItem::SearchRelated => crate::views::related::unavailable(state),
-            MenuItem::Download if state.session.download_dir.is_none() => {
-                Some(crate::words::download::SET_DOWNLOAD_DIR_FIRST)
-            }
-            _ => None,
-        }
-    }
-}
-
-/// Step the menu cursor by `dir`, skipping non-selectable (greyed) items so it
-/// never rests on one.
-pub(super) fn menu_step(cursor: usize, dir: i32, state: &UiState) -> usize {
-    let len = MenuItem::ALL.len();
-    let modulus = len as i32;
-    let mut index = cursor as i32;
-    for _ in 0..len {
-        index = (index + dir).rem_euclid(modulus);
-        if MenuItem::ALL[index as usize].selectable(state) {
-            return index as usize;
-        }
-    }
-    cursor
+/// The menu as `state` has it. Download is greyed until a directory is set,
+/// and *Search related* while the connected server cannot answer it.
+pub(super) fn menu_items(state: &UiState) -> [Item<MenuAction>; 3] {
+    [
+        Item::new(labels::DOWNLOAD, MenuAction::Download).greyed(
+            state
+                .session
+                .download_dir
+                .is_none()
+                .then_some(crate::words::download::SET_DOWNLOAD_DIR_FIRST),
+        ),
+        Item::new(labels::COPY_LINK, MenuAction::CopyLink),
+        Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
+            .greyed(crate::views::related::unavailable(state)),
+    ]
 }
 
 /// Build the eD2k file link for *Copy eD2k link* (spec §3.3) through the
@@ -86,60 +52,6 @@ fn ed2k_link(result: &SearchResult) -> String {
     rmule_primitives::Ed2kLink::File(result.to_file_link()).to_string()
 }
 
-/// The centered row-action menu (spec §3.3 / §4 menu conventions), modal over
-/// the view like the help overlay.
-pub(super) fn draw_menu(
-    frame: &mut Frame,
-    area: Rect,
-    (cursor, viewport): (usize, &Cell<Viewport>),
-    state: &UiState,
-    theme: &Theme,
-) {
-    let items = MenuItem::ALL;
-    // Greedy width: wide enough for every item whole, clamped to the frame;
-    // whatever still overflows wraps under its marker.
-    let natural = items
-        .iter()
-        .map(|item| {
-            2 + display_width(item.label())
-                + item
-                    .reason(state)
-                    .map_or(0, |reason| display_width(reason) + 3)
-        })
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let width = clamp_u16(natural.max(48)).min(area.width);
-    let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
-        let text_w = usize::from(width).saturating_sub(4).max(1);
-        items
-            .iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let selected = index == cursor && item.selectable(state);
-                let marker = if selected { "▸ " } else { "  " };
-                let (text, style) = match item.reason(state) {
-                    Some(reason) => (format!("{} ({reason})", item.label()), theme.dim_text()),
-                    None if selected => (
-                        item.label().to_string(),
-                        Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                    ),
-                    None => (item.label().to_string(), Style::new().fg(theme.fg)),
-                };
-                labeled_lines(Span::styled(marker, style), &text, style, text_w)
-            })
-            .collect()
-    };
-    Modal::new(" Result actions ", theme).draw_list(
-        frame,
-        area,
-        (width, cursor),
-        theme,
-        viewport,
-        rows,
-    );
-}
-
 impl SearchesView {
     pub(super) fn open_menu(&mut self, state: &UiState) {
         // The menu acts on the row it opened over, whatever lands meanwhile.
@@ -147,23 +59,50 @@ impl SearchesView {
         if let Some(entry) = self.held.current_mut() {
             entry.cursor.pin(&ids);
         }
-        self.menu = Some(0); // Download is the first selectable item.
+        self.menu_place.reset();
+        self.menu = Some(menu::first_enabled(&menu_items(state)));
     }
 
-    pub(super) fn activate_menu(&mut self, state: &UiState) -> ViewOutcome {
-        let Some(cursor) = self.menu else {
-            return ViewOutcome::Ignored;
-        };
-        self.menu = None; // any activation closes the menu.
-        match MenuItem::ALL[cursor] {
-            MenuItem::Download => self.download_selected(state),
-            MenuItem::CopyLink => match self.selected_result(state) {
+    /// One key over the open menu.
+    pub(super) fn menu_key(
+        &mut self,
+        cursor: usize,
+        code: KeyCode,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let asked = menu::key(&menu_items(state), cursor, code);
+        self.answer_menu(asked, state)
+    }
+
+    /// A click on the open menu: an item runs, outside closes.
+    pub(super) fn click_menu(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let asked = self.menu_place.click(&menu_items(state), column, row);
+        self.answer_menu(asked, state)
+    }
+
+    fn answer_menu(&mut self, asked: Asked, state: &UiState) -> ViewOutcome {
+        match asked {
+            Asked::Close => self.menu = None,
+            Asked::Move(index) => self.menu = Some(index),
+            Asked::Run(index) => {
+                self.menu = None;
+                return self.run_menu(menu_items(state)[index].action, state);
+            }
+            Asked::Nothing => {}
+        }
+        ViewOutcome::Redraw
+    }
+
+    fn run_menu(&mut self, action: MenuAction, state: &UiState) -> ViewOutcome {
+        match action {
+            MenuAction::Download => self.download_selected(state),
+            MenuAction::CopyLink => match self.selected_result(state) {
                 Some(result) => ViewOutcome::Emit(Action::CopyLink(ed2k_link(result))),
                 None => ViewOutcome::Redraw,
             },
             // Dimmed since the cursor rested here (a server switch under the
             // open menu): nothing is sent.
-            MenuItem::SearchRelated => match self.selected_result(state).and_then(|result| {
+            MenuAction::SearchRelated => match self.selected_result(state).and_then(|result| {
                 crate::views::related::action(
                     state,
                     result.file_hash(),
@@ -175,6 +114,24 @@ impl SearchesView {
             },
         }
     }
+
+    /// Draw the open menu, titled by the row it acts on.
+    pub(super) fn draw_menu(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        cursor: usize,
+        state: &UiState,
+        theme: &Theme,
+    ) {
+        let name = self
+            .selected_result(state)
+            .map_or_else(String::new, |result| {
+                result.primary_name().to_display_string()
+            });
+        let items = menu_items(state);
+        menu::draw(frame, area, (&name, &items, cursor), theme, &self.menu_place);
+    }
 }
 
 #[cfg(test)]
@@ -183,13 +140,12 @@ mod tests {
     #[test]
     fn download_is_greyed_with_the_way_on_until_a_directory_is_set() {
         let mut state = session_state();
-        assert_eq!(MenuItem::Download.reason(&state), None);
+        assert_eq!(menu_items(&state)[0].reason, None);
         state.session.download_dir = None;
         assert_eq!(
-            MenuItem::Download.reason(&state),
+            menu_items(&state)[0].reason.as_deref(),
             Some("set a download dir first: press 6")
         );
-        assert!(!MenuItem::Download.selectable(&state));
     }
 
     use crate::state::SearchStatus;

@@ -475,7 +475,7 @@ fn golden_searches_readd_scrolls_in_a_short_frame() {
     });
     view.handle_key(press(KeyCode::Char('G')), &state);
     assert!(
-        shown(&mut view).contains("Esc keep"),
+        shown(&mut view).contains("n no"),
         "{}",
         shown(&mut view)
     );

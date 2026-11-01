@@ -258,7 +258,7 @@ fn golden_settings_remove_confirm_scrolls_in_a_short_frame() {
         },
     );
     view.handle_key(press(KeyCode::Char('G')), &state);
-    assert!(shown(&mut view).contains("keep it"), "{}", shown(&mut view));
+    assert!(shown(&mut view).contains("n no"), "{}", shown(&mut view));
 }
 
 /// Core's refusal of a path sent to be shared comes back after the field

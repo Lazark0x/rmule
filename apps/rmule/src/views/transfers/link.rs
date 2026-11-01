@@ -61,7 +61,7 @@ mod tests {
             menu_items(DownloadStatus::Paused, download_id(2), &state)
                 .iter()
                 .find(|item| item.label == "Copy eD2k link")
-                .and_then(|item| item.reason),
+                .and_then(|item| item.reason.as_deref()),
             Some("no metadata yet"),
         );
         // download_id(3): metadata landed, but its name is empty (Unknown-origin
@@ -70,7 +70,7 @@ mod tests {
             menu_items(DownloadStatus::Completed, download_id(3), &state)
                 .iter()
                 .find(|item| item.label == "Copy eD2k link")
-                .and_then(|item| item.reason),
+                .and_then(|item| item.reason.as_deref()),
             Some("file name unknown"),
         );
     }

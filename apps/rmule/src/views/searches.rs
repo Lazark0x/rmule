@@ -41,7 +41,6 @@ use crate::theme::Theme;
 use crate::words::Sentence;
 use filters::Filters;
 use held::HeldSearches;
-use menu::{draw_menu, menu_step};
 use readd::ReAdd;
 use sort::ResultsTable;
 
@@ -76,8 +75,8 @@ pub struct SearchesView {
     selected: Option<usize>,
     /// What part of the results table is on screen.
     viewport: Viewport,
-    /// What part of the row menu is on screen, in a frame too short for it.
-    menu_viewport: std::cell::Cell<Viewport>,
+    /// Where the row menu is, and what part of it is on screen.
+    menu_place: crate::views::menu::Place,
     /// The results' order. Per table and durable, not per search.
     sort: TableSort<ResultsTable>,
     /// The current search's order under that sort.
@@ -174,23 +173,7 @@ impl SearchesView {
         }
         // 1. The row-action menu is modal: it captures every key until closed.
         if let Some(cursor) = self.menu {
-            return match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.menu = None;
-                    ViewOutcome::Redraw
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    self.menu = Some(menu_step(cursor, 1, state));
-                    ViewOutcome::Redraw
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.menu = Some(menu_step(cursor, -1, state));
-                    ViewOutcome::Redraw
-                }
-                KeyCode::Enter => self.activate_menu(state),
-                // Modal swallows the rest so nothing leaks to the globals.
-                _ => ViewOutcome::Redraw,
-            };
+            return self.menu_key(cursor, key.code, state);
         }
 
         // 2. The expanded filter editor is modal in the same sense the query
@@ -340,12 +323,15 @@ impl SearchesView {
 
     /// Click routing (ADR-0072, Row Selection): the query line focuses the input,
     /// a results header sorts by its column, a results row selects it (both
-    /// unfocus the input). Menu stays keyboard-only in v1.
+    /// unfocus the input). The row menu takes its clicks.
     pub fn handle_click(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
         self.held.bind(state);
-        // The row menu and the filter editor both hold keyboard focus; a click
+        // The filter editor and the re-add confirm hold the keyboard; a click
         // must not yank it out from under either.
-        if self.menu.is_some() || self.filters_open || self.readd.is_some() {
+        if self.menu.is_some() && self.readd.is_none() {
+            return self.click_menu(column, row, state);
+        }
+        if self.filters_open || self.readd.is_some() {
             return ViewOutcome::Ignored;
         }
         if let Some(index) = self.held.hit(column, row) {
@@ -406,7 +392,7 @@ impl SearchesView {
         self.draw_results(frame, results_area, state, theme);
 
         if let Some(cursor) = self.menu {
-            draw_menu(frame, area, (cursor, &self.menu_viewport), state, theme);
+            self.draw_menu(frame, area, cursor, state, theme);
         }
         self.draw_readd(frame, area, theme);
         caret.filter(|_| self.text_open())

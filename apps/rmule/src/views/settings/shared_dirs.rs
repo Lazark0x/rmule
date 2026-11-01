@@ -11,8 +11,6 @@ use std::path::PathBuf;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DirectoryRefusal, DirectoryRole, ScanCommand};
 
 use super::{Row, SettingsView};
@@ -22,11 +20,10 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, confirm_key, scroll_key};
+use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
 use crate::words::Sentence;
 use crate::words::app::{self as words, AddDirectoryRefusal};
 use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
-use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// The section's heading.
 const SECTION: &str = "Shared directories";
@@ -204,26 +201,13 @@ pub(super) fn draw_remove(
     state: &UiState,
     theme: &Theme,
 ) {
-    let (question, consequence) = remove_confirm(dir, state.shared_under(dir));
-    let width = clamp_u16(64).min(area.width);
-    let lines = |width: u16| {
-        let text_w = usize::from(width).saturating_sub(4).max(1);
-        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-        lines.push(Line::from(""));
-        lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-            Span::styled(" stop sharing    ", Style::new().fg(theme.fg)),
-            Span::styled("n", Style::new().fg(theme.accent)),
-            Span::styled(" keep it", Style::new().fg(theme.fg)),
-        ]));
-        lines
+    let (asks, does) = remove_confirm(dir, state.shared_under(dir));
+    let question = Question {
+        title: crate::words::scan::REMOVE_TITLE,
+        asks: &asks,
+        does: &does,
     };
-    Modal::new(crate::words::scan::REMOVE_TITLE, theme)
-        .danger(theme)
-        .padded()
-        .draw_scrolled(frame, area, width, theme, viewport, lines);
+    draw_question(frame, area, &question, theme, viewport);
 }
 
 #[cfg(test)]

@@ -258,7 +258,7 @@ mod tests {
             );
         }
         let mut view = SharedView::default();
-        view.handle_key(press(KeyCode::Char('a')), &state); // show waiters
+        view.handle_key(press(KeyCode::Char('f')), &state); // show waiters
         view.handle_key(press(KeyCode::Tab), &state); // into the peers pane
         for _ in 0..19 {
             view.handle_key(press(KeyCode::Char('j')), &state);

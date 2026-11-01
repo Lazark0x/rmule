@@ -11,53 +11,29 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 
 use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
 use super::NetworksView;
-use super::form::{FORM_W, ServerForm};
+use super::form::ServerForm;
 use super::servers::{next_priority, priority_word, row_name};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{UiState, server_label};
 use crate::theme::Theme;
-use crate::views::modal::{Modal, confirm_key, scroll_key};
+use crate::views::menu::{self, Asked, Item, Place};
+use crate::views::modal::{Modal, Question, confirm_key, draw_question, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
-use crate::words::labels;
-use crate::wrap::{clamp_u16, display_width, labeled_lines, wrap_text, wrapped_lines};
+use crate::words::{app as words, labels};
+use crate::wrap::wrapped_lines;
 
 /// The details modal's width, room for a sentence on a line or two.
 const DETAILS_W: u16 = 64;
 
-/// A row-menu entry. `disabled` carries the greyed reason tag (
-/// visible deferral, never silent absence); `None` means enabled.
-pub(super) struct MenuItem {
-    pub(super) label: String,
-    pub(super) action: MenuAction,
-    pub(super) disabled: Option<String>,
-}
-
-impl MenuItem {
-    fn enabled(label: impl Into<String>, action: MenuAction) -> Self {
-        Self {
-            label: label.into(),
-            action,
-            disabled: None,
-        }
-    }
-
-    /// An item whose action exists but cannot run right now, tagged with why.
-    fn greyed(label: impl Into<String>, action: MenuAction, reason: impl Into<String>) -> Self {
-        Self {
-            label: label.into(),
-            action,
-            disabled: Some(reason.into()),
-        }
-    }
-}
+/// A row-menu entry.
+pub(super) type MenuItem = Item<MenuAction>;
 
 #[derive(Clone, Copy)]
 pub(super) enum MenuAction {
@@ -78,33 +54,16 @@ pub(super) enum MenuAction {
     UpdateFromUrl,
 }
 
-/// The centered row-action menu (spec §3.4 / §4). The last two items are
-/// *list* actions rather than row actions — aMule's server context menu mixes
-/// them the same way — and carry their global key in the label.
+/// The row-action menu (spec §3.4 / §4). The last two items are *list*
+/// actions rather than row actions, aMule's server context menu mixes them the
+/// same way.
 pub(super) struct Menu {
     pub(super) items: Vec<MenuItem>,
     pub(super) sel: usize,
-    /// What part of the menu is on screen, in a frame too short for it.
-    pub(super) viewport: Cell<Viewport>,
-}
-
-impl Menu {
-    /// Move the selection to the next/previous *enabled* item, wrapping —
-    /// greyed items are skipped, never landed on.
-    fn step(&mut self, forward: bool) {
-        let n = self.items.len();
-        for k in 1..=n {
-            let idx = if forward {
-                (self.sel + k) % n
-            } else {
-                (self.sel + n - k) % n
-            };
-            if self.items[idx].disabled.is_none() {
-                self.sel = idx;
-                return;
-            }
-        }
-    }
+    /// What the title names: the server, or the list with no row selected.
+    pub(super) name: String,
+    /// Where it is, and what part of it is on screen.
+    pub(super) place: Place,
 }
 
 /// The Remove-server confirm modal (one of the spec's exactly-three
@@ -117,59 +76,8 @@ pub(super) struct Confirm {
 }
 
 pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Theme) {
-    // Greedy width: every item whole when the frame allows, wrapped under its
-    // own indent when it does not.
-    let natural = menu
-        .items
-        .iter()
-        .map(|item| {
-            1 + display_width(&item.label)
-                + item
-                    .disabled
-                    .as_ref()
-                    .map_or(0, |reason| display_width(reason) + 1)
-        })
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let width = clamp_u16(natural.max(48)).min(area.width);
-    let rows = |width: u16| -> Vec<Vec<Line<'static>>> {
-        let inner_w = usize::from(width).saturating_sub(2).max(1);
-        menu.items
-            .iter()
-            .enumerate()
-            .map(|(i, item)| match item.disabled.as_deref() {
-                None => {
-                    let style = if i == menu.sel {
-                        Style::new().fg(theme.bg).bg(theme.accent)
-                    } else {
-                        Style::new().fg(theme.fg)
-                    };
-                    // Full-width selection bar: pad each wrapped line out.
-                    wrap_text(&format!(" {}", item.label), inner_w)
-                        .into_iter()
-                        .map(|part| Line::styled(format!("{part:<inner_w$}"), style))
-                        .collect::<Vec<_>>()
-                }
-                Some(reason) => labeled_lines(
-                    Span::styled(format!(" {} ", item.label), theme.dim_text()),
-                    reason,
-                    theme.dim_text(),
-                    inner_w
-                        .saturating_sub(display_width(&item.label) + 2)
-                        .max(1),
-                ),
-            })
-            .collect()
-    };
-    Modal::new(" Server actions ", theme).draw_list(
-        frame,
-        area,
-        (width, menu.sel),
-        theme,
-        &menu.viewport,
-        rows,
-    );
+    let shown = (menu.name.as_str(), menu.items.as_slice(), menu.sel);
+    menu::draw(frame, area, shown, theme, &menu.place);
 }
 
 /// The selected server's details: every sentence the table has no room for,
@@ -191,7 +99,7 @@ pub(super) fn draw_details(
             .collect::<Vec<_>>()
     };
     let title = format!(" {} ", super::servers::row_name(row));
-    Modal::new(title, theme).draw_scrolled(
+    Modal::new(title, theme).closes().draw_scrolled(
         frame,
         area,
         DETAILS_W.min(area.width),
@@ -202,40 +110,12 @@ pub(super) fn draw_details(
 }
 
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
-    let width = FORM_W.min(area.width);
-    let lines = |width: u16| {
-        let text_w = usize::from(width).saturating_sub(2).max(1);
-        // Both prose lines wrap: a long server name grows the modal.
-        let mut lines = wrapped_lines(
-            &format!(
-                "Remove '{}' ({})?",
-                confirm.name,
-                server_label(&confirm.server)
-            ),
-            text_w,
-            Style::new().fg(theme.fg),
-        );
-        // aMule's own posture, which core implements: the list entry goes, the
-        // session does not (ADR-0080).
-        lines.extend(wrapped_lines(
-            "The list entry goes; a session connected to it stays up.",
-            text_w,
-            theme.dim_text(),
-        ));
-        lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled("y", Style::new().fg(theme.accent)),
-            Span::styled(" confirm    ", Style::new().fg(theme.fg)),
-            Span::styled("Esc", Style::new().fg(theme.accent)),
-            Span::styled(" abort", Style::new().fg(theme.fg)),
-        ]));
-        lines
+    let question = Question {
+        title: labels::REMOVE_TITLE,
+        asks: &words::remove_one(&confirm.name, &server_label(&confirm.server)),
+        does: words::REMOVE_DOES,
     };
-
-    Modal::new(" Remove server ", theme)
-        .danger(theme)
-        .at_least(6)
-        .draw_scrolled(frame, area, width, theme, &confirm.viewport, lines);
+    draw_question(frame, area, &question, theme, &confirm.viewport);
 }
 
 impl NetworksView {
@@ -265,54 +145,39 @@ impl NetworksView {
     /// label states what activating it will do and every greyed item states
     /// why it will not.
     pub(super) fn open_menu(&mut self, state: &UiState) -> ViewOutcome {
-        let update = if state.server_list_updating {
-            MenuItem::greyed(
-                labels::UPDATE_LIST,
-                MenuAction::UpdateFromUrl,
-                "(update in flight)",
-            )
-        } else {
-            MenuItem::enabled(labels::UPDATE_LIST, MenuAction::UpdateFromUrl)
-        };
+        let update = Item::new(labels::UPDATE_LIST, MenuAction::UpdateFromUrl)
+            .keyed('U')
+            .greyed(state.server_list_updating.then_some("update in flight"));
         let list_items = [
-            MenuItem::enabled(labels::ADD_SERVER, MenuAction::AddServer),
+            Item::new(labels::ADD_SERVER, MenuAction::AddServer).keyed('a'),
             update,
         ];
 
         let Some(row) = self.selected(state) else {
             // No row: only the list-level actions are meaningful, and the row
             // actions say so instead of vanishing.
+            let none = Some("no server selected");
             let mut items = vec![
-                MenuItem::greyed(labels::CONNECT, MenuAction::Connect, "(no server selected)"),
-                MenuItem::greyed(
-                    labels::COPY_SERVER_LINK,
-                    MenuAction::CopyLink,
-                    "(no server selected)",
-                ),
+                Item::new(labels::CONNECT, MenuAction::Connect)
+                    .keyed('c')
+                    .greyed(none),
+                Item::new(labels::COPY_SERVER_LINK, MenuAction::CopyLink).greyed(none),
             ];
             items.extend(list_items);
-            let sel = items
-                .iter()
-                .position(|item| item.disabled.is_none())
-                .unwrap_or(0);
-            self.menu = Some(Menu {
-                items,
-                sel,
-                viewport: Cell::default(),
-            });
+            self.show_menu(items, labels::SERVER_LIST.to_string());
             return ViewOutcome::Redraw;
         };
 
         // The row the operator's intent stands on offers Disconnect where the
         // others offer Connect: one place, the action that can act.
         let connect = if crate::views::is_remaking(state, &row.server.endpoint) {
-            MenuItem::enabled(labels::STOP_RECONNECTING, MenuAction::Disconnect)
+            Item::new(labels::STOP_RECONNECTING, MenuAction::Disconnect)
         } else if crate::views::is_dialling(state, &row.server.endpoint) {
-            MenuItem::enabled(labels::STOP_CONNECTING, MenuAction::Disconnect)
+            Item::new(labels::STOP_CONNECTING, MenuAction::Disconnect)
         } else if crate::views::is_ours(state, &row.server.endpoint) {
-            MenuItem::enabled(labels::DISCONNECT, MenuAction::Disconnect)
+            Item::new(labels::DISCONNECT, MenuAction::Disconnect)
         } else {
-            MenuItem::enabled(labels::CONNECT, MenuAction::Connect)
+            Item::new(labels::CONNECT, MenuAction::Connect)
         };
         let static_label = if row.server.is_static {
             labels::UNPIN
@@ -327,57 +192,68 @@ impl NetworksView {
         );
 
         let mut items = vec![
-            connect,
-            MenuItem::enabled(labels::COPY_SERVER_LINK, MenuAction::CopyLink),
-            MenuItem::enabled(labels::REMOVE, MenuAction::Remove),
-            MenuItem::enabled(static_label, MenuAction::ToggleStatic),
-            MenuItem::enabled(priority_label, MenuAction::CyclePriority),
-            MenuItem::enabled(labels::DETAILS, MenuAction::Details),
+            connect.keyed('c'),
+            Item::new(labels::COPY_SERVER_LINK, MenuAction::CopyLink),
+            Item::new(labels::REMOVE, MenuAction::Remove).keyed('x'),
+            Item::new(static_label, MenuAction::ToggleStatic),
+            Item::new(priority_label, MenuAction::CyclePriority),
+            Item::new(labels::DETAILS, MenuAction::Details).keyed('d'),
         ];
         items.extend(list_items);
-        let sel = items
-            .iter()
-            .position(|item| item.disabled.is_none())
-            .unwrap_or(0);
-        self.menu = Some(Menu {
-            items,
-            sel,
-            viewport: Cell::default(),
-        });
+        let name = row_name(row);
+        self.show_menu(items, name);
         ViewOutcome::Redraw
     }
 
+    fn show_menu(&mut self, items: Vec<MenuItem>, name: String) {
+        self.menu = Some(Menu {
+            sel: menu::first_enabled(&items),
+            items,
+            name,
+            place: Place::default(),
+        });
+    }
+
     pub(super) fn handle_menu_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.menu = None;
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.step(true);
+        let Some(open) = self.menu.as_ref() else {
+            return ViewOutcome::Ignored;
+        };
+        let asked = menu::key(&open.items, open.sel, key.code);
+        self.answer_menu(asked, state)
+    }
+
+    /// A click on the open menu: an item runs, outside closes.
+    pub(super) fn click_menu(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
+        let Some(open) = self.menu.as_ref() else {
+            return ViewOutcome::Ignored;
+        };
+        let asked = open.place.click(&open.items, column, row);
+        self.answer_menu(asked, state)
+    }
+
+    fn answer_menu(&mut self, asked: Asked, state: &UiState) -> ViewOutcome {
+        match asked {
+            Asked::Close => self.menu = None,
+            Asked::Move(index) => {
+                if let Some(open) = self.menu.as_mut() {
+                    open.sel = index;
                 }
-                ViewOutcome::Redraw
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(menu) = self.menu.as_mut() {
-                    menu.step(false);
+            Asked::Run(index) => {
+                if let Some(open) = self.menu.as_mut() {
+                    open.sel = index;
                 }
-                ViewOutcome::Redraw
+                return self.activate_menu(state);
             }
-            KeyCode::Enter => self.activate_menu(state),
-            // The menu swallows everything else — it is modal.
-            _ => ViewOutcome::Redraw,
+            Asked::Nothing => {}
         }
+        ViewOutcome::Redraw
     }
 
     fn activate_menu(&mut self, state: &UiState) -> ViewOutcome {
         let Some(menu) = self.menu.as_ref() else {
             return ViewOutcome::Ignored;
         };
-        if menu.items[menu.sel].disabled.is_some() {
-            return ViewOutcome::Redraw; // `step` never rests here; belt and braces.
-        }
         let action = menu.items[menu.sel].action; // Copy; releases the borrow.
         self.menu = None;
         match action {
@@ -402,14 +278,7 @@ impl NetworksView {
                 server.host(),
                 server.port()
             ))),
-            MenuAction::Remove => {
-                self.confirm = Some(Confirm {
-                    name: row_name(row),
-                    server,
-                    viewport: std::cell::Cell::default(),
-                });
-                ViewOutcome::Redraw
-            }
+            MenuAction::Remove => self.ask_remove(state),
             MenuAction::ToggleStatic => ViewOutcome::Emit(Action::Command(
                 CoreCommand::ServerList(ServerListCommand::SetServerStatic {
                     server,
@@ -426,6 +295,19 @@ impl NetworksView {
             // Handled above, before the row lookup.
             MenuAction::AddServer | MenuAction::UpdateFromUrl => ViewOutcome::Redraw,
         }
+    }
+
+    /// Ask before removing the selected server; with no row, nothing to ask.
+    pub(super) fn ask_remove(&mut self, state: &UiState) -> ViewOutcome {
+        let Some(row) = self.selected(state) else {
+            return ViewOutcome::Ignored;
+        };
+        self.confirm = Some(Confirm {
+            name: row_name(row),
+            server: row.server.endpoint.clone(),
+            viewport: Cell::default(),
+        });
+        ViewOutcome::Redraw
     }
 
     pub(super) fn handle_confirm_key(&mut self, key: KeyEvent) -> ViewOutcome {

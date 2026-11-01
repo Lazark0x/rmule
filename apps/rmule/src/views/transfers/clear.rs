@@ -6,8 +6,6 @@
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId};
 
 use super::{Overlay, TransfersView};
@@ -15,9 +13,8 @@ use crate::action::Action;
 use crate::state::{DownloadStatus, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, confirm_key, scroll_key};
-use crate::words::readd as readd_words;
-use crate::wrap::wrapped_lines;
+use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
+use crate::words::{labels, readd as readd_words};
 
 /// The downloads the list shows as completed, in id order.
 pub(super) fn completed_ids(state: &UiState) -> Vec<DownloadId> {
@@ -78,40 +75,12 @@ impl TransfersView {
         theme: &Theme,
     ) {
         let count = counted.len();
-        let width = 46u16.min(area.width);
-        let lines = |width: u16| {
-            let text_w = usize::from(width).saturating_sub(2).max(1);
-            let mut lines: Vec<Line<'static>> = Vec::new();
-            lines.extend(wrapped_lines(
-                &readd_words::clear_question(count),
-                text_w,
-                Style::new().fg(theme.fg),
-            ));
-            lines.extend(wrapped_lines(
-                readd_words::clear_keeps(count),
-                text_w,
-                theme.dim_text(),
-            ));
-            lines.push(Line::raw(""));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "y",
-                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" clear    ", Style::new().fg(theme.fg)),
-                Span::styled(
-                    "Esc",
-                    Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" abort", Style::new().fg(theme.fg)),
-            ]));
-            lines
+        let question = Question {
+            title: labels::CLEAR_TITLE,
+            asks: &readd_words::clear_question(count),
+            does: readd_words::clear_keeps(count),
         };
-
-        Modal::new(" Clear completed ", theme)
-            .flash_title(theme)
-            .at_least(6)
-            .draw_scrolled(frame, area, width, theme, &self.confirm_viewport, lines);
+        draw_question(frame, area, &question, theme, &self.confirm_viewport);
     }
 }
 
@@ -261,6 +230,6 @@ mod tests {
             let area = frame.area();
             view.draw(frame, area, &state, &Theme::default_dark(), now());
         });
-        assert!(end.contains("Esc abort"), "{end}");
+        assert!(end.contains("n no"), "{end}");
     }
 }

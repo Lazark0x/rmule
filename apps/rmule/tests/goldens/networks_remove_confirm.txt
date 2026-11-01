@@ -5,13 +5,13 @@
 │   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
 │   —                       192.168.4.4      4661  soon  soon  soon soon Norm│
 │                                                                            │
-│Off-scree┌ Remove server ─────────────────────────────────────────┐         │
-│Health: a│Remove 'eDonkey Prime' (10.0.0.1:4661)?                 │         │
-└ too narr│The list entry goes; a session connected to it stays up.│── 1 / 4 ┘
-┌ Log (0) │                                                        │ K start ┐
-│nothing h│y confirm    Esc abort                                  │         │
-│         └────────────────────────────────────────────────────────┘)        │
-│                                    ││Contacts  —                           │
+│Off-sc┌ Remove server ───────────────────────────────────────────────┐      │
+│Health│ Remove eDonkey Prime (10.0.0.1:4661)?                        │      │
+└ too n│                                                              │1 / 4 ┘
+┌ Log (│ The list entry goes; a session connected to it stays up.     │start ┐
+│nothin│                                                              │      │
+│      │ y yes    n no                                                │      │
+│      └──────────────────────────────────────────────────────────────┘      │
 │                                    ││Firewall  — (never run)               │
 │                                    ││UDP       — (never run)               │
 │                                    ││Keywords  —                           │

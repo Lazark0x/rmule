@@ -68,8 +68,8 @@ fn the_connected_row_offers_disconnect() {
     let mut view = NetworksView::new();
     view.handle_key(press(KeyCode::Char('m')), &state);
     let menu = view.menu.as_ref().unwrap();
-    assert_eq!(menu.items[0].label, "Disconnect (c)");
-    assert_eq!(menu.items[0].disabled, None);
+    assert_eq!(menu.items[0].label, "Disconnect");
+    assert_eq!(menu.items[0].reason, None);
     assert!(
         !menu_labels(&view)
             .iter()
@@ -272,5 +272,5 @@ fn golden_networks_remove_confirm_scrolls_in_a_short_frame() {
         view.draw(frame, area, &state, &Theme::default_dark(), now);
     });
     view.handle_key(press(KeyCode::Char('G')), &state);
-    assert!(shown(&mut view).contains("Esc abort"));
+    assert!(shown(&mut view).contains("n no"));
 }

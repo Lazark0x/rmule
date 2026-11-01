@@ -4,14 +4,14 @@
 │  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
 │  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
 │                                                                            │
-│            ┌ Actions — 0707070707… ───────────────────────────┐            │
-│            │▸ Pause                                           │            │
-│            │  Cancel…                                         │            │
-│            │  Show file details                               │            │
-│            │  Preview  details not known yet                  │            │
-│Off-screen: │  Copy eD2k link                                  │            │
-└ too narrow │  Search related  not connected                   │───── 1 / 3 ┘
-┌ Sources · b└─────────────────────────────────────────── 1 / 6 ┘rse  z zoom ┐
+│              ┌ bunny.mp4 ───────────────────────────────────┐              │
+│              │▸ Pause (p)                                   │              │
+│              │  Cancel… (x)                                 │              │
+│              │  Show file details (d)                       │              │
+│              │  Preview (v)  details not known yet          │              │
+│Off-screen: Do│  Copy eD2k link                              │              │
+└ too narrow to│  Search related  not connected               │─────── 1 / 3 ┘
+┌ Sources · bun└─────────────────────────────────────── 1 / 6 ┘verse  z zoom ┐
 │  Source ▲                   Software            Phase                 Speed│
 │▸ 10.0.0.1:4662              aMule v2.3.3        recv p4           98.7 KB/s│
 │  10.0.0.2:4662 · remembered —                   queued #3                 —│

@@ -5,13 +5,13 @@
 │  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
 │                                                                            │
 │                                                                            │
-│               ┌ Clear completed ───────────────────────────┐               │
-│               │Clear 1 completed download from the list?   │               │
-│               │The file stays on disk and shared.          │               │
-│               │                                            │               │
-│Off-screen: Don│y clear    Esc abort                        │               │
-└ too narrow to └────────────────────────────────────────────┘──────── 1 / 3 ┘
-┌ Sources · bunny.mp4 ──────────────────────────── s sort  S reverse  z zoom ┐
+│      ┌ Clear completed ─────────────────────────────────────────────┐      │
+│      │ Clear 1 completed download from the list?                    │      │
+│      │                                                              │      │
+│      │ The file stays on disk and shared.                           │      │
+│Off-sc│                                                              │      │
+└ too n│ y yes    n no                                                │1 / 3 ┘
+┌ Sourc└──────────────────────────────────────────────────────────────┘ zoom ┐
 │  Source ▲                   Software            Phase                 Speed│
 │▸ 10.0.0.1:4662              aMule v2.3.3        recv p4           98.7 KB/s│
 │  10.0.0.2:4662 · remembered —                   queued #3                 —│

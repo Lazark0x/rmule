@@ -175,6 +175,7 @@ impl TransfersView {
         };
         Modal::new(" File details ", theme)
             .flash_title(theme)
+            .closes()
             .draw_scrolled(frame, area, width, theme, &self.details_viewport, lines);
     }
 }

@@ -18,6 +18,7 @@
 //! the terminal's cursor there; `text_open` says a field holds the keyboard,
 //! so the Key Gate passes it the chords a line editor binds.
 
+pub(crate) mod menu;
 pub(crate) mod modal;
 pub mod networks;
 pub(crate) mod off_screen;

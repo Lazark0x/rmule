@@ -133,6 +133,10 @@ pub fn completed_line(download_id: DownloadId, final_path: &Path) -> String {
 
 /// Transfers' clear with nothing completed to clear.
 pub const NOTHING_TO_CLEAR: Sentence = Sentence::fixed("no completed downloads to clear");
+/// Cancel on a completed row.
+pub const NOTHING_TO_CANCEL: Sentence =
+    Sentence::fixed("completed: the file is kept and shared (m ▸ Clear from list)");
+
 /// Pause on a completed row.
 pub const NOTHING_TO_PAUSE: Sentence =
     Sentence::fixed("completed: nothing to pause (m ▸ Clear from list)");

@@ -405,7 +405,7 @@ mod tests {
             .iter()
             .find(|item| item.label.starts_with("Update"))
             .expect("update item");
-        assert_eq!(update.disabled.as_deref(), Some("(update in flight)"));
+        assert_eq!(update.reason.as_deref(), Some("update in flight"));
     }
 
     #[test]

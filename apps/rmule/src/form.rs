@@ -222,6 +222,9 @@ pub(crate) struct Form {
     /// The last commit's rejection, shown under the fields until the next one.
     /// The typing stays: a validation failure must never cost an entry.
     pub error: Option<Sentence>,
+    /// `error` asks a second `Enter` rather than refusing: it wears the
+    /// warning's mark, never the refusal's.
+    pub asking: bool,
     /// A word about the focused field that refuses nothing, shown where a
     /// rejection is until the next key.
     pub note: Option<Sentence>,
@@ -235,6 +238,7 @@ impl Form {
             focus,
             error: None,
             note: None,
+            asking: false,
         }
     }
 
@@ -616,10 +620,15 @@ impl Form {
             // Glyph-marked, not just red: no fact in this UI is carried by
             // colour alone (spec §5), and a rejection is the last one that
             // should be.
+            let (mark, colour) = if self.asking {
+                ("!", theme.warn)
+            } else {
+                ("✗", theme.bad)
+            };
             lines.extend(wrapped_lines(
-                &format!(" ✗ {error}"),
+                &format!(" {mark} {error}"),
                 width,
-                Style::new().fg(theme.bad),
+                Style::new().fg(colour),
             ));
             rows.resize(lines.len(), None);
         } else if let Some(note) = &self.note {

@@ -5,8 +5,8 @@
 use std::cell::Cell;
 
 use ratatui::Frame;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 
 use crate::theme::Theme;
 use crate::views::modal::Modal;
@@ -15,12 +15,6 @@ use crate::wrap::wrapped_lines;
 
 /// Draw the confirm over the whole frame, saying what `cost` a quit has.
 pub(super) fn draw(frame: &mut Frame, cost: words::QuitCost, theme: &Theme) {
-    let key = |text: &'static str| {
-        Span::styled(
-            text,
-            Style::new().fg(theme.accent).add_modifier(Modifier::BOLD),
-        )
-    };
     let lines = |width: u16| {
         let text_w = usize::from(width).saturating_sub(2).max(1);
         let mut lines = wrapped_lines(
@@ -29,12 +23,7 @@ pub(super) fn draw(frame: &mut Frame, cost: words::QuitCost, theme: &Theme) {
             Style::new().fg(theme.fg),
         );
         lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            key("y"),
-            Span::styled(words::QUIT_YES, Style::new().fg(theme.fg)),
-            key("Esc"),
-            Span::styled(words::QUIT_NO, Style::new().fg(theme.fg)),
-        ]));
+        lines.push(crate::views::modal::answer_line(theme));
         lines
     };
     let area = frame.area();

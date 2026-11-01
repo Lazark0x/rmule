@@ -253,7 +253,7 @@ mod tests {
     fn every_peer_column_orders_by_its_value_with_the_pane_focused() {
         let state = four_peers();
         let mut view = SharedView::default();
-        view.handle_key(press(KeyCode::Char('a')), &state); // every peer
+        view.handle_key(press(KeyCode::Char('f')), &state); // every peer
         view.handle_key(press(KeyCode::Tab), &state);
         assert_eq!(octets(&view, &state), [2, 3, 9, 10]);
         let expect = [
@@ -293,7 +293,7 @@ mod tests {
     fn the_peer_cursor_follows_its_peer_as_the_queue_moves() {
         let mut state = four_peers();
         let mut view = SharedView::default();
-        view.handle_key(press(KeyCode::Char('a')), &state);
+        view.handle_key(press(KeyCode::Char('f')), &state);
         view.handle_key(press(KeyCode::Tab), &state);
         while view.peer_sort.column() != PeerColumn::State {
             view.handle_key(press(KeyCode::Char('s')), &state);

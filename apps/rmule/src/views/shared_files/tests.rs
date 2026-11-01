@@ -11,7 +11,7 @@ use crate::fixture::*;
 fn the_peers_pane_meters_slot_holders_and_dashes_queued_peers() {
     let state = metered();
     let mut view = SharedView::default();
-    view.handle_key(press(KeyCode::Char('a')), &state); // filter off: queued peers show too
+    view.handle_key(press(KeyCode::Char('f')), &state); // filter off: queued peers show too
     let rendered =
         crate::golden::render_to_lines(golden_area().width, golden_area().height, |frame| {
             view.draw(frame, golden_area(), &state, &theme(), Instant::now());
@@ -47,7 +47,7 @@ fn the_active_only_filter_defaults_on_and_a_toggles_it() {
     );
 
     assert!(matches!(
-        view.handle_key(press(KeyCode::Char('a')), &state),
+        view.handle_key(press(KeyCode::Char('f')), &state),
         ViewOutcome::Redraw
     ));
     assert!(!view.active_only);
@@ -58,7 +58,7 @@ fn the_active_only_filter_defaults_on_and_a_toggles_it() {
     );
 
     // Back on: the two queued peers are hidden, and counted.
-    view.handle_key(press(KeyCode::Char('a')), &state);
+    view.handle_key(press(KeyCode::Char('f')), &state);
     let hidden = state.upload_peers.len() - view.visible_peers(&state).len();
     assert_eq!(hidden, 2);
 }
@@ -179,7 +179,7 @@ fn golden_shared_filter_off() {
         |frame| {
             let state = served_files();
             let mut view = SharedView::default();
-            view.handle_key(press(KeyCode::Char('a')), &state); // toggle the filter off
+            view.handle_key(press(KeyCode::Char('f')), &state); // toggle the filter off
             view.draw(frame, golden_area(), &state, &theme(), Instant::now());
         },
     );
@@ -196,7 +196,7 @@ fn golden_shared_upload_speeds() {
         |frame| {
             let state = metered();
             let mut view = SharedView::default();
-            view.handle_key(press(KeyCode::Char('a')), &state); // filter off: show the queue too
+            view.handle_key(press(KeyCode::Char('f')), &state); // filter off: show the queue too
             view.draw(frame, golden_area(), &state, &theme(), Instant::now());
         },
     );
@@ -260,5 +260,5 @@ fn golden_shared_unshare_confirm_scrolls_in_a_short_frame() {
         },
     );
     view.handle_key(press(KeyCode::Char('G')), &state);
-    assert!(shown(&mut view).contains("Esc cancel"));
+    assert!(shown(&mut view).contains("n no"));
 }

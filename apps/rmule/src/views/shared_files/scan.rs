@@ -9,19 +9,16 @@ use std::collections::BTreeSet;
 
 use crate::row_selection::viewport::Viewport;
 use crate::table_sort::RowMove;
-use crate::views::modal::{Modal, scroll_key};
+use crate::views::modal::{Question, draw_question, scroll_key};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, ScanCommand};
 
 use super::ViewOutcome;
 use crate::action::Action;
 use crate::state::{ScanConsent, UiState};
 use crate::theme::Theme;
-use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// The oldest open question this view has not answered; with `adding_only`,
 /// only a directory being added.
@@ -79,24 +76,12 @@ pub(crate) fn draw_consent(
         consent.adding,
         &consent.replaces,
     );
-    let width = clamp_u16(64).min(area.width);
-    let lines = |width: u16| {
-        let text_w = usize::from(width).saturating_sub(4).max(1);
-        let mut lines = wrapped_lines(&question, text_w, Style::new().fg(theme.fg));
-        lines.push(Line::from(""));
-        lines.extend(wrapped_lines(&consequence, text_w, theme.dim_text()));
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("y", Style::new().fg(theme.bad).add_modifier(Modifier::BOLD)),
-            Span::styled(" share    ", Style::new().fg(theme.fg)),
-            Span::styled("n", Style::new().fg(theme.accent)),
-            Span::styled(" keep private", Style::new().fg(theme.fg)),
-        ]));
-        lines
+    let question = Question {
+        title,
+        asks: &question,
+        does: &consequence,
     };
-    Modal::new(title, theme)
-        .padded()
-        .draw_scrolled(frame, area, width, theme, viewport, lines);
+    draw_question(frame, area, &question, theme, viewport);
 }
 
 #[cfg(test)]
@@ -236,7 +221,7 @@ mod tests {
         });
         view.handle_key(press(KeyCode::Char('G')), &state);
         assert!(
-            shown(&mut view).contains("keep private"),
+            shown(&mut view).contains("n no"),
             "{}",
             shown(&mut view)
         );

@@ -10,7 +10,7 @@
 │  distro_h│You have this file, at                                │ CD-Images│
 │  song_mid│/home/me/Downloads/clip_low.avi                       │ Audio    │
 │          │                                                      │          │
-│          │y download again    Esc keep                          │          │
+│          │y yes    n no                                         │          │
 │          └──────────────────────────────────────────────────────┘          │
 │                                                                            │
 │                                                                            │

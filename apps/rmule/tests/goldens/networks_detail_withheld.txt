@@ -19,7 +19,7 @@
 │       │Shares withheld from this server: it answers related searches,│       │
 │       │which would tell anyone which files you share together. Kad   │       │
 │Off-scr│and other servers still have them                             │       │
-│Health:└──────────────────────────────────────────────────────────────┘       │
+│Health:└─────────────────────────────────────────────────── Esc close ┘       │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 1 / 4 ┘
 ┌ Log (0) ───────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │

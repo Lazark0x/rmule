@@ -696,6 +696,7 @@ impl SettingsView {
         theme: &Theme,
         _now: Instant,
     ) -> Option<Position> {
+        self.form.asking = self.warned_dir.is_some();
         self.sync(state);
         let hint = if self.editing && self.form.focus_is_directory() {
             " Tab complete  Enter save  Esc cancel "
