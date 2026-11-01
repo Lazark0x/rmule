@@ -5,13 +5,13 @@
 
 use std::time::Instant;
 
-use rmule_primitives::PeerEndpoint;
+use rmule_primitives::{PeerCrypt, PeerEndpoint};
 
 use super::SourceBook;
 use super::record::{Record, Stage};
 use super::standing::Standing;
 use crate::adapters::CallbackKey;
-use crate::download::queue_standings::{Place, Role};
+use crate::download::queue_standings::{Place, PlaceChange, PlaceId, Role};
 
 /// The peer's last ask, as `role` knows it.
 const fn asked_at(role: Role) -> Option<Instant> {
@@ -45,14 +45,28 @@ impl SourceBook {
         })
     }
 
-    /// Every place the book's records hold: each record holding a standing,
-    /// waiting in the RemoteQueued stage or at the live worker whose slot ask
-    /// earned it, and each record still in a lane (ADR-0090).
-    pub(crate) fn places(&self) -> Vec<Place> {
-        self.records
-            .values()
-            .filter_map(|record| self.place(record))
+    /// What moved in the places the book's records hold since the last ask: a
+    /// place is each record holding a standing, waiting in the RemoteQueued
+    /// stage or at the live worker whose slot ask earned it, and each record
+    /// still in a lane (ADR-0090). Reads only the records touched.
+    pub(crate) fn place_changes(&mut self) -> Vec<PlaceChange> {
+        let touched = self.records.take_touched();
+        touched
+            .into_iter()
+            .map(|id| PlaceChange {
+                id: PlaceId(id.0),
+                place: self.records.get(&id).and_then(|record| self.place(record)),
+            })
             .collect()
+    }
+
+    /// What `crypt` says of `endpoint` is noted, and the record there may
+    /// carry a name it did not.
+    pub(super) fn note_crypt(&mut self, endpoint: PeerEndpoint, crypt: PeerCrypt) {
+        self.run.note_crypt(endpoint, crypt);
+        if let Some(id) = self.aliases.endpoint(endpoint) {
+            self.records.touch(id);
+        }
     }
 
     /// The place the record a fill just took to dial at `endpoint` would hold:

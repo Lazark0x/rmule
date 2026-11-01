@@ -639,7 +639,8 @@ _Avoid_: saved standing (a run keeps no standing past its end)
 rmule's one place in a remote uploader's queue, per peer across the **Download Set**, as aMule's
 uploader holds one queue entry per client and re-targets it between files (`SetUploadFileID`).
 The core's **Queue Standings** file every record holding a standing under its **Ask Names**, each
-run republishing its places after every step, and keep per name a stamp of the peer's last ask.
+run publishing what moved in its places after every step, and keep per name a stamp of the peer's
+last ask. A publication costs the records that moved and the stamps falling due, never the table.
 Held by the download whose **Slot Ask** the peer read last (one that may need a part of the peer
 before one holding no part we need): its record alone re-asks, the ping naming its file or the TCP
 full ask, once per cycle. Every other download with a record at the peer waits on it — aMule's

@@ -10,7 +10,7 @@ use rmule_peer::PeerIdentity;
 use rmule_primitives::{Ipv4Endpoint, Ipv6Endpoint, PeerEndpoint, UserHash};
 
 use super::asks::AskName;
-use super::record::{DialRoad, Heard, Lane, Live, RecordId, Stage};
+use super::record::{DialRoad, Heard, Lane, Live, Record, RecordId, Stage};
 use super::road::PendingRoad;
 use super::standing::ReaskFacts;
 use super::{Adopted, DialEnd, MergeEnd, NextDial, Release, SourceBook, WorkerEnd};
@@ -622,11 +622,26 @@ impl SourceBook {
     /// since the hello is the newest statement of where the buddy is.
     fn hello_buddy(&mut self, hash: UserHash, buddy_udp: Ipv4Endpoint) {
         self.run.note_hello_buddy(hash, buddy_udp);
-        self.records
-            .values_mut()
-            .filter_map(|record| record.candidate.as_mut())
-            .filter(|candidate| candidate.user_hash == Some(hash))
-            .for_each(|candidate| candidate.learn_hello_buddy(buddy_udp));
+        let named = |record: &Record| {
+            record
+                .candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.user_hash == Some(hash))
+        };
+        let ids: Vec<RecordId> = self
+            .records
+            .iter()
+            .filter_map(|(id, record)| named(record).then_some(*id))
+            .collect();
+        for id in ids {
+            if let Some(candidate) = self
+                .records
+                .get_mut(&id)
+                .and_then(|record| record.candidate.as_mut())
+            {
+                candidate.learn_hello_buddy(buddy_udp);
+            }
+        }
     }
 
     /// The live worker at `endpoint` is proven to have served this file bad

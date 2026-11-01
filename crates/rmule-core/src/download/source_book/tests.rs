@@ -577,3 +577,36 @@ fn the_quota_spares_a_sources_own_word_ours_and_a_row_already_held() {
     let ours = sight(&mut book, told(Informant::Own, [203, 0, 113, 9], 5001));
     assert!(matches!(ours, Sighted::Pooled(_)), "{ours:?}");
 }
+
+/// A book's publication reads the records reached since the last one, and a
+/// record that left is told as gone.
+#[test]
+fn place_changes_name_only_what_was_reached() {
+    let mut book = empty_book();
+    sight(&mut book, plain(1));
+    sight(&mut book, plain(2));
+    assert_eq!(book.place_changes().len(), 2);
+    assert!(book.place_changes().is_empty(), "nothing moved since");
+
+    sight(&mut book, plain(3));
+    let changes = book.place_changes();
+    assert_eq!(changes.len(), 1);
+    assert!(changes[0].place.is_some());
+}
+
+/// A User Hash stated for an endpoint is a name of the record there, though
+/// the record itself did not change.
+#[test]
+fn a_crypt_stated_for_a_record_s_endpoint_moves_its_place() {
+    let mut book = empty_book();
+    sight(&mut book, plain(1));
+    book.place_changes();
+
+    let hash = UserHash::from_bytes([9; 16]);
+    book.note_crypt(high(1), PeerCrypt::from_record(None, Some(hash)));
+
+    let changes = book.place_changes();
+    assert_eq!(changes.len(), 1);
+    let place = changes[0].place.as_ref().expect("the record stands");
+    assert!(place.names.contains(&AskName::User(hash)));
+}

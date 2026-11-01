@@ -34,6 +34,14 @@ fn pooled() -> Place {
     }
 }
 
+/// `run`'s one record now stands at `place`.
+fn hold(run: &StandingSeat, place: Option<Place>) {
+    run.publish(vec![PlaceChange {
+        id: PlaceId(0),
+        place,
+    }]);
+}
+
 fn seat(standings: &SharedQueueStandings, id: u64) -> StandingSeat {
     StandingSeat::new(
         Arc::clone(standings),
@@ -49,7 +57,7 @@ fn a_later_run_replaces_what_the_file_left() {
     let t0 = Instant::now();
     let standings = QueueStandings::shared();
     let run = seat(&standings, 1);
-    run.publish(vec![place(Some(t0), false)]);
+    hold(&run, Some(place(Some(t0), false)));
     drop(run);
     let run = seat(&standings, 1);
     assert_eq!(
@@ -60,7 +68,7 @@ fn a_later_run_replaces_what_the_file_left() {
         }
     );
     let later = t0 + Duration::from_secs(1);
-    run.publish(vec![place(Some(later), true)]);
+    hold(&run, Some(place(Some(later), true)));
     drop(run);
     assert_eq!(
         seat(&standings, 1).role(&pooled()),
@@ -80,7 +88,7 @@ fn a_re_add_under_a_new_id_returns_to_the_files_place() {
     let file = FileHash::from_bytes([7; 16]);
     let seat_of = |id| StandingSeat::new(Arc::clone(&standings), DownloadId::from_u64(id), file);
     let run = seat_of(1);
-    run.publish(vec![place(Some(t0), true)]);
+    hold(&run, Some(place(Some(t0), true)));
     drop(run);
     assert_eq!(
         seat_of(2).role(&pooled()),
@@ -98,8 +106,8 @@ fn a_run_with_no_asked_place_leaves_only_the_clock() {
     let t0 = Instant::now();
     let standings = QueueStandings::shared();
     let run = seat(&standings, 1);
-    run.publish(vec![place(Some(t0), true)]);
-    run.publish(Vec::new());
+    hold(&run, Some(place(Some(t0), true)));
+    hold(&run, None);
     drop(run);
     let resumed = seat(&standings, 1);
     assert_eq!(resumed.role(&pooled()), Role::Holds);
@@ -124,8 +132,8 @@ fn the_last_slot_ask_holds_and_a_holder_needing_nothing_yields() {
     let later = t0 + Duration::from_secs(10);
     let standings = QueueStandings::shared();
     let (first, second) = (seat(&standings, 1), seat(&standings, 2));
-    first.publish(vec![place(Some(t0), true)]);
-    second.publish(vec![place(Some(later), true)]);
+    hold(&first, Some(place(Some(t0), true)));
+    hold(&second, Some(place(Some(later), true)));
     assert_eq!(
         first.role(&place(Some(t0), true)),
         Role::Waits {
@@ -134,7 +142,7 @@ fn the_last_slot_ask_holds_and_a_holder_needing_nothing_yields() {
     );
     assert_eq!(second.role(&place(Some(later), true)), Role::Holds);
 
-    second.publish(vec![place(Some(later), false)]);
+    hold(&second, Some(place(Some(later), false)));
     assert_eq!(
         first.role(&place(Some(t0), true)),
         Role::Takes { asked_at: later }
@@ -153,20 +161,20 @@ fn a_pooled_place_outranks_only_a_place_needing_nothing() {
     let t0 = Instant::now();
     let standings = QueueStandings::shared();
     let (holder, lane) = (seat(&standings, 1), seat(&standings, 2));
-    lane.publish(vec![pooled()]);
+    hold(&lane, Some(pooled()));
 
-    holder.publish(vec![place(Some(t0), true)]);
+    hold(&holder, Some(place(Some(t0), true)));
     assert_eq!(holder.role(&place(Some(t0), true)), Role::Holds);
     assert!(matches!(lane.role(&pooled()), Role::Waits { .. }));
 
-    holder.publish(vec![place(Some(t0), false)]);
+    hold(&holder, Some(place(Some(t0), false)));
     assert!(matches!(
         holder.role(&place(Some(t0), false)),
         Role::Waits { .. }
     ));
     assert_eq!(lane.role(&pooled()), Role::Takes { asked_at: t0 });
 
-    holder.publish(vec![pooled()]);
+    hold(&holder, Some(pooled()));
     assert!(lane.role(&pooled()).asks());
     assert!(holder.role(&pooled()).asks());
 }
@@ -180,8 +188,8 @@ fn the_peer_clock_outlives_the_holder_that_stamped_it() {
     let standings = QueueStandings::shared();
     let holder = seat(&standings, 1);
     let waiter = seat(&standings, 2);
-    holder.publish(vec![place(Some(t0), true)]);
-    waiter.publish(vec![place(None, true)]);
+    hold(&holder, Some(place(Some(t0), true)));
+    hold(&waiter, Some(place(None, true)));
     holder.asked(&[peer()], full_ask);
     drop(holder);
     assert_eq!(
@@ -283,10 +291,43 @@ fn a_scored_stamp_stays_until_the_uploaders_purge() {
         4662,
     )))];
     run.asked(&elsewhere, last + STAMP_KEPT + Duration::from_secs(1));
-    run.publish(Vec::new());
+    hold(&run, None);
     assert_eq!(standings.lock().score(&[peer()]), 3);
 
     run.asked(&elsewhere, last + SCORE_KEPT + Duration::from_secs(1));
-    run.publish(Vec::new());
+    hold(&run, None);
     assert_eq!(standings.lock().score(&[peer()]), 0);
+}
+
+/// A stamp's keeping runs from the moment nothing carries its name, read from
+/// its last ask: a place that stopped carrying the name lets it age at once.
+#[test]
+fn a_stamp_ages_only_once_no_place_carries_its_name() {
+    let t0 = Instant::now();
+    let standings = QueueStandings::shared();
+    let run = seat(&standings, 1);
+    let other = seat(&standings, 2);
+    let held = AskName::Endpoint(PeerEndpoint::V4(Ipv4Endpoint::new(
+        Ipv4Addr::new(10, 0, 0, 3),
+        4662,
+    )));
+    hold(&run, Some(place(Some(t0), true)));
+    let past_keeping = t0 + STAMP_KEPT + Duration::from_secs(1);
+    other.asked(&[held], past_keeping);
+    assert!(
+        standings.lock().stamps.contains_key(&peer()),
+        "a carried stamp stays"
+    );
+
+    hold(
+        &run,
+        Some(Place {
+            names: vec![held],
+            ..place(Some(t0), true)
+        }),
+    );
+    assert!(
+        !standings.lock().stamps.contains_key(&peer()),
+        "the place moved off the name, and the stamp was past its keeping"
+    );
 }

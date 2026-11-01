@@ -838,7 +838,7 @@ impl SourceBook {
         record.standing = None;
         record.last_ask = Some(now);
         if let (Some(peer), Some(stated)) = (peer, stated) {
-            self.run.note_crypt(peer, stated);
+            self.note_crypt(peer, stated);
         }
         let Some(record) = self.records.get_mut(&id) else {
             return;

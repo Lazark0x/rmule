@@ -125,11 +125,11 @@ impl DownloadState {
         self.budget.hold(self.sources.slots_in_use());
     }
 
-    /// Republish the places this run's records hold in the node's **Queue
-    /// Standings** (ADR-0107): every record holding a standing. The runner
-    /// calls it from a drain that moved.
-    pub(crate) fn hold_standings(&self) {
-        self.standings.publish(self.sources.places());
+    /// Publish what moved in the places this run's records hold in the node's
+    /// **Queue Standings** (ADR-0107). The runner calls it from a drain that
+    /// moved.
+    pub(crate) fn hold_standings(&mut self) {
+        self.standings.publish(self.sources.place_changes());
     }
 
     /// The fill took `dial`'s record, but another download holds that peer's

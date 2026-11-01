@@ -36,7 +36,7 @@ impl SourceBook {
         if let Some(order) = resolve_family(sighting, gate.dial) {
             let crypt = sighting.peer_crypt();
             for half in order.halves() {
-                self.run.note_crypt(half, crypt);
+                self.note_crypt(half, crypt);
             }
             return self.sight_dialable(order, sighting.user_hash(), sighting.informant());
         }

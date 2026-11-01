@@ -2,7 +2,8 @@
 //! record and no part's state, and a republish walks the whole Source Book, so
 //! the drain and the wake read [`DownloadState::generation`] first.
 //! ADR-0116's seats and ADR-0107's standings still hear every move: a record
-//! that changed moves the number.
+//! that changed moves the number. The standings read only the records that
+//! moved, so a republish moving none costs them nothing.
 
 use std::time::{Duration, Instant};
 

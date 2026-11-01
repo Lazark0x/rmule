@@ -8,10 +8,12 @@
 //! download holds a peer's standing and re-asks it; every other download with
 //! a record there waits on it and asks nothing.
 //!
-//! Each run holds one [`StandingSeat`] and republishes its **places** — every
+//! Each run holds one [`StandingSeat`] and publishes its **places** — every
 //! record holding a standing, and as **Pooled Places** every record still in a
-//! lane, under its **Ask Names** — after every step, never by hand, and stamps
-//! each ping and slot ask as it leaves. A **stamp**
+//! lane, under its **Ask Names** — as they move, after every step, never by
+//! hand, and stamps each ping and slot ask as it leaves. A publication costs
+//! what moved: the records the book touched, and the stamps falling due. A
+//! **stamp**
 //! per name keeps the peer's last ask and the download whose slot ask it last
 //! read, past the place that made it, so a download the standing passes to
 //! asks on the peer's clock. A **Source Handover** (ADR-0090) is a role read
@@ -35,6 +37,10 @@ use rmule_primitives::FileHash;
 
 use crate::download::source_book::{AskName, no_needed_parts_period};
 use crate::service::DownloadId;
+
+use self::expiries::Expiries;
+
+mod expiries;
 
 /// aMule `MIN_REQUESTTIME` (`Constants.h:67`): an ask of a peer under this
 /// past its last scores +3, and 10 bans for two hours
@@ -91,6 +97,20 @@ pub(crate) struct Place {
     /// stock's fallback 20 s later (`DownloadClient.cpp:1260-1270`), the one
     /// ask a ping's stamp does not hold back.
     pub(crate) after_ping: bool,
+}
+
+/// A place's name inside its run: the record holding it, which keeps its name
+/// however its place moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PlaceId(pub(crate) u64);
+
+/// What one record's place came to stand at: `None` when it holds none now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaceChange {
+    /// The record.
+    pub(crate) id: PlaceId,
+    /// Its place as it stands.
+    pub(crate) place: Option<Place>,
 }
 
 /// What a record's download is to the peer's standing.
@@ -206,6 +226,16 @@ impl Stamp {
         }
     }
 
+    /// When a stamp no place carries goes, counted against the newest ask.
+    fn expires(&self) -> Instant {
+        let kept = if self.score > 0 {
+            SCORE_KEPT
+        } else {
+            STAMP_KEPT
+        };
+        self.asked_at + kept
+    }
+
     /// The peer was asked at `now`, as `ask` says.
     fn asked(&mut self, now: Instant, ask: Ask) {
         self.asked_at = self.asked_at.max(now);
@@ -222,14 +252,27 @@ struct LeftPlace {
     needs_parts: bool,
 }
 
-/// The registry: each run's places, the downloads holding a place under each
-/// name, the stamps per name, and the left places per file and name.
+impl LeftPlace {
+    /// When it goes, counted against the newest ask.
+    fn expires(&self) -> Instant {
+        self.asked_at + STAMP_KEPT
+    }
+}
+
+/// The registry: each run's places, the places under each name, the stamps per
+/// name, and the left places per file and name. `stamp_ages` holds an entry
+/// for every stamp no place carries, due no later than the stamp goes, and
+/// `left_ages` one for every left place: nothing else ever walks a table.
 #[derive(Debug, Default)]
 pub(crate) struct QueueStandings {
-    places: HashMap<DownloadId, Vec<Place>>,
-    by_name: HashMap<AskName, HashSet<DownloadId>>,
+    places: HashMap<DownloadId, HashMap<PlaceId, Place>>,
+    by_name: HashMap<AskName, HashSet<(DownloadId, PlaceId)>>,
     stamps: HashMap<AskName, Stamp>,
     left: HashMap<(FileHash, AskName), LeftPlace>,
+    /// The newest ask any stamp took, which everything here ages against.
+    newest: Option<Instant>,
+    stamp_ages: Expiries<AskName>,
+    left_ages: Expiries<(FileHash, AskName)>,
 }
 
 /// The core's one registry, shared by every run of the **Download Set**. Held
@@ -249,29 +292,18 @@ impl QueueStandings {
     /// that needs none.
     fn role(&self, download: DownloadId, file: FileHash, place: &Place) -> Role {
         let mine = rank(download, place);
-        let rivals: HashSet<DownloadId> = place
-            .names
-            .iter()
-            .filter_map(|name| self.by_name.get(name))
-            .flatten()
-            .copied()
-            .filter(|&other| other != download)
-            .collect();
-        let rival_places: Vec<(DownloadId, &Place)> = rivals
-            .into_iter()
-            .flat_map(|other| {
-                self.places
-                    .get(&other)
-                    .into_iter()
-                    .flatten()
-                    .filter(|p| shares_a_name(place, p))
-                    .map(move |p| (other, p))
-            })
-            .collect();
-        let outranked = rival_places
-            .iter()
-            .any(|&(other, p)| (!p.pooled || !place.needs_parts) && rank(other, p) > mine);
-        let stands_elsewhere = rival_places.iter().any(|&(_, p)| !p.pooled);
+        let rivals = || {
+            place
+                .names
+                .iter()
+                .filter_map(|name| self.by_name.get(name))
+                .flatten()
+                .filter(|(other, _)| *other != download)
+                .filter_map(|&(other, id)| Some((other, self.places.get(&other)?.get(&id)?)))
+        };
+        let outranked =
+            rivals().any(|(other, p)| (!p.pooled || !place.needs_parts) && rank(other, p) > mine);
+        let stands_elsewhere = rivals().any(|(_, p)| !p.pooled);
         let stamps: Vec<Stamp> = place
             .names
             .iter()
@@ -342,30 +374,75 @@ impl QueueStandings {
         self.score(&place.names) + FAST_ASK <= MOST_SCORE
     }
 
-    /// Take `download`'s places as they stand now, and fold their slot asks
-    /// into the stamps; a stamp no place carries goes once it is
-    /// [`STAMP_KEPT`] older than the newest. A Pooled Place's ask is the
-    /// record's own claim on its next fill, nothing the peer read. An ask
-    /// was scored as it left, so nothing folded here scores.
-    fn publish(&mut self, download: DownloadId, file: FileHash, places: Vec<Place>) {
-        for place in places.iter().filter(|place| !place.pooled) {
-            let Some(asked) = place.asked else { continue };
-            for name in &place.names {
-                let stamp = self.stamps.entry(*name).or_insert(Stamp::new(asked));
-                stamp.asked(asked, Ask::Slot);
-                if stamp.named.is_none_or(|(_, at)| asked >= at) {
-                    stamp.named = Some((file, asked));
-                }
+    /// Take what moved in `download`'s places, and fold the slot asks of those
+    /// that moved into the stamps; a place that did not move folded its ask
+    /// when it did. A Pooled Place's ask is the record's own claim on its next
+    /// fill, nothing the peer read. An ask was scored as it left, so nothing
+    /// folded here scores.
+    fn publish(&mut self, download: DownloadId, file: FileHash, changes: Vec<PlaceChange>) {
+        for PlaceChange { id, place } in changes {
+            let held = self.places.get(&download).and_then(|held| held.get(&id));
+            if held == place.as_ref() {
+                continue;
             }
-        }
-        self.withdraw(download);
-        for name in places.iter().flat_map(|place| &place.names) {
-            self.by_name.entry(*name).or_default().insert(download);
-        }
-        if !places.is_empty() {
-            self.places.insert(download, places);
+            if let Some(place) = place.as_ref().filter(|place| !place.pooled) {
+                self.fold_ask(file, place);
+            }
+            self.replace(download, id, place);
         }
         self.forget_stale_stamps();
+    }
+
+    /// Fold `place`'s slot ask into the stamps of its names.
+    fn fold_ask(&mut self, file: FileHash, place: &Place) {
+        let Some(asked) = place.asked else { return };
+        for name in &place.names {
+            let stamp = self.stamps.entry(*name).or_insert(Stamp::new(asked));
+            stamp.asked(asked, Ask::Slot);
+            if stamp.named.is_none_or(|(_, at)| asked >= at) {
+                stamp.named = Some((file, asked));
+            }
+        }
+        self.newest = self.newest.max(Some(asked));
+    }
+
+    /// `place` stands for the record `id` of `download`: the names it no longer
+    /// carries let go of the record, and it takes the names it now does.
+    fn replace(&mut self, download: DownloadId, id: PlaceId, place: Option<Place>) {
+        let holder = (download, id);
+        let held = self
+            .places
+            .get_mut(&download)
+            .and_then(|held| held.remove(&id));
+        for name in held.iter().flat_map(|held| &held.names) {
+            if place
+                .as_ref()
+                .is_none_or(|place| !place.names.contains(name))
+            {
+                self.unbind(*name, holder);
+            }
+        }
+        if let Some(place) = place {
+            for name in &place.names {
+                self.by_name.entry(*name).or_default().insert(holder);
+            }
+            self.places.entry(download).or_default().insert(id, place);
+        }
+    }
+
+    /// `name` no longer carries `holder`; a stamp no place carries now starts
+    /// to age.
+    fn unbind(&mut self, name: AskName, holder: (DownloadId, PlaceId)) {
+        let Some(holders) = self.by_name.get_mut(&name) else {
+            return;
+        };
+        holders.remove(&holder);
+        if holders.is_empty() {
+            self.by_name.remove(&name);
+            if let Some(stamp) = self.stamps.get(&name) {
+                self.stamp_ages.add(stamp.expires(), name);
+            }
+        }
     }
 
     /// Take `download`'s places out, its stamps left standing.
@@ -373,12 +450,9 @@ impl QueueStandings {
         let Some(places) = self.places.remove(&download) else {
             return;
         };
-        for name in places.iter().flat_map(|place| &place.names) {
-            if let Some(holders) = self.by_name.get_mut(name) {
-                holders.remove(&download);
-                if holders.is_empty() {
-                    self.by_name.remove(name);
-                }
+        for (id, place) in places {
+            for name in place.names {
+                self.unbind(name, (download, id));
             }
         }
     }
@@ -386,18 +460,22 @@ impl QueueStandings {
     /// `file`'s run ends: each place it published that asked stays as a left
     /// place, and its places come out.
     fn leave(&mut self, download: DownloadId, file: FileHash) {
-        for place in self.places.get(&download).into_iter().flatten() {
+        let places = self
+            .places
+            .get(&download)
+            .into_iter()
+            .flat_map(HashMap::values);
+        for place in places {
             let Some(asked_at) = place.asked.filter(|_| !place.pooled) else {
                 continue;
             };
             for name in &place.names {
-                self.left.insert(
-                    (file, *name),
-                    LeftPlace {
-                        asked_at,
-                        needs_parts: place.needs_parts,
-                    },
-                );
+                let left = LeftPlace {
+                    asked_at,
+                    needs_parts: place.needs_parts,
+                };
+                self.left_ages.add(left.expires(), (file, *name));
+                self.left.insert((file, *name), left);
             }
         }
         self.withdraw(download);
@@ -424,34 +502,47 @@ impl QueueStandings {
             let stamp = self.stamps.entry(*name).or_insert(Stamp::new(now));
             stamp.asked(now, ask);
             stamp.score = score;
+            if !self.by_name.contains_key(name) {
+                self.stamp_ages.add(stamp.expires(), *name);
+            }
         }
+        self.newest = self.newest.max(Some(now));
+        self.forget_stale_stamps();
     }
 
+    /// Forget what fell due against the newest ask: a stamp no place carries
+    /// once it is past its keeping, a left place likewise. Costs what is due.
     fn forget_stale_stamps(&mut self) {
-        let Some(newest) = self.stamps.values().map(|stamp| stamp.asked_at).max() else {
-            return;
-        };
-        let carried = &self.by_name;
-        self.stamps.retain(|name, stamp| {
-            let kept = if stamp.score > 0 {
-                SCORE_KEPT
-            } else {
-                STAMP_KEPT
+        let Some(newest) = self.newest else { return };
+        while let Some(name) = self.stamp_ages.next_due(newest) {
+            let Some(expires) = self.stamps.get(&name).map(Stamp::expires) else {
+                continue;
             };
-            carried.contains_key(name) || newest.saturating_duration_since(stamp.asked_at) < kept
-        });
-        self.left
-            .retain(|_, left| newest.saturating_duration_since(left.asked_at) < STAMP_KEPT);
+            if self.by_name.contains_key(&name) {
+                continue;
+            }
+            if expires <= newest {
+                self.stamps.remove(&name);
+            } else {
+                self.stamp_ages.add(expires, name);
+            }
+        }
+        while let Some(key) = self.left_ages.next_due(newest) {
+            let Some(expires) = self.left.get(&key).map(LeftPlace::expires) else {
+                continue;
+            };
+            if expires <= newest {
+                self.left.remove(&key);
+            } else {
+                self.left_ages.add(expires, key);
+            }
+        }
     }
 }
 
 /// The order places outrank each other by.
 fn rank(download: DownloadId, place: &Place) -> (bool, Option<Instant>, Reverse<DownloadId>) {
     (place.needs_parts, place.asked, Reverse(download))
-}
-
-fn shares_a_name(one: &Place, other: &Place) -> bool {
-    one.names.iter().any(|name| other.names.contains(name))
 }
 
 /// One run's seat in the shared registry. Its drop leaves the run's places as
@@ -552,9 +643,12 @@ impl StandingSeat {
         self.lock().last_ask(place)
     }
 
-    /// Republish the places this run's records hold now.
-    pub(crate) fn publish(&self, places: Vec<Place>) {
-        self.lock().publish(self.download, self.file, places);
+    /// Publish what moved in the places this run's records hold. Nothing moved
+    /// takes nothing, the lock included.
+    pub(crate) fn publish(&self, changes: Vec<PlaceChange>) {
+        if !changes.is_empty() {
+            self.lock().publish(self.download, self.file, changes);
+        }
     }
 
     /// A ping left for the peer `names` names at `now`.

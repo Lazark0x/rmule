@@ -311,7 +311,7 @@ fn six_files_of_one_peer_stop_before_the_fourth_fast_ask_and_resume_on_the_clock
     }
     for id in 5..=6 {
         let turn = last_ask + Duration::from_secs(5);
-        let (rider, answered) = rider_takes_its_turn(&standings, id, turn);
+        let (mut rider, answered) = rider_takes_its_turn(&standings, id, turn);
         assert!(!asked_slot(&answered), "file {id}: {answered:?}");
         assert!(
             answered.iter().any(|d| matches!(

@@ -37,7 +37,7 @@ impl SourceBook {
         record.standing = None;
         record.stage = Stage::Dialing(Live { road, endpoint: at });
         if let Some(stated) = stated {
-            self.run.note_crypt(at, stated);
+            self.note_crypt(at, stated);
         }
         true
     }
