@@ -216,14 +216,10 @@ impl Connection {
         }
     }
 
-    /// The outbound session a dial builds: `new_outbound` plus every
-    /// advertisement the options carry.
-    fn dialing_session(
-        peer: PeerEndpoint,
-        ctx: PeerHandshakeContext,
-        options: &ConnectOptions,
-    ) -> PeerSession {
-        let mut session = PeerSession::new_outbound(peer, ctx);
+    /// A session wearing every advertisement the options carry. Both ends of a
+    /// connection go through here, so a hello advert reaches dial and accept
+    /// alike.
+    fn dressed(mut session: PeerSession, options: &ConnectOptions) -> PeerSession {
         if let Some(gate) = &options.hello_gate {
             session = session.with_hello_gate(gate.clone());
         }
@@ -245,6 +241,17 @@ impl Connection {
         if options.direct_udp_callback {
             session = session.with_direct_udp_callback_advertisement();
         }
+        session
+    }
+
+    /// The outbound session a dial builds: [`Self::dressed`] plus the
+    /// capture-only overrides, which an accepted link never takes.
+    fn dialing_session(
+        peer: PeerEndpoint,
+        ctx: PeerHandshakeContext,
+        options: &ConnectOptions,
+    ) -> PeerSession {
+        let mut session = Self::dressed(PeerSession::new_outbound(peer, ctx), options);
         if let Some(nibble) = options.source_exchange_capture_override {
             session = session.with_source_exchange_capture_override(nibble);
         }
@@ -302,28 +309,7 @@ impl Connection {
     where
         S: AsyncRead + AsyncWrite + SendSide + Unpin + Send + 'static,
     {
-        let mut session = PeerSession::new_inbound(peer, ctx);
-        if let Some(gate) = &options.hello_gate {
-            session = session.with_hello_gate(gate.clone());
-        }
-        if let Some(config) = &options.secure_ident {
-            session = session.with_secure_ident(config.clone());
-        }
-        if let Some(config) = &options.obfuscation {
-            session = session.with_crypt_advertisement(crypt_advertisement(config.policy));
-        }
-        if let Some(ports) = options.udp_ports {
-            session = session.with_udp_ports_advertisement(ports);
-        }
-        if let Some(address) = options.ipv6 {
-            session = session.with_ipv6_advertisement(address);
-        }
-        if let Some(buddy) = options.serving_buddy {
-            session = session.with_serving_buddy_advertisement(buddy);
-        }
-        if options.direct_udp_callback {
-            session = session.with_direct_udp_callback_advertisement();
-        }
+        let session = Self::dressed(PeerSession::new_inbound(peer, ctx), &options);
         Self::spawn(session, stream, options, peer)
     }
 
