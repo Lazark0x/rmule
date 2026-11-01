@@ -332,6 +332,54 @@ fn the_climb_to_seventeen_roots_stored_absolute_paths() {
     assert_eq!(outside.paths().part_path(), moved.join("Temp/outside.part"));
 }
 
+/// The setting a version-17 build wrote climbs by the row's rule: inside the
+/// home it goes with the next move, outside it stays where the operator put
+/// it.
+#[test]
+fn the_climb_to_eighteen_roots_a_stored_temp_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = dir.path().join("elsewhere/Parts");
+    for (name, inside) in [("inside", true), ("outside", false)] {
+        let (seeded, home, moved) = (
+            dir.path().join(format!("{name}-seeded")),
+            dir.path().join(format!("{name}-home")),
+            dir.path().join(format!("{name}-moved")),
+        );
+        std::fs::create_dir(&seeded).unwrap();
+        let store = Store::open(
+            seeded.join(DURABLE_STORE_FILE),
+            &super::durable_schema(),
+            &Ladder::new(17, &[]),
+        )
+        .unwrap();
+        let set = if inside {
+            home.join("Parts")
+        } else {
+            outside.clone()
+        };
+        DurableAppConfig::new(Arc::new(store))
+            .set_value(
+                crate::app_config::Preference::TempDir.key(),
+                set.to_str().unwrap(),
+            )
+            .unwrap();
+
+        std::fs::rename(&seeded, &home).unwrap();
+        let store = open_durable_store(&home).unwrap();
+        assert_eq!(store.version().unwrap(), super::LADDER.current);
+        drop(store);
+
+        std::fs::rename(&home, &moved).unwrap();
+        let config = DurableAppConfig::new(open_durable_store(&moved).unwrap());
+        let expected = if inside {
+            moved.join("Parts")
+        } else {
+            outside.clone()
+        };
+        assert_eq!(config.temp_dir().unwrap(), Some(expected));
+    }
+}
+
 #[test]
 fn a_cancelled_row_keeps_no_children_and_its_path_can_be_given_up() {
     let repo = DurableDownloadRepository::new(open_durable_store_in_memory().unwrap());

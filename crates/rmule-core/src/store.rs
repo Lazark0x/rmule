@@ -9,6 +9,7 @@ pub mod app_config;
 pub mod credit;
 pub mod download;
 pub mod had_set;
+mod home_path;
 pub mod registry;
 pub mod share_totals;
 mod spare_copy;
@@ -34,7 +35,7 @@ pub const DURABLE_STORE_FILE: &str = "rmule.redb";
 /// takes a rung (ADR-0102), and so does a new table whose absence an older
 /// build would write past (ADR-0105 "The Had Set").
 pub(crate) const LADDER: Ladder = Ladder::new(
-    17,
+    18,
     &[
         registry::UPGRADE_FROM_V1,
         had_set::UPGRADE_FROM_V2,
@@ -52,6 +53,7 @@ pub(crate) const LADDER: Ladder = Ladder::new(
         UPGRADE_FROM_V14,
         credit::UPGRADE_FROM_V15,
         download::UPGRADE_FROM_V16,
+        app_config::UPGRADE_FROM_V17,
     ],
 );
 

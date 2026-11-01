@@ -10,11 +10,10 @@
 //! shape and must bump the row's [`Record::VERSION`] like any other field change
 //! (ADR-0083), which is what makes the engine refuse the older table.
 
-mod home_path;
 mod part_path;
 mod rungs;
 
-pub(super) use home_path::HomePath;
+pub(super) use crate::store::home_path::HomePath;
 pub(super) use part_path::PartPathSlot;
 pub(crate) use rungs::{
     UPGRADE_FROM_V5, UPGRADE_FROM_V6, UPGRADE_FROM_V7, UPGRADE_FROM_V16, grow_from_v8,

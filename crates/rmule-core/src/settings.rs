@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use rmule_net::peer::ObfuscationPolicy;
 
-use crate::app_config::{AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION, Preference};
+use crate::app_config::{AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION};
 use crate::directory_scan::guard_temp_dir;
 use crate::port_mapping::PortMappingMode;
 use crate::server_list::ServerPolicy;
@@ -423,11 +423,7 @@ impl CoreSettingsHandle {
     pub fn check(&self, setting: &Setting) -> Result<(), SettingError> {
         match setting {
             Setting::DownloadDir { dir, .. } => {
-                let set = self
-                    .store
-                    .preference(Preference::TempDir)?
-                    .map(PathBuf::from);
-                let temp_dir = self.temp_dir_in_force(set);
+                let temp_dir = self.temp_dir_in_force(self.store.temp_dir()?);
                 stored::validate_download_dir(dir, &self.guards, temp_dir.as_deref())?;
             }
             // The default lies in the data directory, which no shared

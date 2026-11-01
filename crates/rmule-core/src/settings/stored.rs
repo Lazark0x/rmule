@@ -23,7 +23,7 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
     let text = |preference| store.preference(preference);
     Ok(CoreSettings {
         download_dir: text(Preference::DownloadDir)?.map(PathBuf::from),
-        temp_dir: text(Preference::TempDir)?.map(PathBuf::from),
+        temp_dir: store.temp_dir()?,
         nickname: identity.nickname().to_display_string(),
         tcp_port: identity.tcp_port(),
         udp_port: kad.udp_port,
@@ -120,8 +120,8 @@ pub(super) fn validate_download_dir(
 pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(), CoreError> {
     let flag = |on: bool| if on { "true" } else { "false" };
     match setting {
-        Setting::DownloadDir { dir, .. } => store.set_dir(Preference::DownloadDir, dir),
-        Setting::TempDir(Some(dir)) => store.set_dir(Preference::TempDir, dir),
+        Setting::DownloadDir { dir, .. } => store.set_download_dir(dir),
+        Setting::TempDir(Some(dir)) => store.set_temp_dir(dir),
         Setting::TempDir(None) => store.clear_preference(Preference::TempDir),
         Setting::Nickname(nickname) => store.set_nickname(&Ed2kText::from_utf8(nickname.trim())),
         Setting::TcpPort(port) => store.set_tcp_port(*port),

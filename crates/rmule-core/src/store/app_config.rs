@@ -16,12 +16,15 @@ mod servers;
 
 pub(crate) use servers::{grow_from_v8, grow_from_v9, grow_from_v11, grow_from_v13, grow_from_v14};
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rmule_kad::KadId;
 use rmule_primitives::{ClientIdentity, Ed2kText, SecureIdentKey, UserHash};
-use rmule_store::{Indexed, Readable, Record, Store, StoreError, TableDefinition};
+use rmule_store::redb::ReadableTable;
+use rmule_store::{
+    Indexed, Readable, Record, Store, StoreError, TableDefinition, UpgradeStep, WriteTransaction,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
@@ -31,6 +34,7 @@ use crate::app_config::{
 };
 
 use super::Schema;
+use super::home_path::HomePath;
 
 /// The key every identity singleton is stored under. The table holds at most
 /// this one record, so the key is a constant rather than a mint.
@@ -41,6 +45,30 @@ const SINGLETON: u8 = 0;
 /// interprets. Not a record kind: the value is the column.
 const PREFERENCES: TableDefinition<'static, &str, &str> =
     TableDefinition::new("app_config.preference");
+
+/// Store version 17 → 18 (ADR-0115): a Temp Directory inside the Data Directory
+/// becomes relative to it, as a download row's part path did at version 17, so
+/// a move of that directory carries the setting. A version-17 build refuses the
+/// store rather than read the text against its own working directory.
+pub(crate) const UPGRADE_FROM_V17: UpgradeStep = UpgradeStep {
+    from: 17,
+    run: root_temp_dir,
+};
+
+/// Rewrite the stored Temp Directory against the directory the store lies in.
+fn root_temp_dir(txn: &WriteTransaction) -> Result<(), StoreError> {
+    let Some(home) = rmule_store::climbing_home(txn)? else {
+        return Ok(());
+    };
+    let key = Preference::TempDir.key();
+    let mut table = txn.open_table(PREFERENCES)?;
+    let Some(text) = table.get(key)?.map(|text| text.value().to_owned()) else {
+        return Ok(());
+    };
+    let rooted = HomePath::new(Path::new(&text), Some(&home));
+    table.insert(key, rooted.text())?;
+    Ok(())
+}
 
 /// The persisted eD2k [`ClientIdentity`]. `extra_tags` is not carried: it is a
 /// login-time decoration of the identity, not durable identity material.
@@ -328,14 +356,25 @@ impl DurableAppConfig {
         KAD_IDENTITY_SINGLETON.edit(&self.store, |record| record.udp_port = port)
     }
 
-    /// Persist a directory — the download directory or the Temp Directory —
-    /// under `preference`. Fails with [`CoreError::Repository`] on a path
-    /// that is not valid UTF-8, since the preferences column is text.
-    pub(crate) fn set_dir(&self, preference: Preference, dir: &Path) -> Result<(), CoreError> {
-        let value = dir
-            .to_str()
-            .ok_or_else(|| CoreError::Repository("directory is not valid UTF-8".to_owned()))?;
-        self.set_preference(preference, value)
+    /// Persist the download directory, never inside the Data Directory
+    /// (ADR-0101). Fails with [`CoreError::Repository`] on a path that is not
+    /// valid UTF-8, since the preferences column is text.
+    pub(crate) fn set_download_dir(&self, dir: &Path) -> Result<(), CoreError> {
+        self.set_preference(Preference::DownloadDir, dir_text(dir)?)
+    }
+
+    /// Persist the Temp Directory, relative to the Data Directory when it
+    /// lies inside it. Fails as [`set_download_dir`](Self::set_download_dir).
+    pub(crate) fn set_temp_dir(&self, dir: &Path) -> Result<(), CoreError> {
+        dir_text(dir)?;
+        let rooted = HomePath::new(dir, HomePath::home_of(&self.store));
+        self.set_preference(Preference::TempDir, rooted.text())
+    }
+
+    /// The Temp Directory the operator set, read against the Data Directory.
+    pub(crate) fn temp_dir(&self) -> Result<Option<PathBuf>, CoreError> {
+        let stored = self.preference(Preference::TempDir)?;
+        Ok(stored.map(|text| HomePath::from_stored(text).path(HomePath::home_of(&self.store))))
     }
 
     /// Read the decimal `u32` stored under `preference`, or mint one from OS
@@ -353,6 +392,12 @@ impl DurableAppConfig {
         self.set_preference(preference, &secret.to_string())?;
         Ok(secret)
     }
+}
+
+/// `dir`'s text; the preferences column can hold no other.
+fn dir_text(dir: &Path) -> Result<&str, CoreError> {
+    dir.to_str()
+        .ok_or_else(|| CoreError::Repository("directory is not valid UTF-8".to_owned()))
 }
 
 impl AppConfigStore for DurableAppConfig {

@@ -78,7 +78,7 @@ pub struct DurableDownloadRepository {
 impl DurableDownloadRepository {
     /// The Data Directory a relative path is read against.
     fn home(&self) -> Option<&Path> {
-        self.store.file().and_then(Path::parent)
+        HomePath::home_of(&self.store)
     }
 
     /// A repository over the already-open store. The tables were created by

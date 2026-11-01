@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use rmule_core::{
     Core, CoreCommand, CoreCommandRejectReason, CoreConfig, CoreEvent, CoreSettings,
-    DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId, DownloadPaths,
-    DownloadRepository, DownloadedPart, DurableDownloadRepository, DurableStore, NameTaken,
-    PeerDownloadOutcome, ShareGuards,
+    CoreSettingsHandle, DirectoryRefusal, DownloadCommand, DownloadEvent, DownloadId,
+    DownloadPaths, DownloadRepository, DownloadedPart, DurableDownloadRepository, DurableStore,
+    NameTaken, PeerDownloadOutcome, Setting, ShareGuards, open_durable_store,
 };
 use rmule_primitives::{Ed2kFileLink, Ed2kLink, SafeFileName, ServerEndpoint};
 use rmule_testkit::{
@@ -181,6 +181,8 @@ struct Machine {
     _root: tempfile::TempDir,
     downloads: PathBuf,
     data: PathBuf,
+    /// Whether its core restores the store at attach.
+    restores: bool,
 }
 
 impl Machine {
@@ -193,13 +195,14 @@ impl Machine {
             _root: root,
             downloads,
             data,
+            restores: false,
         }
     }
 
     /// A core over `store` whose one peer serves `bytes` as one part, under
     /// `temp_dir` — or, unset, the default in the data directory.
     fn core(&self, store: Arc<DurableStore>, temp_dir: Option<PathBuf>, bytes: &[u8]) -> Core {
-        Core::builder(CoreConfig::default(), store)
+        let core = Core::builder(CoreConfig::default(), store)
             .settings(CoreSettings {
                 download_dir: Some(self.downloads.clone()),
                 temp_dir,
@@ -220,8 +223,12 @@ impl Machine {
                         bytes: bytes.to_vec(),
                     }],
                 },
-            })
-            .build()
+            });
+        if self.restores {
+            core.restore_at_attach().build()
+        } else {
+            core.build()
+        }
     }
 }
 
@@ -279,6 +286,70 @@ async fn a_new_download_fills_in_the_temp_directory_and_finishes_in_the_download
     assert_eq!(finished, machine.downloads.join("apart.bin"));
     assert_eq!(std::fs::read(&finished).unwrap(), bytes);
     assert!(!filled.exists());
+    core.shutdown().await;
+}
+
+/// A Temp Directory inside the Data Directory goes with it (ADR-0115): the
+/// orphan part file at the new place is taken back, a new download fills
+/// there, and nothing makes the old tree again.
+#[tokio::test]
+async fn a_temp_directory_inside_the_data_directory_follows_a_move() {
+    let machine = Machine::new();
+    let moved = machine.data.with_file_name("moved");
+    let store = open_durable_store(&machine.data).unwrap();
+    CoreSettingsHandle::open(Arc::clone(&store))
+        .set(Setting::TempDir(Some(machine.data.join("Parts"))))
+        .unwrap();
+    drop(store);
+    std::fs::rename(&machine.data, &moved).unwrap();
+
+    let orphan = file_link("orphan.bin", b"left behind by a lost store");
+    let parts = moved.join("Parts");
+    std::fs::write(parts.join("orphan.bin.part"), b"left behind").unwrap();
+    std::fs::write(
+        parts.join(".orphan.bin.part.link"),
+        format!("{}\n", Ed2kLink::File(orphan)),
+    )
+    .unwrap();
+
+    let store = open_durable_store(&moved).unwrap();
+    let settings = CoreSettingsHandle::open(Arc::clone(&store)).read().unwrap();
+    assert_eq!(settings.temp_dir.as_ref(), Some(&parts));
+    let bytes = b"filled where the setting went".to_vec();
+    let machine = Machine {
+        data: moved,
+        restores: true,
+        ..machine
+    };
+    let mut core = machine.core(Arc::clone(&store), settings.temp_dir, &bytes);
+    let mut adopted = false;
+    while !adopted {
+        let event = timeout(HANG_GUARD, core.next_event()).await.unwrap().unwrap();
+        adopted = matches!(
+            event,
+            CoreEvent::Download(DownloadEvent::PartFilesAdopted { parts: 1 })
+        );
+    }
+    let repo = DurableDownloadRepository::new(Arc::clone(&store));
+    let adopted = repo.listed_downloads().unwrap()[0].id();
+    assert_eq!(
+        repo.load_download(adopted).unwrap().paths().part_path(),
+        parts.join("orphan.bin.part")
+    );
+
+    core.send(CoreCommand::Download(DownloadCommand::StartDownload {
+        file: file_link_without_part_hash_set("after.bin", &bytes),
+        source_hint: Some(server()),
+        name: rmule_testkit::file_name("after.bin"),
+        if_taken: NameTaken::Refuse,
+        kad_aich_root: None,
+    }))
+    .await
+    .unwrap();
+    let (filled, _) = queued_then_completed(&mut core).await;
+
+    assert_eq!(filled, parts.join("after.bin.part"));
+    assert!(!machine.data.with_file_name("data").exists());
     core.shutdown().await;
 }
 

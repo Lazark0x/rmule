@@ -76,6 +76,8 @@ pub enum Preference {
     DownloadDir,
     /// The **Temp Directory** new downloads keep their part files in
     /// (ADR-0115): [`CoreSettings::temp_dir`](crate::CoreSettings::temp_dir).
+    /// Inside the Data Directory the text is relative to it (ADR-0083), so
+    /// the setting is read through `CoreSettingsHandle::read`, not this key.
     TempDir,
     /// The `server.met` mirror an operator-driven list update fetches
     /// (`rmule_bootstrap::DEFAULT_SERVER_MET_URL` when unset).
