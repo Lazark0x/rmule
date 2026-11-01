@@ -13,6 +13,8 @@
 //! no room to spare (`views/networks.rs::BOTTOM_H`), and this is where the
 //! operator already reads session traffic totals and rates side by side.
 
+use std::time::Instant;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
@@ -23,7 +25,8 @@ use crate::rates::format_rate;
 use crate::state::{DownloadStatus, Ed2kConnection, UiState, UploadState};
 use crate::theme::Theme;
 use crate::views::human_size;
-use crate::wrap::labeled_lines;
+use crate::words::statistics as words;
+use crate::wrap::{display_width, labeled_lines};
 
 /// Label column of a fact row; values wrap under it.
 const LABEL_W: usize = 13;
@@ -60,7 +63,13 @@ impl Fact {
 
 /// The facts strip: session byte totals + current rates on the left, the live
 /// activity counts on the right.
-pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme) {
+pub(super) fn draw_facts(
+    frame: &mut Frame,
+    area: Rect,
+    state: &UiState,
+    theme: &Theme,
+    now: Instant,
+) {
     let [session_area, activity_area] =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
 
@@ -181,7 +190,12 @@ pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: 
         frame,
         session_area,
         theme,
-        session_title(theme, state),
+        session_title(
+            theme,
+            state,
+            now,
+            usize::from(session_area.width.saturating_sub(2)),
+        ),
         &session_rows,
     );
     draw_facts_pane(
@@ -196,13 +210,27 @@ pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: 
 /// The session pane's title, which is also where a stopped core is announced
 /// inside the view (the status bar says it too — this is the in-view echo, so
 /// a reader looking at the frozen graphs is told why).
-fn session_title(theme: &Theme, state: &UiState) -> Line<'static> {
+fn session_title(theme: &Theme, state: &UiState, now: Instant, room: usize) -> Line<'static> {
     let mut spans = vec![Span::styled(" Session ", Style::new().fg(theme.fg))];
     if !state.core_alive {
         spans.push(Span::styled(
             "· engine stopped ",
             Style::new().fg(theme.bad),
         ));
+    }
+    // A stopped core's uptime stops with its last tick, and a narrow pane
+    // keeps the stop.
+    let until = if state.core_alive {
+        Some(now)
+    } else {
+        state.last_snapshot_at
+    };
+    if let (Some(started), Some(until)) = (state.started_at, until) {
+        let up = words::uptime(until.saturating_duration_since(started));
+        let used: usize = spans.iter().map(|span| display_width(&span.content)).sum();
+        if used + display_width(&up) <= room {
+            spans.insert(1, Span::styled(up, theme.dim_text()));
+        }
     }
     Line::from(spans)
 }
@@ -248,15 +276,19 @@ fn draw_facts_pane(
 mod tests {
     use std::time::Instant;
 
-    use super::super::draw;
-    use super::super::graph::NO_SAMPLES;
+    use super::super::StatisticsView;
     use crate::golden::render_to_lines;
+    use crate::words::statistics::NO_SAMPLES;
     use std::time::Duration;
 
     use crate::golden::assert_golden;
 
     use super::*;
     use crate::fixture::*;
+
+    fn draw(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme, now: Instant) {
+        StatisticsView::default().draw(frame, area, state, theme, now);
+    }
 
     /// The window before the first tick has observed no counter: every metered figure reads as absence, not as zero.
     #[test]

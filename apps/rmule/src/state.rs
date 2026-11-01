@@ -7,7 +7,7 @@
 //! rows, levels, rates, the status-bar info feed); each view extends the fold
 //! with its own vocabulary.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
@@ -47,7 +47,7 @@ pub use download::{
 pub use known_file::{KnownFileMark, KnownFileMarks};
 pub use log::{Log, LogLine};
 pub use note::{NOTE_AGE_SHOWN, NOTE_STANDS, Note};
-pub use rate_history::RateSample;
+pub use rate_history::{RateColumn, RateHistory, RateWindow, Rates};
 pub use search::{MoreEnded, SearchPane, SearchStatus};
 pub use serve::{
     PARTIAL_RANK, ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank,
@@ -127,11 +127,12 @@ pub struct UiState {
     pub diagnostics: DiagnosticsSnapshot,
     /// Bridge-synthesized rates from the same tick as `diagnostics`.
     pub rates: TransferRates,
-    /// Session-rate history for the Statistics graphs: one
-    /// [`RateSample`] per data tick, capped at 600 samples — ten minutes at
-    /// the 1 Hz tick — with the oldest dropped. A stopped core simply stops appending — the graph freezes on
-    /// what was actually observed instead of inventing a tail.
-    pub rate_history: VecDeque<RateSample>,
+    /// Session-rate history for the Statistics graphs, in tiers: a stopped
+    /// core simply stops appending, so the graph freezes on what was actually
+    /// observed instead of inventing a tail.
+    pub rate_history: RateHistory,
+    /// When this run's first action landed; uptime counts from here.
+    pub started_at: Option<Instant>,
     /// When the last data tick was folded in; `None` before the first one,
     /// which is how the views tell "idle" from "nothing observed yet".
     pub last_snapshot_at: Option<Instant>,
@@ -195,7 +196,8 @@ impl Default for UiState {
             file_history: None,
             diagnostics: DiagnosticsSnapshot::default(),
             rates: TransferRates::default(),
-            rate_history: VecDeque::new(),
+            rate_history: RateHistory::default(),
+            started_at: None,
             last_snapshot_at: None,
             notable: None,
             kad_lost: false,
@@ -223,6 +225,7 @@ impl UiState {
     }
 
     fn fold_action(&mut self, action: Action, now: Instant) -> bool {
+        self.started_at.get_or_insert(now);
         match action {
             Action::Core(event) => {
                 // Spec §3.4: log every core event (compact) before folding it.

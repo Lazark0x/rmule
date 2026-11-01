@@ -26,4 +26,5 @@ pub mod readd;
 pub mod scan;
 pub mod search;
 pub mod server;
+pub mod statistics;
 pub mod viewport;

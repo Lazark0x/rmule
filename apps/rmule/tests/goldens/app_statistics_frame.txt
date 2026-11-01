@@ -1,5 +1,5 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
-│┌ ▼ Download · now 225.0 KB/s · peak 475.0 KB/s ─────────────────────────────┐│
+│┌ ▼ Download · now 225.0 KB/s · peak 475.0 KB/s ───────────── w 1 s a column ┐│
 ││  ▂▄▆█                ▂▄▆█                ▂▄▆█                ▂▄▆█          ││
 ││▆█████            ▂▄▆█████            ▂▄▆█████            ▂▄▆█████          ││
 ││██████        ▁▃▆█████████        ▁▃▆█████████        ▁▃▆█████████        ▁▃││

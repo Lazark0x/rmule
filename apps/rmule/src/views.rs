@@ -37,7 +37,6 @@ pub(crate) mod too_small;
 pub mod transfers;
 
 use std::ops::Range;
-use std::time::Instant;
 
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
@@ -168,19 +167,6 @@ pub(crate) fn day(at: std::time::SystemTime) -> String {
         .to_string()
 }
 
-/// Relative age of an observation (spec §3.4): seconds under a minute, then
-/// whole minutes. Injected time only — `Instant` is monotonic, never
-/// wall-clock. One vocabulary for every surface that dates a fact (the
-/// Networks log pane, the Statistics graph axis).
-pub(crate) fn relative_age(at: Instant, now: Instant) -> String {
-    let secs = now.saturating_duration_since(at).as_secs();
-    if secs < 60 {
-        format!("{secs}s ago")
-    } else {
-        format!("{}m ago", secs / 60)
-    }
-}
-
 /// Rows region of a bordered table with one header row drawn at `area`:
 /// inside the frame, below the header — where a test clicks a row.
 #[cfg(test)]
@@ -282,21 +268,4 @@ pub enum ViewOutcome {
     Redraw,
     /// Hand an action to the app loop (a core command, a flash, navigation).
     Emit(Action),
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::*;
-
-    #[test]
-    fn relative_age_switches_from_seconds_to_minutes_at_sixty() {
-        let base = Instant::now();
-        let now = base + Duration::from_secs(10_000);
-        assert_eq!(relative_age(now - Duration::from_secs(12), now), "12s ago");
-        assert_eq!(relative_age(now - Duration::from_secs(59), now), "59s ago");
-        assert_eq!(relative_age(now - Duration::from_secs(60), now), "1m ago");
-        assert_eq!(relative_age(now - Duration::from_secs(180), now), "3m ago");
-    }
 }

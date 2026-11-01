@@ -17,22 +17,20 @@ use crate::views::networks::NetworksView;
 use crate::views::searches::SearchesView;
 use crate::views::settings::SettingsView;
 use crate::views::shared_files::SharedView;
-use crate::views::statistics;
+use crate::views::statistics::StatisticsView;
 use crate::views::transfers::TransfersView;
 
 /// The persistent view components (selection/scroll/menu state survives across
 /// frames and view switches). Dispatch is a match — the views share a
 /// signature by convention (views/mod.rs contract), not a trait.
 ///
-/// Statistics has no field: it is display-only, so it holds no view
-/// state to persist and its key/click arms are honest `Ignored`s that let the
-/// globals through.
 #[derive(Default)]
 pub(super) struct Views {
     pub(super) transfers: TransfersView,
     pub(super) searches: SearchesView,
     pub(super) networks: NetworksView,
     pub(super) shared: SharedView,
+    pub(super) statistics: StatisticsView,
     pub(super) settings: SettingsView,
 }
 
@@ -48,7 +46,7 @@ impl Views {
             ViewId::Searches => self.searches.handle_key(key, state),
             ViewId::Networks => self.networks.handle_key(key, state),
             ViewId::SharedFiles => self.shared.handle_key(key, state),
-            ViewId::Statistics => ViewOutcome::Ignored,
+            ViewId::Statistics => self.statistics.handle_key(key),
             ViewId::Settings => self.settings.handle_key(key, state),
         }
     }
@@ -100,7 +98,7 @@ impl Views {
                 None
             }
             ViewId::Statistics => {
-                statistics::draw(frame, area, state, theme, now);
+                self.statistics.draw(frame, area, state, theme, now);
                 None
             }
             ViewId::Settings => self.settings.draw(frame, area, state, theme, now),

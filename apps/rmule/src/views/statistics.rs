@@ -7,9 +7,9 @@
 //!
 //! Everything here is a fact the 1 Hz data tick already established:
 //!
-//! - the graphs replay [`UiState::rate_history`], the per-tick [`crate::state::RateSample`]s
-//!   `apply_snapshot` appends — never a rate this view derives at draw time,
-//!   so a graph column and the status bar's ▼/▲ can never disagree;
+//! - the graphs replay [`UiState::rate_history`], the tiers `apply_snapshot`
+//!   adds each tick to — never a rate this view derives at draw time, so a
+//!   graph column and the status bar's ▼/▲ can never disagree;
 //! - the totals are [`rmule_core::diagnostics::SessionCounters`] — core's
 //!   monotonic process-lifetime byte counters (ADR-0077) — read straight
 //!   through, not summed from rows that retire;
@@ -22,22 +22,24 @@
 //!
 //! # Why a sparkline and not a braille chart
 //!
-//! `Sparkline` maps one sample to one column with block glyphs, so the render
-//! is exact (no interpolation), stable under `TestBackend` — the goldens are
+//! `Sparkline` maps one history column to one cell with block glyphs, so the
+//! render is exact (no interpolation), stable under `TestBackend` — the goldens are
 //! readable ASCII — and degrades to the same glyphs in the Indexed-256 theme,
 //! where only the tone changes. A braille `Chart` would resample the window
 //! onto its canvas, forcing axis furniture and a legend into panes this small
 //! and making every golden width-sensitive for no added truth.
 //!
-//! The view is **display-only**: no selection, no menus, no modal. It holds no
-//! view state at all, so it is a free `draw` rather than a struct.
+//! The view is **display-only**: no selection, no menus, no modal. Its one
+//! view state is the window `w` walks.
 use std::time::Instant;
 
 use ratatui::Frame;
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 
-use crate::state::UiState;
+use crate::state::{RateWindow, UiState};
 use crate::theme::Theme;
+use crate::views::ViewOutcome;
 use facts::draw_facts;
 use graph::{Series, draw_graph};
 
@@ -48,24 +50,48 @@ mod graph;
 /// counting Kad in/out, the Activity one the refused hellos) plus the pane border.
 const FACTS_H: u16 = 8;
 
-/// Draw the whole view: the download graph, the upload graph, the facts strip.
-pub fn draw(frame: &mut Frame, area: Rect, state: &UiState, theme: &Theme, now: Instant) {
-    let [graphs, facts] =
-        Layout::vertical([Constraint::Min(4), Constraint::Length(FACTS_H)]).areas(area);
-    // Both graphs get the same height, so neither draws a bar-row fewer; an
-    // odd row left over sits between them rather than in one of them.
-    let half = graphs.height / 2;
-    let down = Rect {
-        height: half,
-        ..graphs
-    };
-    let up = Rect {
-        y: graphs.bottom() - half,
-        height: half,
-        ..graphs
-    };
+/// The Statistics tab: which window of the history the graphs show.
+#[derive(Debug, Default)]
+pub struct StatisticsView {
+    window: RateWindow,
+}
 
-    draw_graph(frame, down, state, theme, now, Series::Down);
-    draw_graph(frame, up, state, theme, now, Series::Up);
-    draw_facts(frame, facts, state, theme);
+impl StatisticsView {
+    /// `w` walks the window; every other key bubbles to the app loop.
+    pub fn handle_key(&mut self, key: KeyEvent) -> ViewOutcome {
+        if key.code == KeyCode::Char('w') {
+            self.window = self.window.next();
+            return ViewOutcome::Redraw;
+        }
+        ViewOutcome::Ignored
+    }
+
+    /// Draw the whole view: the download graph, the upload graph, the facts strip.
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &UiState,
+        theme: &Theme,
+        now: Instant,
+    ) {
+        let [graphs, facts] =
+            Layout::vertical([Constraint::Min(4), Constraint::Length(FACTS_H)]).areas(area);
+        // Both graphs get the same height, so neither draws a bar-row fewer; an
+        // odd row left over sits between them rather than in one of them.
+        let half = graphs.height / 2;
+        let down = Rect {
+            height: half,
+            ..graphs
+        };
+        let up = Rect {
+            y: graphs.bottom() - half,
+            height: half,
+            ..graphs
+        };
+
+        draw_graph(frame, down, state, theme, now, (Series::Down, self.window));
+        draw_graph(frame, up, state, theme, now, (Series::Up, self.window));
+        draw_facts(frame, facts, state, theme, now);
+    }
 }
