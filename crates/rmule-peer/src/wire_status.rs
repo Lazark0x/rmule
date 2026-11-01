@@ -11,7 +11,7 @@ use crate::file::{PartBitmap, PartBitmapDecodeError, PartIndex};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WireStatus {
     count: u16,
-    bits: PartBitmap,
+    bytes: Vec<u8>,
 }
 
 impl WireStatus {
@@ -23,7 +23,7 @@ impl WireStatus {
     pub fn decode(count: u16, bytes: &[u8]) -> Result<Self, PartBitmapDecodeError> {
         Ok(Self {
             count,
-            bits: PartBitmap::decode(u32::from(count), bytes)?,
+            bytes: PartBitmap::decode(u32::from(count), bytes)?.into_bytes(),
         })
     }
 
@@ -32,12 +32,13 @@ impl WireStatus {
     pub(crate) fn padded(count: u16, bytes: &[u8]) -> Self {
         Self {
             count,
-            bits: PartBitmap::from_fn(u32::from(count), |part| {
+            bytes: PartBitmap::from_fn(u32::from(count), |part| {
                 let index = part.value();
                 bytes
                     .get((index / 8) as usize)
                     .is_some_and(|byte| byte >> (index % 8) & 1 == 1)
-            }),
+            })
+            .into_bytes(),
         }
     }
 
@@ -51,7 +52,7 @@ impl WireStatus {
     pub fn complete_source() -> Self {
         Self {
             count: 0,
-            bits: PartBitmap::all_present(0),
+            bytes: Vec::new(),
         }
     }
 
@@ -70,7 +71,10 @@ impl WireStatus {
         let count = count_of(file_size);
         Self {
             count,
-            bits: PartBitmap::from_fn(u32::from(count), |part| part.value() >= real || held(part)),
+            bytes: PartBitmap::from_fn(u32::from(count), |part| {
+                part.value() >= real || held(part)
+            })
+            .into_bytes(),
         }
     }
 
@@ -103,7 +107,7 @@ impl WireStatus {
         if u32::from(self.count) != rmule_primitives::ed2k_status_part_count(file_size) {
             return None;
         }
-        Some(self.bits.first(real))
+        Some(self.bits().first(real))
     }
 
     #[must_use]
@@ -123,19 +127,27 @@ impl WireStatus {
     /// collapses to [`Self::complete_source`] instead of spelling out bit by
     /// bit.
     pub fn is_complete(&self) -> bool {
-        self.bits.is_complete()
+        self.bits().is_complete()
     }
 
     #[must_use]
     /// The bitmap's wire bytes, padding included.
     pub fn encode(&self) -> Vec<u8> {
-        self.bits.encode()
+        self.bytes.clone()
     }
 
     /// Append `<u16 count><bitmap>`, the shape of aMule's `WritePartStatus`.
     pub fn write_to(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.count.to_le_bytes());
-        out.extend_from_slice(self.bits.as_bytes());
+        out.extend_from_slice(&self.bytes);
+    }
+
+    /// The counted bits, phantom part included: this module's alone.
+    fn bits(&self) -> PartBitmap {
+        PartBitmap::from_fn(u32::from(self.count), |part| {
+            let index = part.value();
+            self.bytes[(index / 8) as usize] >> (index % 8) & 1 == 1
+        })
     }
 }
 

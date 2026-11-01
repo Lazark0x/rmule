@@ -385,7 +385,7 @@ fn a_status_count_is_checked_against_any_size_without_a_bitmap() {
     // Same verdict as the bitmap's own count, `size / PARTSIZE + 1`.
     for size in [1, ED2K_PART_SIZE, ED2K_PART_SIZE + 1, 5 << 30] {
         let own = WireStatus::downloader_empty(size).count();
-        let count = u16::try_from(own).expect("small file").to_le_bytes();
+        let count = own.to_le_bytes();
         let bitmap = vec![0u8; usize::from(u16::from_le_bytes(count)).div_ceil(8)];
         let tail = [count.as_slice(), &bitmap].concat();
         assert!(

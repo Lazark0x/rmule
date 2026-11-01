@@ -351,7 +351,7 @@ impl AichRootHash {
 /// `u16`, and the count is taken once here, so encoding one cannot overflow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartHashList {
-    hashes: Vec<PartHash>,
+    hashes: Box<[PartHash]>,
     count: u16,
 }
 
@@ -364,7 +364,10 @@ impl PartHashList {
         let count = u16::try_from(hashes.len()).map_err(|_| PrimitiveError::TooManyPartHashes {
             count: hashes.len(),
         })?;
-        Ok(Self { hashes, count })
+        Ok(Self {
+            hashes: hashes.into_boxed_slice(),
+            count,
+        })
     }
 
     /// The count the wire carries.

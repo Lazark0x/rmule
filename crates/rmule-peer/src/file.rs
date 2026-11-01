@@ -120,10 +120,9 @@ impl PartBitmap {
         self.bytes.clone()
     }
 
-    #[must_use]
-    /// The bitmap's wire bytes, borrowed.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+    /// The bitmap's bytes, padding included.
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 
     #[must_use]

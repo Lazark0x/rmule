@@ -138,7 +138,7 @@ pub enum HandshakeScan {
 /// hands one over, so a link believed encrypted holds keys by type and no
 /// call on it can pass bytes through in the clear.
 pub struct ObfuscationStream {
-    keys: ObfuscationKeys,
+    keys: Box<ObfuscationKeys>,
 }
 
 impl fmt::Debug for ObfuscationStream {
@@ -169,9 +169,11 @@ pub struct ObfuscationHandshake {
 impl ObfuscationHandshake {
     /// A handshake holding its keys.
     #[must_use]
-    pub const fn keyed(keys: ObfuscationKeys) -> Self {
+    pub fn keyed(keys: ObfuscationKeys) -> Self {
         Self {
-            stream: ObfuscationStream { keys },
+            stream: ObfuscationStream {
+                keys: Box::new(keys),
+            },
             decrypted: Vec::new(),
         }
     }

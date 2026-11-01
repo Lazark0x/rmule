@@ -60,7 +60,7 @@ impl PeerSession {
 
     /// The peer is identified: enter the session and report it.
     pub(super) fn enter_identified(&mut self, identity: PeerIdentity) {
-        self.state = State::Identified(identity.clone());
+        self.state = State::Identified(Box::new(identity.clone()));
         self.core
             .push_event(PeerEvent::Connection(ConnectionEvent::Identified {
                 identity,
@@ -104,7 +104,7 @@ impl PeerSession {
             return;
         };
         if apply(identity) {
-            let identity = identity.clone();
+            let identity = PeerIdentity::clone(identity);
             self.core
                 .push_event(PeerEvent::Connection(ConnectionEvent::IdentityRevised {
                     identity,

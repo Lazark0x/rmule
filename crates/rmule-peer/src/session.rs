@@ -87,7 +87,7 @@ enum State {
     /// Identification proved (ADR-0041); its **Static Capability Claim**
     /// (`CT_MOD_MISCOPTIONS`, ADR-0087) gates what rmule may *write* this
     /// peer: the ExtSX record form and its two optional identity tags.
-    Identified(crate::identity::PeerIdentity),
+    Identified(Box<crate::identity::PeerIdentity>),
     Closed,
 }
 

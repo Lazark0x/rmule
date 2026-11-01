@@ -432,3 +432,24 @@ pub fn temp_dir_not_set(dir: &Path, reason: &DirectoryRefusal) -> String {
         temp_dir_refusal(reason)
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The operator reads which file, how large it is and what the limit is.
+    #[test]
+    fn a_refused_file_says_its_size_and_the_limit() {
+        let event = ScanEvent::FileRefused {
+            dir: PathBuf::from("/vm"),
+            path: PathBuf::from("/vm/disk.img"),
+            refusal: ShareRefusal::PastSizeLimit {
+                file_size: 300 << 30,
+            },
+        };
+        assert_eq!(
+            line(&event).as_str(),
+            "/vm/disk.img is not shared: at 300.0 GB it is past the 256.0 GB eD2k can address"
+        );
+    }
+}
