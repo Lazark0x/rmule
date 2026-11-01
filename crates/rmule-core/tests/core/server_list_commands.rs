@@ -81,7 +81,12 @@ impl FakeFetcher {
 
     fn parked(park: Arc<Notify>) -> Self {
         Self {
-            result: Ok(met_bytes(&[(Ipv4Addr::new(198, 51, 100, 9), 4661, "Parked", "")])),
+            result: Ok(met_bytes(&[(
+                Ipv4Addr::new(198, 51, 100, 9),
+                4661,
+                "Parked",
+                "",
+            )])),
             park: Some(park),
         }
     }
