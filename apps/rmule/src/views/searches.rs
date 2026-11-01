@@ -28,7 +28,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::TableState;
 
-use rmule_core::{CoreCommand, SearchCommand, SearchId};
+use rmule_core::{CoreCommand, SearchCommand};
 use rmule_primitives::{Ed2kText, KeywordQuery};
 
 use super::ViewOutcome;
@@ -72,7 +72,11 @@ pub struct SearchesView {
     /// The results' order. Per table and durable, not per search.
     sort: TableSort<ResultsTable>,
     /// The current search's order under that sort.
-    order_memo: Memo<(u64, Option<SearchId>, TableSort<ResultsTable>), usize>,
+    order_memo: Memo<sort::OrderKey, usize>,
+    /// The widest value of each column, for its width.
+    wants_memo: Memo<sort::OrderKey, usize>,
+    /// Each result's height at the widths last drawn.
+    heights_memo: Memo<(sort::OrderKey, Vec<usize>), u16>,
     /// Every search of the run, each with its query and its own cursor.
     held: HeldSearches,
     /// `Some(cursor)` while the row-action menu is open; `cursor` indexes a

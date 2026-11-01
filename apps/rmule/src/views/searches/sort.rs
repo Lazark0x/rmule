@@ -13,7 +13,7 @@ use rmule_primitives::{Ed2kFileClass, FileHash, SearchResult};
 use super::SearchesView;
 use super::results::result_source_count;
 use crate::state::UiState;
-use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
+use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort};
 use crate::views::ViewOutcome;
 
 /// A result's type as a rank: aMule's `EED2KFileType` value
@@ -89,19 +89,26 @@ impl SortedTable for ResultsTable {
     }
 }
 
+/// What a search's derived rows stand on: the rows, which search, the sort.
+pub(super) type OrderKey = (u64, Option<rmule_core::SearchId>, TableSort<ResultsTable>);
+
 impl SearchesView {
+    /// What the current search's order stands on.
+    pub(super) fn order_key(&self, state: &UiState) -> OrderKey {
+        (
+            state.revision,
+            self.held.current().map(|entry| entry.id),
+            self.sort,
+        )
+    }
+
     /// The current held search's results in display order.
     pub(super) fn ordered<'a>(&self, state: &'a UiState) -> Vec<&'a SearchResult> {
         let Some(pane) = self.held.current_pane(state) else {
             return Vec::new();
         };
-        let key = (
-            state.revision,
-            self.held.current().map(|entry| entry.id),
-            self.sort,
-        );
         self.order_memo
-            .get(key, || self.sort.order(&pane.results))
+            .get(self.order_key(state), || self.sort.order(&pane.results))
             .iter()
             .map(|at| &pane.results[*at])
             .collect()
@@ -174,7 +181,7 @@ mod tests {
     use crate::fixture::*;
     use crate::golden::assert_golden;
     use crate::state::SearchStatus;
-    use crate::table_sort::{Direction, TableSort, TableSorts};
+    use crate::table_sort::{Direction, TableSorts};
 
     fn names(view: &mut SearchesView, state: &UiState) -> Vec<String> {
         view.held.bind(state);

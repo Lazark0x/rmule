@@ -337,19 +337,23 @@ impl SearchesView {
         // left to `Constraint::Fill` so an over-narrow pane shrinks the fixed
         // columns instead of collapsing the name column to nothing.
         let headers = header_widths(&self.sort);
-        let mut wants = [0; 4];
-        for (index, cap) in RESULT_CAPS {
-            let widest = results
-                .iter()
-                .map(|result| match index {
-                    1 => display_width(&human_size(result.file_size())),
-                    2 => display_width(&result_sources_text(result)),
-                    _ => display_width(&result_type_text(result)),
-                })
-                .max()
-                .unwrap_or(0);
-            wants[index] = widest.min(cap);
-        }
+        let key = self.order_key(state);
+        let wants = self.wants_memo.get(key, || {
+            let mut wants = vec![0; 4];
+            for (index, cap) in RESULT_CAPS {
+                let widest = results
+                    .iter()
+                    .map(|result| match index {
+                        1 => display_width(&human_size(result.file_size())),
+                        2 => display_width(&result_sources_text(result)),
+                        _ => display_width(&result_type_text(result)),
+                    })
+                    .max()
+                    .unwrap_or(0);
+                wants[index] = widest.min(cap);
+            }
+            wants
+        });
         let cols_at = |bar: bool| {
             let bar = if bar { viewport::BAR_W } else { 0 };
             greedy_widths(
@@ -425,6 +429,17 @@ impl SearchesView {
                 height,
             )
         };
+        // A row's height at some widths is all the viewport needs of the rows
+        // off screen, so they are laid out once and only those in view are
+        // built; the rest hold their height.
+        let heights_at = |cols: &[usize]| {
+            self.heights_memo.get((key, cols.to_vec()), || {
+                results
+                    .iter()
+                    .map(|result| row_at(result, cols).1)
+                    .collect()
+            })
+        };
         let bar = viewport::needs_bar(results.len(), area.height.saturating_sub(1), || {
             let cols = cols_at(false);
             let room = area
@@ -434,10 +449,7 @@ impl SearchesView {
                     &off_screen_at(&cols),
                 ))
                 .saturating_sub(header_at(&cols).1);
-            let drawn: u32 = results
-                .iter()
-                .map(|result| u32::from(row_at(result, &cols).1))
-                .sum();
+            let drawn: u32 = heights_at(&cols).iter().map(|h| u32::from(*h)).sum();
             drawn > u32::from(room)
         });
         let cols = cols_at(bar);
@@ -456,16 +468,29 @@ impl SearchesView {
             list.width,
             list.height.saturating_sub(header_h),
         );
-        let (rows, heights): (Vec<Row>, Vec<u16>) =
-            results.iter().map(|result| row_at(result, &cols)).unzip();
-        let first = self.viewport.follow(
-            selected.unwrap_or(0),
-            heights.len(),
-            list.height.saturating_sub(header_h),
-            |index| heights[index],
-        );
+        let heights = heights_at(&cols);
+        let room = list.height.saturating_sub(header_h);
+        let first = self
+            .viewport
+            .follow(selected.unwrap_or(0), heights.len(), room, |index| {
+                heights[index]
+            });
+        let mut filled = 0u16;
+        let rows: Vec<Row> = results
+            .iter()
+            .zip(heights.iter())
+            .enumerate()
+            .map(|(index, (result, height))| {
+                if index >= first && filled < room {
+                    filled = filled.saturating_add(*height);
+                    row_at(result, &cols).0
+                } else {
+                    Row::default().height(*height)
+                }
+            })
+            .collect();
         *self.results_state.offset_mut() = first;
-        self.row_heights = heights;
+        self.row_heights = heights.to_vec();
 
         let widths: Vec<Constraint> = cols
             .iter()
