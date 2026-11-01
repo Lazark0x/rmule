@@ -13,7 +13,7 @@ A byte-count fact core republishes *whole* on every data tick — the diagnostic
 _Avoid_: state, metrics, counters (core's counters are the source; a level is the snapshot of them)
 
 **Data tick**:
-The bridge's 1 Hz poll: read `diagnostics_snapshot()`, synthesize transfer rates, patch in the Kad facts the sync accessor cannot see, and publish the result as one snapshot action. The only clock the UI core has — every time-bearing fact is stamped with the tick's injected instant, never a wall clock read at render.
+The bridge's 1 Hz poll: read `diagnostics_snapshot()`, synthesize transfer rates, patch in the Kad facts the sync accessor cannot see, and publish the result as one snapshot action. The only clock the UI core has — every time-bearing fact is stamped with the tick's injected instant, never a wall clock read at render. The one wall reading is the app loop's, handed to the **Log** before each action lands.
 _Avoid_: refresh, frame, poll loop (the render loop is separate and runs at its own pace)
 
 **View state**:
@@ -39,6 +39,18 @@ _Avoid_: layout, shell, frame — as names for the chrome. `Frame` stays ratatui
 **Status bar**:
 The bottom border's one row, which answers "is everything fine?" at any width and takes no rows from the frame. The rates sit first, in fixed cells, and are never pushed off: nothing else claims the row before them, and below 29 columns they read in a short form. What is left goes by claim: a flash or a stopped core, the way to help, the connection, the **Tally**, the note, the server's users; a segment is dropped whole, except a flash and a note, which give up their middle. The connection reads off edges, as the Servers title and its `c` hint do, so they agree in every frame: a dial is `connecting…`, off is dim when chosen, red when lost.
 _Avoid_: footer, status line
+
+**Log**:
+The Networks pane that says what happened, every line a **Sentence** with the local time it was said at, stamped as it arrives so a machine's sleep moves nothing. A date line opens it and each new day; scrolled past one, the day stands on the bottom border. Two rings in fixed memory, read as one in the order said: the everyday lines and the warnings and failures, so a chatty login cannot push a failure out. All of it lasts one run; the Run Log is what outlives it.
+_Avoid_: console, event list
+
+**Severity**:
+How much a **Log** line asks of the operator: info, warning, failure. Read from the event's code (`rmule_words::severity`), never its words, and listed for every event; what a stranger can cause at will is info, whatever it says, so a peer cannot fill the warnings' ring. Drawn as a glyph, with the word opening a warning or a failure, never as colour alone. `f` on the focused log walks every line, warnings and failures, failures.
+_Avoid_: level, priority (a download's)
+
+**Rate history**:
+What the Statistics graphs plot, in fixed memory: ten minutes tick by tick, a day of minutes, a month of hours, stamped on the **Data tick**. A coarse column is the mean of its ticks, so its area is the bytes moved; a span no tick landed in stays blank beside a metered zero, which keeps a floor. `w` walks the window, what a column stands for; a graph never resamples, so a wider pane sees further back. All of it lasts one run.
+_Avoid_: graph buffer, samples
 
 **Tally**:
 What the Transfers table adds up to: active, failed and done, each counted only when not zero, on the status bar and in the terminal's title. A count at the bar's right end moves nothing but itself.

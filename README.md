@@ -209,8 +209,10 @@ port.
 | `a`, `U` | Networks: add a server / update the list from a URL |
 | `c`, `K` | Networks: connect or disconnect the server / start or stop Kad |
 | `d` | Networks: the selected server's grants, flags and health |
+| `f` | Networks, on the log: every line, warnings and failures, or failures |
 | `z` | Zoom the focused pane to the whole tab, or back |
 | `a` | Shared Files: active files only, or every file |
+| `w` | Statistics: graph seconds, a minute a column, or an hour a column |
 | `Enter`, `←` / `→` | Settings: edit a field / step a choice |
 | `x` | Settings: stop sharing the selected directory |
 | `?` | every key, with the version |

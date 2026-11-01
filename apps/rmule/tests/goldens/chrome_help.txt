@@ -9,16 +9,16 @@
 │ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
 │ z               zoom the focused pane to the whole tab, or back             █│
 │ m / Enter       row action menu                                             █│
-│ s / S           sort the focused table by next column / reverse             █│
+│ s / S           sort the focused table by next column / reverse             ▃│
 │ ?               this help; j/k, PgUp/PgDn scroll it when it is long          │
 │ q               quit; asks first while a download runs                       │
 │ Ctrl-C          quit, from anywhere                                          │
-│ Ctrl-Z          stop as a job; transfers stand still until fg                │
-│ Ctrl-L          repaint the screen                                           │
 │ Esc             close a menu, a form or a question; leave the query          │
 │ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word         │
 │ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back │
 │ Tab             in a path field: complete it; ~ is your home                 │
-│ mouse           click tab/row selects, header sorts, wheel scrolls          ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 20 / 40 ┘
+│ mouse           click tab/row selects, header sorts, wheel scrolls           │
+│ a               Networks: add server                                         │
+│ U               Networks: update server list from URL                       ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 42 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

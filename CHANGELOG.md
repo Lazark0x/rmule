@@ -15,6 +15,15 @@ All notable changes to rmule are recorded here. The format follows
   closed last.
 - No field loses what was typed: a refusal stays under it, with the text.
 
+### Log and Statistics
+
+- The log dates itself, marks each line with a glyph and a word for warnings and
+  failures, and keeps those in a ring of their own, so a chatty login cannot
+  push one out. `f` on the log narrows it by severity.
+- A line keeps the time it was said, across a machine's sleep.
+- Statistics keeps ten minutes of seconds, a day of minutes and a month of hours
+  in fixed memory. `w` walks them, and Session says how long the run has been up.
+
 ### Status bar and start
 
 - The status bar always shows the rates, in fixed cells and a unit that adapts

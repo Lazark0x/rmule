@@ -12,6 +12,10 @@ _Avoid_: message, string, label (a label is a word in a cell; a sentence is a li
 One per domain — app, download, event, kad, login, os, peer, port mapping, reach, scan, search, serve, server, software, store, units — each wording its vocabulary with an exhaustive `match`, so a code core adds cannot reach an operator without its words. A front end's own words module of the same name re-exports the shared one and adds what words that front end's own types. `scripts/guards.sh` refuses a Debug format in this crate's source as in the front ends'.
 _Avoid_: messages, strings, i18n table, formatter
 
+**Severity**:
+How much a log line asks of the operator (info, warning, failure), read from the event's code and listed for every event in one `match`, so a code core adds cannot reach the log without one. What a stranger can cause at will is info, whatever it says. It carries a glyph, and the word that opens a warning or a failure.
+_Avoid_: level, priority
+
 **Clause**:
 A fragment a sentence is built from — the reason after a colon, `the folder is not there` — returned as text rather than a **Sentence**, so a caller fits it into a line of its own. A front end ends a sentence with a clause; it never words the code itself.
 _Avoid_: reason string, description

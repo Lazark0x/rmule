@@ -49,6 +49,10 @@ pub const NETWORKS: &[Binding] = &[
         "d",
         "Networks: the selected server's grants, flags and health",
     ),
+    (
+        "f",
+        "Networks: in the log, every line, warnings and failures, or failures",
+    ),
 ];
 
 /// Searches.
@@ -80,6 +84,12 @@ pub const SHARED: &[Binding] = &[
     ("[ / ]", "Shared: filter by directory"),
 ];
 
+/// Statistics.
+pub const STATISTICS: &[Binding] = &[(
+    "w",
+    "Statistics: graph seconds, a minute a column, or an hour a column",
+)];
+
 /// Settings.
 pub const SETTINGS: &[Binding] = &[
     ("Enter  ← / →", "Settings: edit a field / step a selector"),
@@ -87,4 +97,6 @@ pub const SETTINGS: &[Binding] = &[
 ];
 
 /// Every table, in the tabs' order.
-pub const TABLES: [&[Binding]; 6] = [EVERYWHERE, NETWORKS, SEARCHES, TRANSFERS, SHARED, SETTINGS];
+pub const TABLES: [&[Binding]; 7] = [
+    EVERYWHERE, NETWORKS, SEARCHES, TRANSFERS, SHARED, STATISTICS, SETTINGS,
+];

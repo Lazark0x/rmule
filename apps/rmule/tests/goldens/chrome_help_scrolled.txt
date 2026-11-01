@@ -1,24 +1,24 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
-│ a               Networks: add server                                        ▲│
-│ U               Networks: update server list from URL                        │
-│ c               Networks: connect to the selected server, or disconnect from │
-│                 the one you are on                                           │
-│ K               Networks: start or stop Kad                                  │
+│ K               Networks: start or stop Kad                                 ▲│
 │ d               Networks: the selected server's grants, flags and health     │
+│ f               Networks: in the log, every line, warnings and failures, or  │
+│                 failures                                                     │
 │ /               Searches: focus query input                                  │
 │ o               Searches: type/size/sources/extension filters                │
 │ [ / ]           Searches: previous / next held search                        │
 │ x / n           Searches: stop or close a search / server's next page        │
-│ u               Searches: bring back the search closed last                 █│
-│ p               Transfers: pause or resume the selected download            █│
-│ C               Transfers: clear all completed                              █│
+│ u               Searches: bring back the search closed last                  │
+│ p               Transfers: pause or resume the selected download             │
+│ C               Transfers: clear all completed                              ▅│
 │ L               Transfers: add a download from a pasted eD2k link           █│
 │ v               Transfers: preview the selected download in the player set  █│
 │                 in Settings                                                 █│
 │ a               Shared: active files only, or every file                    █│
 │ [ / ]           Shared: filter by directory                                 █│
+│ w               Statistics: graph seconds, a minute a column, or an hour a  █│
+│                 column                                                      █│
 │ Enter  ← / →    Settings: edit a field / step a selector                    █│
 │ x               Settings: stop sharing the selected directory               ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 40 / 40 ┘
+└─────────────────────────────────────────────────────────────── j/k ─ 42 / 42 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘
