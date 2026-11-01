@@ -458,6 +458,9 @@ mod tests {
 
     /// `--no-mouse` must leave the terminal's mouse alone: taking the screen
     /// asks for nothing of it, so only [`mouse_bytes`] ever does.
+    /// Windows with no ANSI console takes the mouse by a call, and writes no
+    /// bytes to look at.
+    #[cfg(unix)]
     #[test]
     fn taking_the_screen_leaves_the_mouse_to_the_setting() {
         assert!(!holds(&enter_bytes(), "\x1b[?1000h"));
