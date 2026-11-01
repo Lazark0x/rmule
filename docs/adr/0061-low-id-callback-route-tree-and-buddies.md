@@ -92,18 +92,26 @@ in no server's namespace, so the server road is refused for it.
 
 ### Open-node roles
 
-- **Buddy service.** One slot. A `0x51` is refused silently unless Kad TCP and UDP both
-  read verified open (aMule `KademliaUDPListener.cpp:1427`), and also when rmule already
-  has a buddy, the requester is a known client or under a firewall-check collision, or is
+- **Buddy service.** One slot, and only a link fills it. A `0x51` is spoofable, so as in stock
+  it wins a place among the candidates and holds nothing (`KS_INCOMING_BUDDY`,
+  `ClientList.cpp:608-615`, against `m_nBuddyStatus == Connected`,
+  `KademliaUDPListener.cpp:1433`). It is refused silently unless Kad TCP and UDP both read
+  verified open (aMule `KademliaUDPListener.cpp:1427`), and also when rmule already holds a
+  buddy's link, the requester is a known client or under a firewall-check collision, or is
   ourselves
   ([ClientList.cpp#L906](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L906)).
-  Otherwise rmule answers `0x5A <buddyID><ourHash><ourTCPport>[connectopts]`.
-- **The held link is the one the recruit dials**, adopted at inbound triage before the
+  Otherwise rmule keeps the **Buddy Recruit** and answers
+  `0x5A <buddyID><ourHash><ourTCPport>[connectopts]`. A recruit waits two connection timeouts
+  (80 s, `CONNECTION_TIMEOUT`) for its dial, a repeat `0x51` restarts its wait, and the table
+  holds 16, the oldest going first, where stock's list has no cap.
+- **The held link is the first recruit to dial**, adopted at inbound triage before the
   adopt/serve split: `try_attach` holds a connection when its `OP_HELLO` reports the User
-  Hash the `0x51` recruited on. The hello decides, never the endpoint, because the recruit
-  is behind a NAT. The connection is still served (ADR-0031), and the relays queue their
-  frames on it. Its close empties both the link and the slot, so the next `0x51` may
-  recruit.
+  Hash a live recruit named and its address is the one the `0x51` came from, the same address
+  the keepalive matches. The dial proves the address the datagram only claimed, so the
+  candidates go and the slot is filled there. The hello picks the row and the connection's
+  address confirms it; the port plays no part, because the recruit is behind a NAT. The
+  connection is still served (ADR-0031), and the relays queue their frames on it. Its close
+  empties both the link and the slot, so the next `0x51` may recruit.
 - **Relays, both verified.** `0x52` becomes `OP_CALLBACK` on the held link and `0x94`
   becomes `OP_REASKCALLBACKTCP`, each only when its buddy ID matches the registered one.
   aMule verifies the `0x94` but not the `0x52` (its `// JOHNTODO` names the gap); rmule
@@ -118,7 +126,10 @@ in no server's namespace, so the server road is refused for it.
 - **Keepalive.** Every `OP_BUDDYPING` on the held link is answered with an empty
   `OP_BUDDYPONG`, and the link's session timeout is extended while it is held. rmule
   answers every ping instead of applying aMule's floor: only the one held link can be
-  ponged at all, and a pong is a six-byte frame.
+  ponged at all, and a pong is a six-byte frame. A held link silent past stock's buddy socket
+  timeout (15 minutes on top of the connection timeout, `ClientTCPSocket.cpp:207-218`), which a
+  ten-minute ping always beats, is dropped on the pump's tick and frees the slot, as stock's
+  timed-out socket does.
 
 ### Firewalled-node roles
 

@@ -101,8 +101,12 @@ One slot's run from its grant: the bytes it has sent and the time it began. Whil
 _Avoid_: serve flow (that is what the slot has in motion), transfer
 
 **Ask Pace**:
-The serve side's one score of how fast each client asks for what costs us: a slot ask, a known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a later one takes 1 off, and 10 bans the address. Keyed by accounting key and **User Hash**, ages out with the client at 34 minutes, bounded (ADR-0055 divergence 7).
+The serve side's one score of how fast each client asks for what costs us: a slot ask, a known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a later one takes 1 off, and 10 bans the address. A reask scores on its own table and its 10 earns the **Hush**, because a datagram proves no sender. Keyed by accounting key and **User Hash**, ages out with the client at 34 minutes, bounded (ADR-0055 divergence 7).
 _Avoid_: aggressiveness counter, flood limiter (that is Kad's)
+
+**Hush**:
+What an offence earns when nothing proved the sender: for two hours the accounting key's datagrams that prove no round trip stop, at the client-UDP front or, for Kad, in the node. TCP, Tunnels, held links and keyed Kad datagrams pass. A forger can name any address, so it costs that address its plaintext UDP and nothing else; a ban takes proof (ADR-0064).
+_Avoid_: soft ban, UDP ban, mute
 
 **Hash Track**:
 Which **User Hash** each address and listen port proved a key under in the last two hours, so a client coming back under another hash is banned at its hello (aMule's tracked client list).
@@ -162,6 +166,10 @@ _Avoid_: slot state, shared slot
 **Recruit Status**:
 The Kad pump's published reading of its own ADR-0061 recruit rule (`RecruitStatus`): whether a FINDBUDDY walk is in flight, and why the last recruit tick refused to walk. Its one writer is the **Kad Pump State**, which restates it fresh when a node starts and drops the walk when the node stops; the **Firewalled Front** copies it into the diagnostics beside its own slot's state, and the **Reachability Trail** writes `buddy=walking` from it.
 _Avoid_: recruit state, walking flag
+
+**Buddy Recruit**:
+A `0x51` waiting for its dial as an open node's candidate: 80 s, sixteen at most, oldest first. It holds no slot, because a datagram proves nothing; the first recruit to dial from the address it named fills the slot and the others go (ADR-0061).
+_Avoid_: pending buddy, buddy request
 
 **Buddy Link**:
 The enacted open half of the **Buddy** relationship (`BuddySlot`, ADR-0061): the `0x51` recruit's accept, the attached held link an identified inbound peer's user hash earns, the verified `0x52`/`0x94` relays that link carries, and `OP_BUDDYPING`'s pong — gated to the held link, the connection-identity check aMule's `GetBuddy() != client` also runs.

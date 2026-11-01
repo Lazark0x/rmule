@@ -43,9 +43,14 @@ AICH is a block-level recovery layer beside MD4, implemented in both directions.
   none.** A single peer's root is never trusted. Without `h=`, core collects root proposals from connected peers
   (`0x9E` → `0x9D`) and commits one only when at least `MIN_UNIQUE_IPS_TO_TRUST` (10)
   distinct voters propose it and it holds at least `MIN_PERCENTAGE_TO_TRUST` (92 %) of
-  all voters, as aMule's `SHAHashSet.cpp` does. A voter is an IPv4 address masked as
-  aMule masks it (`dwIP &= 0x00F0FFFF`), so one subnet cannot stuff the vote, or an IPv6
-  proposer's `/64`. With no trusted root, AICH recovery is unavailable and a
+  all voters, as aMule's `SHAHashSet.cpp` does. A voter is an IPv4 address's top 20 bits,
+  which is what aMule's `dwIP &= 0x00F0FFFF` keeps of a network-order word on a little-endian
+  host (`SHAHashSet.cpp:451`), so one subnet cannot stuff the vote, or an IPv6 proposer's
+  `/64`. A voter holds one vote: restating moves it, where stock counts it under every root it
+  names, so one peer can neither post unbounded roots nor push the total past the 92 % line
+  alone. The vote keeps 1024 voters, first come; past that a new voter is not counted, and a
+  held one may still restate. Only the root just voted can cross the line, so a vote costs
+  constant time. With no trusted root, AICH recovery is unavailable and a
   failed part takes the rootless path of ADR-0117 §1, which attributes its corrupt cells
   across a refetch. AICH is never a new failure mode.
 - **A qualified Kad root.** rmule keeps `TAG_KADAICHHASHRESULT` from a storer its search walk

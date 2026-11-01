@@ -72,16 +72,58 @@ a process restart loses it, as stock's does. Stock's Stop clears it; rmule does 
 the peer's count does not clear either. An ask is spent only once the node has heard someone,
 and never on a run holding 50 sources (`GetMaxSourcePerFileUDP`, `PartFile.cpp:1512`).
 
-**Ban: the node reports, core enforces.** At `count > 5 × rate`
+**Ban: the node reports, core enforces, and proof picks the doors.** At `count > 5 × rate`
 ([PacketTracking.cpp#L212](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/kademlia/net/PacketTracking.cpp#L212))
-the node emits `KadEvent::FloodOffenderDetected`. Core's `BanStore` (IP to banned-until,
-lazy expiry) records it for `CLIENTBANTIME` = 2 hours, checked then evicted as aMule does
+the node emits `KadEvent::FloodOffenderDetected`, stating whether the bucket that crossed
+counted proven datagrams. Core's `BanStore` (accounting key to banned-until, lazy expiry)
+records it for `CLIENTBANTIME` = 2 hours, checked then evicted as aMule does
 ([ClientList.cpp#L739](https://github.com/amule-project/amule/blob/4e8f2b3c3f90cda23765730546b04c684a92e4f5/src/ClientList.cpp#L739)).
-Enforcement is aMule's: inbound connections from a banned IP are refused, banned source
-candidates are not dialed, and every datagram from it stops at the client UDP front before
-the demux (`MuleUDPSocket.cpp:176-177`), which is Kad's socket and the peers'. Stock also
-gates its server UDP socket; rmule's hears only servers it asked, so that door stays open. A ban reaches
-the links and waiters already held as well (ADR-0031).
+
+A UDP source is a claim, and stock's ban takes it at its word: it keys on the source address,
+passes over the receiver key it was handed (`PacketTracking.cpp:108`, the parameter is
+commented out) and closes every door (`:216`). Six 2-byte `0x52` datagrams naming an address
+would shut a real peer out for two hours, and the forger can repeat them. So what an offence
+earns follows what the offender proved:
+
+- **A proven offence earns the ban.** Proof is a finished TCP or Tunnel link, or a Kad
+  datagram with a valid receiver key: that key is our own derivation for the source address
+  and we hand it to that address alone, so reading it proves the sender receives there.
+  Inbound connections from a banned key are refused, banned source candidates are not dialed,
+  and every datagram from it stops at the client UDP front before the demux
+  (`MuleUDPSocket.cpp:176-177`), which is Kad's socket and the peers'. Stock also gates its
+  server UDP socket; rmule's hears only servers it asked, so that door stays open. A ban
+  reaches the links and waiters already held as well (ADR-0031).
+- **An unproven offence earns the Hush.** For the same two hours, the same lazy expiry, every
+  datagram from that key that proves nothing stops: a peer-UDP datagram at the front, which
+  has no proof to give, and a Kad datagram in the node, the one place that can read the
+  receiver key, the front marking it hushed on its way in. TCP stays open, a Tunnel's frames
+  pass (a Tunnel is a proven connection, and 2.3.3 has no such door), held links and waiters
+  keep their places, and a keyed Kad datagram still reaches the node. A forger can cost a
+  victim its plaintext UDP and no more: a reask that goes unanswered falls back to TCP
+  (`DownloadClient.cpp:152-155`), and our Kad requests hand the victim the
+  key its answers then carry. A repeat report resets the window, as a ban's does, and never
+  shortens a ban in force.
+
+The rule stays no softer than stock at the door a flood used. A flooder's datagrams all stop,
+as `MuleUDPSocket.cpp:176-177` stops them, unless it holds the key, and a flooder holding the
+key earns stock's ban outright. What stock has and rmule gives up is one thing: a plaintext
+flooder keeps its TCP, because nothing on that road tells it from the address it named.
+
+**Proof splits the buckets.** A flood bucket keys on `(accounting key, opcode, proven)`. One
+shared bucket would let a forger fill a victim's count with plaintext and wait: the victim's
+next keyed request would drop, and at `5 × rate` that honest datagram would be the proven one
+that crossed, turning a forgery into a ban. A sender mixing both classes gets each class's
+rate, at most twice stock's and still under `5 × rate`, and a class on its own is held as
+stock holds it.
+
+**Two tables, not one.** The hush rows live apart from the ban rows and shed apart. A forger
+can mint hush rows from any address it likes, and a row it mints must never push out a ban a
+proven offender earned.
+
+**A ban covers the host, not the address.** `BanStore` keys on the accounting key, as the flood
+buckets, the wait list and the Ask Pace do: an IPv4 address, an IPv6 `/64`. A sender delegated
+a `/64` mints an address per connection, so a `/128` row would be no ban at all.
+
 The inbound refusal is the second of the **Accept Gates** — the IP filter, the ban, then the
 Test Connection carve-out (ADR-0046), in that order and in one place. They run where a
 connection enters the serve accept channel and before it does: in the accept pump for a TCP
@@ -201,6 +243,14 @@ outbound, because the `0x22` consume checks it.
 
 ## Considered options
 
+- **A plaintext flood drops and never earns anything.** Rejected: the offender keeps every
+  other opcode, its reasks and its answers for the whole two hours, softer than stock at the
+  door the flood used.
+- **Stock's ban for any flood.** Rejected: it hands any forger a two-hour outage of a chosen
+  uploader, Kad contact or waiter, and ADR-0116's rule is that a stranger cannot aim rmule at
+  a third party. It costs no interop to drop, since no peer can see the difference.
+- **One flood bucket per `(key, opcode)`, proof read at the crossing.** Rejected: see **Proof
+  splits the buckets**; the crossing datagram says nothing about the five before it.
 - **The ban on TCP alone.** Rejected: stock's gate is at the socket every UDP protocol shares,
   and an offender left answered keeps its reask and its Kad replies for the whole ban.
 - **The limiter in the socket layer.** Rejected: the deterministic tier needs flood

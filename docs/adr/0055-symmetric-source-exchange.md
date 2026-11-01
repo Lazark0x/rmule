@@ -185,7 +185,7 @@ in core when the count is not the file's.
 | Slot ask not exactly a hash: silence, link kept | `cts:606` | same |
 | Slot ask for an unshared file: nothing sent | `cts:607-617` | same |
 | Repeat slot ask keeps the place, moves the Asked File | `cts:613`, `uq:401-431` | same |
-| Aggressive asker banned | `cts:601`, `cus:194`, `uc:795-824`; 3.1.0 `cts:1768` | same, keyed by client; a source of ours is never banned (divergence 7) |
+| Aggressive asker banned | `cts:601`, `cus:194`, `uc:795-824`; 3.1.0 `cts:1768` | same, keyed by client; a source of ours is never banned; a reask scores apart and earns the Hush (divergence 7) |
 | Parts of a file other than the slot's | `uc:198-249` serves them | not served (divergence 8) |
 | A moved Asked File resets the status | `uc:477-479` | kept per peer and file (divergence 8) |
 | `OP_CANCELTRANSFER`: slot released, slotless a no-op, link kept, body ignored | `cts:673-678` | same (ADR-0056) |
@@ -228,7 +228,9 @@ in core when the count is not the file's.
 - **Divergence 7, aggressive askers.** rmule scores as aMule 3.1.0 does: a slot ask, a
   known waiter's UDP reask or an AICH recovery ask under 590 s after the last adds 3, a
   later one takes 1 off, and a score of 10 bans the address for two hours
-  (`UploadClient.cpp:656-683`). 3.1.0 charges `OP_AICHREQUEST` because each costs a walk of
+  (`UploadClient.cpp:656-683`). A reask is a datagram and proves no sender (ADR-0064), so it
+  scores on its own table and its 10 earns the Hush, the reask unanswered and the waiter's
+  place kept; forged reasks can neither ban a waiter nor bring a later TCP ask to the line. 3.1.0 charges `OP_AICHREQUEST` because each costs a walk of
   known2; the address cap (ADR-0088) bounds wait-list places and nothing else, so it never
   answered that cost, nor a reask's. The **Ask Pace** holds the score, per client: an
   accounting key and a User Hash, so a NAT's clients do not share one. The divergence left
