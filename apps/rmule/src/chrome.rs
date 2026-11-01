@@ -1,6 +1,6 @@
 //! Always-on chrome (spec §3.1): the outer frame whose top border is the tab
 //! bar and whose bottom border is the 4-segment status bar, plus the help
-//! overlay (`?`) and the transient action flash (~3 s amber ✱).
+//! overlay (`?`) and the transient action flash (~3 s ✱).
 //!
 //! Rendering is pure — `UiState` + `ChromeState` + injected `now` → widgets —
 //! so every chrome state goldens under `TestBackend`.
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::Block;
 
 use crate::action::Action;
 use crate::state::UiState;
@@ -62,11 +62,8 @@ pub struct ChromeState {
 
 /// One frame of chrome furniture (frame + tabs + status bar). Returns the
 /// content rect the active view draws into; overlays go on top afterwards
-/// via [`draw_overlays`], so the z-order is chrome → view → modal.
-///
-/// When the status info text cannot fit the bottom border whole (the
-/// never-truncate rule), it spills onto wrapped rows just above the border and the
-/// returned content rect shrinks by exactly those rows.
+/// via [`draw_overlays`], so the z-order is chrome → view → modal. The rect
+/// is the frame's inside at any status text: the bar takes no rows.
 pub fn draw_frame(
     frame: &mut Frame,
     state: &UiState,
@@ -84,19 +81,13 @@ pub fn draw_frame(
     let mut outer = Block::bordered()
         .border_style(theme.chrome())
         .title_top(tabs)
-        .title_bottom(status.border);
+        .title_bottom(status.left)
+        .title_bottom(status.right.right_aligned());
     if show_brand {
         outer = outer.title_top(Line::from(Span::styled(BRAND, theme.dim_text())).right_aligned());
     }
-    let mut content = outer.inner(area);
+    let content = outer.inner(area);
     frame.render_widget(outer, area);
-
-    let spill = u16::try_from(status.overflow.len()).unwrap_or(u16::MAX);
-    if spill > 0 && content.height > spill {
-        let strip = Rect::new(content.x, content.bottom() - spill, content.width, spill);
-        frame.render_widget(Paragraph::new(status.overflow), strip);
-        content.height -= spill;
-    }
     content
 }
 

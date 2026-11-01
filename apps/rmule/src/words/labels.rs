@@ -38,6 +38,8 @@ pub const CONNECT: &str = "Connect (c)";
 pub const DISCONNECT: &str = "Disconnect (c)";
 /// A server row's end of re-making a lost session.
 pub const STOP_RECONNECTING: &str = "Stop reconnecting (c)";
+/// Ends a dial still out.
+pub const STOP_CONNECTING: &str = "Stop connecting";
 /// A static server row's unpin.
 pub const UNPIN: &str = "Unpin (currently static)";
 /// A server row's pin.

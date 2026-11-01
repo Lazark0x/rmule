@@ -22,7 +22,7 @@ fn a_queued_download_appears_waiting_with_its_hash() {
     let row = &state.downloads[&download_id(1)];
     assert_eq!(row.status, DownloadStatus::Waiting);
     assert_eq!(row.file_hash, Some(file_hash(7)));
-    assert_eq!(state.notable.as_deref(), Some("download queued"));
+    assert_eq!(state.notable.as_deref(), Some("added download 1"));
 }
 
 #[test]

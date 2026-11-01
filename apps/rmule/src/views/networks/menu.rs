@@ -307,6 +307,8 @@ impl NetworksView {
         // others offer Connect: one place, the action that can act.
         let connect = if crate::views::is_remaking(state, &row.server.endpoint) {
             MenuItem::enabled(labels::STOP_RECONNECTING, MenuAction::Disconnect)
+        } else if crate::views::is_dialling(state, &row.server.endpoint) {
+            MenuItem::enabled(labels::STOP_CONNECTING, MenuAction::Disconnect)
         } else if crate::views::is_ours(state, &row.server.endpoint) {
             MenuItem::enabled(labels::DISCONNECT, MenuAction::Disconnect)
         } else {

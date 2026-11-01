@@ -150,31 +150,33 @@ impl NetworksView {
         let focused = self.focus == Pane::Servers;
         let border = if focused { theme.accent } else { theme.dim };
         let rows = self.ordered(state);
-        let connected = state.diagnostics.connected_server.as_ref();
-        let title = match (connected, state.ed2k) {
-            (Some(server), Ed2kConnection::Connected { client_id }) => {
+        // The edge, as the status bar reads it, so the two say one thing in
+        // every frame.
+        let connected = state.connected_server.as_ref();
+        let title = match (&state.ed2k, connected) {
+            (Ed2kConnection::Connected { client_id }, server) => {
                 let class = if client_id.is_high_id() {
                     "HighID"
                 } else {
                     "LowID"
                 };
-                format!(
-                    " Servers ({}) · {} {class} ",
-                    rows.len(),
-                    server_label(server)
-                )
+                let server = server.map_or_else(String::new, server_label);
+                format!(" Servers ({}) · {server} {class} ", rows.len())
             }
-            // The level and the edge disagree only for the instant between the
-            // login and the tick that publishes it; say what is proven.
-            (Some(server), Ed2kConnection::Disconnected) => {
-                format!(" Servers ({}) · {} ", rows.len(), server_label(server))
-            }
-            (None, _) => format!(" Servers ({}) · not connected ", rows.len()),
+            (Ed2kConnection::Connecting { server }, _) => format!(
+                " Servers ({}) · {} ",
+                rows.len(),
+                crate::words::server::dialling(server)
+            ),
+            _ => format!(" Servers ({}) · not connected ", rows.len()),
         };
         // `c` is hinted only where it can act (No dead UI): a selected row.
         let toggle = match self.selected(state) {
             Some(row) if crate::views::is_remaking(state, &row.server.endpoint) => {
                 "c stop reconnecting · "
+            }
+            Some(row) if crate::views::is_dialling(state, &row.server.endpoint) => {
+                "c stop connecting · "
             }
             Some(row) if crate::views::is_ours(state, &row.server.endpoint) => "c disconnect · ",
             Some(_) => "c connect · ",

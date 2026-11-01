@@ -404,12 +404,43 @@ impl RateSynthesizer {
     }
 }
 
+/// The units a rate reads in, each 1024 of the one before it.
+const RATE_UNITS: [(&str, &str); 4] = [("KB/s", "K"), ("MB/s", "M"), ("GB/s", "G"), ("TB/s", "T")];
+
+/// The cells [`format_rate`] takes at most: `999.9 KB/s`. A meter that must
+/// not move right-aligns in this many.
+pub const RATE_CELLS: usize = 10;
+
+/// The cells [`format_rate_short`] takes at most: `999.9K`.
+pub const SHORT_RATE_CELLS: usize = 6;
+
+/// `bps` in the first unit that holds it in three digits before the point.
+/// The test is on what one decimal prints, so `999.96` reads `1.0 MB/s`
+/// rather than `1000.0 KB/s`.
+fn scaled_rate(bps: f64) -> (f64, usize) {
+    let mut value = bps / 1024.0;
+    let mut unit = 0;
+    while value >= 999.95 && unit + 1 < RATE_UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    (value, unit)
+}
+
 /// Bytes/sec → the rate text every meter renders: the status bar's ▼/▲, the
 /// downloads **Speed** column, the sources pane, the upload-peers pane. One
 /// definition, so no two meters can disagree about unit or precision.
 #[must_use]
 pub fn format_rate(bps: f64) -> String {
-    format!("{:.1} KB/s", bps / 1024.0)
+    let (value, unit) = scaled_rate(bps);
+    format!("{value:.1} {}", RATE_UNITS[unit].0)
+}
+
+/// The same reading for a frame too narrow for [`format_rate`]: `45.6K`.
+#[must_use]
+pub fn format_rate_short(bps: f64) -> String {
+    let (value, unit) = scaled_rate(bps);
+    format!("{value:.1}{}", RATE_UNITS[unit].1)
 }
 
 #[cfg(test)]

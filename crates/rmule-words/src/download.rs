@@ -92,8 +92,24 @@ pub fn download_name(metadata: Option<&DownloadMetadata>, download_id: DownloadI
         .unwrap_or_else(|| format!("download {}", download_id.as_u64()))
 }
 
-/// The status bar's note for a download edge that notes a fixed fact.
-pub const QUEUED: Sentence = Sentence::fixed("download queued");
+/// A download was added: the receipt names the file.
+#[must_use]
+pub fn queued(name: &str) -> Sentence {
+    Sentence::owned(format!("added {name}"))
+}
+
+/// The receipt for a pause, naming the file.
+#[must_use]
+pub fn paused(name: &str) -> Sentence {
+    Sentence::owned(format!("paused {name}"))
+}
+
+/// The receipt for a resume, naming the file.
+#[must_use]
+pub fn resumed(name: &str) -> Sentence {
+    Sentence::owned(format!("resumed {name}"))
+}
+
 /// A download came back from the store at attach.
 pub const RECOVERED: Sentence = Sentence::fixed("download recovered");
 /// A download finished.

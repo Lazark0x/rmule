@@ -129,7 +129,7 @@ pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: 
         .values()
         .filter(|peer| matches!(peer.state, UploadState::Queued { .. }))
         .count();
-    let ed2k = match state.ed2k {
+    let ed2k = match &state.ed2k {
         Ed2kConnection::Connected { client_id } => {
             let class = if client_id.is_high_id() {
                 "HighID"
@@ -138,7 +138,10 @@ pub(super) fn draw_facts(frame: &mut Frame, area: Rect, state: &UiState, theme: 
             };
             Fact::read("eD2k", format!("connected ({class})"))
         }
-        Ed2kConnection::Disconnected => Fact::absent("eD2k", "not connected"),
+        Ed2kConnection::Connecting { .. } => Fact::absent("eD2k", "connecting…"),
+        Ed2kConnection::Disconnected | Ed2kConnection::Lost => {
+            Fact::absent("eD2k", "not connected")
+        }
     };
     // The same three grades the Networks panel and the status dot report, off
     // the same one runtime fact — three renderings, one source.

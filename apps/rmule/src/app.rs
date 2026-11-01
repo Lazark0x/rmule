@@ -234,8 +234,8 @@ impl App {
                 }
                 _ = render.tick() => {
                     let now = Instant::now();
-                    // A flash expiring is a repaint the state never asked for.
-                    if self.chrome.expire_flash(now) {
+                    // A flash or a note ageing out is a repaint nothing asked for.
+                    if self.chrome.expire_flash(now) | self.state.expire_note(now) {
                         self.dirty = true;
                     }
                     if self.dirty {
@@ -695,7 +695,7 @@ mod tests {
 
         let last = surface.frames.last().expect("quit drew");
         assert!(
-            last.contains(&*crate::words::app::SHUTDOWN_GRACE_ELAPSED),
+            last.contains("Quit ran out of time") && last.contains("may be lost"),
             "the last frame must show the grace-elapsed notice, got:\n{last}"
         );
     }

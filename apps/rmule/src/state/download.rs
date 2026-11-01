@@ -101,6 +101,47 @@ pub struct VolumeStopped {
     pub stop: VolumeStop,
 }
 
+/// One count of the [`Tally`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TallyPart {
+    /// Moving bytes, or moving the finished file into place.
+    Active,
+    /// Failed and still holding its place.
+    Failed,
+    /// Completed and not yet cleared.
+    Done,
+}
+
+/// What the Transfers table adds up to: the status bar's and the terminal
+/// title's answer to "is everything fine?".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// How many are [`TallyPart::Active`].
+    pub active: usize,
+    /// How many are [`TallyPart::Failed`].
+    pub failed: usize,
+    /// How many are [`TallyPart::Done`].
+    pub done: usize,
+}
+
+impl Tally {
+    /// The counts in the order they are read.
+    #[must_use]
+    pub const fn parts(self) -> [(TallyPart, usize); 3] {
+        [
+            (TallyPart::Active, self.active),
+            (TallyPart::Failed, self.failed),
+            (TallyPart::Done, self.done),
+        ]
+    }
+
+    /// Whether there is nothing to count.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.active == 0 && self.failed == 0 && self.done == 0
+    }
+}
+
 impl DownloadRow {
     fn new(status: DownloadStatus) -> Self {
         Self {
@@ -118,6 +159,22 @@ impl DownloadRow {
 }
 
 impl UiState {
+    /// The downloads counted the way a check-in asks after them.
+    #[must_use]
+    pub fn tally(&self) -> Tally {
+        let count = |status: DownloadStatus| {
+            self.downloads
+                .values()
+                .filter(|row| row.status == status)
+                .count()
+        };
+        Tally {
+            active: self.running_downloads(),
+            failed: count(DownloadStatus::Failed),
+            done: count(DownloadStatus::Completed),
+        }
+    }
+
     /// How many downloads a quit would interrupt: moving bytes, or moving the
     /// finished file into place.
     #[must_use]
@@ -199,7 +256,8 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             row.metadata = Some(metadata);
             row.file_path = Some(file_path);
             row.status = DownloadStatus::Waiting;
-            note(state, words::QUEUED)
+            let text = words::queued(&download_name(state, download_id));
+            note(state, text)
         }
         E::DownloadRecovered {
             download_id,
@@ -302,10 +360,26 @@ pub(super) fn fold(state: &mut UiState, event: DownloadEvent) -> bool {
             state.downloads.remove(&download_id);
             note(state, words::CLEARED)
         }
-        E::DownloadPaused { download_id } => set_status(state, download_id, DownloadStatus::Paused),
+        // The receipt for `p`. A pause a full volume forced has already said
+        // why, and that outranks the pause.
+        E::DownloadPaused { download_id } => {
+            let forced = state
+                .downloads
+                .get(&download_id)
+                .is_some_and(|row| row.volume_stop.is_some());
+            let changed = set_status(state, download_id, DownloadStatus::Paused);
+            if forced {
+                changed
+            } else {
+                let text = words::paused(&download_name(state, download_id));
+                note(state, text)
+            }
+        }
         E::DownloadResumed { download_id } => {
             row_mut(state, download_id).failure = None;
-            set_status(state, download_id, DownloadStatus::Waiting)
+            set_status(state, download_id, DownloadStatus::Waiting);
+            let text = words::resumed(&download_name(state, download_id));
+            note(state, text)
         }
         E::DownloadFailed {
             download_id,

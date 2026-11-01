@@ -272,7 +272,7 @@ pub(crate) fn connected_state() -> UiState {
             down_total_bps: 123.4 * 1024.0,
             ..TransferRates::default()
         },
-        notable: Some(crate::words::Sentence::for_test("download completed")),
+        notable: Some(crate::words::Sentence::for_test("download completed").into()),
         ..UiState::default()
     }
 }

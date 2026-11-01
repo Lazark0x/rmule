@@ -210,7 +210,7 @@ mod tests {
             rows[0]
         );
         assert!(
-            rows[23].starts_with("└ —"),
+            rows[23].starts_with("└ ▼"),
             "status bar covered: {:?}",
             rows[23]
         );
@@ -277,7 +277,7 @@ mod tests {
         assert!(end.contains("stop sharing"), "{end}");
         let rows: Vec<&str> = end.lines().collect();
         assert!(rows[0].starts_with("┌ 1 Networks"), "{}", rows[0]);
-        assert!(rows[23].starts_with("└ —"), "{}", rows[23]);
+        assert!(rows[23].starts_with("└ ▼"), "{}", rows[23]);
         assert!(
             !chrome.update(&Action::ScrollHelp(1), now()),
             "the end holds"

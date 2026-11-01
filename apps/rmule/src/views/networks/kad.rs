@@ -88,20 +88,12 @@ pub(super) fn draw_kad(frame: &mut Frame, area: Rect, state: &UiState, theme: &T
     // Dot colour is aMule's own arrow parity, applied to the one fact we have:
     // red = no node, yellow = running but nobody has answered, green = joined.
     // The grade is never colour-only — the *Joined* row spells it out.
-    let dot = match kad {
-        None => theme.bad,
-        Some(k) if k.contact_responded => theme.good,
-        Some(_) => theme.warn,
-    };
+    let dot = crate::views::kad_dot(state, theme);
     let live = Style::new().fg(theme.fg);
-    let contact = kad.is_some_and(|k| k.contact_responded);
-    let word = crate::words::kad::state_word(kad_state, contact);
+    let (word, word_style) = crate::views::kad_word(state, theme);
     let mut lines = vec![Line::from(vec![
         Span::styled("● ", Style::new().fg(dot)),
-        match kad_state {
-            rmule_core::diagnostics::KadState::Off => Span::styled(word, theme.dim_text()),
-            _ => Span::styled(word, live),
-        },
+        Span::styled(word, word_style),
     ])];
 
     let joined = match kad {
@@ -200,7 +192,7 @@ mod tests {
         for (state, dot_color, status, joined) in [
             (
                 UiState::default(),
-                theme.bad,
+                theme.dim,
                 "Kad: off",
                 "Joined    — (node not started)",
             ),

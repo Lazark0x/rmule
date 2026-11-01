@@ -367,3 +367,46 @@ mod tests {
         assert!(words(OpenRefusal::Damaged).contains("keep"));
     }
 }
+
+/// The status bar's connection, each state a code.
+pub const ED2K_HIGH_ID: Sentence = Sentence::fixed("eD2k HighID");
+/// See [`ED2K_HIGH_ID`].
+pub const ED2K_LOW_ID: Sentence = Sentence::fixed("eD2k LowID");
+/// A dial is out and no session stands yet.
+pub const ED2K_CONNECTING: Sentence = Sentence::fixed("eD2k connecting…");
+/// No session, by the operator's choice.
+pub const ED2K_OFF: Sentence = Sentence::fixed("eD2k off");
+/// No session, and the operator wanted one.
+pub const ED2K_LOST: Sentence = Sentence::fixed("eD2k lost");
+
+/// The status bar's connection while core re-makes a lost session.
+#[must_use]
+pub fn ed2k_reconnecting(attempt: u32) -> String {
+    format!("eD2k reconnecting {attempt}")
+}
+
+/// How old a note on the status bar is, set behind its words.
+#[must_use]
+pub fn note_age(age: std::time::Duration) -> Sentence {
+    Sentence::owned(format!(" · {}m ago", age.as_secs() / 60))
+}
+
+/// One count of the download tally: `3 active`, or `3↓` where the row is tight.
+#[must_use]
+pub fn tally_part(part: crate::state::TallyPart, count: usize, short: bool) -> String {
+    use crate::state::TallyPart as P;
+    match (part, short) {
+        (P::Active, false) => format!("{count} active"),
+        (P::Failed, false) => format!("{count} failed"),
+        (P::Done, false) => format!("{count} done"),
+        (P::Active, true) => format!("{count}↓"),
+        (P::Failed, true) => format!("{count}✗"),
+        (P::Done, true) => format!("{count}✓"),
+    }
+}
+
+/// What stands between two counts of the tally.
+#[must_use]
+pub const fn tally_gap(short: bool) -> &'static str {
+    if short { " " } else { " · " }
+}

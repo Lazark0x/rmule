@@ -83,6 +83,7 @@ pub(crate) fn listed_servers() -> UiState {
         ed2k: Ed2kConnection::Connected {
             client_id: ClientId::from_u32(ClientId::LOW_ID_THRESHOLD),
         },
+        connected_server: Some(endpoint("10.0.0.1", 4661)),
         diagnostics: DiagnosticsSnapshot {
             servers: vec![first, second, third, fourth],
             connected_server: Some(endpoint("10.0.0.1", 4661)),

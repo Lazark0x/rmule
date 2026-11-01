@@ -1,4 +1,4 @@
-┌ 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ─────────────────────────────────────── rmule ┐
+┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
 │ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                            ▲│
 │                                                                             █│
@@ -7,18 +7,18 @@
 │ j/k  ↑/↓        select row in focused pane                                  █│
 │ g / G           top / bottom                                                █│
 │ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
-│ z               zoom the focused pane to the whole tab, or back             █│
 │ m / Enter       row action menu                                             █│
 │ s / S           sort the focused table by next column / reverse             █│
 │ ?               this help; j/k, PgUp/PgDn scroll it when it is long         █│
-│ q               quit; asks first while a download runs                      ▃│
-│ Ctrl-C          quit, from anywhere                                          │
-│ Esc             close a menu, a form or a question; leave the query          │
+│ q               quit; asks first while a download runs                      █│
+│ Ctrl-C          quit, from anywhere                                         █│
+│ Esc             close a menu, a form or a question; leave the query         ▆│
 │ mouse           click tab/row selects, header sorts, wheel scrolls           │
 │ a               Networks: add server                                         │
 │ U               Networks: update server list from URL                        │
 │ c               Networks: connect to the selected server, or disconnect from │
 │                 the one you are on                                           │
-│ K               Networks: start or stop Kad                                 ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 20 / 34 ┘
-└ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘
+│ K               Networks: start or stop Kad                                  │
+│ /               Searches: focus query input                                 ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 32 ┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

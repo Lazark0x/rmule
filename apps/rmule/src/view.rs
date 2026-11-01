@@ -7,7 +7,7 @@
 /// Networks, Searches, Transfers, Shared Files, Statistics, then Settings —
 /// and the digit row, the `h`/`l` cycle and the tab bar all derive from it.
 pub enum ViewId {
-    /// The eD2k server list and the Kad panel; the view the app opens on.
+    /// The eD2k server list and the Kad panel; the view a first run opens on.
     #[default]
     Networks,
     /// Search entry and its result tables.
@@ -62,6 +62,41 @@ impl ViewId {
             Self::Statistics => "Statistics",
             Self::Settings => "Settings",
         }
+    }
+
+    /// The label where six full ones do not fit: the two longest give up
+    /// their second word or their tail, so every tab keeps a name.
+    #[must_use]
+    pub const fn short_title(self) -> &'static str {
+        match self {
+            Self::SharedFiles => "Shared",
+            Self::Statistics => "Stats",
+            other => other.title(),
+        }
+    }
+
+    /// The word the tab is stored under. Stable: renaming one would forget an
+    /// installed value.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Networks => "networks",
+            Self::Searches => "searches",
+            Self::Transfers => "transfers",
+            Self::SharedFiles => "shared",
+            Self::Statistics => "statistics",
+            Self::Settings => "settings",
+        }
+    }
+
+    /// Read a stored tab; anything unrecognised, or nothing, is the tab the
+    /// app opens on by default.
+    #[must_use]
+    pub fn parse(key: Option<&str>) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|view| Some(view.key()) == key)
+            .unwrap_or_default()
     }
 
     /// Inverse of [`number`](Self::number); `None` for a digit no view claims.

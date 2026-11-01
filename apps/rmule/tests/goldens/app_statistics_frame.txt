@@ -1,4 +1,4 @@
-┌ 1 │ 2 │ 3 │ 4 │ 5 Statistics │ 6 ───────────────────────────────────── rmule ┐
+┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 │┌ ▼ Download · now 225.0 KB/s · peak 475.0 KB/s ─────────────────────────────┐│
 ││  ▂▄▆█                ▂▄▆█                ▂▄▆█                ▂▄▆█          ││
 ││▆█████            ▂▄▆█████            ▂▄▆█████            ▂▄▆█████          ││
@@ -21,4 +21,4 @@
 ││Kad in       —                       ││eD2k         not connected           ││
 ││Kad out      —                       ││Kad          off                     ││
 │└─────────────────────────────────────┘└─────────────────────────────────────┘│
-└ — │ ▼ 225.0 KB/s ▲ 40.0 KB/s │ ●eD2k off ●Kad off  │ ? help──────────────────┘
+└ ▼ 225.0 KB/s ▲  40.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

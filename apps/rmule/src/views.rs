@@ -44,7 +44,7 @@ use ratatui::style::Style;
 
 use crate::action::Action;
 use crate::rates::format_rate;
-use crate::state::UiState;
+use crate::state::{Ed2kConnection, UiState};
 use crate::theme::Theme;
 
 /// The canonical eD2k link for a file, through [`rmule_primitives::Ed2kLink`]'s
@@ -79,7 +79,7 @@ pub(crate) const fn connect_action(server: rmule_primitives::ServerEndpoint) -> 
 /// to it, or re-making its lost session. There `c` and the row menu
 /// disconnect; everywhere else they connect.
 pub(crate) fn is_ours(state: &UiState, server: &rmule_primitives::ServerEndpoint) -> bool {
-    is_connected_to(state, server) || is_remaking(state, server)
+    is_connected_to(state, server) || is_remaking(state, server) || is_dialling(state, server)
 }
 
 /// The Networks tab's `c` key, the eD2k connect/disconnect toggle: on the
@@ -96,9 +96,44 @@ pub(crate) fn is_remaking(state: &UiState, server: &rmule_primitives::ServerEndp
         && !is_connected_to(state, server)
 }
 
+/// Whether a dial to `server` is out, which `c` stops.
+pub(crate) fn is_dialling(state: &UiState, server: &rmule_primitives::ServerEndpoint) -> bool {
+    matches!(&state.ed2k, Ed2kConnection::Connecting { server: dialled } if dialled == server)
+}
+
+/// Read off the edge, as the status bar is: the level trails it by a tick, so
+/// the two would disagree in one frame.
 fn is_connected_to(state: &UiState, server: &rmule_primitives::ServerEndpoint) -> bool {
     state.connected_server.as_ref() == Some(server)
-        || state.diagnostics.connected_server.as_ref() == Some(server)
+}
+
+/// How Kad's dot is coloured, on the status bar and the Networks panel alike:
+/// green joined, amber on its way, and off dim when that is simply where it
+/// stands, red when it ended on its own.
+pub(crate) fn kad_dot(state: &UiState, theme: &Theme) -> ratatui::style::Color {
+    match (state.diagnostics.kad_state, state.diagnostics.kad) {
+        (rmule_core::diagnostics::KadState::Off, _) if state.kad_lost => theme.bad,
+        (rmule_core::diagnostics::KadState::Off, _) => theme.dim,
+        (_, Some(kad)) if kad.contact_responded => theme.good,
+        _ => theme.warn,
+    }
+}
+
+/// Where Kad stands in the one word set the status bar and the Networks panel
+/// share, styled by whether it is running.
+pub(crate) fn kad_word(state: &UiState, theme: &Theme) -> (&'static str, Style) {
+    let contact = state
+        .diagnostics
+        .kad
+        .is_some_and(|kad| kad.contact_responded);
+    let kad_state = state.diagnostics.kad_state;
+    let word = crate::words::kad::state_word(kad_state, contact);
+    let style = if kad_state == rmule_core::diagnostics::KadState::Off {
+        theme.dim_text()
+    } else {
+        Style::new().fg(theme.fg)
+    };
+    (word, style)
 }
 
 pub(crate) fn connect_toggle(state: &UiState, server: rmule_primitives::ServerEndpoint) -> Action {

@@ -308,6 +308,9 @@ impl App {
             | Action::Flash(_)) => {
                 let from = self.chrome.active;
                 self.dirty |= self.chrome.update(&chrome_action, now);
+                if let Action::Flash(text) = &chrome_action {
+                    self.state.log_flash(text.clone(), now);
+                }
                 // `h` / `l` pass through a tab: only the tab's own digit or
                 // click means the operator came to use it.
                 if matches!(chrome_action, Action::SwitchView(_))

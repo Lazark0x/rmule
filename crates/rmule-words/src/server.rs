@@ -148,6 +148,12 @@ pub const AUTO_UPDATE_URLS_NONE: &str = "none set";
 /// What the auto-update addresses are, and how they are typed.
 pub const AUTO_UPDATE_URLS_NOTE: &str = "server.met addresses, space between  (on restart)";
 
+/// Where a dial stands, as the Servers pane's title says it.
+#[must_use]
+pub fn dialling(server: &ServerEndpoint) -> Sentence {
+    Sentence::owned(format!("connecting to {}…", server_label(server)))
+}
+
 /// The dial to a server started.
 #[must_use]
 pub fn connecting(server: &ServerEndpoint, leaving: Option<&ServerEndpoint>) -> Sentence {

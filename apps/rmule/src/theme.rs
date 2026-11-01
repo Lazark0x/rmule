@@ -30,8 +30,8 @@ pub struct Theme {
     /// The one hue marking structure worth following — focused border, active
     /// tab, key names.
     pub accent: Color,
-    /// Attention that is not a verdict: the action flash, an edited field.
-    /// Deliberately the same amber as [`warn`](Self::warn) in every palette.
+    /// Attention that is not a verdict: an edited field. Deliberately the
+    /// same amber as [`warn`](Self::warn) in every palette.
     pub highlight: Color,
     /// Verdict on a state that needs nothing: connected, complete, High ID.
     pub good: Color,
@@ -249,10 +249,11 @@ impl Theme {
         Style::new().fg(self.dim)
     }
 
-    /// The transient action flash (amber ✱, spec §3.1).
+    /// The transient action flash (✱): the accent, because a receipt is not a
+    /// warning and amber is the warning's colour.
     #[must_use]
     pub fn flash(&self) -> Style {
-        Style::new().fg(self.highlight).add_modifier(Modifier::BOLD)
+        Style::new().fg(self.accent).add_modifier(Modifier::BOLD)
     }
 }
 

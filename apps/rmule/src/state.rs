@@ -24,6 +24,7 @@ mod download;
 pub(crate) use download::STALL_AFTER;
 mod known_file;
 mod log;
+mod note;
 mod rate_history;
 mod search;
 mod serve;
@@ -38,12 +39,13 @@ pub use crate::words::serve::withheld_words;
 pub use crate::words::units::seconds;
 pub(crate) use crate::words::units::server_label;
 pub use download::{
-    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, VolumeStopped,
-    download_failure_words, integrity_fault_words, lifecycle_words, part_fault_words,
-    release_words, restart_failed_again, retirement_words,
+    DownloadRow, DownloadStatus, FAILURE_NOT_RECORDED, NO_NETWORK_WAIT, Tally, TallyPart,
+    VolumeStopped, download_failure_words, integrity_fault_words, lifecycle_words,
+    part_fault_words, release_words, restart_failed_again, retirement_words,
 };
 pub use known_file::{KnownFileMark, KnownFileMarks};
 pub use log::LogLine;
+pub use note::{NOTE_AGE_SHOWN, NOTE_STANDS, Note};
 pub use rate_history::RateSample;
 pub use search::{MoreEnded, SearchPane, SearchStatus};
 pub use serve::{
@@ -133,8 +135,12 @@ pub struct UiState {
     /// which is how the views tell "idle" from "nothing observed yet".
     pub last_snapshot_at: Option<Instant>,
     /// Status-bar info feed (spec §3.1 segment 1): the last notable core
-    /// fact, newest wins. Flash timing is chrome's concern, not state's.
-    pub notable: Option<Sentence>,
+    /// fact, newest wins, until it ages out of the bar. Flash timing is
+    /// chrome's concern, not state's.
+    pub notable: Option<Note>,
+    /// Kad ended on its own: its node stopped without the operator asking, or
+    /// its socket never bound. Lowered when a node runs again.
+    pub kad_lost: bool,
     /// Flips false when the core's event stream ends, so the UI renders a
     /// stopped core honestly instead of freezing silently.
     pub core_alive: bool,
@@ -191,6 +197,7 @@ impl Default for UiState {
             rate_history: VecDeque::new(),
             last_snapshot_at: None,
             notable: None,
+            kad_lost: false,
             core_alive: true,
             log: VecDeque::new(),
             session: SessionConfig::default(),
@@ -207,6 +214,7 @@ impl UiState {
     /// Returns whether anything visible changed (the render dirty hint).
     pub fn apply(&mut self, action: Action, now: Instant) -> bool {
         let changed = self.fold_action(action, now);
+        self.stamp_note(now);
         if changed {
             self.revision = self.revision.wrapping_add(1);
         }
@@ -303,9 +311,19 @@ impl UiState {
         self.diagnostics = frame.diagnostics;
         search::fold_more(self, more_before, more_after);
         self.rates = frame.rates;
+        if self.diagnostics.kad_state != rmule_core::diagnostics::KadState::Off {
+            self.kad_lost = false;
+        }
         self.last_snapshot_at = Some(now);
         server::count_down(self, now);
         true
+    }
+
+    /// Keep a flash's whole sentence: the status bar may shorten it, and it
+    /// is gone in seconds.
+    pub fn log_flash(&mut self, text: Sentence, now: Instant) {
+        self.push_log(text, now);
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// The server an activity command should name: the live connection's
@@ -345,6 +363,7 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // pane's compact line, since it is the answer to "why is Kad off"
         // an operator who never scrolled back would otherwise never see.
         CoreEvent::ClientUdpBindFailed { port, kind } => {
+            state.kad_lost = true;
             note(state, reach::client_udp_bind_failed(port, kind))
         }
         // A pair that came up without a family it selected. The
@@ -365,7 +384,10 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
         // The Kad node died mid-session — an operator-relevant
         // "why is Kad off" fact, the same posture as the two socket notes
         // above, not something the data-tick snapshot alone would explain.
-        CoreEvent::KadStopped { reason } => note(state, crate::words::kad::stopped(reason)),
+        CoreEvent::KadStopped { reason } => {
+            state.kad_lost = reason != rmule_core::KadStopReason::Stopped;
+            note(state, crate::words::kad::stopped(reason))
+        }
         // Quit's progress is the status bar's, reduced by the app.
         CoreEvent::Quitting { .. } => false,
         // What stopped working for the rest of the run: a fact the operator
@@ -395,7 +417,7 @@ pub fn fold(state: &mut UiState, event: CoreEvent) -> bool {
 }
 
 fn note(state: &mut UiState, text: Sentence) -> bool {
-    state.notable = Some(text);
+    state.notable = Some(text.into());
     true
 }
 

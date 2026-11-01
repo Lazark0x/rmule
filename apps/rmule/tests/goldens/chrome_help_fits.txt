@@ -1,6 +1,7 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared Files │ 5 Statistics │ 6 Settings ─────── rmule ┐
 │                                                                                                  │
 │                                                                                                  │
+│                                                                                                  │
 │┌ Help ──────────────────────────────────────────────────────────────────────────────────────────┐│
 ││ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                                               ││
 ││                                                                                                ││
@@ -9,7 +10,6 @@
 ││ j/k  ↑/↓        select row in focused pane                                                     ││
 ││ g / G           top / bottom                                                                   ││
 ││ Tab / Shift-Tab cycle panes (accent border = focus)                                            ││
-││ z               zoom the focused pane to the whole tab, or back                                ││
 ││ m / Enter       row action menu                                                                ││
 ││ s / S           sort the focused table by next column / reverse                                ││
 ││ ?               this help; j/k, PgUp/PgDn scroll it when it is long                            ││
@@ -21,7 +21,6 @@
 ││ U               Networks: update server list from URL                                          ││
 ││ c               Networks: connect to the selected server, or disconnect from the one you are on││
 ││ K               Networks: start or stop Kad                                                    ││
-││ d               Networks: the selected server's grants, flags and health                       ││
 ││ /               Searches: focus query input                                                    ││
 ││ o               Searches: type/size/sources/extension filters                                  ││
 ││ [ / ]           Searches: previous / next held search                                          ││
@@ -37,4 +36,5 @@
 │└────────────────────────────────────────────────────────────────────────────────────────────────┘│
 │                                                                                                  │
 │                                                                                                  │
-└ — │ Users: — · Files: — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help───────────────────┘
+│                                                                                                  │
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─────────────────────? help ┘

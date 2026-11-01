@@ -96,6 +96,7 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
             connected_server: Some(endpoint("10.0.0.2", 4242)),
             ..DiagnosticsSnapshot::default()
         },
+        connected_server: Some(endpoint("10.0.0.2", 4242)),
         ..UiState::default()
     };
     let theme = Theme::default_dark();

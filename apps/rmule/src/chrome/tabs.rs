@@ -27,36 +27,35 @@ const BRAND_MIN_GAP: usize = 2;
 ///
 /// # The six-tab width budget
 ///
-/// A full tab is `" N Title "`, so the bar costs `Σ(len(title) + 4)` plus one
-/// `│` per gap: **84 columns** for the six v1 views, against the 78 an
-/// 80-column frame has inside its border. Five tabs fit 80 exactly (71); six
-/// cannot, and nothing about naming makes them — so the bar adapts rather than
-/// clipping a label mid-word:
+/// A tab is `" N Title "`, so the bar costs `Σ(len(title) + 4)` plus one `│`
+/// per gap. It takes the first form that fits, rather than clipping a label
+/// mid-word:
 ///
 /// - **Full** — every tab named. 84 columns ⇒ from an **86-column** frame up.
-/// - **Compact** — inactive tabs shrink to `" N "` (3 columns) and the active
-///   one keeps its name: `20 + len(title) + 4`, so **32–36** columns ⇒ from a
-///   **38-column** frame up, which is far below any frame the rest of the UI
-///   is usable in.
-///
-/// Number-only-for-everything was the other candidate and is what the compact
-/// form deliberately is *not*: the canonical 80-column terminal lands here, and
-/// dropping every label at the most common width would trade a truthful bar for
-/// an uninformative one. Which view you are in is the one fact the bar exists
-/// to carry; the digits carry the rest, and `?` names them all.
+/// - **Short** — every tab named, the two longest by [`ViewId::short_title`].
+///   73 columns ⇒ from a **75-column** frame up, so the canonical 80-column
+///   terminal names all six.
+/// - **Compact** — inactive tabs shrink to `" N "` and the active one keeps
+///   its name: **29–33** columns ⇒ from a **35-column** frame up, far below any
+///   frame the rest of the UI is usable in.
 fn tab_texts(active: ViewId, frame_width: u16) -> Vec<(String, ViewId)> {
-    let full: Vec<(String, ViewId)> = ViewId::ALL
-        .into_iter()
-        .map(|view| (format!(" {} {} ", view.number(), view.title()), view))
-        .collect();
-    if bar_width(&full) <= usize::from(frame_width.saturating_sub(2)) {
-        return full;
+    let named = |title: fn(ViewId) -> &'static str| -> Vec<(String, ViewId)> {
+        ViewId::ALL
+            .into_iter()
+            .map(|view| (format!(" {} {} ", view.number(), title(view)), view))
+            .collect()
+    };
+    let room = usize::from(frame_width.saturating_sub(2));
+    for form in [named(ViewId::title), named(ViewId::short_title)] {
+        if bar_width(&form) <= room {
+            return form;
+        }
     }
     ViewId::ALL
         .into_iter()
         .map(|view| {
             let text = if view == active {
-                format!(" {} {} ", view.number(), view.title())
+                format!(" {} {} ", view.number(), view.short_title())
             } else {
                 format!(" {} ", view.number())
             };
@@ -163,8 +162,16 @@ mod tests {
         assert_eq!(tab_at(&wide, 0), None, "corner glyph");
         assert_eq!(tab_at(&wide, 200), None, "past the tabs");
 
-        // Compact form (80 columns): " 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ".
-        let narrow = chrome_at(ViewId::Networks, 80);
+        // Short form (80 columns): " 1 Networks │ 2 Searches │ … │ 6 Settings ".
+        let short = chrome_at(ViewId::Networks, 80);
+        assert_eq!(tab_at(&short, 12), Some(ViewId::Networks));
+        assert_eq!(tab_at(&short, 14), Some(ViewId::Searches));
+        assert_eq!(tab_at(&short, 62), Some(ViewId::Settings));
+        assert_eq!(tab_at(&short, 73), Some(ViewId::Settings));
+        assert_eq!(tab_at(&short, 74), None, "past the sixth tab");
+
+        // Compact form (60 columns): " 1 Networks │ 2 │ 3 │ 4 │ 5 │ 6 ".
+        let narrow = chrome_at(ViewId::Networks, 60);
         assert_eq!(tab_at(&narrow, 12), Some(ViewId::Networks));
         assert_eq!(
             tab_at(&narrow, 14),
@@ -177,13 +184,10 @@ mod tests {
         assert_eq!(tab_at(&narrow, 33), None, "past the compact bar");
     }
 
-    /// The bar is the top border's load-bearing furniture, and the sixth tab
-    /// put the fully-named form past the canonical 80-column frame that
-    /// five tabs fit exactly. The guard pins both rungs of the ladder
-    /// and the width each one needs — and that the brand still yields to the
-    /// tabs rather than shouldering up against them.
+    /// The ladder: each form holds from the width its doc gives, the
+    /// default terminal names all six, and nothing overflows any frame.
     #[test]
-    fn the_tab_bar_swaps_to_its_compact_form_rather_than_clipping_a_label() {
+    fn the_tab_bar_takes_the_first_form_that_fits_rather_than_clipping_a_label() {
         let theme = Theme::default_dark();
         let width_at = |frame: u16| tabs_line(ViewId::Transfers, frame, &theme).width();
 
@@ -191,17 +195,18 @@ mod tests {
         assert_eq!(
             width_at(86),
             84,
-            "…which an 86-column frame is the first to hold"
+            "an 86-column frame is the first to hold them"
         );
-        assert_eq!(width_at(85), 33, "one column short ⇒ the compact form");
-        assert_eq!(width_at(80), 33, "the canonical terminal reads compact");
-        // Widest compact bar: the longest title is the active one.
-        assert_eq!(
-            tabs_line(ViewId::SharedFiles, 80, &theme).width(),
-            36,
-            "the compact floor is set by ' 4 Shared Files '"
+        assert_eq!(width_at(85), 73, "one column short ⇒ the short form");
+        assert_eq!(width_at(80), 73, "the canonical terminal names all six");
+        assert_eq!(width_at(75), 73, "the first frame to hold the short form");
+        assert_eq!(width_at(74), 33, "one column short ⇒ the compact form");
+        assert!(
+            tabs_line(ViewId::Settings, 80, &theme)
+                .to_string()
+                .contains("4 Shared │ 5 Stats")
         );
-        for width in 38u16..=200 {
+        for width in 35u16..=200 {
             for active in ViewId::ALL {
                 assert!(
                     tabs_line(active, width, &theme).width() <= usize::from(width - 2),
@@ -210,9 +215,9 @@ mod tests {
             }
         }
 
-        // The brand is decoration and yields to either form.
+        // The brand is decoration and yields to any form.
         assert!(!brand_fits(84, 86), "no room beside the full bar at 86");
-        assert!(brand_fits(33, 80), "…but the compact bar leaves plenty");
+        assert!(!brand_fits(73, 80), "nor beside the short bar at 80");
         let roomy = u16::try_from(84 + BRAND.chars().count() + BRAND_MIN_GAP + 2).unwrap();
         assert!(brand_fits(84, roomy), "…and it returns once there is room");
         assert!(!brand_fits(84, roomy - 1));

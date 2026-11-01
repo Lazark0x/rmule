@@ -491,6 +491,24 @@ fn kad_rates_difference_tick_to_tick_and_a_stopped_node_drops_them() {
 fn rate_text_is_kb_per_second_at_one_decimal() {
     assert_eq!(format_rate(0.0), "0.0 KB/s");
     assert_eq!(format_rate(123.4 * 1024.0), "123.4 KB/s");
+    assert_eq!(format_rate(8.0 * 1024.0 * 1024.0), "8.0 MB/s");
+    assert_eq!(format_rate_short(45.6 * 1024.0), "45.6K");
+    assert_eq!(format_rate_short(8.0 * 1024.0 * 1024.0), "8.0M");
+}
+
+/// The width a fixed meter reserves holds every reading: the top of a unit
+/// rounds up into the next one, never into a fourth digit.
+#[test]
+fn a_rate_never_outgrows_its_cells_at_a_unit_boundary() {
+    assert_eq!(format_rate(999.94 * 1024.0), "999.9 KB/s");
+    assert_eq!(format_rate(999.96 * 1024.0), "1.0 MB/s");
+    assert_eq!(format_rate_short(999.96 * 1024.0), "1.0M");
+    let mut bps = 1.0;
+    while bps < 1e15 {
+        assert!(format_rate(bps).len() <= RATE_CELLS, "{bps}");
+        assert!(format_rate_short(bps).len() <= SHORT_RATE_CELLS, "{bps}");
+        bps *= 1.37;
+    }
 }
 
 /// The stall signal is the counter's own last move: it counts from the run's

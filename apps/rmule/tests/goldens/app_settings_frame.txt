@@ -1,4 +1,4 @@
-┌ 1 │ 2 │ 3 │ 4 │ 5 │ 6 Settings ─────────────────────────────────────── rmule ┐
+┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 │┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐│
 ││Paths                                                                      ▲││
 ││ Download dir unset — downloads have nowhere to land                       █││
@@ -21,4 +21,4 @@
 ││ List URLs    none set  server.met addresses, space between  (on restart)   ││
 ││                                                                           ▼││
 │└──────────────────────────────────────────────────────────────────── 1 / 21 ┘│
-└ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘
