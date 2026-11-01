@@ -148,7 +148,7 @@ impl SearchesView {
     pub(crate) fn arrive(&mut self, state: &UiState) {
         self.held.bind(state);
         if self.held.is_empty() && self.menu.is_none() && !self.filters_open {
-            self.arrived = !self.input_focused && self.query.is_empty();
+            self.arrived = self.query.is_empty();
             self.input_focused = true;
         }
     }
@@ -168,7 +168,8 @@ impl SearchesView {
     /// the view's, so the app loop can fall through to the global bindings —
     /// except while the query input is focused, where every printable is text
     /// and only non-text control keys bubble (a focused input's keys never
-    /// reach the globals, so `h`/`l`/`q`/`1`–`4` are characters here).
+    /// reach the globals, so `h`/`l`/`q`/`1`–`6` are characters here), the one
+    /// exception being an input the tab focused with nothing typed yet.
     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.held.bind(state);
         // 0. The re-add confirm is modal over everything.

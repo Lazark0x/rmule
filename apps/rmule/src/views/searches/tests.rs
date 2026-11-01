@@ -199,6 +199,14 @@ fn arrival_leaves_the_navigation_keys_with_the_app() {
         ));
     }
     assert_eq!(view.query.text(), "");
+    view.arrive(&state);
+    assert!(
+        matches!(
+            view.handle_key(press(KeyCode::Char('3')), &state),
+            ViewOutcome::Ignored
+        ),
+        "back on the tab the digit is the app's again"
+    );
     view.handle_key(press(KeyCode::Char('/')), &state);
     view.handle_key(press(KeyCode::Char('1')), &state);
     assert_eq!(view.query.text(), "1", "a `/` first, and the digit is text");

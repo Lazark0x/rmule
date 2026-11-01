@@ -1,5 +1,7 @@
 //! Unit tests for the front-end-owned configuration: the app-config seam, the preference snapshot and the edit vocabulary.
 
+use std::path::Path;
+
 use super::*;
 
 fn store() -> SharedConfig {
@@ -223,4 +225,14 @@ fn a_nickname_must_be_something_a_hello_can_carry() {
     assert!(validate_nickname("   ").is_err());
     assert!(validate_nickname("bad\u{7}name").is_err());
     assert_eq!(validate_nickname("  rmule  "), Ok("rmule".to_string()));
+}
+
+#[test]
+fn a_leading_tilde_is_the_operators_home_and_nothing_else_is() {
+    let home = || Some(PathBuf::from("/home/op"));
+    assert_eq!(under_home("~", home()), PathBuf::from("/home/op"));
+    assert_eq!(under_home("~/dl", home()), Path::new("/home/op").join("dl"));
+    assert_eq!(under_home("~op/dl", home()), PathBuf::from("~op/dl"));
+    assert_eq!(under_home("/srv/~/dl", home()), PathBuf::from("/srv/~/dl"));
+    assert_eq!(under_home("~/dl", None), PathBuf::from("~/dl"));
 }

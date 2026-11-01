@@ -6,6 +6,15 @@ All notable changes to rmule are recorded here. The format follows
 
 ## [Unreleased]
 
+### Terminal UI
+
+- Every text field has a caret, readline keys and the terminal's own cursor, so
+  an input method composes in place. A path field takes `~` and completes on
+  `Tab`.
+- `Enter` on a search moves to its results, and `u` brings back the search
+  closed last.
+- No field loses what was typed: a refusal stays under it, with the text.
+
 ### Transfers
 
 - Part files are sparse where the file system allows.

@@ -113,7 +113,7 @@ What a search result says about the operator's own history with its file: **Down
 _Avoid_: file status, known flag, File-Known Predicate (core's serving gate, a different question)
 
 **Held Search**:
-One search the Search tab is keeping: its query, its status, its live **Search Result Set** and its own cursor. Its status line names each leg of the search in the TUI's words — server, other servers, Kad: waiting for a connection, waiting for Kad, searching, done, not asked / not running, not answered, and not sent with its reason — no server, no Kad contact answered, another Kad lookup holds the word, no word of three letters; a completed search names any leg that ended so beside its count. Any number are held side by side, each an entry on the strip under the query input; one not in view keeps receiving results. It lasts until the operator closes it or the run ends — nothing of it is written to disk.
+One search the Search tab is keeping: its query, its status, its live **Search Result Set** and its own cursor. Its status line names each leg of the search in the TUI's words — server, other servers, Kad: waiting for a connection, waiting for Kad, searching, done, not asked / not running, not answered, and not sent with its reason — no server, no Kad contact answered, another Kad lookup holds the word, no word of three letters; a completed search names any leg that ended so beside its count. Any number are held side by side, each an entry on the strip under the query input; one not in view keeps receiving results. It lasts until the operator closes it, `u` bringing the one closed last back, or the run ends — nothing of it is written to disk.
 _Avoid_: search tab (the Search tab holds them), search history, saved search, session
 
 

@@ -295,3 +295,13 @@ fn golden_searches_options_summary() {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
 }
+
+#[test]
+fn the_summary_gives_a_bare_size_its_unit() {
+    let mut filters = Filters::default();
+    filters.form.focus = Filters::MIN_SIZE;
+    filters.form.set_focused_text("3");
+    filters.form.focus = Filters::MAX_SIZE;
+    filters.form.set_focused_text("700 MB");
+    assert_eq!(filters.summary(), "≥3 B · ≤700 MB");
+}
