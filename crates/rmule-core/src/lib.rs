@@ -188,7 +188,7 @@ pub use server_list::{
 };
 pub use settings::{
     CoreSettings, CoreSettingsHandle, Flag, FlagTable, Flags, Setting, SettingError,
-    SettingRefusal, TakesEffect, flag_reads, flag_text,
+    SettingRefusal, TakesEffect, flag_text,
 };
 pub use stop_request::StopRequest;
 // The one obfuscation policy `CoreSettings::obfuscation` carries across the peer

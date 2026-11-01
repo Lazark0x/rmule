@@ -276,17 +276,6 @@ impl ObfuscationChoice {
     /// Every choice, in the order the Settings field cycles them.
     pub const ALL: [Self; 4] = [Self::Off, Self::Supported, Self::Requested, Self::Required];
 
-    /// The choice's stable name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Supported => "supported",
-            Self::Requested => "requested",
-            Self::Required => "required",
-        }
-    }
-
     /// The choice that names `policy`.
     #[must_use]
     pub fn of(policy: Option<ObfuscationPolicy>) -> Self {

@@ -74,7 +74,7 @@ pub const fn flag_text(on: bool) -> &'static str {
 /// none, and on only as [`flag_text`] spells it, so text no build wrote is
 /// off whatever the default.
 #[must_use]
-pub fn flag_reads(stored: Option<&str>, unset: bool) -> bool {
+pub(crate) fn flag_reads(stored: Option<&str>, unset: bool) -> bool {
     stored.map_or(unset, |text| text == flag_text(true))
 }
 

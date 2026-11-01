@@ -24,7 +24,8 @@ use std::sync::Arc;
 
 use rmule_net::peer::ObfuscationPolicy;
 
-pub use self::flag::{Flag, FlagTable, Flags, flag_reads, flag_text};
+pub(crate) use self::flag::flag_reads;
+pub use self::flag::{Flag, FlagTable, Flags, flag_text};
 use crate::app_config::{AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION};
 use crate::directory_scan::guard_temp_dir;
 use crate::port_mapping::PortMappingMode;
