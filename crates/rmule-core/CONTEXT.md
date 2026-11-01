@@ -850,7 +850,7 @@ The byte I/O abstraction. Download writes verified parts into a `.part` file and
 _Avoid_: storage backend, file manager
 
 **Held Part File**:
-The one handle a download's run holds on its `.part` file from its first act to finalize (ADR-0094, "The run holds its part file"). Every verified part is written through it, never by path. Before each part, at finalize, and each second while the run waits (for a connection, or for sources with nothing in flight) the run compares the path's device and inode (on Windows its volume serial number and file index) with the handle's, and the handle's length with the recorded parts' end, and reports what it found — `Gone`, `Replaced` or `Truncated` — as `PartFileLost`, with what it cost — or, when the store cannot say which parts were lost, with no count, and the download fails as a store failure. The part file is the operator's to delete; rmule never recreates it behind them. It carries the sparse flag on Windows; each write punches its **Extension Gap** and reads **Allocated Bytes** (ADR-0111).
+The one handle a download's run holds on its `.part` file from its first act to finalize (ADR-0094, "The run holds its part file"). Every byte is written through it, never by path. Before each batch, at finalize, and each second while the run waits (for a connection, or for sources with nothing in flight) the run compares the path's device and inode (on Windows its volume serial number and file index) with the handle's, and the handle's length with the recorded parts' end, and reports what it found — `Gone`, `Replaced` or `Truncated` — as `PartFileLost`, with what it cost — or, when the store cannot say which parts were lost, with no count, and the download fails as a store failure. The part file is the operator's to delete; rmule never recreates it behind them. It carries the sparse flag on Windows; each write punches its **Extension Gap** and reads **Allocated Bytes** (ADR-0111).
 _Avoid_: part file lock (nothing is locked), reopen
 
 **Volume Stop**:
@@ -858,7 +858,7 @@ A run ending itself because its volume, not a peer, cannot go on (ADR-0094, "A v
 _Avoid_: disk error, insufficient (stock's word for one of the three)
 
 **Sparse Part File**:
-A download's `.part` under ADR-0111: positional, never pre-sized, holding only hash-verified bytes. Where the **Hole Verdict** is `HoldsHoles` it occupies only the bytes written plus slack. Its length is the end of the highest part written.
+A download's `.part` under ADR-0111: positional, never pre-sized, holding every byte written, verified or not. What counts is the store's word, the verified parts and the **Arrived Checkpoint**, never a reading of the file. Where the **Hole Verdict** is `HoldsHoles` it occupies only the bytes written plus slack. Its length is the end of the highest byte written.
 _Avoid_: temp file, preallocated file
 
 **Extension Gap**:
@@ -930,11 +930,23 @@ What core measures of one worker from its block arrivals at the instants it is h
 _Avoid_: speed, bandwidth, throughput
 
 **Arrived Ranges**:
-The exact byte ranges of one in-flight part that have arrived, relative to the part's start, and their bytes in 180 KiB cells, each cell recording every worker that wrote into it (ADR-0117). A merge writes only bytes not yet arrived, so the first copy of a byte wins whatever its grid; the part verifies when they cover it. In memory for the run: a restart rebuilds the missing set from the verified parts.
+The exact byte ranges of one in-flight part that have arrived, in the file's offsets, each 180 KiB cell recording every worker that wrote into it (ADR-0117). A merge passes on only bytes not yet arrived, so the first copy of a byte wins whatever its grid; the part verifies when they cover it. The bytes lie in the `.part`, and the **Arrived Checkpoint** carries the ranges across a run's end.
 _Avoid_: prefix, bitmap, gap list
 
+**Arrived Checkpoint**:
+What the store holds of a part in flight (ADR-0117 §4): one `download.arrived_part` row of its **Arrived Ranges** and its cells' writers, committed only after the `.part` is synced, so it never claims a byte that has not reached the file. A byte no row claims counts as absent. Every run starts from it, whatever ended the last. Lost across a kill or a power cut: at most the bytes since the last one.
+_Avoid_: resume data, gap list, part.met
+
+**Write Cache**:
+The node's bound on bytes between the brain and the disk (ADR-0117 §4): 64 MiB over every run, 16 MiB per run, counted at arrival and returned when the write ends. Short of it, a run's drain waits, and the sockets with it.
+_Avoid_: buffer pool, page cache
+
+**Persist Lane**:
+A run's one queue of disk work (ADR-0029, ADR-0117 §4): writes, part checks, checkpoints and recovery checks, in order, one at a time, so a part's check follows its bytes and a checkpoint follows what it claims. The first write refused ends it, and the run ends as a **Volume Stop**.
+_Avoid_: writer thread, flush queue
+
 **Failed Cells**:
-What a part that failed its check with no **Trusted AICH Root** keeps across its refetch (ADR-0117 §1): per 180 KiB cell, the SHA-1 of its bytes and its writers, each with the User Hash its hello named. One attempt per part, the latest, in memory until the part verifies. A refetched cell is asked of a worker that did not write it first; when the part verifies, a cell whose hash differs proves its old writers corrupt, and when it fails again, matching cells from disjoint writers are corroborated and differing ones disputed, naming the writers both failures point to.
+What a part that failed its check with no **Trusted AICH Root** keeps across its refetch (ADR-0117 §1): per 180 KiB cell, the SHA-1 of its bytes and its writers, each with the User Hash its hello named. One attempt per part, the latest, in memory until the part verifies or the run ends. A refetched cell is asked of a worker that did not write it first; when the part verifies, a cell whose hash differs proves its old writers corrupt, and when it fails again, matching cells from disjoint writers are corroborated and differing ones disputed, naming the writers both failures point to.
 _Avoid_: black box, retire-all, suspects list
 
 **Claimed Block**:

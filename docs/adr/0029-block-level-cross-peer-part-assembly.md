@@ -12,11 +12,11 @@ such peers never finished, because every racer restarted from zero.
 
 ## Decision
 
-Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
+Part assembly lives in `rmule-core`: one record per in-flight part, its bytes in the `.part`.
 
 - `PartAssembly` holds, per in-flight part, its **Arrived Ranges** — the exact byte
-  ranges that have arrived — and their bytes, the set of contributing peers, and the
-  writers of each `EMBLOCKSIZE` cell (ADR-0117).
+  ranges that have arrived — the set of contributing peers, and the writers of each
+  `EMBLOCKSIZE` cell (ADR-0117). It holds no byte.
 - Workers are block askers. `PeerWorkerCommand::RequestBlocks` hands a worker the
   blocks to ask (ADR-0117), and the worker reports what arrives as
   `PeerWorkerEvent::BlockReceived { part_index, offset, bytes }`. It decides no
@@ -24,23 +24,33 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   (`UploadClient.cpp:290`) and a brain's turn per packet tops a download out, so the
   worker gathers a block's packets: core hears the run when the block is whole, when a
   packet does not extend it, before anything else the worker says, and within 100 ms.
-- Core merges each arrival into the part's Arrived Ranges, writing only the bytes not
-  yet arrived: a later copy of an arrived byte, a duplicate's or a drained block's, is
-  dropped. When the ranges cover the part, the run's **Persist Lane** verifies the MD4
-  part hash on the blocking pool, writes the part and commits its record at the store's
-  own durability, one part at a time, and the brain hears the landing as a fact and
-  frees the buffer. The brain takes blocks meanwhile. The lane holds two parts behind
-  the one it works on; past that the drain waits, and the sockets with it. A part hash
-  set settles the lane first, since it judges every part recorded.
+- Core merges each arrival into the part's Arrived Ranges. The bytes not yet arrived
+  go to the run's **Persist Lane** through the node's **Write Cache** and on to the
+  `.part` at their own offsets; a later copy of an arrived byte, a duplicate's or a
+  drained block's, is dropped. The brain never touches them again. When the ranges cover
+  the part, the lane takes the part behind the writes before it, so it reads back what
+  arrived: it hashes the bytes from the file by MD4 on the blocking pool, and commits the
+  part's record at the store's own durability, one part at a time. The brain hears the
+  landing as a fact. The brain takes blocks meanwhile. The lane holds two parts behind
+  the one it works on, and bytes past the run's share of the cache wait too; past either
+  the drain waits, and the sockets with it. A part hash set settles the lane first, since
+  it judges every part recorded.
 - Several workers share a part's blocks, and the End Game asks its last blocks twice
   (ADR-0117). A worker's end frees the blocks it was asked and keeps every byte that
   arrived, so a mid-part drop never resets progress.
-- Assembly is in memory and per session. Pause, cancel and restart discard partial
-  parts. A part's bytes live in 180 KiB cells, each allocated at its first byte, so a
-  part holds about what has arrived and at most `ED2K_PART_SIZE`. Workers join the
-  first-ranked part with an unclaimed block (ADR-0117), so the parts holding bytes are
-  fewer than the transferring sources: twenty transfers hold at most 20 parts, about
-  186 MB, per download.
+- **What is on disk.** The `.part` holds every byte the lane has written, verified or
+  not (ADR-0111). What the file holds proves nothing: the verified parts are what the
+  store records, and an unverified byte counts only while the **Arrived Checkpoint** claims
+  it (ADR-0117 §4). A byte the file holds and no checkpoint claims counts as absent and is
+  fetched again over itself.
+- **A resume is one path.** Every run starts from the verified parts and the checkpoint,
+  whether it follows a Pause, a restart, a repair or a rebuild of the core. A resumed part's
+  ranges, cut to what the file reaches, and its writers are the assembly it starts from, so
+  a resumed part is an in-flight one, and a part they cover goes straight to its check.
+- **The bound.** A part costs its ranges and its writers on the heap, some hundreds of
+  bytes, however many of its bytes arrived. Bytes on their way to the file are the Write
+  Cache's, whose cap is node-wide: however many transfers run and however many parts they
+  hold open, assembly costs the cache and the records.
 - **Request pipeline.** A worker keeps its link busy by keeping blocks asked ahead of
   the bytes, as stock 2.3.3 keeps `STANDARD_BLOCKS_REQUEST` (3) blocks pending
   (`updownclient.h:102`, `DownloadClient.cpp:619-641`) and amule-kno sizes the
@@ -95,9 +105,11 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   - **No part boundary drains it.** The next handout reaches the worker while its blocks
     are still asked, so the pipeline runs from one part into the next without a round
     trip (ADR-0117).
-- **On a failed part hash:** with a trusted AICH root, core drops only the corrupt
-  cells' bytes and retires the workers that wrote into them (ADR-0038, ADR-0117).
-  Without one, core discards the buffer, keeps each cell's hash and writers as the
+- **On a failed part hash:** with a trusted AICH root, the lane checks the recovery data
+  against the bytes in the file; core drops only the corrupt cells from the ranges and
+  retires the workers that wrote into them (ADR-0038, ADR-0117). Without one, core
+  drops the part's ranges, keeps each cell's hash, which the lane read from the file, and
+  its writers as the
   part's **Failed Cells**, and hands the part's blocks again to every worker holding it.
   The refetch attributes the bad cells: a verified refetch disproves the old copies
   that differ, and a repeated failure names the writers both failures point to
@@ -110,8 +122,10 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
 - End-game duplicates pull at most three blocks twice per Duplicate Set (ADR-0117).
 - Without AICH, a persistent poisoner sharing a part with honest workers costs at
   least one refetch before it is named, and the honest workers keep their slots.
-- Assembly behaviour — off-grid and duplicated arrivals merged, bytes kept across a
-  drop, retirement on failure, buffers freed on success and failure — is asserted with
+- A Pause, a Quit or a rebuild costs no block a run held, and a kill or a power cut costs
+  at most the bytes since the last checkpoint.
+- Assembly behaviour — off-grid and duplicated arrivals merged, ranges kept across a
+  drop, retirement on failure, ranges dropped on failure — is asserted with
   deterministic fake workers, without sockets.
 - A link no longer idles between blocks: a fast uploader's measured 18–58% idle share
   with one block in flight is what the depth buys back. The depth rule is a pure
@@ -122,11 +136,15 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
 - **Each worker keeps its own bytes; seed a reassigned peer with the furthest.**
   Rejected: while workers download concurrently each still restarts at 0, so the
   common scarce-part case stays unsolved.
-- **Durable block-level progress across restarts.** Rejected: it needs sub-part rows
-  and `.part` revalidation, and unverified bytes on disk are risky to trust on resume;
-  the gain, mid-part resume after a restart, is smaller than the cost.
-- **Write blocks to `.part` at once, track ranges in memory.** Rejected: restart must
-  treat those bytes as absent anyway, so it pays the write complexity for nothing.
+- **In memory for the run, discarded by a Pause or a restart.** Rejected: "restart must
+  treat those bytes as absent" is a choice. The part hash and AICH judge bytes from disk
+  as they judge bytes from a peer, so a resumed byte is as safe as a fresh one, and each
+  discard throws away slots won at a stock uploader. A part held 9.5 MiB of heap, with no
+  node-wide cap.
+- **A second file beside the `.part`.** Rejected: it keeps the `.part` verified-only, but
+  costs a copy at every part's end and a second file for the part check, the Volume Stop
+  and a cancel to reckon with. Nothing reads the `.part`'s unverified bytes except a player
+  (ADR-0114).
 - **Retire only the last contributor.** Rejected: it lets an early-block poisoner
   escape and can loop on the same bad peer.
 - **Retire every contributor to the failed attempt.** Rejected (ADR-0117 §1): with a

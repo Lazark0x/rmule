@@ -93,10 +93,10 @@ never its message). A row failed before the store carried a reason says "reason 
   continues: its run finds every part verified and moves the file again (ADR-0115).
 
 **The run holds its part file.** It opens the file once — creating it for a download with no
-part recorded — and writes every part through that handle, never re-opening by path. Before each
-verified part is written, before finalize, when it leaves a wait, and every second while it waits
+part recorded — and writes every byte through that handle, never re-opening by path. Before each
+batch is written, before finalize, when it leaves a wait, and every second while it waits
 (`WAITING_PART_FILE_CHECK`), it compares the path's device and inode with the handle's and the
-handle's length with the end of the highest recorded part (one `stat` and one `fstat`); a removed
+handle's length with the end of the highest byte it wrote or recorded (one `stat` and one `fstat`); a removed
 file's handle stays writable on macOS and Linux, so an error is never the signal.
 
 - **Gone or replaced:** the file's last name was removed (the handle reads no link left), or

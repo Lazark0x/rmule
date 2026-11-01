@@ -43,9 +43,9 @@ download's diagnostics row. It is read from the row each frame, never stored.
   and no byte-range query is added. aMule's 256 KiB size floor is dropped: a smaller file
   whose part 0 is verified is complete.
 - The tail never gates. ADR-0112's Preview Band fetches it early; a player that needs an
-  index not yet on disk fails, and its exit note says so. The `.part` keeps each part at its
-  own offset with holes where parts are missing (ADR-0111), so the player sees verified
-  bytes in place.
+  index not yet on disk fails, and its exit note says so. The `.part` keeps every byte at its
+  own offset with holes where none arrived (ADR-0111), as aMule's does, so the player sees
+  what has arrived in place: verified up to the gate, unverified past it.
 
 **Core publishes where the bytes are.** `DownloadQueued` and `DownloadRecovered` gain
 `file_path`: the `.part` of a download that is not complete, the finished file of one that

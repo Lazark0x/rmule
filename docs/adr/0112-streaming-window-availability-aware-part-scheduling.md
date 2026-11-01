@@ -92,7 +92,7 @@ tie:
 | 1 | very rare | `frequency[i] ≤ max(1, m × n / 100)`, `n` the records holding Advertised Parts, `m` as aMule's |
 | 2 | band | `i` is in the **Preview Band** |
 | 3 | window | `i` is in the **Streaming Window** |
-| 4 | key | `(0, i)` inside the window, `(frequency[i], i)` outside it |
+| 4 | key | `(0, 0, i)` inside the window, `(frequency[i], −arrived[i], i)` outside it, `arrived[i]` the part's arrived bytes (ADR-0117 §4) |
 
 - `n` counts the sources whose parts are known, where aMule's `GetSourceCount()` counts every
   source: the book also holds pooled sources nobody has asked yet. Below 20 the bound is 1,

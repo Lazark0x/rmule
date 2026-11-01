@@ -39,64 +39,69 @@ aMule citations are to 2.3.3; read, never ported (ADR-0082).
 
 ## Decision
 
-**A download's `.part` is a Sparse Part File: positional, holding only verified bytes, never
-pre-sized, and on a disk that can hold a hole occupying only the bytes written.**
+**A download's `.part` is a Sparse Part File: positional, holding the bytes written, verified or
+not, never pre-sized, and on a disk that can hold a hole occupying only the bytes written.**
 
 ### The Sparse Part File
 
 - **Positional.** Byte *N* of the download is byte *N* of the `.part`, on every platform: no
   header, index or remapping. It is what lets the serve side (ADR-0113) and a player (ADR-0114)
   read the `.part` at the download's own offsets, as aMule does.
-- **Verified bytes only.** A part is checked against its part hash before it is written
-  (`persist_streamed_part`). The one exception is a file with no part hashes, whose parts are
-  written under the file hash's authority and checked whole at finalize.
+- **The file is not the record.** A byte reaches the `.part` as it arrives (ADR-0117 §4), and a
+  part is checked against its part hash from the file, once whole (`persist_streamed_part`). A file
+  with no part hashes has its parts checked whole at finalize. Which bytes count is the store's
+  word: the verified parts, then the Arrived Checkpoint. No reading of the file, its length or its
+  allocation says what arrived, so a disk that holds no holes, where a gap reads as zeros and costs
+  its length, is the same file to every reader.
 - **Never pre-sized.** No `set_len`, no reserving `fallocate`. Its length is the end of the highest
-  part written so far; a reader meets the end of the file there, as on aMule's builds other than
+  byte written so far; a reader meets the end of the file there, as on aMule's builds other than
   Windows.
 - **Bounded.** Where the run's Hole Verdict is `HoldsHoles`, the file's **Allocated Bytes** are at
   most the bytes written, plus one allocation unit of the filesystem at each end of each Extension
   Gap, plus the filesystem's own slack (XFS preallocation, cluster rounding). A part a repair
   dropped (ADR-0094, "Damaged parts are repaired, not condemned") counts as written until it is
-  rewritten at the same offset and length. The gaps are not stored anywhere new: they are the parts ADR-0079's positional
-  vector does not show `Verified`.
+  rewritten at the same offset and length. The gaps are the ranges no write reached.
 
 ### Every write that extends the file punches its Extension Gap
 
 - **The Extension Gap** of one write at `offset` into a file whose length was `end` just before it
   is `[end, offset)` when `offset > end`, and empty otherwise. It is the only range a write can make
-  a filesystem zero-fill, and it never holds a verified byte: every earlier write ended at or before
-  `end`. The run already reads `end` on the held handle before each part, in the check that the
-  file is still the one it holds.
+  a filesystem zero-fill, and it never holds a written byte: every earlier write ended at or before
+  `end`. The run reads `end` on the held handle before each write, in the check that the file is
+  still the one it holds, and a batch of writes carries it forward from one to the next.
 - **The punch.** After the write, the run punches `[align_up(end, 4096), align_down(offset, 4096))`
-  when that range is not empty: aligned inward, so the verified bytes on both sides are untouched
-  and APFS never sees an unaligned range. The eD2k part size is 2,375 × 4 KiB, so every gap a
-  whole-part write opens is aligned already; aligning inward keeps the rule true without that.
+  when that range is not empty: aligned inward, so the bytes on both sides are untouched and APFS
+  never sees an unaligned range. The eD2k part size is 2,375 × 4 KiB and `EMBLOCKSIZE` 45 × 4 KiB,
+  so a gap between blocks on the grid is aligned already; aligning inward keeps the rule for one
+  off it.
   Linux punches with `fallocate(PUNCH_HOLE | KEEP_SIZE)`, macOS with `fcntl(F_PUNCHHOLE)`, Windows
   with `FSCTL_SET_ZERO_DATA`. On a filesystem that left a hole by itself the punch changes nothing;
   one path on every platform keeps the bound independent of how each filesystem extends a file.
-- **A failed punch costs space, never correctness.** The part is already written; the failure is
+- **A failed punch costs space, never correctness.** The bytes are already written; the failure is
   logged at `debug` and the run goes on.
 - **Windows sets the sparse flag once per run.** When the run holds its part file it sets
   `FSCTL_SET_SPARSE` on the handle, before its first write. The control is idempotent, so a part
   file an older build wrote becomes sparse too; the zeros it already holds stay allocated, and
   nothing scans for them. A volume that refuses the flag (FAT, exFAT) is not an error, but that run
   does not punch: `FSCTL_SET_ZERO_DATA` on a file that is not sparse writes zeros.
-- **Nothing else is punched.** A rewrite inside the file, such as a repaired part, extends nothing.
-  A dropped part's range is left allocated, since its rewrite reuses it.
-- **One write is one blocking-pool call** on the held standard-library handle: the check, the
-  positional write, the punch and the reading. No async file operation is ever in flight on the
-  handle while a raw-handle call runs on it.
+- **Nothing else is punched.** A rewrite inside the file, such as a refetched cell or a repaired
+  part, extends nothing. A dropped part's range is left allocated, since its rewrite reuses it.
+- **One batch of writes is one blocking-pool call** on the held standard-library handle: the check,
+  the positional writes, their punches and the reading. Every write of a run goes through its
+  Persist Lane, so no other operation is ever in flight on the handle while a raw-handle call runs
+  on it.
 
 ### Allocated Bytes is a level read after each write
 
 `DownloadDiagnostics::allocated_bytes: Option<u64>` is what the filesystem reserved for the
 `.part`: `st_blocks × 512` on Unix, `FILE_STANDARD_INFO.AllocationSize` on Windows, read on the
-held handle after the punch. It is read when the run holds the file and after every part written,
+held handle after the punch. It is read when the run holds the file and after every batch written,
 never on a clock and never when a snapshot is taken, since the snapshot is a synchronous read of
 shared state (ADR-0077). `None` means not read; a reading that fails sets `None`. It is published
 as read, above the file's length included: core computes no ratio and clamps nothing, and
 "over-allocated" is a consumer's word. The row keeps the last reading after the run ends
-(ADR-0094); the next run's first reading replaces it. Cost: one `fstat` per 9.28 MB part.
+(ADR-0094); the next run's first reading replaces it. Cost: one `fstat` per batch, at most one
+per MiB written or per second.
 
 ### Each run measures whether its disk holds holes
 
@@ -135,7 +140,7 @@ as read, above the file's length included: core computes no ratio and clamps not
 Core carries the verdict and the directory; the sentences live in the download words of
 `rmule-words`, which the CLI and the TUI share. The edge's sentence names the download and the
 directory and says that this disk holds no holes, so the file takes its full length up to its last
-verified part, that the download goes on, and that a Temp Directory on another disk avoids it. The
+byte written, that the download goes on, and that a Temp Directory on another disk avoids it. The
 CLI prints it; the TUI puts it in the status note and the Networks log, once per run. The
 Allocated Bytes and the verdict are shown in one place only: an **On disk** row in the Transfers
 details modal, the Allocated Bytes and what the verdict means; the downloads table carries
@@ -192,9 +197,9 @@ before completion, and the finished file is never pre-sized either.
 
 ## Consequences
 
-- On ext4, XFS, btrfs, APFS and NTFS a part file costs its verified bytes plus slack, in whatever
-  order its parts arrive. On HFS+, exFAT and FAT32 it costs every byte up to its highest verified
-  part, which the head-and-tail order of ADR-0112 reaches early, and the operator is told once per
+- On ext4, XFS, btrfs, APFS and NTFS a part file costs its written bytes plus slack, in whatever
+  order they arrive. On HFS+, exFAT and FAT32 it costs every byte up to its highest written byte,
+  which the head-and-tail order of ADR-0112 reaches early, and the operator is told once per
   run. With the default Temp Directory on the data directory's volume, that happens mostly where
   the operator moved the Temp Directory to such a disk, or for an older row whose part file lies
   in the download directory.

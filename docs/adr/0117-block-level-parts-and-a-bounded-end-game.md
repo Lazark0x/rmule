@@ -46,21 +46,21 @@ block, two parts in one pipeline and a duplicate are each an ordinary request to
 
 **A part's missing blocks are handed to every granted worker that advertised it, one worker per
 block. Once a worker has no unclaimed block left, it may be handed at most three blocks that a
-slower worker is fetching. The first byte to arrive at an offset is kept. Nothing new persists.**
+slower worker is fetching. The first byte to arrive at an offset is kept, in the `.part`, and a checkpoint keeps the ranges.**
 
 ### 1. Assembly state: the Arrived Ranges
 
-- **Per in-flight part, the Arrived Ranges.** A sorted set of disjoint byte ranges relative to the
-  part's start, exact to the byte, and the bytes behind them. A merge writes only the bytes not
-  yet arrived. Every later copy of an arrived byte is dropped, from whatever worker, so an
-  off-grid block, a block split across two workers and a duplicate all merge the same way.
-- **The bytes live in 180 KiB cells** on the part's `EMBLOCKSIZE` grid, each allocated at its first
-  byte. A part holds about what has arrived, rounded up to whole cells, and never more than its
-  length.
-- **Each cell records its writers**: every worker that wrote a byte into it. This is the AICH
-  provenance of ADR-0038. It is exact even when a cell holds two workers' bytes.
-- **A part is complete when its Arrived Ranges cover it.** It then verifies by MD4 against the
-  authority in force, unchanged (ADR-0026, ADR-0027).
+- **Per in-flight part, the Arrived Ranges.** A sorted set of disjoint byte ranges, in the file's
+  offsets as every other range is, exact to the byte. A merge passes on only the bytes not yet
+  arrived. Every later copy of an arrived byte is dropped, from whatever worker, so an off-grid
+  block, a block split across two workers and a duplicate all merge the same way.
+- **The bytes go to the `.part`** at their own offsets, through the Write Cache (§4).
+- **A cell** is 180 KiB of the part's `EMBLOCKSIZE` grid. **Each cell records its writers**: every
+  worker that wrote a byte into it. This is the AICH provenance of ADR-0038. It is exact even when
+  a cell holds two workers' bytes.
+- **A part is complete when its Arrived Ranges cover it.** The Persist Lane then reads it back from
+  the file and verifies it by MD4 against the authority in force, unchanged (ADR-0026, ADR-0027).
+  A cell hash a failure or a refetch's verdict needs is read from the file on the same lane.
 - **What one bad source costs.**
   - With a **Trusted AICH Root**, the recovery data names the corrupt cells. Only those cells'
     bytes leave the Arrived Ranges, and they are fetched again by whoever has room. The workers
@@ -79,7 +79,9 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
 - **Kept across the refetch: the Failed Cells.** For each cell of the failed attempt, the SHA-1
   of its bytes (its AICH block hash) and its writers, each with the User Hash its hello named.
   A part keeps one attempt, the latest. That is at most 53 hashes of 20 bytes plus one
-  attempt's writers per part. It lives in memory for the run and goes when the part verifies.
+  attempt's writers per part. It lives in memory for the run and goes when the part verifies, or
+  when the run ends: it is evidence, and a run that starts without it costs a repeated failure its
+  verdict, never a byte.
   aMule keeps the same evidence as per-IP ranges until they verify
   (`CorruptionBlackBox.cpp:78-112`).
 - **A refetched cell is asked of someone else.** A worker is handed the blocks of cells it did
@@ -175,19 +177,59 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
   backup race goes too. A worker that has not delivered a part now shares the part's unclaimed
   blocks instead of streaming the part a second time.
 
-### 4. Persistence: nothing new
+### 4. Persistence: the bytes in the `.part`, the ranges in a checkpoint
 
-- A part file records what it records today: the verified parts only (ADR-0111, "Verified bytes
-  only"; ADR-0079). Arrived Ranges and Claimed Blocks live in memory for the run. A pause, a stop
-  and a restart discard the arrived blocks of every unverified part, as ADR-0029 decided.
-- **The block set rebuilds from the verified parts**: every block of every other part is
-  missing, cut on the same grid. No store change, and store version 15 is untouched.
-- **Why this is enough.** Parts with arrived bytes are no more than ADR-0029's: workers join
-  the first-ranked part, so they are fewer than the transferring sources. A restart therefore
-  loses no more than it did. Keeping the bytes would need unverified bytes in the `.part`, or a
-  second file beside it, plus a checkpoint of the ranges. The serve side (ADR-0113), Preview
-  (ADR-0114) and the Allocated Bytes bound (ADR-0111) all rest on the `.part` holding only
-  verified parts.
+- **What is on disk.** Every byte the lane wrote lies in the `.part` at its own offset (ADR-0111).
+  The store's verified parts are unchanged (ADR-0079), and the **Arrived Checkpoint** is one
+  `download.arrived_part` row per part in flight: its Arrived Ranges, its writers and the User Hash
+  each hello named. Claimed Blocks stay in memory: a run hands blocks again.
+- **The Write Cache** is the node's bound on bytes between the brain and the disk: 64 MiB,
+  counted at arrival and returned when the write ends, over every run. One run may hold 16 MiB of
+  it, so a volume that stalls costs its own runs, not the node's. A run writes its bytes in order of
+  offset, joined where they touch, once it holds 1 MiB, each second, and before a part's check, a
+  checkpoint or a run's end. A run past its share, or short of the cache, holds its drain until
+  its lane or the node gives bytes back: the workers wait on the brain and the sockets on the
+  workers. A stop lets the drain through over the cap, so a stalled volume never stands between a
+  run and its end.
+- **Everything of a run's disk goes through its Persist Lane, in order:** writes, part checks,
+  checkpoints and recovery checks, one at a time. A part's check is queued behind its last bytes,
+  and a checkpoint behind every byte it claims, by that order alone. The first write the volume
+  refuses ends the lane: nothing behind it runs, so nothing claims what it did not write, and the run
+  ends as a Volume Stop (ADR-0094), disk full and a write error alike, as a code.
+- **The checkpoint.** Every 30 seconds with bytes written, every 256 MiB, and at a run's end, the
+  lane syncs the `.part`'s data and only then commits the rows of the parts that moved, at the
+  store's own durability. So a checkpoint claims only bytes already on the disk. A row of a part
+  with a verified record is never written, and `record_verified_part` removes the part's row in its
+  own transaction.
+- **What it promises.**
+
+| The run ended by | What a claimed byte is | What is lost |
+|---|---|---|
+| Pause, Stop, Quit, a Volume Stop's pause once its lane stands | synced before the last commit | nothing the brain merged |
+| kill -9, a panic, a rebuild of the core | on the file, as the kernel holds it | bytes since the last checkpoint: 30 s or 256 MiB of them per download, and a part that had not committed. They count as absent and are fetched over themselves |
+| A power cut | synced before the commit that claims it | the same, and whatever the writeback window held of verified parts: their records are re-hashed at the run's start (ADR-0094) |
+| A foreign write or a bad disk | whatever the file holds | the part's check fails, and the part refetches as any bad part does |
+
+- **Nothing reads the file to learn what arrived.** A byte no row claims counts as absent, whatever
+  the file holds there. A run cuts every claim to the length of the file it holds, so a file cut
+  short costs what it cost and no read at a part's end meets the end of the file. A part file gone
+  or replaced takes its rows with it (ADR-0094). A Restart that starts over, a cancel and a clear
+  remove them with the rest of the record.
+- **Provenance survives a restart.** The row carries each cell's writers, so a resumed part is an
+  assembly like any other: a failure names the same writers, the sole writer of a corrupt cell is
+  distrusted by the User Hash it wrote under, and a writer no longer connected retires nobody.
+  The alternative, a resumed cell with unknown writers, would make "one worker wrote the whole part"
+  false on a part with a past, and every rule of §1 would grow a case for it.
+- **A part the checkpoint covers** verifies as its run starts, before any worker: a part that stood
+  on the lane or awaited a recovery answer as the run ended. A recovery ask that was out is not
+  remembered: the check fails again and asks again.
+- **The serve side and Preview are unchanged in what they trust.** The serve side reads only the
+  Verified Range (ADR-0113). A player reads the file as it stands (ADR-0114). The Allocated Bytes
+  bound counts bytes written (ADR-0111).
+- **Why the rank breaks ties by arrived bytes.** Outside the Streaming Window, of two parts equally
+  rare, the one with more bytes is chosen (ADR-0112 §4), so a part a source stranded finishes
+  before a new one opens. Disk, not heap, pays for a part left open now, so this is a tie-break and
+  no more: a rarer part still goes first.
 
 ### 5. The worker's side
 
@@ -275,9 +317,17 @@ slower worker is fetching. The first byte to arrive at an offset is kept. Nothin
   a lost wait at a stock uploader, and duplicating at most three blocks costs less than the slot.
 - **Unbounded duplicates**, BitTorrent's end game. Rejected: without a per-block cancel, every
   duplicate's losing copy crosses the wire in full.
-- **Durable arrived blocks** (aMule's gap list in `.part.met`). Rejected (§4): the `.part` would
-  hold unverified bytes that the serve side, Preview and the allocation bound would have to tell
-  apart, and the restart loss it saves is no larger than ADR-0029's.
+- **Arrived blocks in memory for the run.** Rejected: a part held 9.5 MiB of heap with no node-wide
+  cap, and workers do not stay on one part: a source that leaves strands its part, and at twenty
+  workers simulated parts ran at two to three times the sources. Each Pause and restart then
+  fetched it all again. Libtorrent and aMule keep this state on disk.
+- **A checkpoint per block.** Rejected: a sync and a commit per block spend the disk on a promise a
+  Pause gets for free and a kill loses little of.
+- **A checkpoint committed before its sync.** Rejected: a power cut would leave claims over bytes
+  never written, and each would fail its part and name an innocent writer.
+- **Dropping the provenance of resumed bytes.** Rejected (§4).
+- **The Write Cache's cap per run.** Rejected as the whole rule: 500 transfers across many
+  downloads add up to no bound at all. Kept as the share.
 - **Rebuilding the ranges from the `.part`'s allocation** (the Hole Probe's reading). Rejected:
   allocation is page-grained, absent on a `HoleLess` disk, and blind to off-grid blocks.
 - **A worker bound to its part**, as aMule does. Not taken: the deterministic rank keeps a worker
