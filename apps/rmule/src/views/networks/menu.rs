@@ -17,7 +17,7 @@ use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::{Ed2kLink, Ed2kServerLink, ServerEndpoint};
 
 use super::form::ServerForm;
-use super::servers::{next_priority, priority_word, row_name};
+use super::servers::{banner, next_priority, priority_word, row_title};
 use super::{NetworksView, servers};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
@@ -99,7 +99,7 @@ pub(super) fn draw_details(
             .flat_map(|sentence| wrapped_lines(sentence, text_w, Style::new().fg(theme.fg)))
             .collect::<Vec<_>>()
     };
-    let title = format!(" {} ", super::servers::row_name(row));
+    let title = format!(" {} ", super::servers::row_title(row));
     Modal::new(title, theme).closes().draw_scrolled(
         frame,
         area,
@@ -113,6 +113,7 @@ pub(super) fn draw_details(
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
     let asks = match (&confirm.name, confirm.servers.as_slice()) {
         (Some(name), [server]) => rows::remove_one(name, &server_label(server)),
+        (None, [server]) => rows::remove_unnamed(&server_label(server)),
         (_, many) => rows::remove_many(many.len()),
     };
     let question = Question {
@@ -211,7 +212,7 @@ impl NetworksView {
         ];
         items.extend(list_items);
         let name = if self.tags.is_empty() {
-            row_name(row)
+            row_title(row)
         } else {
             rows::tagged(self.tags.len())
         };
@@ -327,7 +328,7 @@ impl NetworksView {
             return ViewOutcome::Ignored;
         }
         self.confirm = Some(Confirm {
-            name: row.filter(|_| self.tags.is_empty()).map(row_name),
+            name: row.filter(|_| self.tags.is_empty()).and_then(banner),
             servers,
             viewport: Cell::default(),
         });

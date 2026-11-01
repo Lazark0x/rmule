@@ -72,9 +72,6 @@ impl Default for HelpVersion {
     }
 }
 
-/// Key-column width of the help overlay; descriptions wrap to the right of it.
-const KEY_COL_W: usize = 16;
-
 /// A table's rows that hold what is typed; its title holding it keeps them all.
 fn kept(section: &Section, filter: &RowFilter) -> Vec<Binding> {
     let whole = filter.keeps([section.title]);
@@ -114,7 +111,13 @@ pub(super) fn draw_help(
     // binding whole, and only wraps the description column when the frame is
     // narrower than that. Its width does not follow the filter: the panel
     // stands still as the operator types.
-    let key_w = KEY_COL_W;
+    let key_w = sections
+        .iter()
+        .flat_map(|section| section.rows.iter())
+        .map(|(key, _)| display_width(key))
+        .max()
+        .unwrap_or(0)
+        + 1;
     let natural = sections
         .iter()
         .flat_map(|section| section.rows.iter())

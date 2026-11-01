@@ -59,16 +59,23 @@ const SERVER_GIVE_WAY: [usize; 10] = [3, 10, 9, 8, 6, 5, 2, 4, 7, 1];
 /// glyphs, so neither fact is carried by colour alone (spec §5).
 const SERVER_GUTTER_W: usize = 3;
 
-/// A row's display name: the server's own banner, or an honest dash. Core
-/// never invents one, and the address is its own column — repeating it here
-/// would make an unnamed row look named.
-pub(super) fn row_name(row: &ServerDiagnostics) -> String {
+/// The server's own banner, when it has one.
+pub(super) fn banner(row: &ServerDiagnostics) -> Option<String> {
     let name = row.server.name.to_display_string();
-    if name.trim().is_empty() {
-        absent::NO_NAME.to_string()
-    } else {
-        name
-    }
+    (!name.trim().is_empty()).then_some(name)
+}
+
+/// A row's display name: its banner, or the word for none. Core never invents
+/// one, and the address is its own column — repeating it here would make an
+/// unnamed row look named.
+pub(super) fn row_name(row: &ServerDiagnostics) -> String {
+    banner(row).unwrap_or_else(|| absent::NO_NAME.to_string())
+}
+
+/// What a menu or a confirm calls a row: its name, or for a server with none
+/// its address, never a word in place of the name.
+pub(super) fn row_title(row: &ServerDiagnostics) -> String {
+    banner(row).unwrap_or_else(|| server_label(&row.server.endpoint))
 }
 
 /// aMule's `ST_PREFERENCE` in four columns.

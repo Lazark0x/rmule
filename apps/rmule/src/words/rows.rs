@@ -54,6 +54,12 @@ pub fn remove_one(name: &str, address: &str) -> String {
     format!("Remove {name} ({address})?")
 }
 
+/// What the remove confirm asks of one server with no name.
+#[must_use]
+pub fn remove_unnamed(address: &str) -> String {
+    format!("Remove {address}?")
+}
+
 /// What the remove confirm asks of several servers.
 #[must_use]
 pub fn remove_many(count: usize) -> String {

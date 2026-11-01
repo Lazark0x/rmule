@@ -11,7 +11,7 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│       ┌ no name ─────────────────────────────────────────────────────┐       │
+│       ┌ 192.168.4.4:4661 ────────────────────────────────────────────┐       │
 │       │Grants: never logged in, so it has not said what it grants    │       │
 │       │UDP: no status answer yet — the status ping has not asked it  │       │
 │       │this run                                                      │       │

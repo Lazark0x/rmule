@@ -175,6 +175,25 @@ fn a_held_store_is_refused_as_busy_not_as_a_string() {
     drop(held);
 }
 
+/// The system says only that something exists at the path: the refusal says
+/// what stands there, or the operator is sent to free some space.
+#[test]
+fn a_file_where_the_data_dir_goes_is_refused_as_no_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a-file");
+    std::fs::write(&file, b"x").unwrap();
+    assert!(matches!(
+        open_durable_store(&file).unwrap_err(),
+        CoreError::StoreRefused {
+            refusal: OpenRefusal::Disk {
+                kind: std::io::ErrorKind::NotADirectory,
+                ..
+            },
+            ..
+        }
+    ));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_new_store_is_born_private_and_an_old_one_is_repaired() {
