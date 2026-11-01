@@ -118,23 +118,20 @@ impl Backend for Screen {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use ratatui::Terminal;
-
-    use super::{Line, Screen};
+    use super::{Backend, Line, Position, Screen};
 
     /// Crossterm's own answer asks a terminal, and a test has none: a clear
     /// that asked would fail here, or wait out its two seconds.
     #[test]
     fn a_clear_asks_the_terminal_nothing() {
         let line = Line::open(std::io::sink(), || {}).expect("thread");
-        let viewport = ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 80, 24)),
-        };
-        let mut terminal = Terminal::with_options(Screen::new(line), viewport).expect("terminal");
+        let mut screen = Screen::new(line);
         let asked = Instant::now();
 
-        terminal.clear().expect("no question, no failure");
+        let cursor = screen.get_cursor_position().expect("no question");
+        Backend::clear(&mut screen).expect("no question, no failure");
 
+        assert_eq!(cursor, Position::ORIGIN);
         assert!(asked.elapsed() < Duration::from_secs(1));
     }
 }
