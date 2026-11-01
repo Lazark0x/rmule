@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 [linux · 1]
-┌ Results · Stopped with the engine ─ Enter menu  [ ] search  x close  s sort  S reverse ┐
+┌ Results · Stopped with the engine ────────── Enter menu  / filter  [ ] search  x close ┐
 │  Name ▲                                                          Size Sources Type     │
 │▸ linux-1.iso                                                   1.0 KB      40 CD-Images│
 │                                                                                        │

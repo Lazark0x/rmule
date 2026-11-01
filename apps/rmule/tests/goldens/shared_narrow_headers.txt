@@ -10,7 +10,7 @@
 │(12) · Accepted 1 (5) ·         │
 │Transferred 1.0 MB (4.0 MB)     │
 └ 6 columns not shown ──── 1 / 2 ┘
-┌ Uploads · active only ─ s sort ┐
+┌ Uploads · active only ── f all ┐
 │  File                          │
 │▸ 0101010101…                   │
 │                                │

@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
@@ -35,6 +35,8 @@ use super::{ViewOutcome, rate_cell};
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table::Drawn;
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::views::panes::{self, Zoomed};
@@ -60,6 +62,12 @@ pub struct SharedView {
     zoomed: bool,
     /// The files table's order.
     sort: TableSort<SharedTable>,
+    /// `/`: the files it keeps.
+    filter: RowFilter,
+    /// `/` over the peers.
+    peer_filter: RowFilter,
+    /// The rows `Space` tagged.
+    tags: Tags<FileHash>,
     /// The table's lines, in that order.
     lines_memo: Memo<sort::LinesKey, sort::SharedLine>,
     /// The selected file, by hash.
@@ -109,6 +117,9 @@ impl Default for SharedView {
             focus: Pane::Files,
             zoomed: false,
             sort: TableSort::default(),
+            filter: RowFilter::default(),
+            peer_filter: RowFilter::default(),
+            tags: Tags::default(),
             cursor: RowCursor::default(),
             files_selected: 0,
             peers_selected: 0,
@@ -194,10 +205,25 @@ impl SharedView {
     fn handle_pane_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
         self.clamp_selection(state);
         let files = self.focus == Pane::Files && !state.shared.is_empty();
-        let peers = self.focus == Pane::Peers && !self.visible_peers(state).is_empty();
+        let peers = self.focus == Pane::Peers && !state.upload_peers.is_empty();
+        let filtered = match self.focus {
+            Pane::Files => self.filter.key(&key, files),
+            Pane::Peers => self.peer_filter.key(&key, peers),
+        };
+        if let Some(outcome) = filtered {
+            self.clamp_selection(state);
+            return outcome;
+        }
         if let Some(movement) = RowMove::of(key.code) {
             self.move_selection(state, movement);
             return ViewOutcome::Redraw;
+        }
+        if files {
+            let ids = self.file_ids(state);
+            if let Some(outcome) = self.tags.key(key.code, &ids, &mut self.cursor) {
+                self.clamp_selection(state);
+                return outcome;
+            }
         }
         match key.code {
             KeyCode::Char('s') if files => self.sort.key(true),
@@ -217,13 +243,14 @@ impl SharedView {
                 ViewOutcome::Redraw
             }
             // `x` is the row's way out everywhere; it asks first.
-            KeyCode::Char('x') if files => match self.selected_row(state) {
-                Some(row) => {
-                    self.ask_unshare(vec![row.file_hash]);
-                    ViewOutcome::Redraw
+            KeyCode::Char('x') if files => {
+                let targets = self.targets(state);
+                if targets.is_empty() {
+                    return ViewOutcome::Ignored;
                 }
-                None => ViewOutcome::Ignored,
-            },
+                self.ask_unshare(targets);
+                ViewOutcome::Redraw
+            }
             KeyCode::Char('f') => {
                 self.active_only = !self.active_only;
                 self.clamp_selection(state);
@@ -244,6 +271,32 @@ impl SharedView {
             }
             _ => ViewOutcome::Ignored,
         }
+    }
+
+    /// What an action takes: the tagged files still shared, else the file
+    /// under the cursor. A Partial Share is its download's, so none is here.
+    pub(super) fn targets(&mut self, state: &UiState) -> Vec<FileHash> {
+        self.tags.keep(|file_hash| state.shared.contains_key(file_hash));
+        self.tags
+            .targets(self.selected_row(state).map(|row| row.file_hash))
+    }
+
+    /// A paste into the Row Filter that holds the keyboard.
+    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        let filter = match self.focus {
+            Pane::Files => &mut self.filter,
+            Pane::Peers => &mut self.peer_filter,
+        };
+        filter.paste(text).unwrap_or(ViewOutcome::Ignored)
+    }
+
+    /// Whether a Row Filter holds the keyboard.
+    pub(crate) fn text_open(&self) -> bool {
+        let filter = match self.focus {
+            Pane::Files => &self.filter,
+            Pane::Peers => &self.peer_filter,
+        };
+        self.menu.is_none() && self.confirm.is_none() && filter.typing()
     }
 
     /// Move the focused pane's cursor.
@@ -320,7 +373,7 @@ impl SharedView {
         state: &UiState,
         theme: &Theme,
         _now: Instant, // no time-varying content; kept for the view contract
-    ) {
+    ) -> Option<Position> {
         self.clamp_selection(state);
         // No upload activity is said on one line, and the files keep the rest.
         let idle = state.upload_peers.is_empty().then_some(3);
@@ -347,6 +400,11 @@ impl SharedView {
         }
         if let Some(consent) = self.pending_consent(state) {
             scan::draw_consent(frame, area, consent, theme, &self.consent_viewport);
+            return None;
+        }
+        match self.focus {
+            Pane::Files => self.drawn_files.caret,
+            Pane::Peers => self.drawn_peers.caret,
         }
     }
 

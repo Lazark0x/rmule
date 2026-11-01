@@ -1,5 +1,5 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
-│┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐│
+│┌ Settings ────────────────────────── Enter edit  ←→ step  / filter  j/k row ┐│
 ││Paths                                                                      ▲││
 ││ Download dir unset — downloads have nowhere to land                       █││
 ││ Temp dir     /srv/rmule/Temp  (the default)                               █││

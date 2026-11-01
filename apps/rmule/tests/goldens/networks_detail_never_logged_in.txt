@@ -1,4 +1,4 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─────────── c connect · d details · a add ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ─── c connect · m menu · / filter · a add ┐
 │   Name ▲               Address          Port  Ping Users Files  Age Prio Fail│
 │ ● eDonkey Prime        10.0.0.1         4661  42ms    1M   24M  12s Norm    0│
 │   Flaky Mirror         172.16.9.9       5000  lost  lost  lost lost Low  dead│
@@ -21,7 +21,7 @@
 │Off-screen: Desc — · Static no                                                │
 │Health: not reached yet — no answer and no failed try so far                  │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 4 / 4 ┘
-┌ Log (0) ───────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ────── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │
 │                                      ││Contacts  —                           │

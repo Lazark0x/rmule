@@ -115,6 +115,7 @@ impl NetworksView {
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.log_caret = None;
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -130,14 +131,23 @@ impl NetworksView {
             return;
         }
 
+        let kept: Vec<&LogLine> = shown
+            .iter()
+            .copied()
+            .filter(|line| self.log_filter.keeps([line.text.as_str()]))
+            .collect();
+        let (inner, filter_line) = self.log_filter.carve(inner);
+        self.log_caret =
+            self.log_filter
+                .draw(frame, filter_line, (kept.len(), state.log.len()), theme);
         let day_style = theme.dim_text().add_modifier(Modifier::BOLD);
         // Each entry wraps under its gutter: a long event text costs extra rows
         // instead of being cut at the pane edge. Scrolling therefore counts
         // *display* lines, not entries.
         let lines_at = |width: u16| {
-            let mut lines = Vec::with_capacity(shown.len() + 1);
+            let mut lines = Vec::with_capacity(kept.len() + 1);
             let mut days: Vec<(usize, String)> = Vec::new();
-            for line in &shown {
+            for line in &kept {
                 let date = line.wall.format("%Y-%m-%d").to_string();
                 if days.last().is_none_or(|(_, day)| *day != date) {
                     days.push((lines.len(), date.clone()));
@@ -147,7 +157,7 @@ impl NetworksView {
             }
             (lines, days)
         };
-        let bar = viewport::needs_bar(shown.len(), inner.height, || {
+        let bar = viewport::needs_bar(kept.len(), inner.height, || {
             lines_at(inner.width).0.len() > usize::from(inner.height)
         });
         let (list, bar) = viewport::split(inner, bar);

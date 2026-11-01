@@ -1,4 +1,4 @@
-┌ Shared Files · 3 files · 754.0 MB ────────────── s sort  S reverse  z zoom ┐
+┌ Shared Files · 3 files · 754.0 MB ────────── m menu  / filter  Tab uploads ┐
 │  File                                    State ▲             Size Uploading│
 │▸ film.mkv                                shared          700.0 MB         1│
 │  song.mp3                                shared            4.0 MB         0│
@@ -10,7 +10,7 @@
 │                                                                            │
 │Off-screen: Requests 3 (12) · Accepted 1 (5) · Transferred 1.0 MB (4.0 MB)  │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 3 ┘
-┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
 │  Peer ▲                State             Speed File                        │
 │▸ 10.0.0.1:4662         Uploading             — film.mkv                    │
 │                                                                            │

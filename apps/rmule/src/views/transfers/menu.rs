@@ -35,6 +35,8 @@ pub(super) enum MenuAction {
     Preview,
     CopyLink,
     SearchRelated,
+    /// Every download on show: pause what runs, or resume what rests.
+    PauseAll,
     /// A greyed, deferred item: rendered with a reason tag, never actioned
     /// (spec §6 fence). The menu cursor never rests on one.
     Inert,
@@ -92,7 +94,101 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
             or_inert(MenuAction::SearchRelated, related_reason),
         )
         .greyed(related_reason),
+        Item::new(labels::PAUSE_ALL, MenuAction::PauseAll).keyed('P'),
     ]
+}
+
+/// What the menu offers over tagged rows: only what acts on all of them.
+pub(super) fn tagged_items(targets: &[DownloadId], state: &UiState) -> Vec<MenuItem> {
+    let any = |wanted: fn(DownloadStatus) -> bool| {
+        targets
+            .iter()
+            .filter_map(|id| state.downloads.get(id))
+            .any(|row| wanted(row.status))
+    };
+    let pausable = any(can_pause);
+    let resumable = any(can_resume);
+    vec![
+        Item::new(labels::PAUSE, MenuAction::Pause)
+            .keyed('p')
+            .greyed((!pausable).then_some(labels::NONE_RUNNING)),
+        Item::new(labels::RESUME, MenuAction::Resume)
+            .greyed((!resumable).then_some(labels::NONE_RESTING)),
+        Item::new(labels::CANCEL, MenuAction::Cancel)
+            .keyed('x')
+            .greyed(
+                cancellable(targets.to_vec(), state)
+                    .is_empty()
+                    .then_some("completed: the file is kept and shared"),
+            ),
+    ]
+}
+
+const fn can_pause(status: DownloadStatus) -> bool {
+    !matches!(
+        status,
+        DownloadStatus::Paused | DownloadStatus::Failed | DownloadStatus::Completed
+    )
+}
+
+const fn can_resume(status: DownloadStatus) -> bool {
+    matches!(status, DownloadStatus::Paused | DownloadStatus::Failed)
+}
+
+/// `targets` a cancel can take: a completed download has nothing to delete.
+pub(super) fn cancellable(targets: Vec<DownloadId>, state: &UiState) -> Vec<DownloadId> {
+    targets
+        .into_iter()
+        .filter(|id| {
+            state
+                .downloads
+                .get(id)
+                .is_some_and(|row| row.status != DownloadStatus::Completed)
+        })
+        .collect()
+}
+
+/// Pause what of `targets` is running, or, with none running, resume what
+/// rests. One press, one meaning for the whole set.
+pub(super) fn pause_or_resume(targets: &[DownloadId], state: &UiState) -> Action {
+    let of = |wanted: fn(DownloadStatus) -> bool| {
+        targets
+            .iter()
+            .copied()
+            .filter(|id| {
+                state
+                    .downloads
+                    .get(id)
+                    .is_some_and(|row| wanted(row.status))
+            })
+            .collect::<Vec<_>>()
+    };
+    let running = of(can_pause);
+    if running.is_empty() {
+        resume_all(&of(can_resume))
+    } else {
+        pause_all(&running)
+    }
+}
+
+fn pause_all(ids: &[DownloadId]) -> Action {
+    Action::Commands(
+        ids.iter()
+            .map(|id| {
+                CoreCommand::Download(DownloadCommand::PauseDownload { download_id: *id })
+            })
+            .collect(),
+    )
+}
+
+fn resume_all(ids: &[DownloadId]) -> Action {
+    Action::Commands(
+        ids.iter()
+            .map(|id| {
+                CoreCommand::Download(DownloadCommand::ResumeDownload { download_id: *id })
+            })
+            .collect(),
+    )
 }
 
 /// The place of the action the cursor names, `None` once the row's status no
@@ -139,13 +235,29 @@ impl TransfersView {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
         };
-        let items = menu_items(status, id, state);
+        let items = self.items_now(id, status, state, ids);
         let Some(at) = menu_index(&items, cursor) else {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
         };
         let asked = menu::key(&items, at, key.code);
-        self.answer_menu(asked, &items, id, status, state)
+        self.answer_menu(asked, &items, (id, status), state, ids)
+    }
+
+    /// The menu the row and the tags ask for now.
+    pub(super) fn items_now(
+        &mut self,
+        id: DownloadId,
+        status: DownloadStatus,
+        state: &UiState,
+        ids: &[DownloadId],
+    ) -> Vec<MenuItem> {
+        let targets = self.targets(state, ids);
+        if self.tags.is_empty() {
+            menu_items(status, id, state)
+        } else {
+            tagged_items(&targets, state)
+        }
     }
 
     /// A click on the open menu: an item runs, outside closes.
@@ -159,18 +271,18 @@ impl TransfersView {
             self.overlay = Overlay::None;
             return ViewOutcome::Redraw;
         };
-        let items = menu_items(status, id, state);
+        let items = self.items_now(id, status, state, ids);
         let asked = self.menu_place.click(&items, column, row);
-        self.answer_menu(asked, &items, id, status, state)
+        self.answer_menu(asked, &items, (id, status), state, ids)
     }
 
     fn answer_menu(
         &mut self,
         asked: Asked,
         items: &[MenuItem],
-        id: DownloadId,
-        status: DownloadStatus,
+        row: (DownloadId, DownloadStatus),
         state: &UiState,
+        ids: &[DownloadId],
     ) -> ViewOutcome {
         match asked {
             Asked::Close => self.overlay = Overlay::None,
@@ -180,7 +292,7 @@ impl TransfersView {
                 };
             }
             Asked::Nothing => {}
-            Asked::Run(index) => return self.run_menu(items[index].action, id, status, state),
+            Asked::Run(index) => return self.run_menu(items[index].action, row, state, ids),
         }
         ViewOutcome::Redraw
     }
@@ -188,14 +300,21 @@ impl TransfersView {
     fn run_menu(
         &mut self,
         action: MenuAction,
-        id: DownloadId,
-        status: DownloadStatus,
+        (id, status): (DownloadId, DownloadStatus),
         state: &UiState,
+        ids: &[DownloadId],
     ) -> ViewOutcome {
+        if !self.tags.is_empty() {
+            return self.run_tagged(action, state, ids);
+        }
         match action {
             MenuAction::Pause | MenuAction::Resume | MenuAction::Restart => {
                 self.overlay = Overlay::None;
                 ViewOutcome::Emit(pause_toggle_action(status, id))
+            }
+            MenuAction::PauseAll => {
+                self.overlay = Overlay::None;
+                ViewOutcome::Emit(pause_or_resume(ids, state))
             }
             MenuAction::Clear => {
                 self.overlay = Overlay::None;
@@ -244,8 +363,39 @@ impl TransfersView {
         }
     }
 
+    fn run_tagged(
+        &mut self,
+        action: MenuAction,
+        state: &UiState,
+        ids: &[DownloadId],
+    ) -> ViewOutcome {
+        let targets = self.targets(state, ids);
+        self.overlay = Overlay::None;
+        let of = |wanted: fn(DownloadStatus) -> bool| -> Vec<DownloadId> {
+            targets
+                .iter()
+                .copied()
+                .filter(|id| {
+                    state
+                        .downloads
+                        .get(id)
+                        .is_some_and(|row| wanted(row.status))
+                })
+                .collect()
+        };
+        match action {
+            MenuAction::Pause => ViewOutcome::Emit(pause_all(&of(can_pause))),
+            MenuAction::Resume => ViewOutcome::Emit(resume_all(&of(can_resume))),
+            MenuAction::Cancel => {
+                self.ask_cancel(cancellable(targets.clone(), state));
+                ViewOutcome::Redraw
+            }
+            _ => ViewOutcome::Redraw,
+        }
+    }
+
     pub(super) fn draw_menu(
-        &self,
+        &mut self,
         frame: &mut Frame,
         area: Rect,
         state: &UiState,
@@ -256,9 +406,13 @@ impl TransfersView {
         let Some((id, status)) = self.selected_row_status(state, ids) else {
             return;
         };
-        let items = menu_items(status, id, state);
+        let items = self.items_now(id, status, state, ids);
         let at = menu_index(&items, cursor).unwrap_or(0);
-        let name = download_name(state, id);
+        let name = if self.tags.is_empty() {
+            download_name(state, id)
+        } else {
+            crate::words::app::tagged(self.tags.len())
+        };
         menu::draw(frame, area, (&name, &items, at), theme, &self.menu_place);
     }
 }

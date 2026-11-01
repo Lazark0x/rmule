@@ -74,6 +74,7 @@ pub mod kad;
 pub(crate) mod line_edit;
 pub mod player;
 pub mod rates;
+pub(crate) mod row_filter;
 pub mod row_selection;
 pub mod start_notes;
 pub mod state;

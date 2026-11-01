@@ -195,13 +195,15 @@ fn removing_a_server_confirms_then_emits_remove_and_leaves_the_row_to_the_level(
         ViewOutcome::Redraw
     ));
     let confirm = view.confirm.as_ref().expect("confirm modal up");
-    assert_eq!(confirm.name, "eDonkey Prime");
+    assert_eq!(confirm.name.as_deref(), Some("eDonkey Prime"));
     assert!(view.menu.is_none(), "menu closes when confirm opens");
 
     match view.handle_key(press(KeyCode::Char('y')), &state) {
-        ViewOutcome::Emit(Action::Command(CoreCommand::ServerList(
-            ServerListCommand::RemoveServer { server },
-        ))) => assert_eq!(server, endpoint("10.0.0.1", 4661)),
+        ViewOutcome::Emit(Action::Commands(commands)) => assert!(matches!(
+            commands.as_slice(),
+            [CoreCommand::ServerList(ServerListCommand::RemoveServer { server })]
+                if *server == endpoint("10.0.0.1", 4661)
+        )),
         other => panic!("expected RemoveServer, got {other:?}"),
     }
     assert_eq!(

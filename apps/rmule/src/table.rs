@@ -14,6 +14,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::row_filter::RowFilter;
 use crate::row_selection::viewport::{self, Viewport};
 use crate::row_selection::{gutter, mark_row};
 use crate::table_sort::{SortedTable, TableSort, header_label, header_widths};
@@ -252,6 +253,10 @@ pub(crate) struct Rows<'a> {
     pub cells: &'a dyn Fn(usize, &[usize]) -> Vec<Cell>,
     /// A gutter of the table's own, in place of the selection marker's.
     pub marker: Option<&'a dyn Fn(usize) -> Span<'static>>,
+    /// Whether a row is tagged, in a table that tags.
+    pub tagged: Option<&'a dyn Fn(usize) -> bool>,
+    /// The table's Row Filter, and how many rows it reads.
+    pub filter: Option<(&'a RowFilter, usize)>,
 }
 
 /// Where a table landed, for the clicks that follow it.
@@ -264,6 +269,9 @@ pub(crate) struct Drawn {
     rows: Rect,
     first: usize,
     shown: usize,
+    /// Where the terminal's cursor goes, while the Row Filter's field holds
+    /// the keyboard.
+    pub(crate) caret: Option<Position>,
 }
 
 impl Drawn {
@@ -315,6 +323,12 @@ pub(crate) fn draw(
     viewport: &mut Viewport,
     theme: &Theme,
 ) -> Drawn {
+    let (body, filter_line) = rows
+        .filter
+        .map_or((body, Rect::default()), |(filter, _)| filter.carve(body));
+    let caret = rows.filter.and_then(|(filter, total)| {
+        filter.draw(frame, filter_line, (rows.count, total), theme)
+    });
     let said_of = |row: usize, widths: &[usize]| {
         off_screen::hidden(
             table.labels.iter().copied(),
@@ -362,7 +376,10 @@ pub(crate) fn draw(
     for index in first..first + shown {
         let selected = rows.selected == Some(index);
         let marker = rows.marker.map_or_else(
-            || gutter(selected, rows.focused, theme),
+            || {
+                let tagged = rows.tagged.is_some_and(|tagged| tagged(index));
+                gutter(selected, tagged, rows.focused, theme)
+            },
             |marker| marker(index),
         );
         let mut line = [table.line(&(rows.cells)(index, &widths), &widths, marker)];
@@ -399,6 +416,7 @@ pub(crate) fn draw(
         rows: Rect::new(list.x, list.y + header_h, list.width, room),
         first,
         shown,
+        caret,
     }
 }
 

@@ -1,4 +1,4 @@
-┌ Shared Files · 2 files · — ───────────────────── s sort  S reverse  z zoom ┐
+┌ Shared Files · 2 files · — ────── m menu  / filter  Tab uploads  Space tag ┐
 │  File ▲                                  State               Size Uploading│
 │▸ 0101010101…                             shared                 —         1│
 │  0202020202…                             shared                 —         0│
@@ -10,7 +10,7 @@
 │      │                                                              │      │
 │Off-sc│ Stops serving it; peers lose the source.                     │ MB)  │
 └ too n│                                                              │1 / 2 ┘
-┌ Uploa│ y yes    n no                                                │ zoom ┐
+┌ Uploa│ y yes    n no                                                │verse ┐
 │  Peer└──────────────────────────────────────────────────────────────┘      │
 │▸ 10.0.0.1:4662         Uploading             — 0101010101…                 │
 │                                                                            │

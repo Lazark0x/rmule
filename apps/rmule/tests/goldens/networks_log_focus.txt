@@ -8,11 +8,11 @@
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-┌ Log (3) ────── f severity · z zoom ┐┌ Kad ──────────────────────── K start ┐
-│2026-01-01                          ││● Kad: off                            │
-│12:00:00 · part 5 verified          ││Joined    — (node not started)        │
-│12:00:25 · part 12 verified         ││Contacts  —                           │
-│12:00:38 · part 17 verified         ││Firewall  — (never run)               │
+┌ Log (3) ──── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
+│11:59:20 part 5 verified            ││● Kad: off                            │
+│11:59:45 part 12 verified           ││Joined    — (node not started)        │
+│11:59:58 part 17 verified           ││Contacts  —                           │
+│                                    ││Firewall  — (never run)               │
 │                                    ││UDP       — (never run)               │
 │                                    ││Keywords  —                           │
 │                                    ││Node id   —                           │

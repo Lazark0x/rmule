@@ -17,6 +17,7 @@ use super::TransfersView;
 use super::downloads::{
     Eta, diag_counts, display_name, done_fraction, row_eta, source_counts, status_text,
 };
+use crate::row_filter::keeps_row;
 use crate::state::{DownloadStatus, UiState};
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
 use crate::views::ViewOutcome;
@@ -217,11 +218,13 @@ impl SortedTable for DownloadsTable {
 impl TransfersView {
     /// Every download's line, in display order.
     pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[DownloadLine]> {
-        self.lines_memo.get((state.revision, self.sort), || {
+        let key = (state.revision, self.sort, self.filter.generation());
+        self.lines_memo.get(key, || {
             let lines: Vec<DownloadLine> = state
                 .downloads
                 .keys()
                 .map(|id| DownloadLine::new(*id, state))
+                .filter(|line| keeps_row::<DownloadsTable>(&self.filter, line))
                 .collect();
             let order = self.sort.order(&lines);
             let mut slots: Vec<Option<DownloadLine>> = lines.into_iter().map(Some).collect();

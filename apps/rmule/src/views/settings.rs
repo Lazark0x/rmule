@@ -56,6 +56,7 @@ use crate::config::{
     validate_nickname, validate_temp_dir,
 };
 use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
+use crate::row_filter::RowFilter;
 use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
 use crate::table_sort::RowMove;
@@ -222,6 +223,8 @@ pub struct SettingsView {
     /// download directory (ADR-0101), a Temp dir that does not exist yet — and
     /// waits for the second `Enter` that confirms it.
     warned_dir: Option<std::path::PathBuf>,
+    /// `/`: the rows it keeps.
+    filter: RowFilter,
     /// A directory sent to be shared and the count of refusals when it went:
     /// a refusal of it after that brings the add row back with its text.
     sent_dir: Option<(std::path::PathBuf, u64)>,
@@ -246,6 +249,7 @@ impl Default for SettingsView {
             line_rows: Vec::new(),
             body: Rect::default(),
             warned_dir: None,
+            filter: RowFilter::default(),
             sent_dir: None,
             slots,
             removing: None,
@@ -438,6 +442,32 @@ impl SettingsView {
         self.form = fresh;
         self.slots = slots;
         self.reopen_refused_add(state);
+        self.narrow();
+    }
+
+    /// Show the rows the Row Filter keeps: by label, value and section.
+    fn narrow(&mut self) {
+        if self.filter.is_empty() {
+            self.form.hidden.clear();
+            return;
+        }
+        let filter = &self.filter;
+        self.form.narrow(|field| {
+            filter.keeps(
+                [field.label, field.searched_value()]
+                    .into_iter()
+                    .chain(field.section),
+            )
+        });
+    }
+
+    /// Whether the keys a Row Filter leaves are open: nothing being edited,
+    /// no question up.
+    fn offer_filter(&mut self, key: &KeyEvent, state: &UiState) -> Option<ViewOutcome> {
+        let outcome = self.filter.key(key, true)?;
+        self.sync(state);
+        self.narrow();
+        Some(outcome)
     }
 
     /// Validate the focused field into the edit it names, or the reason it is
@@ -515,13 +545,17 @@ impl SettingsView {
     /// Whether an open field holds the keyboard. A question over it reads
     /// key codes alone, so no chord may reach it as its letter.
     pub(crate) fn text_open(&self, state: &UiState) -> bool {
-        self.editing
+        (self.editing || self.filter.typing())
             && self.removing.is_none()
             && crate::views::shared_files::scan::open_consent(state, &self.answered, true).is_none()
     }
 
     /// A paste into the field open for editing, whole.
     pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        if let Some(outcome) = self.filter.paste(text) {
+            self.narrow();
+            return outcome;
+        }
         if self.editing && self.form.paste(text) {
             ViewOutcome::Redraw
         } else {
@@ -545,6 +579,12 @@ impl SettingsView {
         }
         if self.removing.is_some() {
             return self.remove_key(key);
+        }
+
+        if !self.editing
+            && let Some(outcome) = self.offer_filter(&key, state)
+        {
+            return outcome;
         }
 
         // A selector commits where it is stepped: there is nothing to type, so
@@ -703,9 +743,9 @@ impl SettingsView {
         } else if self.editing {
             " Enter save  Esc cancel "
         } else if self.form.focus_is_item() {
-            " j/k row  x stop sharing "
+            " x stop sharing  / filter  j/k row "
         } else {
-            " j/k row  ←→ step  Enter edit "
+            " Enter edit  ←→ step  / filter  j/k row "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(Style::new().fg(if self.editing {
@@ -719,6 +759,15 @@ impl SettingsView {
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        let (inner, filter_line) = self.filter.carve(inner);
+        let kept = self.form.fields.len()
+            - self.form.hidden.iter().filter(|hidden| **hidden).count();
+        let filter_caret = self.filter.draw(
+            frame,
+            filter_line,
+            (kept, self.form.fields.len()),
+            theme,
+        );
         self.body = inner;
         // Below the form's own floor the *labels* are what would have to be
         // cut, so the pane shows its frame and nothing else rather than a
@@ -806,7 +855,7 @@ impl SettingsView {
             return None;
         }
         (self.removing.is_none())
-            .then(|| crate::views::caret_in(list, shown, caret_at))
+            .then(|| filter_caret.or_else(|| crate::views::caret_in(list, shown, caret_at)))
             .flatten()
     }
 }

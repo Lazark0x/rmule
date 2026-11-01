@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [alpha · 3…]
-┌ Results · Running… ───── Enter menu  [ ] search  x stop  s sort  S reverse ┐
+┌ Results · Running… ─── Enter menu  / filter  [ ] search  x stop  Space tag ┐
 │  Name ▲  ┌ Download again? ─────────────────────────────────────┐ Type     │
 │▸ clip_low│clip_low.avi                                          │ Videos   │
 │  distro_h│You have this file, at                                │ CD-Images│

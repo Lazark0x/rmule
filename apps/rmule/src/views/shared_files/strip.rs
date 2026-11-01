@@ -144,7 +144,7 @@ fn entry_line(text: &str, selected: bool, width: usize, theme: &Theme) -> Line<'
         theme.dim_text()
     };
     Line::from(vec![
-        gutter(selected, true, theme),
+        gutter(selected, false, true, theme),
         Span::styled(cut_middle(text, width), style),
     ])
 }

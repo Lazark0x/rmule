@@ -14,8 +14,10 @@ use ratatui::widgets::{Block, Paragraph};
 use rmule_primitives::{Ed2kText, SearchResult};
 
 use super::SearchesView;
+use super::sort::ResultsTable;
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
 use crate::table::{self, Cell, Rows, Table};
+use crate::table_sort::SortedTable;
 use crate::theme::Theme;
 use crate::views::human_size;
 use crate::wrap::{clamp_u16, display_width, wrap_text};
@@ -237,7 +239,7 @@ impl SearchesView {
             let sort = if pane.results.is_empty() {
                 ""
             } else {
-                "  s sort  S reverse  z zoom"
+                "  Space tag  s sort  S reverse  z zoom"
             };
             let next = if more.is_some_and(|more| more.asks_left > 0) {
                 "  n more"
@@ -247,7 +249,7 @@ impl SearchesView {
             let menu = if pane.results.is_empty() {
                 ""
             } else {
-                "Enter menu  "
+                "Enter menu  / filter  "
             };
             format!(" {menu}[ ] search  {x}{next}{sort}{reopen} ")
         } else if self.current_refused() || self.current_not_sent().is_some() {
@@ -375,13 +377,24 @@ impl SearchesView {
             &RESULT_GIVE_WAY,
             header_style,
         )
-        .wants(&wants);
+        .wants(&wants)
+        .empty(crate::words::app::NO_MATCH);
+        let entry = self.held.current();
+        let tagged = |index: usize| {
+            entry.is_some_and(|entry| entry.tags.contains(&ResultsTable::identity(results[index])))
+        };
+        let total = self
+            .held
+            .current_pane(state)
+            .map_or(0, |pane| pane.results.len());
         let rows = Rows {
             count: results.len(),
             selected,
             focused: !self.input_focused,
             cells: &cells,
             marker: None,
+            tagged: Some(&tagged),
+            filter: entry.map(|entry| (&entry.filter, total)),
         };
         self.drawn = table::draw(
             frame,

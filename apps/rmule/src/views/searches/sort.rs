@@ -12,6 +12,7 @@ use rmule_primitives::{Ed2kFileClass, FileHash, SearchResult};
 
 use super::SearchesView;
 use super::results::result_source_count;
+use crate::row_filter::keeps_row;
 use crate::state::UiState;
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort};
 use crate::views::ViewOutcome;
@@ -92,7 +93,7 @@ impl SortedTable for ResultsTable {
 }
 
 /// What a search's derived rows stand on: the rows, which search, the sort.
-pub(super) type OrderKey = (u64, Option<rmule_core::SearchId>, TableSort<ResultsTable>);
+pub(super) type OrderKey = (u64, Option<rmule_core::SearchId>, TableSort<ResultsTable>, u64);
 
 impl SearchesView {
     /// What the current search's order stands on.
@@ -101,6 +102,7 @@ impl SearchesView {
             state.revision,
             self.held.current().map(|entry| entry.id),
             self.sort,
+            self.held.current().map_or(0, |entry| entry.filter.generation()),
         )
     }
 
@@ -110,7 +112,16 @@ impl SearchesView {
             return Vec::new();
         };
         self.order_memo
-            .get(self.order_key(state), || self.sort.order(&pane.results))
+            .get(self.order_key(state), || {
+                let order = self.sort.order(&pane.results);
+                match self.held.current() {
+                    Some(entry) if !entry.filter.is_empty() => order
+                        .into_iter()
+                        .filter(|at| keeps_row::<ResultsTable>(&entry.filter, &pane.results[*at]))
+                        .collect(),
+                    _ => order,
+                }
+            })
             .iter()
             .map(|at| &pane.results[*at])
             .collect()
@@ -380,6 +391,26 @@ mod tests {
         let mut fresh = SearchesView::by_name();
         fresh.restore_sort(&TableSorts::default());
         assert_eq!(fresh.sort, TableSort::default());
+    }
+
+    /// With results on screen `/` filters them; `i` is the way to the query.
+    #[test]
+    fn slash_filters_held_results_and_i_goes_to_the_query() {
+        let state = tiers();
+        let mut view = SearchesView::by_name().having_sent("ubuntu");
+        view.handle_key(press(KeyCode::Char('/')), &state);
+        assert!(view.text_open());
+        assert!(!view.input_focused, "the query stands");
+        for letter in "song".chars() {
+            view.handle_key(press(KeyCode::Char(letter)), &state);
+        }
+        assert_eq!(view.result_ids(&state).len(), 1);
+        view.handle_key(press(KeyCode::Enter), &state);
+        assert!(!view.text_open());
+        view.handle_key(press(KeyCode::Esc), &state);
+        assert_eq!(view.result_ids(&state).len(), 3);
+        view.handle_key(press(KeyCode::Char('i')), &state);
+        assert!(view.input_focused);
     }
 
     #[test]

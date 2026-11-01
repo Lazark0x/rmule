@@ -23,7 +23,7 @@ pub fn title(shown: usize, kept: usize, floor: Severity) -> String {
 #[must_use]
 pub const fn hint(focused: bool) -> &'static str {
     if focused {
-        " f severity · z zoom "
+        " / filter · f severity · z zoom "
     } else {
         " z zoom "
     }

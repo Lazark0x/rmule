@@ -1,4 +1,4 @@
-┌ Downloads (4) ─── s sort  S reverse  C clear completed  L add link  z zoom ┐
+┌ Downloads (4) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
 │  bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
 │  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
@@ -11,8 +11,8 @@
 │              │  Preview (v)  details not known yet          │              │
 │              │  Copy eD2k link  no metadata yet             │              │
 │              │  Search related  not connected               │              │
-│              └─────────────────────────────────────── 1 / 6 ┘              │
-│                                                                            │
+│              │  Pause or resume all (P)                     │              │
+│              └─────────────────────────────────────── 1 / 7 ┘              │
 │                                                                            │
 │Off-screen: Done — · ETA — · Src —                                          │
 └ too narrow to show: Done, ETA, Src ───────────────────────────────── 4 / 4 ┘

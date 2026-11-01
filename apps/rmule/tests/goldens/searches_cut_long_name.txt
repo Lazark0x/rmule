@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                        │
 └──────────────────────────────────────────────────────────────────────────────┘
 [ubuntu · 2]
-┌ Results · Completed · 2 ─ Enter menu  [ ] search  x close  s sort  S reverse ┐
+┌ Results · Completed · 2 ────────── Enter menu  / filter  [ ] search  x close ┐
 │  Name ▲                                               Size  Sources Type     │
 │▸ long-long-long-long-long-long-l…END-OF-NAME.iso    1.0 GB 250 (12) CD-Images│
 │  song_mid.mp3                                       4.0 MB   42 (7) Audio    │

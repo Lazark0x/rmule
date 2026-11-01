@@ -22,6 +22,7 @@ use std::borrow::Cow;
 use std::cmp::Ordering;
 
 pub use cursor::{RowCursor, RowMove};
+pub(crate) use name::fold;
 pub(crate) use memo::Memo;
 pub use stored::TableSorts;
 

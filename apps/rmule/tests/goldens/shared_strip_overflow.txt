@@ -6,7 +6,7 @@
 │         nothing shared under /srv/books — [ ] for another directory        │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
 │  Peer ▲                State             Speed File                        │
 │▸ 10.0.0.1:4662         Uploading             — album.flac                  │
 │Off-screen: Software aMule v2.3.3                                           │

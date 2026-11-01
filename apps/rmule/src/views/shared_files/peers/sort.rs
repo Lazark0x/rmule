@@ -11,6 +11,8 @@ use std::borrow::Cow;
 
 use rmule_primitives::PeerEndpoint;
 
+use crate::row_filter::keeps_row;
+
 use super::super::SharedView;
 use super::file_label;
 use crate::state::{UiState, UploadPeer, UploadState};
@@ -131,6 +133,7 @@ impl SharedView {
         self.peer_sort
             .order(&lines)
             .into_iter()
+            .filter(|at| keeps_row::<PeersTable>(&self.peer_filter, &lines[*at]))
             .map(|at| visible[at])
             .collect()
     }

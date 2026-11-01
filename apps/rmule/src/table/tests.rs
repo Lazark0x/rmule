@@ -53,6 +53,8 @@ fn drawn(names: &[&str], selected: usize, width: u16, height: u16) -> (Vec<Strin
         focused: true,
         cells: &cells,
         marker: None,
+        tagged: None,
+        filter: None,
     };
     let mut viewport = Viewport::default();
     let mut landed = Drawn::default();
@@ -85,7 +87,7 @@ fn drawn(names: &[&str], selected: usize, width: u16, height: u16) -> (Vec<Strin
 
 #[test]
 fn a_long_name_takes_one_line_and_its_row_keeps_its_place() {
-    let (lines, landed) = drawn(&["a", "a-very-long-name-of-a-file.iso", "c"], 0, 24, 6);
+    let (lines, landed) = drawn(&["a", "a-very-long-name-of-a-file.iso", "c"], 0, 24, 8);
     assert_eq!(lines[0], "  Name ▲            Size");
     assert_eq!(lines[1], "▸ a               1.0 MB");
     assert_eq!(lines[2], "  a-very-lon….iso 1.0 MB");

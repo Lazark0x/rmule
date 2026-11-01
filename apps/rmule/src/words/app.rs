@@ -503,3 +503,29 @@ pub fn remove_many(count: usize) -> String {
 /// What a yes to the remove confirm does: the list entry goes, a session does
 /// not (ADR-0080).
 pub const REMOVE_DOES: &str = "The list entry goes; a session connected to it stays up.";
+
+/// The Row Filter's count: how many rows hold what is typed.
+#[must_use]
+pub fn filter_count(kept: usize, total: usize) -> String {
+    format!("{kept} of {total}")
+}
+
+/// A list the Row Filter left empty.
+pub const NO_MATCH: &str = "nothing here holds what is typed";
+
+/// A pane's count of its tagged rows.
+#[must_use]
+pub fn tagged(count: usize) -> String {
+    format!("{count} tagged")
+}
+
+/// Why a row menu's item waits while rows are tagged.
+pub const ONE_ROW_ONLY: &str = "one row at a time";
+
+/// Tagged results the operator has a history with, left for a row of their own.
+#[must_use]
+pub fn tagged_marked_left(count: usize) -> Sentence {
+    Sentence::owned(format!(
+        "{count} tagged left: they ask first, one at a time"
+    ))
+}

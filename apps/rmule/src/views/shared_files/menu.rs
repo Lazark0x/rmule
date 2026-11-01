@@ -65,15 +65,22 @@ fn shared_link(state: &UiState, file_hash: FileHash) -> Option<String> {
 /// it, as in every row menu, dimmed while the connected server cannot answer
 /// it (read from `state` on every call, so a server switch shows at once);
 /// Comments is a standing non-goal.
-fn file_menu(state: &UiState, file_hash: FileHash) -> [Item<MenuAction>; 4] {
+fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAction>; 4] {
+    let one = |reason: Option<&'static str>| {
+        if tagged {
+            Some(words::ONE_ROW_ONLY)
+        } else {
+            reason
+        }
+    };
     [
-        Item::new(labels::COPY_LINK, MenuAction::CopyLink).greyed(
-            shared_link(state, file_hash)
-                .is_none()
-                .then_some("its name and size are not read yet"),
-        ),
+        Item::new(labels::COPY_LINK, MenuAction::CopyLink).greyed(one(shared_link(
+            state, file_hash,
+        )
+        .is_none()
+        .then_some("its name and size are not read yet"))),
         Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
-            .greyed(crate::views::related::unavailable(state)),
+            .greyed(one(crate::views::related::unavailable(state))),
         Item::new(labels::UNSHARE, MenuAction::Unshare).keyed('x'),
         Item::new(labels::COMMENTS, MenuAction::Comments).greyed(Some(labels::COMMENTS_REASON)),
     ]
@@ -114,6 +121,7 @@ impl SharedView {
                 let Some(confirm) = self.confirm.take() else {
                     return ViewOutcome::Redraw;
                 };
+                self.tags.clear();
                 ViewOutcome::Emit(Action::Commands(
                     confirm
                         .targets
@@ -142,7 +150,7 @@ impl SharedView {
         let Some(open) = self.menu.as_ref() else {
             return ViewOutcome::Ignored;
         };
-        let items = file_menu(state, open.file_hash);
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
         let asked = menu::key(&items, open.selected, key.code);
         self.answer_menu(asked, state)
     }
@@ -152,7 +160,7 @@ impl SharedView {
         let Some(open) = self.menu.as_ref() else {
             return ViewOutcome::Ignored;
         };
-        let items = file_menu(state, open.file_hash);
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
         let asked = open.place.click(&items, column, row);
         self.answer_menu(asked, state)
     }
@@ -181,7 +189,7 @@ impl SharedView {
             return ViewOutcome::Ignored;
         };
         let file_hash = open.file_hash;
-        let action = file_menu(state, file_hash)[open.selected].action;
+        let action = file_menu(state, file_hash, !self.tags.is_empty())[open.selected].action;
         match action {
             // Dimmed since the cursor rested here (a server switch under the
             // open menu): nothing is sent, and the menu stays.
@@ -196,7 +204,12 @@ impl SharedView {
                 }
             }
             MenuAction::Unshare => {
-                self.ask_unshare(vec![file_hash]);
+                let targets = self.targets(state);
+                self.ask_unshare(if targets.is_empty() {
+                    vec![file_hash]
+                } else {
+                    targets
+                });
                 ViewOutcome::Redraw
             }
             MenuAction::CopyLink => match shared_link(state, file_hash) {
@@ -235,7 +248,7 @@ impl SharedView {
         };
         self.menu = Some(FileMenu {
             file_hash: row.file_hash,
-            selected: menu::first_enabled(&file_menu(state, row.file_hash)),
+            selected: menu::first_enabled(&file_menu(state, row.file_hash, !self.tags.is_empty())),
             place: Place::default(),
         });
         ViewOutcome::Redraw
@@ -245,8 +258,12 @@ impl SharedView {
         let Some(open) = &self.menu else {
             return;
         };
-        let name = file_name(state, open.file_hash);
-        let items = file_menu(state, open.file_hash);
+        let name = if self.tags.is_empty() {
+            file_name(state, open.file_hash)
+        } else {
+            words::tagged(self.tags.len())
+        };
+        let items = file_menu(state, open.file_hash, !self.tags.is_empty());
         menu::draw(
             frame,
             area,

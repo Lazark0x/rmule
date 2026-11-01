@@ -1,4 +1,4 @@
-┌ Shared Files · 1 file · 700.0 MB ─────────────── s sort  S reverse  z zoom ┐
+┌ Shared Files · 1 file · 700.0 MB ─────────── m menu  / filter  Tab uploads ┐
 │  all shared files · 2 files                                                │
 │  /home/u/Downloads (download dir) · watched · 1 file, 40.0 MB              │
 │▸ /srv/media · not watched: the system's limit on w…ches) · 1 file, 700.0 MB│
@@ -10,7 +10,7 @@
 │                                                                            │
 │Off-screen: Requests 0 (0) · Accepted 0 (0) · Transferred 0 B (0 B)         │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 1 ┘
-┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
 │  Peer ▲                State             Speed File                        │
 │▸ 10.0.0.1:4662         Uploading             — album.flac                  │
 │                                                                            │

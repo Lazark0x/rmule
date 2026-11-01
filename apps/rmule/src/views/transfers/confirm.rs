@@ -38,6 +38,7 @@ impl TransfersView {
         match confirm_key(key.code) {
             Some(true) => {
                 self.overlay = Overlay::None;
+                self.tags.clear();
                 ViewOutcome::Emit(Action::Commands(
                     targets
                         .iter()

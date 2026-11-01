@@ -170,6 +170,12 @@ impl NetworksView {
             ),
             _ => format!(" Servers ({}) · not connected ", rows.len()),
         };
+        let title = if self.tags.is_empty() {
+            title
+        } else {
+            let tagged = crate::words::app::tagged(self.tags.len());
+            format!("{}· {tagged} ", title.trim_end_matches(' ').to_string() + " ")
+        };
         // `c` is hinted only where it can act (No dead UI): a selected row.
         let toggle = match self.selected(state) {
             Some(row) if crate::views::is_remaking(state, &row.server.endpoint) => {
@@ -187,7 +193,10 @@ impl NetworksView {
         } else if rows.is_empty() {
             " a add · U update · m menu ".to_string()
         } else {
-            format!(" {toggle}d details · a add · U update · m menu · s/S sort · z zoom ")
+            format!(
+                " {toggle}m menu · / filter · a add · Tab log · d details · U update · \
+                 Space tag · s/S sort · z zoom "
+            )
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(Style::new().fg(border)),
@@ -207,8 +216,13 @@ impl NetworksView {
             |index: usize, _: &[usize]| server_cells(rows[index], Style::new().fg(theme.fg), theme);
         let server_sel = self.server_sel;
         let marker = |index: usize| {
-            let is_connected = connected == Some(&rows[index].server.endpoint);
-            server_marker(index == server_sel, is_connected, focused, theme)
+            let endpoint = &rows[index].server.endpoint;
+            server_marker(
+                (index == server_sel, self.tags.contains(endpoint)),
+                connected == Some(endpoint),
+                focused,
+                theme,
+            )
         };
         let table = Table::of(
             &self.sort,
@@ -219,13 +233,19 @@ impl NetworksView {
         )
         .flex_pair(SERVER_DESC_COL)
         .gutter(SERVER_GUTTER_W)
-        .empty("no servers — press a to add one, or U to update the list from a URL");
+        .empty(if self.filter.shown() {
+            crate::words::app::NO_MATCH
+        } else {
+            "no servers — press a to add one, or U to update the list from a URL"
+        });
         let rows = Rows {
             count: rows.len(),
             selected: Some(server_sel),
             focused,
             cells: &cells,
             marker: Some(&marker),
+            tagged: None,
+            filter: Some((&self.filter, state.diagnostics.servers.len())),
         };
         self.drawn = table::draw(
             frame,
@@ -265,19 +285,22 @@ fn draw_health(
 
 /// A server row's gutter: the selection arrow and the connected dot.
 fn server_marker(
-    selected: bool,
+    (selected, tagged): (bool, bool),
     is_connected: bool,
     focused: bool,
     theme: &Theme,
 ) -> Span<'static> {
     Span::styled(
         format!(
-            "{}{} ",
+            "{}{}{}",
             if selected { "▸" } else { " " },
-            if is_connected { "●" } else { " " }
+            if is_connected { "●" } else { " " },
+            if tagged { "•" } else { " " }
         ),
         if selected {
             selection_style(theme, focused)
+        } else if tagged {
+            Style::new().fg(theme.accent)
         } else if is_connected {
             Style::new().fg(theme.good)
         } else {

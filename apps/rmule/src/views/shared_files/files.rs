@@ -113,14 +113,19 @@ impl SharedView {
 
         // Header line (spec §3.5): file count + total size.
         let total = total_size(&lines_in_order).map_or_else(|| "—".to_string(), human_size);
+        let tagged = if self.tags.is_empty() {
+            String::new()
+        } else {
+            format!("· {} ", crate::words::app::tagged(self.tags.len()))
+        };
         let title = format!(
-            " Shared Files · {} · {total} ",
+            " Shared Files · {} · {total} {tagged}",
             crate::words::scan::files(lines_in_order.len())
         );
         let hint = if lines_in_order.is_empty() {
             ""
         } else {
-            " s sort  S reverse  z zoom "
+            " m menu  / filter  Tab uploads  Space tag  s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(pane_border(theme, focused)),
@@ -135,7 +140,7 @@ impl SharedView {
         }
         let inner = self.draw_strip(frame, inner, state, theme);
 
-        if lines_in_order.is_empty() {
+        if lines_in_order.is_empty() && !self.filter.shown() {
             let empty = self.directory_filter(state).map_or_else(
                 || crate::words::scan::NOTHING_SHARED.to_string(),
                 crate::words::scan::nothing_under,
@@ -146,13 +151,18 @@ impl SharedView {
         let cells = |index: usize, _: &[usize]| file_cells(&lines_in_order[index], theme);
         let header_style = theme.dim_text().add_modifier(Modifier::BOLD);
         let table =
-            Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style).wants(&FILE_WANTS);
+            Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, header_style)
+                .wants(&FILE_WANTS)
+                .empty(crate::words::app::NO_MATCH);
+        let tagged = |index: usize| self.tags.contains(&lines_in_order[index].file_hash);
         let rows = Rows {
             count: lines_in_order.len(),
             selected: Some(self.files_selected),
             focused,
             cells: &cells,
             marker: None,
+            tagged: Some(&tagged),
+            filter: Some((&self.filter, state.shared.len())),
         };
         self.drawn_files = table::draw(
             frame,

@@ -32,6 +32,8 @@ use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_primitives::ServerEndpoint;
 
 use crate::action::Action;
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table::Drawn;
@@ -94,6 +96,12 @@ pub struct NetworksView {
     focus: Pane,
     /// The server table's order.
     sort: TableSort<ServersTable>,
+    /// `/`: the servers it keeps.
+    filter: RowFilter,
+    /// `/` over the log.
+    log_filter: RowFilter,
+    /// The rows `Space` tagged.
+    tags: Tags<ServerEndpoint>,
     /// The selected server, by endpoint.
     cursor: RowCursor<ServerEndpoint>,
     /// The selected server's position in the current order — `cursor`
@@ -108,6 +116,8 @@ pub struct NetworksView {
     log_viewport: Viewport,
     /// The least severe line the log shows: `f` walks it.
     log_floor: Severity,
+    /// Where the log's filter wants the terminal's cursor.
+    log_caret: Option<Position>,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
@@ -126,12 +136,16 @@ impl Default for NetworksView {
         Self {
             focus: Pane::Servers,
             sort: TableSort::default(),
+            filter: RowFilter::default(),
+            log_filter: RowFilter::default(),
+            tags: Tags::default(),
             cursor: RowCursor::default(),
             server_sel: 0,
             viewport: Viewport::default(),
             drawn: Drawn::default(),
             log_viewport: Viewport::at_end(),
             log_floor: Severity::Info,
+            log_caret: None,
             menu: None,
             confirm: None,
             form: None,
@@ -217,8 +231,22 @@ impl NetworksView {
             return self.handle_details_key(key);
         }
 
+        let filtered = match self.focus {
+            Pane::Servers => self.filter.key(&key, !servers(state).is_empty()),
+            Pane::Log => self.log_filter.key(&key, !state.log.is_empty()),
+        };
+        if let Some(outcome) = filtered {
+            return outcome;
+        }
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, state);
+        }
+        if self.focus == Pane::Servers {
+            let ids = self.server_ids(state);
+            if let Some(outcome) = self.tags.key(key.code, &ids, &mut self.cursor) {
+                self.clamp_selection(state);
+                return outcome;
+            }
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
@@ -374,14 +402,26 @@ impl NetworksView {
             .form
             .as_ref()
             .and_then(|form| draw_form(frame, area, form, theme));
+        let caret = caret.or(match self.focus {
+            Pane::Servers => self.drawn.caret,
+            Pane::Log => self.log_caret,
+        });
         if let Some(confirm) = self.confirm.as_ref() {
             draw_confirm(frame, area, confirm, theme);
         }
         caret
     }
 
-    /// Whether a form holds the keyboard.
+    /// Whether a form or a Row Filter holds the keyboard.
     pub(crate) fn text_open(&self) -> bool {
+        let filter = match self.focus {
+            Pane::Servers => &self.filter,
+            Pane::Log => &self.log_filter,
+        };
+        let open = self.menu.is_none() && self.confirm.is_none() && self.details.is_none();
+        if open && self.form.is_none() && filter.typing() {
+            return true;
+        }
         self.form.is_some()
     }
 }

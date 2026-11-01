@@ -16,6 +16,12 @@ pub const CANCEL: &str = "Cancel…";
 pub const SHOW_DETAILS: &str = "Show file details";
 /// A download row's preview.
 pub const PREVIEW: &str = "Preview";
+/// The row menu's item over every download on show.
+pub const PAUSE_ALL: &str = "Pause or resume all";
+/// Why Pause waits over tagged rows.
+pub const NONE_RUNNING: &str = "none of them is running";
+/// Why Resume waits over tagged rows.
+pub const NONE_RESTING: &str = "none of them is paused";
 /// A running download's pause.
 pub const PAUSE: &str = "Pause";
 /// A paused download's resume.

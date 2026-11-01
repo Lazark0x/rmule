@@ -203,6 +203,15 @@ impl NetworksView {
 
     /// A paste into an open form; nothing else on this tab takes text.
     pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        let filter = match self.focus {
+            super::Pane::Servers => &mut self.filter,
+            super::Pane::Log => &mut self.log_filter,
+        };
+        if self.form.is_none()
+            && let Some(outcome) = filter.paste(text)
+        {
+            return outcome;
+        }
         let Some(entry) = self.form.as_mut() else {
             return ViewOutcome::Ignored;
         };

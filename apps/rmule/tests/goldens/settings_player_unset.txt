@@ -1,4 +1,4 @@
-┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
+┌ Settings ────────────────────────── Enter edit  ←→ step  / filter  j/k row ┐
 │ Dead after   3  failed tries in a row; a dead server stays listed         ▲│
 │ Hide shares  off  from servers that answer related searches                │
 │                                                                           ▂│

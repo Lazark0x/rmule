@@ -1,4 +1,4 @@
-┌ Servers (2) · not connected ───── c connect · d details · a add · U update ┐
+┌ Servers (2) · not connected ──────── c connect · m menu · / filter · a add ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │▸  Der Grosse Deut…er Zwei 198.51.100.200   4661  soon  120k  soon soon Norm│
 │   Second                  10.0.0.5         4661  soon  soon  soon soon Norm│
@@ -8,7 +8,7 @@
 │fakes, no adverts, moderated around the clock · Fail 0 · Static no          │
 │Health: not reached yet — no answer and no failed try so far                │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 2 ┘
-┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ──── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │

@@ -1,4 +1,4 @@
-┌ Settings ──────────────────────────────────── j/k row  ←→ step  Enter edit ┐
+┌ Settings ────────────────────────── Enter edit  ←→ step  / filter  j/k row ┐
 │Paths                                                                      ▲│
 │ Download dir unset — downloads have nowhere to land                       █│
 │ Temp dir     the default: Temp in the data dir                            █│

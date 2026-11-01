@@ -134,6 +134,16 @@ impl TransfersView {
     /// are each asked for at once, as Enter on each would; those refused come
     /// up in the field in turn with their refusals, so none is lost.
     pub(crate) fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+        let filter = match self.focus {
+            super::Pane::Table => &mut self.filter,
+            super::Pane::Sources => &mut self.source_filter,
+        };
+        if self.add_link.is_none()
+            && matches!(self.overlay, super::Overlay::None)
+            && let Some(outcome) = filter.paste(text)
+        {
+            return outcome;
+        }
         let Some(entry) = self.add_link.as_mut() else {
             return ViewOutcome::Ignored;
         };

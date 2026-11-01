@@ -30,7 +30,14 @@ pub(super) enum MenuAction {
 
 /// The menu as `state` has it. Download is greyed until a directory is set,
 /// and *Search related* while the connected server cannot answer it.
-pub(super) fn menu_items(state: &UiState) -> [Item<MenuAction>; 3] {
+pub(super) fn menu_items(state: &UiState, tagged: bool) -> [Item<MenuAction>; 3] {
+    let one = |reason: Option<&'static str>| {
+        if tagged {
+            Some(crate::words::app::ONE_ROW_ONLY)
+        } else {
+            reason
+        }
+    };
     [
         Item::new(labels::DOWNLOAD, MenuAction::Download).greyed(
             state
@@ -39,9 +46,9 @@ pub(super) fn menu_items(state: &UiState) -> [Item<MenuAction>; 3] {
                 .is_none()
                 .then_some(crate::words::download::SET_DOWNLOAD_DIR_FIRST),
         ),
-        Item::new(labels::COPY_LINK, MenuAction::CopyLink),
+        Item::new(labels::COPY_LINK, MenuAction::CopyLink).greyed(one(None)),
         Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
-            .greyed(crate::views::related::unavailable(state)),
+            .greyed(one(crate::views::related::unavailable(state))),
     ]
 }
 
@@ -60,7 +67,15 @@ impl SearchesView {
             entry.cursor.pin(&ids);
         }
         self.menu_place.reset();
-        self.menu = Some(menu::first_enabled(&menu_items(state)));
+        self.menu = Some(menu::first_enabled(&self.items_now(state)));
+    }
+
+    fn items_now(&self, state: &UiState) -> [Item<MenuAction>; 3] {
+        let tagged = self
+            .held
+            .current()
+            .is_some_and(|entry| !entry.tags.is_empty());
+        menu_items(state, tagged)
     }
 
     /// One key over the open menu.
@@ -70,13 +85,13 @@ impl SearchesView {
         code: KeyCode,
         state: &UiState,
     ) -> ViewOutcome {
-        let asked = menu::key(&menu_items(state), cursor, code);
+        let asked = menu::key(&self.items_now(state), cursor, code);
         self.answer_menu(asked, state)
     }
 
     /// A click on the open menu: an item runs, outside closes.
     pub(super) fn click_menu(&mut self, column: u16, row: u16, state: &UiState) -> ViewOutcome {
-        let asked = self.menu_place.click(&menu_items(state), column, row);
+        let asked = self.menu_place.click(&self.items_now(state), column, row);
         self.answer_menu(asked, state)
     }
 
@@ -86,7 +101,7 @@ impl SearchesView {
             Asked::Move(index) => self.menu = Some(index),
             Asked::Run(index) => {
                 self.menu = None;
-                return self.run_menu(menu_items(state)[index].action, state);
+                return self.run_menu(self.items_now(state)[index].action, state);
             }
             Asked::Nothing => {}
         }
@@ -124,12 +139,16 @@ impl SearchesView {
         state: &UiState,
         theme: &Theme,
     ) {
-        let name = self
-            .selected_result(state)
-            .map_or_else(String::new, |result| {
-                result.primary_name().to_display_string()
-            });
-        let items = menu_items(state);
+        let items = self.items_now(state);
+        let tagged = self.held.current().map_or(0, |entry| entry.tags.len());
+        let name = if tagged > 0 {
+            crate::words::app::tagged(tagged)
+        } else {
+            self.selected_result(state)
+                .map_or_else(String::new, |result| {
+                    result.primary_name().to_display_string()
+                })
+        };
         menu::draw(frame, area, (&name, &items, cursor), theme, &self.menu_place);
     }
 }
@@ -140,10 +159,10 @@ mod tests {
     #[test]
     fn download_is_greyed_with_the_way_on_until_a_directory_is_set() {
         let mut state = session_state();
-        assert_eq!(menu_items(&state)[0].reason, None);
+        assert_eq!(menu_items(&state, false)[0].reason, None);
         state.session.download_dir = None;
         assert_eq!(
-            menu_items(&state)[0].reason.as_deref(),
+            menu_items(&state, false)[0].reason.as_deref(),
             Some("set a download dir first: press 6")
         );
     }

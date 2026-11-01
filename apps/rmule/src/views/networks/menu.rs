@@ -16,7 +16,7 @@ use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_core::{CoreCommand, ServerListCommand};
 use rmule_primitives::ServerEndpoint;
 
-use super::NetworksView;
+use super::{NetworksView, servers};
 use super::form::ServerForm;
 use super::servers::{next_priority, priority_word, row_name};
 use crate::action::Action;
@@ -69,8 +69,9 @@ pub(super) struct Menu {
 /// The Remove-server confirm modal (one of the spec's exactly-three
 /// destructive confirms, §4). Names the server and the consequence.
 pub(super) struct Confirm {
-    name: String,
-    server: ServerEndpoint,
+    /// The row by name, with several none.
+    name: Option<String>,
+    servers: Vec<ServerEndpoint>,
     /// What part of the question is on screen, in a frame too short for it.
     viewport: std::cell::Cell<Viewport>,
 }
@@ -110,9 +111,13 @@ pub(super) fn draw_details(
 }
 
 pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, theme: &Theme) {
+    let asks = match (&confirm.name, confirm.servers.as_slice()) {
+        (Some(name), [server]) => words::remove_one(name, &server_label(server)),
+        (_, many) => words::remove_many(many.len()),
+    };
     let question = Question {
         title: labels::REMOVE_TITLE,
-        asks: &words::remove_one(&confirm.name, &server_label(&confirm.server)),
+        asks: &asks,
         does: words::REMOVE_DOES,
     };
     draw_question(frame, area, &question, theme, &confirm.viewport);
@@ -191,16 +196,24 @@ impl NetworksView {
             priority_word(next)
         );
 
+        // Tagged rows take the one action that acts on all of them.
+        let one = (!self.tags.is_empty()).then_some(words::ONE_ROW_ONLY);
         let mut items = vec![
-            connect.keyed('c'),
-            Item::new(labels::COPY_SERVER_LINK, MenuAction::CopyLink),
+            connect.keyed('c').greyed(one),
+            Item::new(labels::COPY_SERVER_LINK, MenuAction::CopyLink).greyed(one),
             Item::new(labels::REMOVE, MenuAction::Remove).keyed('x'),
-            Item::new(static_label, MenuAction::ToggleStatic),
-            Item::new(priority_label, MenuAction::CyclePriority),
-            Item::new(labels::DETAILS, MenuAction::Details).keyed('d'),
+            Item::new(static_label, MenuAction::ToggleStatic).greyed(one),
+            Item::new(priority_label, MenuAction::CyclePriority).greyed(one),
+            Item::new(labels::DETAILS, MenuAction::Details)
+                .keyed('d')
+                .greyed(one),
         ];
         items.extend(list_items);
-        let name = row_name(row);
+        let name = if self.tags.is_empty() {
+            row_name(row)
+        } else {
+            words::tagged(self.tags.len())
+        };
         self.show_menu(items, name);
         ViewOutcome::Redraw
     }
@@ -299,12 +312,18 @@ impl NetworksView {
 
     /// Ask before removing the selected server; with no row, nothing to ask.
     pub(super) fn ask_remove(&mut self, state: &UiState) -> ViewOutcome {
-        let Some(row) = self.selected(state) else {
+        self.tags
+            .keep(|tagged| servers(state).iter().any(|row| row.server.endpoint == *tagged));
+        let row = self.selected(state);
+        let servers = self
+            .tags
+            .targets(row.map(|row| row.server.endpoint.clone()));
+        if servers.is_empty() {
             return ViewOutcome::Ignored;
-        };
+        }
         self.confirm = Some(Confirm {
-            name: row_name(row),
-            server: row.server.endpoint.clone(),
+            name: row.filter(|_| self.tags.is_empty()).map(row_name),
+            servers,
             viewport: Cell::default(),
         });
         ViewOutcome::Redraw
@@ -316,13 +335,18 @@ impl NetworksView {
                 let Some(confirm) = self.confirm.take() else {
                     return ViewOutcome::Redraw;
                 };
+                self.tags.clear();
                 // The row goes when the level says it went — nothing is
                 // removed locally and reconciled afterwards.
-                ViewOutcome::Emit(Action::Command(CoreCommand::ServerList(
-                    ServerListCommand::RemoveServer {
-                        server: confirm.server,
-                    },
-                )))
+                ViewOutcome::Emit(Action::Commands(
+                    confirm
+                        .servers
+                        .into_iter()
+                        .map(|server| {
+                            CoreCommand::ServerList(ServerListCommand::RemoveServer { server })
+                        })
+                        .collect(),
+                ))
             }
             Some(false) => {
                 self.confirm = None;

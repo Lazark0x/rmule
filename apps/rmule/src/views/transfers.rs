@@ -58,6 +58,8 @@ use rmule_core::DownloadId;
 use rmule_core::diagnostics::DownloadDiagnostics;
 
 use crate::action::Action;
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{DownloadStatus, UiState};
 use crate::table::Drawn;
@@ -132,8 +134,14 @@ enum Overlay {
 pub struct TransfersView {
     /// The downloads table's order.
     sort: TableSort<DownloadsTable>,
-    /// The table's lines under that sort.
-    lines_memo: Memo<(u64, TableSort<DownloadsTable>), sort::DownloadLine>,
+    /// `/`: the downloads it keeps.
+    filter: RowFilter,
+    /// `/` over the sources pane.
+    source_filter: RowFilter,
+    /// The rows `Space` tagged.
+    tags: Tags<DownloadId>,
+    /// The table's lines under that sort and filter.
+    lines_memo: Memo<(u64, TableSort<DownloadsTable>, u64), sort::DownloadLine>,
     /// The selected download, by id.
     cursor: RowCursor<DownloadId>,
     /// That download's position in the current order, re-placed before every
@@ -246,8 +254,20 @@ impl TransfersView {
 
     fn handle_base(&mut self, key: KeyEvent, state: &UiState, ids: &[DownloadId]) -> ViewOutcome {
         let sources = self.source_keys(state, selected_id(ids, self.selected));
+        let filtered = match self.focus {
+            Pane::Table => self.filter.key(&key, !state.downloads.is_empty()),
+            Pane::Sources => self.source_filter.key(&key, !sources.is_empty()),
+        };
+        if let Some(outcome) = filtered {
+            return outcome;
+        }
         if let Some(movement) = RowMove::of(key.code) {
             return self.move_selection(movement, ids, &sources);
+        }
+        if self.focus == Pane::Table
+            && let Some(outcome) = self.tags.key(key.code, ids, &mut self.cursor)
+        {
+            return outcome;
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
@@ -286,17 +306,20 @@ impl TransfersView {
             }
             // `x` is the row's way out everywhere: here, its cancel. Greyed
             // in the menu, so a completed row asks nothing.
-            KeyCode::Char('x') => match self.selected_row_status(state, ids) {
-                Some((_, DownloadStatus::Completed)) => {
-                    ViewOutcome::Emit(Action::Flash(crate::words::download::NOTHING_TO_CANCEL))
+            KeyCode::Char('x') => {
+                self.cursor.pin(ids);
+                let targets = menu::cancellable(self.targets(state, ids), state);
+                if targets.is_empty() {
+                    return match self.selected {
+                        Some(_) => ViewOutcome::Emit(Action::Flash(
+                            crate::words::download::NOTHING_TO_CANCEL,
+                        )),
+                        None => ViewOutcome::Ignored,
+                    };
                 }
-                Some((id, _)) => {
-                    self.cursor.pin(ids);
-                    self.ask_cancel(vec![id]);
-                    ViewOutcome::Redraw
-                }
-                None => ViewOutcome::Ignored,
-            },
+                self.ask_cancel(targets);
+                ViewOutcome::Redraw
+            }
             KeyCode::Char('d') => match self.selected_row_status(state, ids) {
                 Some(_) => {
                     self.cursor.pin(ids);
@@ -308,10 +331,17 @@ impl TransfersView {
             },
             KeyCode::Char('C') => self.clear_completed_key(state),
             KeyCode::Char('L') => self.open_add_link(state),
+            KeyCode::Char('p') if !self.tags.is_empty() => {
+                let targets = self.targets(state, ids);
+                ViewOutcome::Emit(menu::pause_or_resume(&targets, state))
+            }
             KeyCode::Char('p') => match self.selected_row_status(state, ids) {
                 Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id)),
                 None => ViewOutcome::Ignored,
             },
+            KeyCode::Char('P') if !ids.is_empty() => {
+                ViewOutcome::Emit(menu::pause_or_resume(ids, state))
+            }
             // The menu's Preview (ADR-0114): the app reads the row as the
             // menu does, and flashes the reason the menu greys a blocked
             // row with.
@@ -364,6 +394,13 @@ impl TransfersView {
         self.selected = self.cursor.place(ids);
         let sources = self.source_keys(state, selected_id(ids, self.selected));
         self.source_selected = self.source_cursor.place(&sources);
+    }
+
+    /// What an action takes: the tagged downloads still listed, else the one
+    /// under the cursor.
+    pub(super) fn targets(&mut self, state: &UiState, ids: &[DownloadId]) -> Vec<DownloadId> {
+        self.tags.keep(|id| state.downloads.contains_key(id));
+        self.tags.targets(selected_id(ids, self.selected))
     }
 
     fn selected_diag<'a>(
@@ -464,6 +501,10 @@ impl TransfersView {
         if !sources_area.is_empty() {
             self.draw_sources(frame, sources_area, state, theme, &ids, now);
         }
+        let filter_caret = match self.focus {
+            Pane::Table => self.drawn.caret,
+            Pane::Sources => self.source_drawn.caret,
+        };
 
         match &self.overlay {
             Overlay::None => {}
@@ -476,12 +517,20 @@ impl TransfersView {
                 self.draw_confirm_clear(frame, area, counted, theme)
             }
         }
-        self.draw_add_link(frame, area, theme)
+        self.draw_add_link(frame, area, theme).or(filter_caret)
     }
 
-    /// Whether the Add-link form holds the keyboard.
+    /// Whether the Add-link form or a Row Filter holds the keyboard.
     pub(crate) fn text_open(&self) -> bool {
         self.add_link.is_some()
+            || (matches!(self.overlay, Overlay::None) && self.focused_filter().typing())
+    }
+
+    fn focused_filter(&self) -> &RowFilter {
+        match self.focus {
+            Pane::Table => &self.filter,
+            Pane::Sources => &self.source_filter,
+        }
     }
 }
 

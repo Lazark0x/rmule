@@ -63,14 +63,16 @@ fn shared(focus: usize, theme: &Theme) -> Buffer {
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 fn searches(focus: usize, theme: &Theme) -> Buffer {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let mut view = SearchesView::new().having_sent("ubuntu");
     if focus == 1 {
-        view.handle_key(press(KeyCode::Char('/')), &state);
+        view.handle_key(press(KeyCode::Char('i')), &state);
     }
     drawn(|frame| {
         view.draw(frame, area(), &state, theme, Instant::now());

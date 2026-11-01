@@ -216,7 +216,7 @@ fn clicks_select_rows_in_either_pane() {
                 &state,
                 &Theme::default_dark(),
                 Instant::now(),
-            )
+            );
         })
         .expect("draw");
     view.focus = Pane::Peers;

@@ -1,4 +1,4 @@
-┌ Downloads (3) ─────── s sort  S reverse  C clear completed ┐
+┌ Downloads (3) ─────────── p pause  m menu  / filter  L add ┐
 │  File ▲                              Progress   Status     │
 │▸ bunny.mp4                           ██░█▓░█▓░░ Downloading│
 │  ABABABABAB…                         ░░░░░░░░░░ Paused     │
@@ -9,7 +9,7 @@
 │Off-screen: Size 87.7 MB · Done 42% · Speed 12.1 MB/s · ETA │
 │7m00s · Src 8 (1)                                           │
 └ too narrow to show: Size, Done, Speed, ETA, Src ──── 1 / 3 ┘
-┌ Sources · bunny.mp4 ──────────── s sort  S reverse  z zoom ┐
+┌ Sources · bunny.mp4 ────── Tab downloads  / filter  s sort ┐
 │  Source ▲                   Software       Phase           │
 │▸ 10.0.0.1:4662              aMule v2.3.3   recv p4         │
 │  10.0.0.2:4662 · remembered —              queued #3       │

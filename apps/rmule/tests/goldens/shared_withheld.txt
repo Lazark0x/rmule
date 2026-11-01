@@ -1,4 +1,4 @@
-┌ Shared Files · 4 files · — ───────────────────── s sort  S reverse  z zoom ┐
+┌ Shared Files · 4 files · — ────── m menu  / filter  Tab uploads  Space tag ┐
 │  File ▲                                  State               Size Uploading│
 │▸ alpha.film.name.mkv                     shared             100 B         0│
 │  bravo.song.name.mp3                     folder missing     200 B         2│
@@ -10,7 +10,7 @@
 │                                                                            │
 │Off-screen: Requests 9 (0) · Accepted 6 (0) · Transferred 0 B (0 B)         │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 4 ┘
-┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
 │  Peer ▲                State             Speed File                        │
 │▸ 10.0.0.20:4662        Uploading             — bravo.song.name.mp3         │
 │  10.0.0.21:4662        Uploading             — bravo.song.name.mp3         │

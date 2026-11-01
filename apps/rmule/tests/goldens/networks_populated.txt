@@ -1,4 +1,4 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ────── c disconnect · d details · a add ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ────── c disconnect · m menu · / filter ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │▸● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
 │   Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
@@ -8,7 +8,7 @@
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
-┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ──── / filter  Tab servers ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │

@@ -122,7 +122,11 @@ impl SearchesView {
             return ViewOutcome::Redraw;
         }
         if !self.input_focused {
-            return ViewOutcome::Ignored;
+            return self
+                .held
+                .current_mut()
+                .and_then(|entry| entry.filter.paste(text))
+                .unwrap_or(ViewOutcome::Ignored);
         }
         self.arrived = false;
         self.refusal = None;
@@ -130,9 +134,16 @@ impl SearchesView {
         ViewOutcome::Redraw
     }
 
-    /// Whether the query or the options editor holds the keyboard.
+    /// Whether the query, the options editor or the results' Row Filter
+    /// holds the keyboard.
     pub(crate) fn text_open(&self) -> bool {
-        self.menu.is_none() && self.readd.is_none() && (self.input_focused || self.filters_open)
+        let filtering = self
+            .held
+            .current()
+            .is_some_and(|entry| entry.filter.typing());
+        self.menu.is_none()
+            && self.readd.is_none()
+            && (self.input_focused || self.filters_open || filtering)
     }
 
     /// The operator came to the tab. With no search held the one thing to do
@@ -193,19 +204,32 @@ impl SearchesView {
             .held
             .current_pane(state)
             .is_some_and(|pane| !pane.results.is_empty());
+        if let Some(entry) = self.held.current_mut()
+            && let Some(outcome) = entry.filter.key(&key, has_results)
+        {
+            return outcome;
+        }
         if has_results && let Some(movement) = RowMove::of(key.code) {
             let ids = self.result_ids(state);
             let page = self.viewport.page();
             return self.with_cursor(|cursor| cursor.apply(&ids, movement, page));
+        }
+        if has_results {
+            let ids = self.result_ids(state);
+            if let Some(entry) = self.held.current_mut()
+                && let Some(outcome) = entry.tags.key(key.code, &ids, &mut entry.cursor)
+            {
+                return outcome;
+            }
         }
         match key.code {
             KeyCode::Char('z') => {
                 self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
-            // Two panes (input, results): Tab and Shift-Tab both cross to
-            // the input, mirroring `/`.
-            KeyCode::Char('/') | KeyCode::Tab | KeyCode::BackTab => {
+            // Two panes (input, results): `i`, Tab and Shift-Tab cross to the
+            // input, and so does `/` while there is no result for it to filter.
+            KeyCode::Char('/' | 'i') | KeyCode::Tab | KeyCode::BackTab => {
                 self.input_focused = true;
                 self.zoomed = false;
                 ViewOutcome::Redraw
@@ -395,7 +419,7 @@ impl SearchesView {
             self.draw_menu(frame, area, cursor, state, theme);
         }
         self.draw_readd(frame, area, theme);
-        caret.filter(|_| self.text_open())
+        caret.or(self.drawn.caret).filter(|_| self.text_open())
     }
 }
 

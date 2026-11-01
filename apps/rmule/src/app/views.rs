@@ -63,8 +63,9 @@ impl Views {
             ViewId::Transfers => self.transfers.handle_paste(text, state),
             ViewId::Searches => self.searches.handle_paste(text),
             ViewId::Networks => self.networks.handle_paste(text),
+            ViewId::SharedFiles => self.shared.handle_paste(text),
             ViewId::Settings => self.settings.handle_paste(text),
-            ViewId::SharedFiles | ViewId::Statistics => ViewOutcome::Ignored,
+            ViewId::Statistics => ViewOutcome::Ignored,
         }
     }
 
@@ -74,8 +75,9 @@ impl Views {
             ViewId::Transfers => self.transfers.text_open(),
             ViewId::Searches => self.searches.text_open(),
             ViewId::Networks => self.networks.text_open(),
+            ViewId::SharedFiles => self.shared.text_open(),
             ViewId::Settings => self.settings.text_open(state),
-            ViewId::SharedFiles | ViewId::Statistics => false,
+            ViewId::Statistics => false,
         }
     }
 

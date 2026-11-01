@@ -85,7 +85,7 @@ impl TransfersView {
 
         let block = pane_block(
             area.width,
-            (&title, " s sort  S reverse  z zoom "),
+            (&title, " Tab downloads  / filter  s sort  S reverse  z zoom "),
             focused,
             theme,
         );
@@ -136,6 +136,8 @@ impl TransfersView {
             focused,
             cells: &cells,
             marker: None,
+            tagged: None,
+            filter: Some((&self.source_filter, listed.len())),
         };
         let inner = block.inner(area);
         frame.render_widget(block, area);

@@ -31,6 +31,8 @@ use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{SearchPane, SearchStatus, UiState};
+use crate::row_filter::RowFilter;
+use crate::row_selection::tags::Tags;
 use crate::table_sort::RowCursor;
 use crate::theme::Theme;
 use crate::wrap::clamp_u16;
@@ -54,6 +56,10 @@ pub(super) struct HeldSearch {
     pub(super) kind: HeldKind,
     /// The selection in this search's results.
     pub(super) cursor: RowCursor<ResultId>,
+    /// `/`: the results it keeps.
+    pub(super) filter: RowFilter,
+    /// The results `Space` tagged.
+    pub(super) tags: Tags<ResultId>,
     /// What was typed in the input and not sent while this entry was current.
     pub(super) draft: Option<String>,
 }
@@ -99,6 +105,8 @@ impl HeldSearches {
             query,
             kind,
             cursor: RowCursor::default(),
+            filter: RowFilter::default(),
+            tags: Tags::default(),
             draft: None,
         });
         self.current = self.entries.len() - 1;
@@ -113,6 +121,8 @@ impl HeldSearches {
             query: query.to_string(),
             kind: HeldKind::NotSent { why, related },
             cursor: RowCursor::default(),
+            filter: RowFilter::default(),
+            tags: Tags::default(),
             draft: None,
         });
         self.current = self.entries.len() - 1;
@@ -146,6 +156,8 @@ impl HeldSearches {
                     query: String::new(),
                     kind: HeldKind::Keywords,
                     cursor: RowCursor::default(),
+                    filter: RowFilter::default(),
+                    tags: Tags::default(),
                     draft: None,
                 });
             }

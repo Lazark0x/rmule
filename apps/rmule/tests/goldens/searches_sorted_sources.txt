@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [ubuntu · 3]
-┌ Results · Completed · 3 ────────── Enter menu  [ ] search  x close  s sort ┐
+┌ Results · Completed · 3 ──────── Enter menu  / filter  [ ] search  x close ┐
 │  Name                                             Size  Sources ▼ Type     │
 │▸ distro_hot.iso                                 3.0 GB 1234 (900) CD-Images│
 │  song_mid.mp3                                   4.0 MB     42 (7) Audio    │

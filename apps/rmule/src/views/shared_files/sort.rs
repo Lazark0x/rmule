@@ -16,6 +16,8 @@ use std::sync::Arc;
 use rmule_core::diagnostics::ShareTotals;
 use rmule_primitives::FileHash;
 
+use crate::row_filter::keeps_row;
+
 use super::SharedView;
 use crate::state::{DownloadRow, PARTIAL_RANK, SharedRow, UiState, withheld_rank};
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort, TableSorts};
@@ -194,7 +196,9 @@ impl SortedTable for SharedTable {
 pub(super) struct LinesKey {
     revision: u64,
     sort: TableSort<SharedTable>,
-    filter: Option<PathBuf>,
+    directory: Option<PathBuf>,
+    /// The Row Filter's words, as it counts them.
+    typed: u64,
 }
 
 impl SharedView {
@@ -212,7 +216,8 @@ impl SharedView {
         LinesKey {
             revision: state.revision,
             sort: self.sort,
-            filter: self.directory_filter(state).map(Path::to_path_buf),
+            directory: self.directory_filter(state).map(Path::to_path_buf),
+            typed: self.filter.generation(),
         }
     }
 
@@ -243,7 +248,10 @@ impl SharedView {
                 })
             })
             .map(|(file_hash, download)| SharedLine::partial(file_hash, download, state));
-        let lines: Vec<SharedLine> = rows.chain(partials).collect();
+        let lines: Vec<SharedLine> = rows
+            .chain(partials)
+            .filter(|line| keeps_row::<SharedTable>(&self.filter, line))
+            .collect();
         let order = self.sort.order(&lines);
         let mut slots: Vec<Option<SharedLine>> = lines.into_iter().map(Some).collect();
         order

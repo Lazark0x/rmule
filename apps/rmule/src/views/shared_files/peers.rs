@@ -124,8 +124,10 @@ impl SharedView {
         };
         let hint = if state.upload_peers.is_empty() {
             ""
+        } else if self.active_only {
+            " f all  / filter  Tab files  s sort  S reverse  z zoom "
         } else {
-            " s sort  S reverse  z zoom "
+            " f active  / filter  Tab files  s sort  S reverse  z zoom "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(pane_border(theme, focused)),
@@ -146,7 +148,7 @@ impl SharedView {
 
         let visible = self.ordered_peers(state);
         // Filtered-out peers are counted, never silently truncated (spec §3.5).
-        let hidden = state.upload_peers.len() - visible.len();
+        let hidden = self.visible_peers(state).len().abs_diff(state.upload_peers.len());
         let footer =
             (hidden > 0).then(|| format!("  {}", crate::words::serve::hidden_queued(hidden)));
 
@@ -190,13 +192,19 @@ impl SharedView {
             header_style,
         )
         .wants(&wants)
-        .empty("no active uploads");
+        .empty(if self.peer_filter.shown() {
+            crate::words::app::NO_MATCH
+        } else {
+            "no active uploads"
+        });
         let rows = Rows {
             count: visible.len(),
             selected: Some(self.peers_selected),
             focused,
             cells: &cells,
             marker: None,
+            tagged: None,
+            filter: Some((&self.peer_filter, state.upload_peers.len())),
         };
         self.drawn_peers = table::draw(
             frame,

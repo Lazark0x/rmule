@@ -1,4 +1,4 @@
-┌ Shared Files · 2 files · — ───────────────────── s sort  S reverse  z zoom ┐
+┌ Shared Files · 2 files · — ────── m menu  / filter  Tab uploads  Space tag ┐
 │  File ▲                                  State               Size Uploading│
 │▸ 0101010101…                             shared                 —         1│
 │  0202020202…                             shared                 —         0│
@@ -10,7 +10,7 @@
 │                                                                            │
 │Off-screen: Requests 3 (12) · Accepted 1 (5) · Transferred 1.0 MB (4.0 MB)  │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 2 ┘
-┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
+┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
 │  Peer ▲                State             Speed File                        │
 │▸ 10.0.0.1:4662         Uploading             — 0101010101…                 │
 │                                                                            │

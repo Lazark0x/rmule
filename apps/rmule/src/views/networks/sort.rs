@@ -10,6 +10,8 @@ use rmule_core::ServerPriority;
 use rmule_core::diagnostics::{PingState, ServerDiagnostics};
 use rmule_primitives::ServerEndpoint;
 
+use crate::row_filter::keeps_row;
+
 use super::{NetworksView, servers};
 use crate::state::UiState;
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort, TableSorts};
@@ -126,6 +128,7 @@ impl NetworksView {
             .order(rows)
             .into_iter()
             .map(|at| &rows[at])
+            .filter(|row| keeps_row::<ServersTable>(&self.filter, row))
             .collect()
     }
 

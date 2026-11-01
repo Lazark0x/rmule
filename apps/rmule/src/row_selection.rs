@@ -14,10 +14,17 @@ use ratatui::text::{Line, Span};
 
 use crate::theme::Theme;
 
+pub(crate) mod tags;
 pub(crate) mod viewport;
 
 /// The marker and its separator: the two gutter cells of a selected row.
 pub const MARKER: &str = "▸ ";
+
+/// A tagged row's gutter.
+pub const TAGGED: &str = " •";
+
+/// The gutter of a tagged row under the cursor.
+const BOTH: &str = "▸•";
 
 /// The style of the selected row: bold in the focused pane, dimmed in another.
 /// It sets no foreground, so a row's own colours — a result's Known-File Mark,
@@ -33,13 +40,15 @@ pub fn selection_style(theme: &Theme, focused: bool) -> Style {
 }
 
 /// The two-cell gutter of a row the table draws itself: the marker on the
-/// selected row, blank otherwise.
+/// selected row, then the mark of a tagged one.
 #[must_use]
-pub fn gutter(selected: bool, focused: bool, theme: &Theme) -> Span<'static> {
-    if selected {
-        Span::styled(MARKER, selection_style(theme, focused))
-    } else {
-        Span::raw("  ")
+pub fn gutter(selected: bool, tagged: bool, focused: bool, theme: &Theme) -> Span<'static> {
+    let tag = Style::new().fg(theme.accent);
+    match (selected, tagged) {
+        (true, false) => Span::styled(MARKER, selection_style(theme, focused)),
+        (true, true) => Span::styled(BOTH, selection_style(theme, focused).fg(theme.accent)),
+        (false, true) => Span::styled(TAGGED, tag),
+        (false, false) => Span::raw("  "),
     }
 }
 

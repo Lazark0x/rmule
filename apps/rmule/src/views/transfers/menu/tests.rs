@@ -73,12 +73,12 @@ fn the_menu_cursor_skips_greyed_items_and_wraps() {
     );
     // Down walks the three enabled items and wraps past the end, never
     // landing on a greyed item.
-    use MenuAction::{Cancel, Details, Resume};
-    for expected in [Cancel, Details, Resume, Cancel] {
+    use MenuAction::{Cancel, Details, PauseAll, Resume};
+    for expected in [Cancel, Details, PauseAll, Resume] {
         view.handle_key(press(KeyCode::Char('j')), &state);
         assert_eq!(view.overlay, Overlay::Menu { cursor: expected });
     }
-    for expected in [Resume, Details] {
+    for expected in [PauseAll, Details] {
         view.handle_key(press(KeyCode::Char('k')), &state);
         assert_eq!(view.overlay, Overlay::Menu { cursor: expected });
     }
@@ -152,6 +152,7 @@ fn choose_related(view: &mut TransfersView, state: &UiState, row: usize) -> View
     view.select_row(state, row);
     view.handle_key(press(KeyCode::Char('m')), state);
     view.handle_key(press(KeyCode::Char('G')), state);
+    view.handle_key(press(KeyCode::Char('k')), state);
     view.handle_key(press(KeyCode::Enter), state)
 }
 

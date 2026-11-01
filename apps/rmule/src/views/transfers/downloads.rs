@@ -283,8 +283,13 @@ impl TransfersView {
         lines: &[DownloadLine],
     ) {
         let focused = self.focus == Pane::Table;
-        let title = format!(" Downloads ({}) ", lines.len());
-        if lines.is_empty() {
+        let title = if self.tags.is_empty() {
+            format!(" Downloads ({}) ", lines.len())
+        } else {
+            let tagged = crate::words::app::tagged(self.tags.len());
+            format!(" Downloads ({}) · {tagged} ", lines.len())
+        };
+        if lines.is_empty() && !self.filter.shown() {
             let block = pane_block(area.width, (&title, " L add link "), focused, theme);
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -296,11 +301,12 @@ impl TransfersView {
             );
             return;
         }
-        // `C` is offered while it has something to clear.
+        // The keys a person needs first; they give way from the end. `C` is
+        // offered while it has something to clear.
         let hint = if !super::clear::completed_ids(state).is_empty() {
-            " s sort  S reverse  C clear completed  L add link  z zoom "
+            " p pause  m menu  / filter  L add  Tab sources  Space tag  C clear  s sort  z zoom "
         } else {
-            " s sort  S reverse  L add link  z zoom "
+            " p pause  m menu  / filter  L add  Tab sources  Space tag  s sort  z zoom "
         };
         let block = pane_block(area.width, (&title, hint), focused, theme);
         let inner = block.inner(area);
@@ -329,13 +335,17 @@ impl TransfersView {
             theme.dim_text(),
         )
         .wants(&wants)
-        .left(PROGRESS_COL);
+        .left(PROGRESS_COL)
+        .empty(crate::words::app::NO_MATCH);
+        let tagged = |index: usize| self.tags.contains(&lines[index].id);
         let rows = Rows {
             count: lines.len(),
             selected: self.selected,
             focused,
             cells: &cells,
             marker: None,
+            tagged: Some(&tagged),
+            filter: Some((&self.filter, state.downloads.len())),
         };
         self.drawn = table::draw(
             frame,

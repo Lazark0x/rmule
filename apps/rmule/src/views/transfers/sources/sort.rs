@@ -15,6 +15,7 @@ use rmule_core::diagnostics::WorkerEntry;
 use super::super::TransfersView;
 pub(in crate::views::transfers) use super::row::SourceKey;
 use super::row::{SourceRow, source_rows};
+use crate::row_filter::keeps_row;
 use crate::state::UiState;
 use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSorts};
 use crate::views::ViewOutcome;
@@ -109,6 +110,7 @@ impl TransfersView {
         let lines: Vec<SourceLine> = rows
             .iter()
             .map(|row| SourceLine::new(row, id, state, &ranks))
+            .filter(|line| keeps_row::<SourcesTable>(&self.source_filter, line))
             .collect();
         self.source_sort
             .order(&lines)

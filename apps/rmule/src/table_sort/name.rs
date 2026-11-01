@@ -32,6 +32,12 @@ impl NameKey {
     }
 }
 
+/// `text` with case and accents folded away, as the sort reads a name.
+#[must_use]
+pub(crate) fn fold(text: &str) -> String {
+    NameKey::new(text).0
+}
+
 /// The combining-mark blocks an NFD decomposition of a Latin, Greek or
 /// Cyrillic accented letter splits into.
 fn is_combining_mark(c: char) -> bool {

@@ -1,4 +1,4 @@
-┌ Downloads (3) ─── s sort  S reverse  C clear completed  L add link  z zoom ┐
+┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
 │▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
 │  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │

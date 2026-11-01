@@ -16,10 +16,12 @@ use ratatui::text::Line;
 use rmule_core::{CoreCommand, DownloadCommand, DownloadId, NameTaken};
 use rmule_primitives::{SafeFileName, SearchResult};
 
+use super::sort::ResultsTable;
 use super::{SearchesView, ViewOutcome};
 use crate::action::Action;
 use crate::row_selection::viewport::Viewport;
 use crate::state::{KnownFileMark, KnownFileMarks, UiState};
+use crate::table_sort::SortedTable;
 use crate::theme::Theme;
 use crate::views::day;
 use crate::views::modal::{Modal, confirm_key, scroll_key};
@@ -38,8 +40,44 @@ pub(super) struct ReAdd {
 }
 
 impl SearchesView {
-    /// The row menu's Download on the selected result.
+    /// The tagged results, those the operator holds no history with: a marked
+    /// file asks its own question, one row at a time, so it is left and said.
+    fn download_tagged(&mut self, state: &UiState) -> ViewOutcome {
+        let Some(entry) = self.held.current_mut() else {
+            return ViewOutcome::Redraw;
+        };
+        let tagged = entry.tags.targets(None);
+        entry.tags.clear();
+        let marks = KnownFileMarks::of(state);
+        let results = self.held.current_pane(state).map_or(&[][..], |pane| {
+            pane.results.as_slice()
+        });
+        let (fresh, marked): (Vec<&SearchResult>, Vec<&SearchResult>) = results
+            .iter()
+            .filter(|result| tagged.contains(&ResultsTable::identity(result)))
+            .partition(|result| marks.get(result.file_hash(), result.file_size()).is_none());
+        let commands = fresh
+            .into_iter()
+            .map(|result| start_command(result, state, false))
+            .collect();
+        let mut actions = vec![Action::Commands(commands)];
+        if !marked.is_empty() {
+            actions.push(Action::Flash(crate::words::app::tagged_marked_left(
+                marked.len(),
+            )));
+        }
+        ViewOutcome::Emit(Action::Actions(actions))
+    }
+
+    /// The row menu's Download on the tagged results, else the selected one.
     pub(super) fn download_selected(&mut self, state: &UiState) -> ViewOutcome {
+        if self
+            .held
+            .current()
+            .is_some_and(|entry| !entry.tags.is_empty())
+        {
+            return self.download_tagged(state);
+        }
         let Some(result) = self.selected_result(state).cloned() else {
             return ViewOutcome::Redraw;
         };
@@ -135,20 +173,22 @@ impl SearchesView {
 /// Kad-only operator: core finds the sources over Kad and asks any server
 /// session that comes up later.
 fn start_download(result: &SearchResult, state: &UiState, again: bool) -> ViewOutcome {
+    ViewOutcome::Emit(Action::Command(start_command(result, state, again)))
+}
+
+fn start_command(result: &SearchResult, state: &UiState, again: bool) -> CoreCommand {
     let file = result.to_file_link();
-    ViewOutcome::Emit(Action::Command(CoreCommand::Download(
-        DownloadCommand::StartDownload {
-            name: SafeFileName::of_link(&file),
-            file,
-            source_hint: state.active_server(),
-            if_taken: if again {
-                NameTaken::Number
-            } else {
-                NameTaken::Refuse
-            },
-            kad_aich_root: result.kad_aich_root(),
+    CoreCommand::Download(DownloadCommand::StartDownload {
+        name: SafeFileName::of_link(&file),
+        file,
+        source_hint: state.active_server(),
+        if_taken: if again {
+            NameTaken::Number
+        } else {
+            NameTaken::Refuse
         },
-    )))
+        kad_aich_root: result.kad_aich_root(),
+    })
 }
 
 /// `ResumeDownload` for a failed download — the one Restart (ADR-0094,

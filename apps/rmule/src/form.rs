@@ -177,6 +177,11 @@ impl Field {
         self
     }
 
+    /// The value a Row Filter reads: a selector's choice, a field's text.
+    pub fn searched_value(&self) -> &str {
+        self.value().0
+    }
+
     /// Can focus rest here? Display rows cannot.
     pub fn focusable(&self) -> bool {
         !matches!(self.kind, FieldKind::Display { .. })
@@ -222,6 +227,8 @@ pub(crate) struct Form {
     /// The last commit's rejection, shown under the fields until the next one.
     /// The typing stays: a validation failure must never cost an entry.
     pub error: Option<Sentence>,
+    /// The fields a Row Filter left out, by index; empty leaves all of them.
+    pub hidden: Vec<bool>,
     /// `error` asks a second `Enter` rather than refusing: it wears the
     /// warning's mark, never the refusal's.
     pub asking: bool,
@@ -238,6 +245,7 @@ impl Form {
             focus,
             error: None,
             note: None,
+            hidden: Vec::new(),
             asking: false,
         }
     }
@@ -282,6 +290,24 @@ impl Form {
         self.step_focus(false);
     }
 
+    /// Whether a Row Filter left field `index` out.
+    fn left_out(&self, index: usize) -> bool {
+        self.hidden.get(index).copied().unwrap_or(false)
+    }
+
+    /// Whether the focus can rest on field `index`.
+    fn reachable(&self, index: usize) -> bool {
+        self.fields[index].focusable() && !self.left_out(index)
+    }
+
+    /// Hide the fields `keep` turns down and move the focus off a hidden one.
+    pub fn narrow(&mut self, keep: impl Fn(&Field) -> bool) {
+        self.hidden = self.fields.iter().map(|field| !keep(field)).collect();
+        if self.focus < self.fields.len() && !self.reachable(self.focus) {
+            self.step_focus(true);
+        }
+    }
+
     /// Move focus to the next/previous focusable field, wrapping.
     pub fn step_focus(&mut self, forward: bool) {
         let len = self.fields.len();
@@ -294,7 +320,7 @@ impl Form {
             } else {
                 (self.focus + len - step % len) % len
             };
-            if self.fields[index].focusable() {
+            if self.reachable(index) {
                 self.focus = index;
                 return;
             }
@@ -310,7 +336,7 @@ impl Form {
             RowMove::Last => self.focus_last(),
             RowMove::Page(pages) => {
                 let reachable: Vec<usize> = (0..self.fields.len())
-                    .filter(|index| self.fields[*index].focusable())
+                    .filter(|index| self.reachable(*index))
                     .collect();
                 let at = reachable
                     .iter()
@@ -534,7 +560,10 @@ impl Form {
         let mut caret_at = None;
 
         for (index, field) in self.fields.iter().enumerate() {
-            if let Some(section) = field.section {
+            if self.left_out(index) {
+                continue;
+            }
+            if let Some(section) = field.section.filter(|_| self.hidden.is_empty()) {
                 if !lines.is_empty() {
                     lines.push(Line::raw(""));
                     rows.push(None);

@@ -1,4 +1,4 @@
-┌ Downloads ┌ File details ─────────────────────────────────────┐ink  z zoom ┐
+┌ Downloads ┌ File details ─────────────────────────────────────┐  Space tag ┐
 │  File ▲   │ origin  link                                     ▲│Status     ▲│
 │▸ bunny.mp4│ done    42%  (4/10 parts)                         │Downloading█│
 │  ABABABABA│ speed   123.4 KB/s                               ▅│Paused     ▼│

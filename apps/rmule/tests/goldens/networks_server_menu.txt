@@ -1,4 +1,4 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ───────── c connect · d details · a add ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ─ c connect · m menu · / filter · a add ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │ ● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
 │▸  Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
@@ -8,7 +8,7 @@
 │Off-screen: De│  Copy server link                            │              │
 │Health: dead s│  Remove… (x)                                 │(limit 3)     │
 └ too narrow to│  Pin as static                               │─────── 2 / 4 ┘
-┌ Log (0) ─────│  Priority: Low → Norm                        │───── K start ┐
+┌ Log (0) ──── │  Priority: Low → Norm                        │───── K start ┐
 │nothing has ha│  Details (d)                                 │              │
 │              │  Add server… (a)                             │arted)        │
 │              │  Update list from URL… (U)                   │              │
