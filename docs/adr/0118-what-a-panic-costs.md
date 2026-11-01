@@ -90,15 +90,19 @@ Quit, a status of success and no crash report.
 
 - `crate::tui`'s line is one thread that makes every terminal write. The run hands it bytes and
   goes on, and a frame it cannot take yet is held, whole, for the next tick. A terminal nobody
-  reads stalls that thread and no other.
+  reads stalls that thread and no other. The loop asks the terminal nothing either: ratatui's
+  cursor query before a clear is answered from memory, since crossterm's answer is a write and a
+  two-second read of the input the pump is on.
 - A failed write, or a hang-up on standard input, is the terminal's loss. Raw mode goes back on
   whatever remains, and the standard streams are blanked: input becomes a pipe nobody writes,
   output and error the null device.
 - `crate::stop` is a value any thread sets without blocking. A request wakes the loop, starts the
   core's quit from a task of its own and arms a deadline, so a stop waits on neither the UI loop
   nor the terminal. Past the grace, or five seconds past the core's stop, the process ends.
-- The restore is bounded by a second, then by discarding what the terminal did not read. The
-  input pump is waited for by a quarter of a second and never past it.
+- The restore is bounded by a second, then by discarding what the terminal did not read. macOS
+  drains a session leader's terminal inside its exit, with no bound, so a leader on a terminal
+  that never read discards the rest too: no shell is left to restore for. The input pump is
+  waited for by a quarter of a second and never past it.
 
 Crossterm's reader loops without end on a descriptor that reads EOF or EIO, inside `poll`, past
 its timeout, so a thread that is there cannot be told to stop. Blanking standard input parks it

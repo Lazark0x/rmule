@@ -32,6 +32,8 @@ struct State {
     queue: VecDeque<Vec<u8>>,
     writing: bool,
     lost: bool,
+    /// The run is done with the terminal: nothing more is taken.
+    shut: bool,
 }
 
 impl Line {
@@ -55,10 +57,17 @@ impl Line {
             return;
         }
         let mut state = self.shared.state.lock();
-        if !state.lost {
+        if !state.lost && !state.shut {
             state.queue.push_back(bytes);
             self.shared.changed.notify_all();
         }
+    }
+
+    /// Take nothing more. What ratatui writes as it drops comes after the
+    /// restore, and a late byte on a terminal nobody reads would hold a
+    /// session leader's exit.
+    pub(super) fn shut(&self) {
+        self.shared.state.lock().shut = true;
     }
 
     /// Whether what was sent has not all reached the terminal.

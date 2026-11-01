@@ -9,7 +9,8 @@
 //!
 //! Every byte goes through the [`Line`], so nothing here waits on the
 //! terminal: a frame the line is not ready for is held, a stalled terminal
-//! holds nobody, and losing the terminal is told to the [`Stop`] rather than
+//! holds nobody, the loop asks the terminal nothing ([`Screen`]), and losing
+//! the terminal is told to the [`Stop`] rather than
 //! returned as an error. Crossterm's reader spins on a dead descriptor and
 //! never returns, so the loss also blanks the standard streams, which parks
 //! that reader; the watch on input hangs up the same way when no write is
@@ -35,7 +36,6 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -52,8 +52,10 @@ pub use rmule_os::terminal::NoStop;
 
 use crate::stop::Stop;
 use line::Line;
+use screen::Screen;
 
 mod line;
+mod screen;
 
 /// How long the terminal's restore may wait on a terminal that is not reading.
 const LEAVE_BOUND: Duration = Duration::from_secs(1);
@@ -103,6 +105,12 @@ pub fn leave() {
         if !line.settle(LEAVE_BOUND) {
             rmule_os::terminal::discard_pending_output();
             line.settle(DISCARDED_BOUND);
+            // A session's leader exits through the kernel's drain of its
+            // terminal, unbounded on macOS, and leaves no shell to restore
+            // for: what is left must not hold the exit.
+            if rmule_os::terminal::stop_refused().is_some() {
+                rmule_os::terminal::discard_pending_output();
+            }
         }
     }
     let _ = disable_raw_mode();
@@ -185,28 +193,9 @@ fn restore_bytes() -> Vec<u8> {
     bytes
 }
 
-/// The stream ratatui writes a frame to: a buffer, handed to the [`Line`]
-/// whole. Its writes cannot fail, so neither can ratatui's.
-struct FrameBytes {
-    bytes: Vec<u8>,
-    line: Line,
-}
-
-impl Write for FrameBytes {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.line.send(std::mem::take(&mut self.bytes));
-        Ok(())
-    }
-}
-
 /// The terminal for the run. `Drop` gives it back.
 pub struct Tui {
-    terminal: Terminal<CrosstermBackend<FrameBytes>>,
+    terminal: Terminal<Screen>,
     line: Line,
     repaint_owed: bool,
     /// The title in force, for the re-entry after a stop to take again.
@@ -237,10 +226,7 @@ impl Tui {
             Ordering::SeqCst,
         );
         line.send(enter_bytes());
-        let terminal = Terminal::new(CrosstermBackend::new(FrameBytes {
-            bytes: Vec::new(),
-            line: line.clone(),
-        }))?;
+        let terminal = Terminal::new(Screen::new(line.clone()))?;
         Ok(Self {
             terminal,
             line,
@@ -268,6 +254,7 @@ fn watch_for_hangup(stop: Stop) {
 impl Drop for Tui {
     fn drop(&mut self) {
         leave();
+        self.line.shut();
     }
 }
 
@@ -330,7 +317,7 @@ impl Surface for Tui {
         let drawn = self.terminal.draw(render).is_ok();
         let backend = self.terminal.backend_mut();
         let _ = queue!(backend, EndSynchronizedUpdate);
-        let _ = backend.flush();
+        let _ = Write::flush(backend);
         if drawn { Drawn::Shown } else { Drawn::Held }
     }
 
