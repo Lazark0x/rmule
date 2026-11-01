@@ -105,7 +105,7 @@ pub struct UiState {
     /// download's own offer, never a registry row, named by its download.
     pub partial_shares: Revised<BTreeSet<FileHash>>,
     /// Upload-side peers (slot holders + queue waiters), keyed by endpoint.
-    pub upload_peers: BTreeMap<PeerEndpoint, UploadPeer>,
+    pub upload_peers: Revised<BTreeMap<PeerEndpoint, UploadPeer>>,
     /// The **File History** as core last answered it — the registry's entries
     /// and the cancelled downloads, the Known-File Marks' durable half.
     /// `None` until the first answer: no mark is drawn from what has not been
@@ -191,7 +191,7 @@ impl Default for UiState {
             shared: Revised::default(),
             shared_counters: Revised::default(),
             partial_shares: Revised::default(),
-            upload_peers: BTreeMap::new(),
+            upload_peers: Revised::default(),
             searches: Revised::default(),
             refused_searches: BTreeMap::new(),
             directory_refusal: (0, None),
