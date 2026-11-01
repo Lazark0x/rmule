@@ -9,6 +9,7 @@
 //! once the download is asked for.
 
 use std::cell::Cell;
+use std::collections::VecDeque;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
@@ -37,6 +38,8 @@ pub(super) struct AddLink {
     form: Form,
     /// What part of the form is on screen, in a frame too short for it.
     viewport: Cell<Viewport>,
+    /// Links of a paste refused and waiting their turn in the field.
+    refused: VecDeque<(String, LinkRefusal)>,
 }
 
 impl AddLink {
@@ -46,7 +49,19 @@ impl AddLink {
                 Field::text("Link", "").with_placeholder("ed2k://|file|name|size|hash|/"),
             ]),
             viewport: Cell::default(),
+            refused: VecDeque::new(),
         }
+    }
+
+    /// Put the next refused link in the field with its refusal. Whether there
+    /// was one.
+    fn next_refused(&mut self) -> bool {
+        let Some((line, refusal)) = self.refused.pop_front() else {
+            return false;
+        };
+        self.form.set_focused_text(&line);
+        self.form.error = Some(words::link_refused(&refusal));
+        true
     }
 }
 
@@ -122,6 +137,37 @@ fn start(
 }
 
 impl TransfersView {
+    /// A paste into the form: one link goes in the field. Several, one a line,
+    /// are each asked for at once, as Enter on each would; those refused come
+    /// up in the field in turn with their refusals, so none is lost.
+    pub(crate) fn handle_paste(&mut self, text: &str, state: &UiState) -> ViewOutcome {
+        let Some(entry) = self.add_link.as_mut() else {
+            return ViewOutcome::Ignored;
+        };
+        release_form(&mut entry.viewport);
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.len() < 2 {
+            entry.form.paste(text);
+            return ViewOutcome::Redraw;
+        }
+        let mut asked = Vec::new();
+        for line in lines {
+            match read_link(line).and_then(|(file, skipped)| start(file, &skipped, state)) {
+                Ok(ViewOutcome::Emit(action)) => asked.push(action),
+                Ok(_) => {}
+                Err(refusal) => entry.refused.push_back((line.to_string(), refusal)),
+            }
+        }
+        if !entry.next_refused() {
+            self.add_link = None;
+        }
+        ViewOutcome::Emit(Action::Actions(asked))
+    }
+
     /// `L`: open the Add-link form.
     pub(super) fn open_add_link(&mut self) -> ViewOutcome {
         self.add_link = Some(AddLink::new());
@@ -148,7 +194,9 @@ impl TransfersView {
                     .and_then(|(file, skipped)| start(file, &skipped, state));
                 match outcome {
                     Ok(outcome) => {
-                        self.add_link = None;
+                        if !entry.next_refused() {
+                            self.add_link = None;
+                        }
                         outcome
                     }
                     Err(refusal) => {

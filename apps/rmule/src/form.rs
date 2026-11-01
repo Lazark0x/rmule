@@ -184,6 +184,17 @@ impl Field {
     }
 }
 
+/// `text` as one field's value: line breaks and tabs become spaces, and nothing
+/// a terminal would act on stays in it.
+pub(crate) fn one_line(text: &str) -> String {
+    let spaced: String = text
+        .trim()
+        .chars()
+        .map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c })
+        .collect();
+    crate::words::plain(&spaced)
+}
+
 /// What one key did to the form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum FormKey {
@@ -326,6 +337,28 @@ impl Form {
             self.fields.get(self.focus).map(|field| &field.kind),
             Some(FieldKind::Choice { .. })
         )
+    }
+
+    /// A paste into the focused text field: the whole of it in one go, on one
+    /// line. Whether there was a field to take it.
+    pub fn paste(&mut self, text: &str) -> bool {
+        let Some(FieldKind::Text { value, .. }) =
+            self.fields.get_mut(self.focus).map(|field| &mut field.kind)
+        else {
+            return false;
+        };
+        value.push_str(&one_line(text));
+        true
+    }
+
+    /// Replace the focused text field with `text`, kept as it stands.
+    pub fn set_focused_text(&mut self, text: &str) {
+        if let Some(FieldKind::Text { value, .. }) =
+            self.fields.get_mut(self.focus).map(|field| &mut field.kind)
+        {
+            value.clear();
+            value.push_str(text);
+        }
     }
 
     /// Route one key. `Enter`/`Esc` are reported, never acted on.

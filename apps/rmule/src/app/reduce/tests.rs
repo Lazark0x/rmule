@@ -114,6 +114,24 @@ fn arriving_on_searches_with_no_results_focuses_the_query() {
     assert_eq!(app.views.searches.query_text(), "queen");
 }
 
+/// A paste is one thing: its letters run as no key, and its line break sends
+/// nothing, wherever it lands.
+#[test]
+fn a_paste_is_text_or_nothing_and_never_keys() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.reduce(key_action(KeyCode::Char('2')), now);
+    app.reduce(Action::Input(Event::Paste("queen\nlive".into())), now);
+    assert_eq!(app.views.searches.query_text(), "queen live");
+    assert!(app.pending_commands.is_empty(), "no search went out");
+    app.chrome.active = ViewId::SharedFiles;
+    assert!(matches!(
+        app.reduce(Action::Input(Event::Paste("q2x".into())), now),
+        Flow::Continue
+    ));
+    assert_eq!(app.chrome.active, ViewId::SharedFiles);
+}
+
 #[test]
 fn input_routes_through_mapping_into_chrome_state() {
     let mut app = App::new(Theme::default_dark());

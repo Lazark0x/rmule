@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -49,7 +49,12 @@ pub fn leave() {
     if KITTY_PUSHED.swap(false, Ordering::SeqCst) {
         let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
     }
-    let _ = execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen);
+    let _ = execute!(
+        stdout(),
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
     let _ = disable_raw_mode();
 }
 
@@ -79,6 +84,9 @@ impl Tui {
             KITTY_PUSHED.store(true, Ordering::SeqCst);
         }
         execute!(stdout(), EnableMouseCapture)?;
+        // Without it a paste arrives as keys, and each runs as a command. The
+        // legacy Windows console refuses it, which costs only that.
+        let _ = execute!(stdout(), EnableBracketedPaste);
         Ok(Self { terminal })
     }
 }

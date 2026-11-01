@@ -199,6 +199,16 @@ impl NetworksView {
         ViewOutcome::Redraw
     }
 
+    /// A paste into an open form; nothing else on this tab takes text.
+    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        let Some(entry) = self.form.as_mut() else {
+            return ViewOutcome::Ignored;
+        };
+        entry.form.paste(text);
+        release_form(&mut entry.viewport);
+        ViewOutcome::Redraw
+    }
+
     pub(super) fn handle_form_key(&mut self, key: KeyEvent) -> ViewOutcome {
         let Some(entry) = self.form.as_mut() else {
             return ViewOutcome::Ignored;

@@ -12,7 +12,8 @@
 //! else cannot reach those surfaces.
 
 pub use rmule_words::{
-    Sentence, download, event, kad, login, os, peer, portmap, reach, serve, software, store, units,
+    Sentence, download, event, kad, login, os, peer, plain, portmap, reach, serve, software, store,
+    units,
 };
 
 pub mod app;

@@ -104,6 +104,23 @@ impl SearchesView {
         Self::default()
     }
 
+    /// A paste: into the options editor while it is up, else into the focused
+    /// query, whole. A pasted line break does not send the search.
+    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        if self.menu.is_some() || self.readd.is_some() {
+            return ViewOutcome::Ignored;
+        }
+        if self.filters_open {
+            self.filters.form.paste(text);
+            return ViewOutcome::Redraw;
+        }
+        if !self.input_focused {
+            return ViewOutcome::Ignored;
+        }
+        self.query.push_str(&crate::form::one_line(text));
+        ViewOutcome::Redraw
+    }
+
     /// The operator arrived on the tab. With no results to act on the one
     /// thing to do here is type, and a typed letter must not reach the
     /// globals, where `q` quits.

@@ -19,6 +19,8 @@ use crate::views::ViewOutcome;
 /// root and one classic source — the reader's own skipped-field fixture.
 const SKIPPING_LINK: &str = "ed2k://|file|hello.txt|11|AA010FBC1D14C795D86EF98C95479D17|x=1|h=A2NWOTYURUU3P3GCUB6KCNW3FTYYELQB|comment|/|sources,192.0.2.44:4662|/";
 
+const OTHER_LINK: &str = "ed2k://|file|other.bin|11|BB010FBC1D14C795D86EF98C95479D17|/";
+
 fn typed(view: &mut TransfersView, state: &UiState, text: &str) {
     for c in text.chars() {
         view.handle_key(press(KeyCode::Char(c)), state);
@@ -36,6 +38,52 @@ fn with_session() -> UiState {
 
 fn refusal(view: &TransfersView) -> Option<&str> {
     view.add_link.as_ref()?.form.error.as_deref()
+}
+
+/// The sent `StartDownload`s of a paste's outcome.
+fn asked(outcome: ViewOutcome) -> usize {
+    match outcome {
+        ViewOutcome::Emit(Action::Actions(actions)) => actions.len(),
+        _ => panic!("a paste of several links emits what it asked for"),
+    }
+}
+
+/// Two links in one paste are two downloads; before bracketed paste the second
+/// ran as keys.
+#[test]
+fn a_paste_of_several_links_asks_for_each() {
+    let state = with_session();
+    let mut view = TransfersView::new();
+    view.open_add_link();
+    let paste = format!("{SKIPPING_LINK}\r\n{OTHER_LINK}\n");
+    assert_eq!(asked(view.handle_paste(&paste, &state)), 2);
+    assert!(view.add_link.is_none(), "nothing left to answer");
+}
+
+/// A refused link of a paste is never lost: each comes up in the field with
+/// its refusal, and the form closes when the last is dealt with.
+#[test]
+fn links_refused_in_a_paste_come_up_in_turn() {
+    let state = with_session();
+    let mut view = TransfersView::new();
+    view.open_add_link();
+    let paste = format!("not a link\n{SKIPPING_LINK}\nnor this\n");
+    assert_eq!(asked(view.handle_paste(&paste, &state)), 1);
+    let field = |view: &TransfersView| {
+        view.add_link
+            .as_ref()
+            .map(|entry| entry.form.text(0).to_string())
+    };
+    assert_eq!(field(&view).as_deref(), Some("not a link"));
+    assert!(refusal(&view).is_some());
+    clear(&mut view, &state);
+    typed(&mut view, &state, SKIPPING_LINK);
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert_eq!(field(&view).as_deref(), Some("nor this"));
+    clear(&mut view, &state);
+    typed(&mut view, &state, OTHER_LINK);
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.add_link.is_none());
 }
 
 #[test]

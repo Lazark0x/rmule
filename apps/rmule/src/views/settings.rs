@@ -487,6 +487,15 @@ impl SettingsView {
         Ok(Some(edit))
     }
 
+    /// A paste into the field open for editing, whole.
+    pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
+        if self.editing && self.form.paste(text) {
+            ViewOutcome::Redraw
+        } else {
+            ViewOutcome::Ignored
+        }
+    }
+
     /// Offer one key the globals did not claim. While a field is
     /// open every printable is text; otherwise the row cursor moves and
     /// unclaimed keys bubble out as [`ViewOutcome::Ignored`].

@@ -53,6 +53,23 @@ impl Views {
         }
     }
 
+    /// A bracketed paste, whole, to the surface that holds a text field. The
+    /// other surfaces have nowhere to put it, and it acts on nothing.
+    pub(super) fn handle_paste(
+        &mut self,
+        active: ViewId,
+        text: &str,
+        state: &UiState,
+    ) -> ViewOutcome {
+        match active {
+            ViewId::Transfers => self.transfers.handle_paste(text, state),
+            ViewId::Searches => self.searches.handle_paste(text),
+            ViewId::Networks => self.networks.handle_paste(text),
+            ViewId::Settings => self.settings.handle_paste(text),
+            ViewId::SharedFiles | ViewId::Statistics => ViewOutcome::Ignored,
+        }
+    }
+
     pub(super) fn draw(
         &mut self,
         active: ViewId,
