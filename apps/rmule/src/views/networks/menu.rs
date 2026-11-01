@@ -121,7 +121,7 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
                 + item
                     .disabled
                     .as_ref()
-                    .map_or(0, |reason| display_width(&reason) + 1)
+                    .map_or(0, |reason| display_width(reason) + 1)
         })
         .max()
         .unwrap_or(0)

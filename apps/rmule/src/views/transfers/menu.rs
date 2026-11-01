@@ -293,7 +293,7 @@ impl TransfersView {
         let natural = items
             .iter()
             .map(|item| {
-                2 + display_width(&item.label) + item.reason.map_or(0, |r| display_width(&r) + 2)
+                2 + display_width(&item.label) + item.reason.map_or(0, |r| display_width(r) + 2)
             })
             .chain(std::iter::once(display_width(&title)))
             .max()

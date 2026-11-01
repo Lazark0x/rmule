@@ -101,10 +101,10 @@ pub(super) fn draw_menu(
     let natural = items
         .iter()
         .map(|item| {
-            2 + display_width(&item.label())
+            2 + display_width(item.label())
                 + item
                     .reason(state)
-                    .map_or(0, |reason| display_width(&reason) + 3)
+                    .map_or(0, |reason| display_width(reason) + 3)
         })
         .max()
         .unwrap_or(0)

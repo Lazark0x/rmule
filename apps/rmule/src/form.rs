@@ -324,7 +324,7 @@ impl Form {
         let widest = self
             .fields
             .iter()
-            .map(|field| display_width(&field.value().0))
+            .map(|field| display_width(field.value().0))
             .max()
             .unwrap_or(0);
         LABEL_W + 2 + MARKER_W + widest

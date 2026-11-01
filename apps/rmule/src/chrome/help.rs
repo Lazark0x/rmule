@@ -93,7 +93,7 @@ pub(super) fn draw_help(
     let key_w = KEY_COL_W;
     let natural = rows
         .iter()
-        .map(|(_, what)| key_w + 3 + display_width(&what))
+        .map(|(_, what)| key_w + 3 + display_width(what))
         .max()
         .unwrap_or(0)
         .max(display_width(&version.0) + 3);
@@ -156,7 +156,7 @@ pub(super) fn draw_help(
     // The border says which lines show while not all of them do, and the
     // keys that move them, which give way first.
     let rest = place.draw(frame, modal, bar, theme);
-    if place.overflows() && usize::from(rest.width) >= display_width(&SCROLL_HINT) {
+    if place.overflows() && usize::from(rest.width) >= display_width(SCROLL_HINT) {
         frame.render_widget(
             Paragraph::new(Span::styled(SCROLL_HINT, theme.dim_text())).right_aligned(),
             rest,

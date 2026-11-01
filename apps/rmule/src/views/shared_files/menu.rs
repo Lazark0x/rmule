@@ -113,8 +113,8 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
     // Greedy width, wrapped prose.
     let natural = [
         display_width(&question),
-        display_width(&consequence),
-        display_width(&title),
+        display_width(consequence),
+        display_width(title),
     ]
     .into_iter()
     .max()
@@ -147,9 +147,7 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
 
 /// Natural (unwrapped) width of a menu item, gutter included.
 fn menu_item_width(item: &MenuItem) -> usize {
-    GUTTER_W
-        + display_width(&item.label)
-        + item.greyed.map_or(0, |reason| display_width(&reason) + 4)
+    GUTTER_W + display_width(item.label) + item.greyed.map_or(0, |reason| display_width(reason) + 4)
 }
 
 /// The menu cursor's gutter: an accent marker on the item the menu is on.

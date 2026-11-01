@@ -142,7 +142,7 @@ pub async fn run_join(
     .context("spawn the Kad node")?;
 
     say!(
-        "kad: node up id={} udp={} — the ONLY public-network path; no bytes are written to disk",
+        "kad: node up id={} udp={} — a diagnostic; nothing it hears is saved",
         hex16(id.as_bytes()),
         node.local_addr().port()
     );

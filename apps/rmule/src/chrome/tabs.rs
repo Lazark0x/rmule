@@ -68,7 +68,7 @@ fn tab_texts(active: ViewId, frame_width: u16) -> Vec<(String, ViewId)> {
 /// Rendered width of a tab set: the texts plus one separator per gap.
 fn bar_width(tabs: &[(String, ViewId)]) -> usize {
     tabs.iter()
-        .map(|(text, _)| display_width(&text))
+        .map(|(text, _)| display_width(text))
         .sum::<usize>()
         + tabs.len().saturating_sub(1)
 }
@@ -94,7 +94,7 @@ pub(super) fn tabs_line(active: ViewId, frame_width: u16, theme: &Theme) -> Line
 /// furniture that carries meaning.
 pub(super) fn brand_fits(tabs_w: usize, frame_width: u16) -> bool {
     let inner = usize::from(frame_width.saturating_sub(2));
-    tabs_w + display_width(&BRAND) + BRAND_MIN_GAP <= inner
+    tabs_w + display_width(BRAND) + BRAND_MIN_GAP <= inner
 }
 
 /// Which tab a click on the top border row hits, against the bar as it was
