@@ -8,7 +8,7 @@ use rmule_primitives::{
 };
 
 use super::{ChangeClientIpV6, PeerIpv6Tags};
-use crate::error::PeerIpv6DecodeError;
+use crate::error::WireFault;
 use rmule_primitives::ipv6_address_tag;
 
 fn address(text: &str) -> Ipv6Addr {
@@ -131,7 +131,7 @@ fn change_client_ip_refuses_a_short_payload_and_an_unusable_address() {
     let short = rmule_primitives::Packet::new(PacketProtocol::Edonkey, 0xAC, vec![0x20; 15]);
     assert_eq!(
         ChangeClientIpV6::decode_packet(&short),
-        Err(PeerIpv6DecodeError::WrongSize {
+        Err(WireFault::WrongSize {
             expected: 16,
             actual: 15
         })
@@ -143,7 +143,7 @@ fn change_client_ip_refuses_a_short_payload_and_an_unusable_address() {
         rmule_primitives::Packet::new(PacketProtocol::Edonkey, 0xAC, link_local.octets().to_vec());
     assert_eq!(
         ChangeClientIpV6::decode_packet(&packet),
-        Err(PeerIpv6DecodeError::UnusableAddress {
+        Err(WireFault::UnusableAddress {
             address: link_local
         })
     );

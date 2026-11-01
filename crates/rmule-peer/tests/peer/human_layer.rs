@@ -7,10 +7,10 @@
 use std::net::Ipv4Addr;
 
 use rmule_peer::{
-    ChangeClientId, FileDesc, HumanLayerDecodeError, Message, PeerPacket, PeerPacketDecodeError,
-    PublicIpAnswer, QueueRanking,
+    ChangeClientId, FileDesc, Message, PeerPacket, PeerPacketDecodeError, PublicIpAnswer,
+    QueueRanking, WireFault,
 };
-use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol};
+use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WrongFrame};
 
 // --- Browse requests: 0x4A / 0x5D / 0x5E — payload never inspected ---------
 
@@ -179,8 +179,8 @@ fn public_ip_answer_truncated_is_rejected() {
     let err = PeerPacket::decode(&packet).expect_err("3 bytes is not a full IPv4");
     assert_eq!(
         err,
-        PeerPacketDecodeError::HumanLayer {
-            source: HumanLayerDecodeError::WrongPayloadLen {
+        PeerPacketDecodeError::Frame {
+            source: WireFault::WrongSize {
                 expected: 4,
                 actual: 3
             }
@@ -210,8 +210,8 @@ fn message_missing_length_prefix_is_truncated() {
     let err = PeerPacket::decode(&packet).expect_err("1 byte has no full length prefix");
     assert_eq!(
         err,
-        PeerPacketDecodeError::HumanLayer {
-            source: HumanLayerDecodeError::Truncated {
+        PeerPacketDecodeError::Frame {
+            source: WireFault::Truncated {
                 needed: 2,
                 actual: 1
             }
@@ -229,8 +229,8 @@ fn message_declared_length_must_exactly_match_the_frame() {
     let err = PeerPacket::decode(&packet).expect_err("declared/actual length mismatch");
     assert_eq!(
         err,
-        PeerPacketDecodeError::HumanLayer {
-            source: HumanLayerDecodeError::SizeMismatch {
+        PeerPacketDecodeError::Frame {
+            source: WireFault::LengthMismatch {
                 declared: 10,
                 actual: 5
             }
@@ -276,8 +276,8 @@ fn filedesc_header_truncated_is_rejected() {
     let err = PeerPacket::decode(&packet).expect_err("incomplete header");
     assert_eq!(
         err,
-        PeerPacketDecodeError::HumanLayer {
-            source: HumanLayerDecodeError::Truncated {
+        PeerPacketDecodeError::Frame {
+            source: WireFault::Truncated {
                 needed: 5,
                 actual: 4
             }
@@ -321,14 +321,18 @@ fn filedesc_wrong_frame_is_rejected() {
     // Bypasses `packet.rs`'s (protocol, opcode) pre-dispatch — the decoder
     // must self-validate rather than trust an upstream match (ADR-0068).
     let wrong_protocol = Packet::new(PacketProtocol::Edonkey, 0x61, vec![0u8; 5]);
+    let filedesc_frame = WrongFrame {
+        protocol: PacketProtocol::Emule,
+        opcode: 0x61,
+    };
     assert_eq!(
         FileDesc::decode_packet(&wrong_protocol),
-        Err(HumanLayerDecodeError::WrongFrame { opcode: 0x61 })
+        Err(WireFault::WrongFrame(filedesc_frame))
     );
     let wrong_opcode = Packet::new(PacketProtocol::Emule, 0x60, vec![0u8; 5]);
     assert_eq!(
         FileDesc::decode_packet(&wrong_opcode),
-        Err(HumanLayerDecodeError::WrongFrame { opcode: 0x60 })
+        Err(WireFault::WrongFrame(filedesc_frame))
     );
 }
 
@@ -355,8 +359,8 @@ fn change_client_id_wrong_payload_len_is_rejected() {
     let err = PeerPacket::decode(&packet).expect_err("7 bytes is not the 8-byte shape");
     assert_eq!(
         err,
-        PeerPacketDecodeError::HumanLayer {
-            source: HumanLayerDecodeError::WrongPayloadLen {
+        PeerPacketDecodeError::Frame {
+            source: WireFault::WrongSize {
                 expected: 8,
                 actual: 7
             }

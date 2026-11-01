@@ -105,7 +105,7 @@ impl PeerSession {
                 ));
                 return;
             }
-            Err(PeerPacketDecodeError::Slot { .. })
+            Err(PeerPacketDecodeError::Frame { .. })
                 if packet.protocol() == PeerOpcode::StartUploadReq.protocol()
                     && packet.opcode() == PeerOpcode::StartUploadReq.as_u8() =>
             {

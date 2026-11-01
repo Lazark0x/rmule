@@ -167,7 +167,7 @@ fixed_hash!(ServerHash, 16, "server", from_hex, to_hex_upper);
 /// * **dispatch-validated** (`Name, Err, protocol: <p>, opcode: <o>`) — the
 ///   protocol/opcode were already matched by a packet dispatcher, so the
 ///   decoder only rejects a non-empty payload, via
-///   `Err::WrongPayloadLen { expected: 0, actual }`.
+///   `Err::WrongSize { expected: 0, actual }`.
 #[macro_export]
 macro_rules! empty_body_codec {
     // Dispatch-validated: opcode/protocol already matched upstream; the decoder
@@ -185,11 +185,11 @@ macro_rules! empty_body_codec {
             /// already matched.
             ///
             /// # Errors
-            /// `WrongPayloadLen` if the body is not empty.
+            /// `WrongSize` if the body is not empty.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 let actual = packet.payload().len();
                 if actual != 0 {
-                    return ::core::result::Result::Err($err::WrongPayloadLen { expected: 0, actual });
+                    return ::core::result::Result::Err($err::WrongSize { expected: 0, actual });
                 }
                 ::core::result::Result::Ok(Self)
             }

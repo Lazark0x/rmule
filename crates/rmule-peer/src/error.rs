@@ -1,65 +1,132 @@
-//! One error vocabulary for the crate: every leg's decode error re-exported
-//! through here, plus the frame-level failures the umbrella decoder raises.
+//! One error vocabulary for the crate: the fault every plain leg's decoder
+//! raises, the hello's and the source answers' own reasons, and the umbrella
+//! decoder's error that carries them.
 //!
 //! Decode errors are data, not panics — a hostile peer's malformed frame
-//! resolves to a typed reason the session can diagnose, skip or close on.
+//! resolves to a typed reason the session can diagnose, skip or close on. The
+//! legs a session treats differently keep their own type, and a leg that merely
+//! refuses a frame raises a [`WireFault`].
 
 use std::net::Ipv6Addr;
 
-use rmule_primitives::{PrimitiveError, WireTruncated};
+use rmule_primitives::{PrimitiveError, WireTruncated, WrongFrame};
 use thiserror::Error;
 
-pub use crate::aich::AichDecodeError;
-pub use crate::file_request::FileRequestDecodeError;
-pub use crate::hash_set::HashSetDecodeError;
-pub use crate::human_layer::HumanLayerDecodeError;
-pub use crate::multipacket::MultiPacketDecodeError;
-pub use crate::parts::{PartsDecodeError, PartsEncodeError};
+pub use crate::file::PartBitmapDecodeError;
+pub use crate::parts::PartsEncodeError;
 pub use crate::peer_udp::ReaskDecodeError;
-pub use crate::secure_ident::SuiDecodeError;
-pub use crate::slot::SlotDecodeError;
-pub use crate::source_exchange::{
-    AnswerSources2DecodeError, AnswerSourcesDecodeError, RequestSources2DecodeError,
-    RequestSourcesDecodeError,
-};
+pub use crate::source_exchange::{AnswerSources2DecodeError, AnswerSourcesDecodeError};
 
-/// Why an `OP_CHANGE_CLIENT_IP` (`0xAC`) could not be read (ADR-0087).
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum PeerIpv6DecodeError {
-    /// The payload was not exactly the sixteen address bytes the opcode
-    /// carries — there is no tag wrapper to disambiguate a short read.
-    #[error("OP_CHANGE_CLIENT_IP payload is {actual} bytes, not the {expected} an IPv6 address is")]
-    WrongSize {
-        /// What the shape requires.
-        expected: usize,
-        /// What arrived.
+/// Why a body is not the packet its opcode names. Every leg without a reason
+/// of its own raises this; which leg it was is the frame's own opcode.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum WireFault {
+    /// The frame is some other packet's.
+    #[error(transparent)]
+    WrongFrame(#[from] WrongFrame),
+
+    /// The payload ended inside a field the shape requires.
+    #[error("payload truncated: needed {needed} bytes, had {actual}")]
+    Truncated {
+        /// Bytes the shape requires at that point.
+        needed: usize,
+        /// Bytes present.
         actual: usize,
     },
 
+    /// A fixed-size shape arrived at another size, the empty-body packets
+    /// included, where anything at all is wrong.
+    #[error("payload wrong size: expected {expected} bytes, had {actual}")]
+    WrongSize {
+        /// The size the shape requires.
+        expected: usize,
+        /// The size that arrived.
+        actual: usize,
+    },
+
+    /// A length or count the frame declares disagrees with the bytes it carries.
+    #[error("declared {declared}, but the frame carries {actual} bytes")]
+    LengthMismatch {
+        /// What the frame declared.
+        declared: usize,
+        /// Bytes that followed the declaration.
+        actual: usize,
+    },
+
+    /// Bytes remain after the shape ends: the frame was not the packet it
+    /// claimed to be, rather than that packet with extras.
+    #[error("payload has trailing bytes after its shape ends")]
+    TrailingBytes,
+
+    /// A declared count cannot be held by this platform's `usize`, rejected
+    /// before it sizes any allocation.
+    #[error("declared count {count} overflows usize multiplication")]
+    CountOverflow {
+        /// The count the frame declared.
+        count: usize,
+    },
+
+    /// A block's range runs backwards, so it names no bytes.
+    #[error("part range end {end} before start {start}")]
+    EndBeforeStart {
+        /// The declared start.
+        start: u64,
+        /// The declared end.
+        end: u64,
+    },
+
+    /// A bundle claimed a file size above eD2k's 256 GiB ceiling.
+    #[error("file size {size} exceeds the eD2k maximum")]
+    FileSizeOutOfRange {
+        /// The size the bundle claimed.
+        size: u64,
+    },
+
+    /// `OP_SECIDENTSTATE`'s state byte names no state this crate knows.
+    #[error("unknown secure-identification state byte 0x{value:02X}")]
+    UnknownState {
+        /// The byte that arrived.
+        value: u8,
+    },
+
     /// Sixteen well-formed bytes naming an address a scope-less tag cannot
-    /// identify (`IsUsableTagIdentity`) — a link-local peer would be two
+    /// identify (`IsUsableTagIdentity`): a link-local peer would be two
     /// identities, so the announcement is refused rather than adopted.
-    #[error("OP_CHANGE_CLIENT_IP names {address}, which is not a usable tag identity")]
+    #[error("{address} is not a usable tag identity")]
     UnusableAddress {
         /// The address the announcement carried.
         address: Ipv6Addr,
     },
+
+    /// The part bitmap inside the frame did not decode.
+    #[error("part bitmap: {0}")]
+    Bitmap(#[from] PartBitmapDecodeError),
+
+    /// A tag inside the frame did not decode.
+    #[error("tag decode failed: {source}")]
+    Tag {
+        #[from]
+        /// The primitive decoder's reason.
+        source: PrimitiveError,
+    },
+}
+
+impl From<WireTruncated> for WireFault {
+    fn from(truncated: WireTruncated) -> Self {
+        Self::Truncated {
+            needed: truncated.needed,
+            actual: truncated.available,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 /// Why a peer hello (`OP_HELLO` or `OP_HELLOANSWER`) could not be read.
 /// Both directions share one shape, so they share one error.
 pub enum PeerHelloDecodeError {
-    #[error("unsupported packet protocol for peer hello")]
-    /// The frame arrived under a protocol byte no hello uses.
-    UnsupportedProtocol,
-
-    /// A hello decoder was handed a frame carrying some other opcode.
-    #[error("wrong opcode for peer hello variant: 0x{opcode:02X}")]
-    WrongOpcode {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
+    /// The frame is some other packet's.
+    #[error(transparent)]
+    WrongFrame(#[from] WrongFrame),
 
     /// The payload ended inside a field the hello shape requires.
     #[error("peer hello payload truncated: needed {needed} bytes, had {actual}")]
@@ -122,51 +189,10 @@ impl From<WireTruncated> for PeerHelloDecodeError {
     }
 }
 
-impl From<WireTruncated> for EmuleInfoDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-/// Why an `OP_EMULEINFO` / `OP_EMULEINFOANSWER` could not be read.
-pub enum EmuleInfoDecodeError {
-    #[error("unsupported packet protocol for OP_EMULEINFO")]
-    /// The frame arrived under a protocol byte other than eMule's.
-    UnsupportedProtocol,
-
-    /// The decoder was handed a frame carrying some other opcode.
-    #[error("wrong opcode for OP_EMULEINFO: 0x{opcode:02X}")]
-    WrongOpcode {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
-
-    /// The payload ended inside the six-byte header.
-    #[error("OP_EMULEINFO payload truncated: needed {needed} bytes, had {actual}")]
-    Truncated {
-        /// Bytes the header requires.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-
-    #[error("OP_EMULEINFO tag decode failed: {source}")]
-    /// A tag inside the block did not decode.
-    Tag {
-        #[from]
-        /// The primitive decoder's reason.
-        source: PrimitiveError,
-    },
-}
-
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-/// Why a peer frame could not be read. One variant per leg, each naming
-/// the decoder that refused it, so a caller can tell a malformed hello
-/// from a malformed part request without matching on strings.
+/// Why a peer frame could not be read. The legs a session treats differently
+/// from a malformed frame have a variant each, so a caller can tell them apart
+/// without matching on strings; every other leg is a [`Self::Frame`].
 pub enum PeerPacketDecodeError {
     #[error("OP_HELLO decode failed: {source}")]
     /// An `OP_HELLO` body.
@@ -176,52 +202,12 @@ pub enum PeerPacketDecodeError {
         source: PeerHelloDecodeError,
     },
 
-    #[error("OP_EMULEINFO decode failed: {source}")]
-    /// An `OP_EMULEINFO` or `OP_EMULEINFOANSWER` body.
-    EmuleInfo {
-        #[source]
-        /// The emule-info decoder's reason.
-        source: EmuleInfoDecodeError,
-    },
-
     #[error("OP_HELLOANSWER decode failed: {source}")]
     /// An `OP_HELLOANSWER` body.
     HelloAnswer {
         #[source]
         /// The hello decoder's reason.
         source: PeerHelloDecodeError,
-    },
-
-    #[error("file-request packet decode failed: {source}")]
-    /// A file-request leg frame (name, status, or the id-set packets).
-    FileRequest {
-        #[source]
-        /// The file-request decoder's reason.
-        source: FileRequestDecodeError,
-    },
-
-    #[error("hash-set packet decode failed: {source}")]
-    /// A part-hash set request or answer.
-    HashSet {
-        #[source]
-        /// The hash-set decoder's reason.
-        source: HashSetDecodeError,
-    },
-
-    #[error("slot-queue packet decode failed: {source}")]
-    /// A slot or queue-rank frame.
-    Slot {
-        #[source]
-        /// The slot decoder's reason.
-        source: SlotDecodeError,
-    },
-
-    #[error("part packet decode failed: {source}")]
-    /// A part request or a part block.
-    Parts {
-        #[source]
-        /// The parts decoder's reason.
-        source: PartsDecodeError,
     },
 
     #[error("source-exchange packet decode failed: {source}")]
@@ -240,59 +226,11 @@ pub enum PeerPacketDecodeError {
         source: AnswerSources2DecodeError,
     },
 
-    #[error("OP_REQUESTSOURCES decode failed: {source}")]
-    /// An `OP_REQUESTSOURCES` (`0x81`).
-    SourceExchangeRequest {
-        #[source]
-        /// The request decoder's reason.
-        source: RequestSourcesDecodeError,
-    },
-
-    #[error("OP_REQUESTSOURCES2 decode failed: {source}")]
-    /// An `OP_REQUESTSOURCES2` (`0x83`).
-    SourceExchangeRequest2 {
-        #[source]
-        /// The SX2 request decoder's reason.
-        source: RequestSources2DecodeError,
-    },
-
-    #[error("AICH packet decode failed: {source}")]
-    /// An AICH request or answer.
-    Aich {
-        #[source]
-        /// The AICH decoder's reason.
-        source: AichDecodeError,
-    },
-
-    #[error("secure-identification packet decode failed: {source}")]
-    /// A Secure User Identification frame.
-    Sui {
-        #[source]
-        /// The identification decoder's reason.
-        source: SuiDecodeError,
-    },
-
-    #[error("multipacket packet decode failed: {source}")]
-    /// An `OP_MULTIPACKET` bundle or its answer.
-    MultiPacket {
-        #[source]
-        /// The bundle walker's reason.
-        source: MultiPacketDecodeError,
-    },
-
-    #[error("human-layer packet decode failed: {source}")]
-    /// A chat, comment or browse frame (ADR-0068).
-    HumanLayer {
-        #[source]
-        /// The human-layer decoder's reason.
-        source: HumanLayerDecodeError,
-    },
-
-    #[error("IPv6 dialect packet decode failed: {source}")]
-    /// An `OP_CHANGE_CLIENT_IP` (ADR-0087).
-    Ipv6 {
-        #[source]
-        /// The IPv6 decoder's reason.
-        source: PeerIpv6DecodeError,
+    #[error("peer frame decode failed: {source}")]
+    /// Any other leg's frame.
+    Frame {
+        #[from]
+        /// The leg's reason.
+        source: WireFault,
     },
 }

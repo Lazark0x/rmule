@@ -25,7 +25,8 @@
 //! search returns zero hits) and falls through to `PeerPacket::Unknown`.
 
 use rmule_primitives::{FileHash, Packet, WireReader, empty_body_codec};
-use thiserror::Error;
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
 
@@ -49,10 +50,10 @@ pub struct QueueRanking {
 
 impl StartUploadReq {
     /// Read the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SlotDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(SlotDecodeError::WrongPayloadLen {
+            return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -79,7 +80,7 @@ empty_body_codec! {
     /// `OP_ACCEPTUPLOADREQ` (`0x55`) — the slot is granted; part requests
     /// may start.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    AcceptUploadReq, SlotDecodeError,
+    AcceptUploadReq, WireFault,
     protocol: PeerOpcode::AcceptUploadReq.protocol(),
     opcode: PeerOpcode::AcceptUploadReq.as_u8()
 }
@@ -88,7 +89,7 @@ empty_body_codec! {
     /// `OP_OUTOFPARTREQS` (`0x57`) — the granted transfer is over; back to
     /// the queue.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    OutOfPartReqs, SlotDecodeError,
+    OutOfPartReqs, WireFault,
     protocol: PeerOpcode::OutOfPartReqs.protocol(),
     opcode: PeerOpcode::OutOfPartReqs.as_u8()
 }
@@ -98,24 +99,24 @@ empty_body_codec! {
     /// transfer." The downloader emits it; the uploader ends the upload
     /// relationship on receipt but keeps the connection open (no disconnect).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    CancelTransfer, SlotDecodeError,
+    CancelTransfer, WireFault,
     protocol: PeerOpcode::CancelTransfer.protocol(),
     opcode: PeerOpcode::CancelTransfer.as_u8()
 }
 
 impl QueueRanking {
     /// Read the ranking, which is fixed-size and padded.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SlotDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != QUEUE_RANKING_PAYLOAD_LEN {
-            return Err(SlotDecodeError::WrongPayloadLen {
+            return Err(WireFault::WrongSize {
                 expected: QUEUE_RANKING_PAYLOAD_LEN,
                 actual: payload.len(),
             });
         }
         let rank = WireReader::new(payload)
             .read_u16_le("queue rank")
-            .map_err(|truncated| SlotDecodeError::WrongPayloadLen {
+            .map_err(|truncated| WireFault::WrongSize {
                 expected: QUEUE_RANKING_PAYLOAD_LEN,
                 actual: truncated.available,
             })?;
@@ -134,18 +135,4 @@ impl QueueRanking {
             payload,
         )
     }
-}
-
-/// Why a slot or queue packet could not be read.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum SlotDecodeError {
-    #[error("slot-queue packet payload wrong size: expected {expected} bytes, had {actual}")]
-    /// The body was not the fixed size this packet's shape requires —
-    /// including the empty-body packets, where anything at all is wrong.
-    WrongPayloadLen {
-        /// The size this packet's shape requires.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
 }

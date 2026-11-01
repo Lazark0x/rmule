@@ -40,6 +40,8 @@ mod tests;
 use rmule_primitives::{FileHash, Packet, WireReader, WireTruncated};
 use thiserror::Error;
 
+use crate::error::WireFault;
+
 pub(crate) use self::admission::sanitize_and_route;
 pub use self::entry::{SourceExchangeEntry, SourceExchangeVersion};
 use self::entry::{decode_source_entries, encode_source_entry};
@@ -154,21 +156,6 @@ impl ServedSourcesVersion {
     }
 }
 
-/// Why an `OP_REQUESTSOURCES` could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum RequestSourcesDecodeError {
-    /// The payload was not exactly one file hash.
-    #[error(
-        "OP_REQUESTSOURCES payload is {actual} bytes, not the {expected} a bare file hash requires"
-    )]
-    WrongSize {
-        /// What the shape requires.
-        expected: usize,
-        /// What arrived.
-        actual: usize,
-    },
-}
-
 /// `OP_REQUESTSOURCES` — ask a peer for more sources of `file_hash`. Payload is
 /// just `[file_hash 16]`. rmule both sends this (the requester ask) and
 /// decodes it to *serve* a peer that asks us (the serve callback answers
@@ -191,21 +178,22 @@ impl RequestSources {
     }
 
     /// Read a peer's ask, or say why the payload is not one.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, RequestSourcesDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(RequestSourcesDecodeError::WrongSize {
+            return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
         }
         let mut reader = WireReader::new(payload);
-        let file_hash = reader.read_file_hash("file hash").map_err(|truncated| {
-            RequestSourcesDecodeError::WrongSize {
-                expected: FileHash::BYTE_LEN,
-                actual: truncated.available,
-            }
-        })?;
+        let file_hash =
+            reader
+                .read_file_hash("file hash")
+                .map_err(|truncated| WireFault::WrongSize {
+                    expected: FileHash::BYTE_LEN,
+                    actual: truncated.available,
+                })?;
         Ok(Self { file_hash })
     }
 }
@@ -630,21 +618,6 @@ fn wire_count<T>(sources: &[T]) -> (u16, &[T]) {
     (count, &sources[..usize::from(count)])
 }
 
-/// Why an `OP_REQUESTSOURCES2` could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum RequestSources2DecodeError {
-    /// The payload was not the standalone shape's 19 bytes.
-    #[error(
-        "OP_REQUESTSOURCES2 payload is {actual} bytes, not the {expected} the standalone shape requires"
-    )]
-    WrongSize {
-        /// What the shape requires.
-        expected: usize,
-        /// What arrived.
-        actual: usize,
-    },
-}
-
 /// `OP_REQUESTSOURCES2` (SX2) — standalone shape
 /// `<version 1><options 2><file_hash 16>` (19 bytes;
 /// `DownloadClient.cpp::SendFileRequest`/`SendBlockRequests` @4e8f2b3c, both
@@ -696,15 +669,15 @@ impl RequestSources2 {
 
     /// Read a peer's standalone ask, requiring the full 19 bytes rather
     /// than aMule's `size != 16` check (see the type docs).
-    pub fn decode_packet(packet: &Packet) -> Result<Self, RequestSources2DecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != Self::WIRE_LEN {
-            return Err(RequestSources2DecodeError::WrongSize {
+            return Err(WireFault::WrongSize {
                 expected: Self::WIRE_LEN,
                 actual: payload.len(),
             });
         }
-        let wrong_size = |truncated: WireTruncated| RequestSources2DecodeError::WrongSize {
+        let wrong_size = |truncated: WireTruncated| WireFault::WrongSize {
             expected: Self::WIRE_LEN,
             actual: truncated.available,
         };

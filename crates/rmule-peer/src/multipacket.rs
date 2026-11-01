@@ -42,10 +42,10 @@
 //! further opcodes on the next iteration).
 
 use rmule_primitives::{
-    AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, WireTruncated,
-    write_wire_string,
+    AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, write_wire_string,
 };
-use thiserror::Error;
+
+use crate::error::WireFault;
 
 use crate::file_request::{ExtendedRequests, FileSizedStatus, read_file_sized_status};
 use crate::opcode::PeerOpcode;
@@ -189,27 +189,20 @@ impl MultiPacketRequest {
     /// model and keeping the prefix already walked. `level` is the session's
     /// negotiated extended-requests level: it alone says whether a part status
     /// follows a `0x58` sub, since the stream frames nothing.
-    pub fn decode_packet(
-        packet: &Packet,
-        level: ExtendedRequests,
-    ) -> Result<Self, MultiPacketDecodeError> {
-        let has_size = match PeerOpcode::try_from_u8(packet.opcode()) {
-            Some(op @ PeerOpcode::MultiPacket) if op.protocol() == packet.protocol() => false,
-            Some(op @ PeerOpcode::MultiPacketExt) if op.protocol() == packet.protocol() => true,
-            // Dispatch only routes matching (protocol, opcode) here, but this is
-            // a public decoder — a direct caller with a mismatched packet gets a
-            // typed error, not a panic (the crate's malformed-input convention).
-            _ => {
-                return Err(MultiPacketDecodeError::UnexpectedOpcode {
-                    opcode: packet.opcode(),
-                });
-            }
-        };
-
-        let payload = packet.payload();
+    pub fn decode_packet(packet: &Packet, level: ExtendedRequests) -> Result<Self, WireFault> {
+        let plain = PeerOpcode::MultiPacket;
+        let ext = PeerOpcode::MultiPacketExt;
+        let (has_size, payload) = packet
+            .body_of(plain.protocol(), plain.as_u8())
+            .map(|body| (false, body))
+            .or_else(|_| {
+                packet
+                    .body_of(ext.protocol(), ext.as_u8())
+                    .map(|body| (true, body))
+            })?;
         let header_len = FileHash::BYTE_LEN + if has_size { 8 } else { 0 };
         if payload.len() < header_len {
-            return Err(MultiPacketDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: header_len,
                 actual: payload.len(),
             });
@@ -221,7 +214,7 @@ impl MultiPacketRequest {
             // The size is the peer's claim and sizes every status read below,
             // so a claim no eD2k file can have ends the bundle here.
             if size > MAX_ED2K_FILE_SIZE {
-                return Err(MultiPacketDecodeError::FileSizeOutOfRange { size });
+                return Err(WireFault::FileSizeOutOfRange { size });
             }
             Some(size)
         } else {
@@ -322,10 +315,10 @@ impl MultiPacketRequest {
 
 impl MultiPacketAnswer {
     /// Read an answer bundle, with the same stop-and-keep rule as the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, MultiPacketDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN {
-            return Err(MultiPacketDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -399,7 +392,7 @@ impl MultiPacketAnswer {
 
 /// Read the `0x59` sub-item body — `<u16 name_len><name>` — leaving the
 /// reader past exactly what it consumed (more items may follow).
-fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecodeError> {
+fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, WireFault> {
     Ok(Ed2kText::from_bytes(
         reader.read_len16_bytes("file name")?.to_vec(),
     ))
@@ -407,7 +400,7 @@ fn decode_name(reader: &mut WireReader<'_>) -> Result<Ed2kText, MultiPacketDecod
 
 /// Read the `0x50` sub-item body — `<u16 part_count><bitmap>` — leaving the
 /// reader past exactly what it consumed (more items may follow).
-fn decode_status(reader: &mut WireReader<'_>) -> Result<WireStatus, MultiPacketDecodeError> {
+fn decode_status(reader: &mut WireReader<'_>) -> Result<WireStatus, WireFault> {
     let part_count = reader.read_u16_le("part count")?;
     let bitmap = reader.take(usize::from(part_count).div_ceil(8), "part bitmap")?;
     Ok(WireStatus::padded(part_count, bitmap))
@@ -458,43 +451,6 @@ fn read_name_status(rest: &[u8], file_size: Option<u64>) -> NameStatus {
             }
         }
     }
-}
-
-impl From<WireTruncated> for MultiPacketDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
-/// Why a bundle could not be read. An unmodelled sub-opcode is not here:
-/// that stops the walk and is reported with the prefix, not as a failure.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum MultiPacketDecodeError {
-    /// The bundle ended inside a sub-item's own fields.
-    #[error("multipacket payload truncated: needed {needed} bytes, had {actual}")]
-    Truncated {
-        /// Bytes that sub-item requires.
-        needed: usize,
-        /// Bytes left in the bundle.
-        actual: usize,
-    },
-
-    /// The frame is not a bundle at all.
-    #[error("multipacket decode called on non-multipacket opcode 0x{opcode:02X}")]
-    UnexpectedOpcode {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
-
-    /// `OP_MULTIPACKET_EXT` claimed a file size above eD2k's 256 GiB ceiling.
-    #[error("multipacket file size {size} exceeds the eD2k maximum")]
-    FileSizeOutOfRange {
-        /// The size the bundle claimed.
-        size: u64,
-    },
 }
 
 #[cfg(test)]

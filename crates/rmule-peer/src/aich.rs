@@ -12,49 +12,17 @@
 //! here and parsed/built by `rmule_primitives::AichHashSet`. The file-hash
 //! discovery pair (`0x9D`/`0x9E`) lands with the trusted-set work.
 
-use rmule_primitives::{AichRootHash, FileHash, Packet, WireReader, WireTruncated};
-use thiserror::Error;
+use rmule_primitives::{AichRootHash, FileHash, Packet, WireReader};
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
 
 /// Fixed header shared by both packets: file hash + part number + master hash.
 const HEADER_LEN: usize = FileHash::BYTE_LEN + 2 + AichRootHash::BYTE_LEN;
 
-/// Why an AICH packet could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum AichDecodeError {
-    /// The payload does not even hold the fixed header.
-    #[error("AICH packet payload is {actual} bytes, needs at least the {needed}-byte header")]
-    TooShort {
-        /// The header's size.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-    /// A request carried more or less than its exact shape — unlike an
-    /// answer, it has no trailing branch to absorb the difference.
-    #[error("OP_AICHREQUEST payload is {actual} bytes, not the exact {expected} expected")]
-    WrongRequestLen {
-        /// The size a request is.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
-}
-
-impl From<WireTruncated> for AichDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::TooShort {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
 /// The fixed header both packets open with.
-fn read_header(
-    reader: &mut WireReader<'_>,
-) -> Result<(FileHash, u16, AichRootHash), AichDecodeError> {
+fn read_header(reader: &mut WireReader<'_>) -> Result<(FileHash, u16, AichRootHash), WireFault> {
     Ok((
         reader.read_file_hash("file hash")?,
         reader.read_u16_le("part")?,
@@ -62,7 +30,7 @@ fn read_header(
     ))
 }
 
-fn read_root(reader: &mut WireReader<'_>) -> Result<AichRootHash, AichDecodeError> {
+fn read_root(reader: &mut WireReader<'_>) -> Result<AichRootHash, WireFault> {
     Ok(AichRootHash::from_bytes(reader.read_array("master hash")?))
 }
 
@@ -80,10 +48,10 @@ pub struct AichRequest {
 
 impl AichRequest {
     /// Read a request, which is a fixed size.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != HEADER_LEN {
-            return Err(AichDecodeError::WrongRequestLen {
+            return Err(WireFault::WrongSize {
                 expected: HEADER_LEN,
                 actual: payload.len(),
             });
@@ -128,10 +96,10 @@ pub struct AichAnswer {
 
 impl AichAnswer {
     /// Read an answer; anything past the fixed header is the branch.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < HEADER_LEN {
-            return Err(AichDecodeError::TooShort {
+            return Err(WireFault::Truncated {
                 needed: HEADER_LEN,
                 actual: payload.len(),
             });
@@ -212,10 +180,10 @@ pub struct AichFileHashReq {
 
 impl AichFileHashReq {
     /// Read the request.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != FileHash::BYTE_LEN {
-            return Err(AichDecodeError::WrongRequestLen {
+            return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -257,10 +225,10 @@ impl AichFileHashAns {
     const PAYLOAD_LEN: usize = FileHash::BYTE_LEN + AichRootHash::BYTE_LEN;
 
     /// Read the standalone answer, which must carry both hashes.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, AichDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != Self::PAYLOAD_LEN {
-            return Err(AichDecodeError::WrongRequestLen {
+            return Err(WireFault::WrongSize {
                 expected: Self::PAYLOAD_LEN,
                 actual: payload.len(),
             });
@@ -365,7 +333,7 @@ mod tests {
         );
         assert!(matches!(
             AichAnswer::decode_packet(&packet),
-            Err(AichDecodeError::TooShort { .. })
+            Err(WireFault::Truncated { .. })
         ));
     }
 }

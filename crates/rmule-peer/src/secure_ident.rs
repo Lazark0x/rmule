@@ -9,44 +9,10 @@
 //! carried opaquely here, exactly like AICH `recovery_data`.
 
 use rmule_primitives::{Packet, WireReader, WireTruncated};
-use thiserror::Error;
+
+use crate::error::WireFault;
 
 use crate::opcode::PeerOpcode;
-
-/// Why a Secure User Identification packet could not be read.
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
-pub enum SuiDecodeError {
-    /// The state announcement was not its fixed five bytes.
-    #[error("OP_SECIDENTSTATE payload is {actual} bytes, not the exact {expected} expected")]
-    WrongStateLen {
-        /// The size an announcement is.
-        expected: usize,
-        /// The size that arrived.
-        actual: usize,
-    },
-    /// The state byte names no state this crate knows.
-    #[error("OP_SECIDENTSTATE has unknown state byte 0x{value:02X}")]
-    UnknownState {
-        /// The byte that arrived.
-        value: u8,
-    },
-    /// A length-prefixed body carried no prefix at all.
-    #[error("{opcode} payload is empty, missing its length prefix")]
-    MissingLengthPrefix {
-        /// Which packet, for the message.
-        opcode: &'static str,
-    },
-    /// The declared body length and the bytes present disagree.
-    #[error("{opcode} declares {declared} body bytes but carries {actual}")]
-    LengthMismatch {
-        /// Which packet, for the message.
-        opcode: &'static str,
-        /// The length declared.
-        declared: usize,
-        /// The bytes that followed it.
-        actual: usize,
-    },
-}
 
 /// V2 `byIPUsed` kinds, pinned from aMule `ClientCredits.h`. The
 /// kind names whose address the signer folded into the signature: a Low-ID
@@ -107,22 +73,21 @@ impl SecIdentStatePacket {
     const WIRE_LEN: usize = 5;
 
     /// Read the announcement, whose size is fixed.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SuiDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() != Self::WIRE_LEN {
-            return Err(SuiDecodeError::WrongStateLen {
+            return Err(WireFault::WrongSize {
                 expected: Self::WIRE_LEN,
                 actual: payload.len(),
             });
         }
         let mut reader = WireReader::new(payload);
-        let short = |truncated: WireTruncated| SuiDecodeError::WrongStateLen {
+        let short = |truncated: WireTruncated| WireFault::WrongSize {
             expected: Self::WIRE_LEN,
             actual: truncated.available,
         };
         let raw = reader.read_u8("state").map_err(short)?;
-        let state =
-            SecIdentState::from_u8(raw).ok_or(SuiDecodeError::UnknownState { value: raw })?;
+        let state = SecIdentState::from_u8(raw).ok_or(WireFault::UnknownState { value: raw })?;
         let challenge = reader.read_u32_le("challenge").map_err(short)?;
         Ok(Self { state, challenge })
     }
@@ -152,9 +117,9 @@ pub struct PublicKeyPacket {
 
 impl PublicKeyPacket {
     /// Read the key off its length prefix.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SuiDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         Ok(Self {
-            der: decode_length_prefixed(packet.payload(), "OP_PUBLICKEY")?,
+            der: decode_length_prefixed(packet.payload())?,
         })
     }
 
@@ -185,16 +150,11 @@ pub struct SignaturePacket {
 
 impl SignaturePacket {
     /// Read a signature, taking a trailing byte as the V2 `byIPUsed` kind.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, SuiDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let mut reader = WireReader::new(packet.payload());
-        let len = usize::from(reader.read_u8("signature length").map_err(|_| {
-            SuiDecodeError::MissingLengthPrefix {
-                opcode: "OP_SIGNATURE",
-            }
-        })?);
+        let len = usize::from(reader.read_u8("signature length")?);
         let body_len = reader.remaining();
-        let mismatch = || SuiDecodeError::LengthMismatch {
-            opcode: "OP_SIGNATURE",
+        let mismatch = || WireFault::LengthMismatch {
             declared: len,
             actual: body_len,
         };
@@ -227,17 +187,12 @@ impl SignaturePacket {
     }
 }
 
-fn decode_length_prefixed(payload: &[u8], opcode: &'static str) -> Result<Vec<u8>, SuiDecodeError> {
+fn decode_length_prefixed(payload: &[u8]) -> Result<Vec<u8>, WireFault> {
     let mut reader = WireReader::new(payload);
-    let len = usize::from(
-        reader
-            .read_u8("length prefix")
-            .map_err(|_| SuiDecodeError::MissingLengthPrefix { opcode })?,
-    );
+    let len = usize::from(reader.read_u8("length prefix")?);
     let actual = reader.remaining();
     if len != actual {
-        return Err(SuiDecodeError::LengthMismatch {
-            opcode,
+        return Err(WireFault::LengthMismatch {
             declared: len,
             actual,
         });
@@ -298,7 +253,7 @@ mod tests {
         );
         assert!(matches!(
             SecIdentStatePacket::decode_packet(&unknown),
-            Err(SuiDecodeError::UnknownState { value: 9 })
+            Err(WireFault::UnknownState { value: 9 })
         ));
 
         let short = Packet::new(
@@ -308,7 +263,7 @@ mod tests {
         );
         assert!(matches!(
             SecIdentStatePacket::decode_packet(&short),
-            Err(SuiDecodeError::WrongStateLen { .. })
+            Err(WireFault::WrongSize { .. })
         ));
     }
 
@@ -373,7 +328,7 @@ mod tests {
         );
         assert!(matches!(
             SignaturePacket::decode_packet(&wire),
-            Err(SuiDecodeError::LengthMismatch { .. })
+            Err(WireFault::LengthMismatch { .. })
         ));
     }
 
@@ -387,7 +342,7 @@ mod tests {
         );
         assert!(matches!(
             PublicKeyPacket::decode_packet(&corrupt),
-            Err(SuiDecodeError::LengthMismatch {
+            Err(WireFault::LengthMismatch {
                 declared: 9,
                 actual: 2,
                 ..
@@ -401,7 +356,7 @@ mod tests {
         );
         assert!(matches!(
             SignaturePacket::decode_packet(&empty),
-            Err(SuiDecodeError::MissingLengthPrefix { .. })
+            Err(WireFault::Truncated { .. })
         ));
     }
 }

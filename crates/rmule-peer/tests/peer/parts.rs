@@ -10,7 +10,7 @@
 //! unconditionally reads 3 pairs — fewer pairs corrupts the wire.
 
 use rmule_peer::{
-    CompressedPart, PartOffsetWidth, PartRanges, PeerPacket, RequestParts, SendingPart,
+    CompressedPart, PartOffsetWidth, PartRanges, PeerPacket, RequestParts, SendingPart, WireFault,
 };
 use rmule_primitives::{FileHash, Packet, PacketProtocol};
 
@@ -175,6 +175,25 @@ fn sendingpart_round_trips_with_decoder_choosing_variant_by_opcode() {
     // tested separately. Same SendingPart value supports both.
     assert!(sp.encode_packet(PartOffsetWidth::U32).is_ok());
     assert!(sp.encode_packet(PartOffsetWidth::U64).is_ok());
+}
+
+/// These decoders are public: a direct caller's mismatched frame is a typed
+/// refusal, as every other decoder's is, never a panic.
+#[test]
+fn a_part_decoder_refuses_another_packets_frame() {
+    let hello = Packet::new(PacketProtocol::Edonkey, 0x01, vec![0u8; 16]);
+    assert!(matches!(
+        RequestParts::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
+    assert!(matches!(
+        SendingPart::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
+    assert!(matches!(
+        CompressedPart::decode_packet(&hello),
+        Err(WireFault::WrongFrame(_))
+    ));
 }
 
 #[test]

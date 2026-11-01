@@ -12,10 +12,10 @@
 //! asker's own part status after the hash whenever the session's
 //! [`ExtendedRequests`] level is at least 1.
 
-use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, WireTruncated, write_wire_string};
-use thiserror::Error;
+use rmule_primitives::{Ed2kText, FileHash, Packet, WireReader, write_wire_string};
 
-use crate::file::PartBitmapDecodeError;
+use crate::error::WireFault;
+
 use crate::opcode::PeerOpcode;
 use crate::wire_status::WireStatus;
 
@@ -207,10 +207,10 @@ impl RequestFileName {
     /// Read the request; the dispatcher matched its opcode already. Whatever
     /// follows the hash is kept unread as the [`PartStatusTail`]: only the
     /// side that knows the asked file can size the status it holds.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, FileRequestDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN {
-            return Err(FileRequestDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN,
                 actual: payload.len(),
             });
@@ -237,7 +237,7 @@ impl RequestFileName {
 
 impl SetReqFileId {
     /// Read the answer.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, FileRequestDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let file_hash = decode_only_file_hash(packet)?;
         Ok(Self { file_hash })
     }
@@ -255,7 +255,7 @@ impl SetReqFileId {
 
 impl FileReqAnsNoFil {
     /// Read the refusal.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, FileRequestDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let file_hash = decode_only_file_hash(packet)?;
         Ok(Self { file_hash })
     }
@@ -273,10 +273,10 @@ impl FileReqAnsNoFil {
 
 impl ReqFileNameAnswer {
     /// Read the file-id set.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, FileRequestDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN + 2 {
-            return Err(FileRequestDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN + 2,
                 actual: payload.len(),
             });
@@ -285,7 +285,7 @@ impl ReqFileNameAnswer {
         let file_hash = reader.read_file_hash("file hash")?;
         let file_name = Ed2kText::from_bytes(reader.read_len16_bytes("file name")?.to_vec());
         if !reader.is_exhausted() {
-            return Err(FileRequestDecodeError::TrailingBytes);
+            return Err(WireFault::TrailingBytes);
         }
         Ok(Self {
             file_hash,
@@ -310,10 +310,10 @@ impl ReqFileNameAnswer {
 
 impl FileStatus {
     /// Read the status answer, bitmap included.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, FileRequestDecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN + 2 {
-            return Err(FileRequestDecodeError::Truncated {
+            return Err(WireFault::Truncated {
                 needed: FileHash::BYTE_LEN + 2,
                 actual: payload.len(),
             });
@@ -321,8 +321,7 @@ impl FileStatus {
         let mut reader = WireReader::new(payload);
         let file_hash = reader.read_file_hash("file hash")?;
         let part_count = reader.read_u16_le("part count")?;
-        let bitmap = WireStatus::decode(part_count, reader.remaining_bytes())
-            .map_err(FileRequestDecodeError::Bitmap)?;
+        let bitmap = WireStatus::decode(part_count, reader.remaining_bytes())?;
         Ok(Self { file_hash, bitmap })
     }
 
@@ -340,44 +339,13 @@ impl FileStatus {
     }
 }
 
-fn decode_only_file_hash(packet: &Packet) -> Result<FileHash, FileRequestDecodeError> {
+fn decode_only_file_hash(packet: &Packet) -> Result<FileHash, WireFault> {
     let payload = packet.payload();
     if payload.len() != FileHash::BYTE_LEN {
-        return Err(FileRequestDecodeError::Truncated {
+        return Err(WireFault::Truncated {
             needed: FileHash::BYTE_LEN,
             actual: payload.len(),
         });
     }
     Ok(WireReader::new(payload).read_file_hash("file hash")?)
-}
-
-impl From<WireTruncated> for FileRequestDecodeError {
-    fn from(truncated: WireTruncated) -> Self {
-        Self::Truncated {
-            needed: truncated.needed,
-            actual: truncated.available,
-        }
-    }
-}
-
-/// Why a file-probe packet could not be read.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum FileRequestDecodeError {
-    #[error("file-request packet payload truncated: needed {needed} bytes, had {actual}")]
-    /// The payload ended inside a field the shape requires.
-    Truncated {
-        /// Bytes the shape requires at that point.
-        needed: usize,
-        /// Bytes present.
-        actual: usize,
-    },
-
-    #[error("file-request packet payload has trailing bytes after declared name")]
-    /// Bytes remain after the shape ends — the frame was not the packet it
-    /// claimed to be, rather than that packet with extras.
-    TrailingBytes,
-
-    #[error("file-status bitmap decode failed: {0}")]
-    /// The part bitmap inside an `OP_FILESTATUS` did not decode.
-    Bitmap(#[from] PartBitmapDecodeError),
 }

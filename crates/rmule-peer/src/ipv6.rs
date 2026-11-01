@@ -25,7 +25,7 @@ use rmule_primitives::{
     is_usable_tag_identity,
 };
 
-use crate::error::PeerIpv6DecodeError;
+use crate::error::WireFault;
 use crate::opcode::PeerOpcode;
 
 /// The IPv6 addresses a peer's hello carried, each admitted only under
@@ -116,20 +116,18 @@ impl ChangeClientIpV6 {
     /// Read an announcement.
     ///
     /// # Errors
-    /// [`PeerIpv6DecodeError::WrongSize`] when the payload is not exactly the
-    /// sixteen address bytes, [`PeerIpv6DecodeError::UnusableAddress`] when it
+    /// [`WireFault::WrongSize`] when the payload is not exactly the
+    /// sixteen address bytes, [`WireFault::UnusableAddress`] when it
     /// is well-formed but names an address a tag cannot identify.
-    pub fn decode_packet(packet: &Packet) -> Result<Self, PeerIpv6DecodeError> {
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         let bytes: [u8; Ipv6Endpoint::ADDR_WIRE_LEN] =
-            payload
-                .try_into()
-                .map_err(|_| PeerIpv6DecodeError::WrongSize {
-                    expected: Ipv6Endpoint::ADDR_WIRE_LEN,
-                    actual: payload.len(),
-                })?;
+            payload.try_into().map_err(|_| WireFault::WrongSize {
+                expected: Ipv6Endpoint::ADDR_WIRE_LEN,
+                actual: payload.len(),
+            })?;
         let address = Ipv6Addr::from(bytes);
-        Self::new(address).ok_or(PeerIpv6DecodeError::UnusableAddress { address })
+        Self::new(address).ok_or(WireFault::UnusableAddress { address })
     }
 }
 

@@ -81,7 +81,7 @@ fn umbrella_multipacket_decode_error_maps_to_the_multipacket_variant() {
     );
     assert!(matches!(
         PeerPacket::decode(&packet),
-        Err(rmule_peer::PeerPacketDecodeError::MultiPacket { .. })
+        Err(rmule_peer::PeerPacketDecodeError::Frame { .. })
     ));
 }
 

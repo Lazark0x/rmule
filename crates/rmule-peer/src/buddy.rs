@@ -107,14 +107,9 @@ impl ReaskCallbackTcp {
     /// [`BuddyRelayDecodeError`] for another frame, a body too short for its
     /// header, or an IPv6 requester that is not a usable identity.
     pub fn decode_packet(packet: &Packet) -> Result<Self, BuddyRelayDecodeError> {
-        if packet.protocol() != PacketProtocol::Emule
-            || packet.opcode() != PeerOpcode::ReaskCallbackTcp.as_u8()
-        {
-            return Err(BuddyRelayDecodeError::WrongFrame {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+        let mut reader = WireReader::new(
+            packet.body_of(PacketProtocol::Emule, PeerOpcode::ReaskCallbackTcp.as_u8())?,
+        );
         // A sentinel id is all-ones in either byte order, so no convention
         // question arises.
         let lead = reader.read_array::<4>("requester address")?;
@@ -204,14 +199,8 @@ impl Callback {
     /// Decode a `0x99` relay body back into its fields — the round-trip twin, and
     /// the read a firewalled-node `0x99` consume builds on.
     pub fn decode_packet(packet: &Packet) -> Result<Self, BuddyRelayDecodeError> {
-        if packet.protocol() != PacketProtocol::Emule
-            || packet.opcode() != PeerOpcode::Callback.as_u8()
-        {
-            return Err(BuddyRelayDecodeError::WrongFrame {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+        let mut reader =
+            WireReader::new(packet.body_of(PacketProtocol::Emule, PeerOpcode::Callback.as_u8())?);
         let buddy_id = reader.read_array::<BUDDY_ID_LEN>("buddy id")?;
         let file_hash = FileHash::from_bytes(kad_wire_id(reader.read_array("file hash")?));
         let requester = Ipv4Endpoint::new(
@@ -238,12 +227,9 @@ impl From<WireTruncated> for BuddyRelayDecodeError {
 /// Why a buddy relay output could not be decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum BuddyRelayDecodeError {
-    /// The decoder was handed some other opcode.
-    #[error("not an OP_REASKCALLBACKTCP frame: opcode 0x{opcode:02X}")]
-    WrongFrame {
-        /// The opcode that arrived.
-        opcode: u8,
-    },
+    /// The frame is some other packet's.
+    #[error(transparent)]
+    WrongFrame(#[from] rmule_primitives::WrongFrame),
     /// The frame ended inside the relay header.
     #[error("buddy relay truncated: needed {needed} bytes, had {actual}")]
     Truncated {
@@ -264,6 +250,8 @@ pub enum BuddyRelayDecodeError {
 #[cfg(test)]
 mod tests {
     use std::net::Ipv6Addr;
+
+    use rmule_primitives::WrongFrame;
 
     use super::*;
 
@@ -298,7 +286,10 @@ mod tests {
         let wrong = Packet::new(PacketProtocol::Emule, 0x93, vec![0x00; ENDPOINT_LEN]);
         assert_eq!(
             ReaskCallbackTcp::decode_packet(&wrong),
-            Err(BuddyRelayDecodeError::WrongFrame { opcode: 0x93 }),
+            Err(BuddyRelayDecodeError::WrongFrame(WrongFrame {
+                protocol: PacketProtocol::Emule,
+                opcode: PeerOpcode::ReaskCallbackTcp.as_u8(),
+            })),
         );
     }
 
@@ -409,7 +400,10 @@ mod tests {
         let wrong = Packet::new(PacketProtocol::Emule, 0x9A, vec![0x00; Callback::BODY_LEN]);
         assert_eq!(
             Callback::decode_packet(&wrong),
-            Err(BuddyRelayDecodeError::WrongFrame { opcode: 0x9A }),
+            Err(BuddyRelayDecodeError::WrongFrame(WrongFrame {
+                protocol: PacketProtocol::Emule,
+                opcode: PeerOpcode::Callback.as_u8(),
+            })),
         );
     }
 }

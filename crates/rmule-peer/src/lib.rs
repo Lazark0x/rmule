@@ -41,9 +41,7 @@ mod software;
 mod source_exchange;
 mod wire_status;
 
-pub use aich::{
-    AichAnswer, AichDecodeError, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest,
-};
+pub use aich::{AichAnswer, AichFileHashAns, AichFileHashReq, AichRefused, AichRequest};
 pub use buddy::{BuddyRelayDecodeError, Callback, ReaskCallbackTcp};
 pub use capability::{MiscOptions1, MiscOptions2, ModMiscOptions, UdpPortsAdvert};
 pub use compress::{InflateFailed, deflate_block};
@@ -52,10 +50,7 @@ pub use compressed_frame::{
 };
 pub use emule_info::{EmuleInfo, LegacyMuleInfo};
 pub use error::{
-    EmuleInfoDecodeError, FileRequestDecodeError, HashSetDecodeError, HumanLayerDecodeError,
-    PartsDecodeError, PartsEncodeError, PeerHelloDecodeError, PeerIpv6DecodeError,
-    PeerPacketDecodeError, ReaskDecodeError, RequestSources2DecodeError, RequestSourcesDecodeError,
-    SlotDecodeError,
+    PartsEncodeError, PeerHelloDecodeError, PeerPacketDecodeError, ReaskDecodeError, WireFault,
 };
 pub use file::{PartBitmap, PartBitmapDecodeError, PartIndex};
 pub use file_request::{
@@ -73,8 +68,8 @@ pub use human_layer::{ChangeClientId, FileDesc, Message, PublicIpAnswer};
 pub use identity::PeerIdentity;
 pub use ipv6::{ChangeClientIpV6, PeerIpv6Tags};
 pub use multipacket::{
-    AnswerItem, BundleCut, BundledAsk, MultiPacketAnswer, MultiPacketDecodeError,
-    MultiPacketRequest, RequestItem, UnknownSub,
+    AnswerItem, BundleCut, BundledAsk, MultiPacketAnswer, MultiPacketRequest, RequestItem,
+    UnknownSub,
 };
 pub use obfuscation::{PeerObfuscation, PeerObfuscationStep};
 pub use opcode::PeerOpcode;
@@ -89,7 +84,7 @@ pub use peer_udp::{
 };
 pub use secure_ident::{
     CRYPT_CIP_LOCALCLIENT, CRYPT_CIP_NONECLIENT, CRYPT_CIP_REMOTECLIENT, PublicKeyPacket,
-    SecIdentState, SecIdentStatePacket, SignaturePacket, SuiDecodeError,
+    SecIdentState, SecIdentStatePacket, SignaturePacket,
 };
 pub use session::{
     AskedRanges, ConnectionCommand, ConnectionEvent, FileProbeStatus, IdentityChange, NoticeEvent,

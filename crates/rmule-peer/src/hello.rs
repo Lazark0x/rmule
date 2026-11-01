@@ -137,15 +137,8 @@ impl Hello {
 
     /// Read an opening hello, requiring the legacy hash-size prefix.
     pub fn decode_packet(packet: &Packet) -> Result<Self, PeerHelloDecodeError> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(PeerHelloDecodeError::UnsupportedProtocol);
-        }
-        if packet.opcode() != PeerOpcode::Hello.as_u8() {
-            return Err(PeerHelloDecodeError::WrongOpcode {
-                opcode: packet.opcode(),
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+        let payload = packet.body_of(PacketProtocol::Edonkey, PeerOpcode::Hello.as_u8())?;
+        let mut reader = WireReader::new(payload);
         let hash_size = reader.read_u8("hash size")?;
         // aMule refuses any other size (`BaseClient.cpp:386-394`): the answer
         // has no size field to echo one with.
@@ -210,15 +203,8 @@ impl HelloAnswer {
 
     /// Read an answer, which carries no hash-size prefix.
     pub fn decode_packet(packet: &Packet) -> Result<Self, PeerHelloDecodeError> {
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(PeerHelloDecodeError::UnsupportedProtocol);
-        }
-        if packet.opcode() != PeerOpcode::HelloAnswer.as_u8() {
-            return Err(PeerHelloDecodeError::WrongOpcode {
-                opcode: packet.opcode(),
-            });
-        }
-        let (body, trailer) = decode_body(packet.payload())?;
+        let payload = packet.body_of(PacketProtocol::Edonkey, PeerOpcode::HelloAnswer.as_u8())?;
+        let (body, trailer) = decode_body(payload)?;
         Ok(Self { body, trailer })
     }
 

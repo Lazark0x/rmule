@@ -65,7 +65,7 @@ fn request_rejects_truncated_header() {
     let packet = request_packet(PeerOpcode::MultiPacket, short_hash);
     assert!(matches!(
         MultiPacketRequest::decode_packet(&packet, ExtendedRequests::NONE),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -76,7 +76,7 @@ fn ext_request_rejects_truncated_size_field() {
     let packet = request_packet(PeerOpcode::MultiPacketExt, payload);
     assert!(matches!(
         MultiPacketRequest::decode_packet(&packet, ExtendedRequests::NONE),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -240,7 +240,7 @@ fn answer_rejects_truncated_header() {
     let packet = answer_packet(vec![0u8; FileHash::BYTE_LEN - 1]);
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&packet),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -251,7 +251,7 @@ fn answer_rejects_truncated_name_length_prefix() {
     payload.push(0x00); // only one length byte
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -263,7 +263,7 @@ fn answer_rejects_name_length_overrun() {
     payload.extend_from_slice(b"only-3");
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -275,7 +275,7 @@ fn answer_rejects_truncated_status_bitmap() {
     payload.push(0xFF); // only 1 given
     assert!(matches!(
         MultiPacketAnswer::decode_packet(&answer_packet(payload)),
-        Err(MultiPacketDecodeError::Truncated { .. })
+        Err(WireFault::Truncated { .. })
     ));
 }
 
@@ -350,7 +350,7 @@ fn a_hostile_ext_size_is_refused_before_any_status_read() {
     });
     assert_eq!(
         result.expect("ran"),
-        Err(MultiPacketDecodeError::FileSizeOutOfRange { size: hostile })
+        Err(WireFault::FileSizeOutOfRange { size: hostile })
     );
     assert!(took < std::time::Duration::from_millis(1), "took {took:?}");
 

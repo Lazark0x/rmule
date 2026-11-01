@@ -307,18 +307,14 @@ impl PeerPacket {
                 return Ok(Self::AskSharedDeniedAns);
             }
             (PacketProtocol::Emule, human_layer::OP_FILEDESC) => {
-                return FileDesc::decode_packet(packet)
-                    .map(Self::FileDesc)
-                    .map_err(|source| PeerPacketDecodeError::HumanLayer { source });
+                return Ok(Self::FileDesc(FileDesc::decode_packet(packet)?));
             }
             (PacketProtocol::Emule, OP_EMULEINFO | OP_EMULEINFOANSWER) => {
-                return EmuleInfo::decode_packet(packet)
-                    .map(|info| Self::EmuleInfo {
-                        answer: packet.opcode() == OP_EMULEINFOANSWER,
-                        info,
-                        payload: packet.payload().to_vec(),
-                    })
-                    .map_err(|source| PeerPacketDecodeError::EmuleInfo { source });
+                return Ok(Self::EmuleInfo {
+                    answer: packet.opcode() == OP_EMULEINFOANSWER,
+                    info: EmuleInfo::decode_packet(packet)?,
+                    payload: packet.payload().to_vec(),
+                });
             }
             _ => {}
         }
@@ -339,57 +335,49 @@ impl PeerPacket {
             PeerOpcode::HelloAnswer => HelloAnswer::decode_packet(packet)
                 .map(Self::HelloAnswer)
                 .map_err(|source| PeerPacketDecodeError::HelloAnswer { source }),
-            PeerOpcode::RequestFileName => RequestFileName::decode_packet(packet)
-                .map(Self::RequestFileName)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::ReqFileNameAnswer => ReqFileNameAnswer::decode_packet(packet)
-                .map(Self::ReqFileNameAnswer)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::FileReqAnsNoFil => FileReqAnsNoFil::decode_packet(packet)
-                .map(Self::FileReqAnsNoFil)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::SetReqFileId => SetReqFileId::decode_packet(packet)
-                .map(Self::SetReqFileId)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::FileStatus => FileStatus::decode_packet(packet)
-                .map(Self::FileStatus)
-                .map_err(|source| PeerPacketDecodeError::FileRequest { source }),
-            PeerOpcode::HashSetRequest => HashSetRequest::decode_packet(packet)
-                .map(Self::HashSetRequest)
-                .map_err(|source| PeerPacketDecodeError::HashSet { source }),
-            PeerOpcode::HashSetAnswer => HashSetAnswer::decode_packet(packet)
-                .map(Self::HashSetAnswer)
-                .map_err(|source| PeerPacketDecodeError::HashSet { source }),
-            PeerOpcode::StartUploadReq => StartUploadReq::decode_packet(packet)
-                .map(Self::StartUploadReq)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
-            PeerOpcode::AcceptUploadReq => AcceptUploadReq::decode_packet(packet)
-                .map(Self::AcceptUploadReq)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
+            PeerOpcode::RequestFileName => Ok(Self::RequestFileName(
+                RequestFileName::decode_packet(packet)?,
+            )),
+            PeerOpcode::ReqFileNameAnswer => Ok(Self::ReqFileNameAnswer(
+                ReqFileNameAnswer::decode_packet(packet)?,
+            )),
+            PeerOpcode::FileReqAnsNoFil => Ok(Self::FileReqAnsNoFil(
+                FileReqAnsNoFil::decode_packet(packet)?,
+            )),
+            PeerOpcode::SetReqFileId => {
+                Ok(Self::SetReqFileId(SetReqFileId::decode_packet(packet)?))
+            }
+            PeerOpcode::FileStatus => Ok(Self::FileStatus(FileStatus::decode_packet(packet)?)),
+            PeerOpcode::HashSetRequest => {
+                Ok(Self::HashSetRequest(HashSetRequest::decode_packet(packet)?))
+            }
+            PeerOpcode::HashSetAnswer => {
+                Ok(Self::HashSetAnswer(HashSetAnswer::decode_packet(packet)?))
+            }
+            PeerOpcode::StartUploadReq => {
+                Ok(Self::StartUploadReq(StartUploadReq::decode_packet(packet)?))
+            }
+            PeerOpcode::AcceptUploadReq => Ok(Self::AcceptUploadReq(
+                AcceptUploadReq::decode_packet(packet)?,
+            )),
             // aMule acts on a cancel whatever rides after the opcode, reading
             // none of it (stock 2.3.3 `4e8f2b3c` `ClientTCPSocket.cpp:673-678`):
             // a body is ignored, never a reason to close.
             PeerOpcode::CancelTransfer => Ok(Self::CancelTransfer(CancelTransfer)),
-            PeerOpcode::OutOfPartReqs => OutOfPartReqs::decode_packet(packet)
-                .map(Self::OutOfPartReqs)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
-            PeerOpcode::QueueRanking => QueueRanking::decode_packet(packet)
-                .map(Self::QueueRanking)
-                .map_err(|source| PeerPacketDecodeError::Slot { source }),
+            PeerOpcode::OutOfPartReqs => {
+                Ok(Self::OutOfPartReqs(OutOfPartReqs::decode_packet(packet)?))
+            }
+            PeerOpcode::QueueRanking => {
+                Ok(Self::QueueRanking(QueueRanking::decode_packet(packet)?))
+            }
             PeerOpcode::RequestParts | PeerOpcode::RequestPartsI64 => {
-                RequestParts::decode_packet(packet)
-                    .map(Self::RequestParts)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::RequestParts(RequestParts::decode_packet(packet)?))
             }
             PeerOpcode::SendingPart | PeerOpcode::SendingPartI64 => {
-                SendingPart::decode_packet(packet)
-                    .map(Self::SendingPart)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::SendingPart(SendingPart::decode_packet(packet)?))
             }
             PeerOpcode::CompressedPart | PeerOpcode::CompressedPartI64 => {
-                CompressedPart::decode_packet(packet)
-                    .map(Self::CompressedPart)
-                    .map_err(|source| PeerPacketDecodeError::Parts { source })
+                Ok(Self::CompressedPart(CompressedPart::decode_packet(packet)?))
             }
             PeerOpcode::AnswerSources => {
                 // An ExtSX claimant's answer is a record list, so its reader is
@@ -410,12 +398,12 @@ impl PeerPacket {
             // `OP_REQUESTSOURCES2` (the SX2 `<ver><opts><hash>` triple; rmule
             // accepts its correct 19-byte shape rather than replicating aMule
             // 2.3.3's `size != 16` disconnect defect — ADR-0055).
-            PeerOpcode::RequestSources => RequestSources::decode_packet(packet)
-                .map(Self::RequestSources)
-                .map_err(|source| PeerPacketDecodeError::SourceExchangeRequest { source }),
-            PeerOpcode::RequestSources2 => RequestSources2::decode_packet(packet)
-                .map(Self::RequestSources2)
-                .map_err(|source| PeerPacketDecodeError::SourceExchangeRequest2 { source }),
+            PeerOpcode::RequestSources => {
+                Ok(Self::RequestSources(RequestSources::decode_packet(packet)?))
+            }
+            PeerOpcode::RequestSources2 => Ok(Self::RequestSources2(
+                RequestSources2::decode_packet(packet)?,
+            )),
             // `OP_ANSWERSOURCES2` (`0x84`) — a peer's SX2 answer to our own
             // `0x83` ask (ADR-0055 requester consume). Unlike `0x82`, the entry
             // version travels on the wire, so decode is self-contained (no
@@ -429,42 +417,32 @@ impl PeerPacket {
             }
             .map(Self::AnswerSources2)
             .map_err(|source| PeerPacketDecodeError::SourceExchange2 { source }),
-            PeerOpcode::AichRequest => AichRequest::decode_packet(packet)
-                .map(Self::AichRequest)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
+            PeerOpcode::AichRequest => Ok(Self::AichRequest(AichRequest::decode_packet(packet)?)),
             PeerOpcode::AichAnswer if AichRefused::is_form_of(packet) => {
                 Ok(Self::AichRefused(AichRefused::decode_packet(packet)))
             }
-            PeerOpcode::AichAnswer => AichAnswer::decode_packet(packet)
-                .map(Self::AichAnswer)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::AichFileHashReq => AichFileHashReq::decode_packet(packet)
-                .map(Self::AichFileHashReq)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::AichFileHashAns => AichFileHashAns::decode_packet(packet)
-                .map(Self::AichFileHashAns)
-                .map_err(|source| PeerPacketDecodeError::Aich { source }),
-            PeerOpcode::SecIdentState => SecIdentStatePacket::decode_packet(packet)
-                .map(Self::SecIdentState)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
-            PeerOpcode::PublicKey => PublicKeyPacket::decode_packet(packet)
-                .map(Self::PublicKey)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
-            PeerOpcode::Signature => SignaturePacket::decode_packet(packet)
-                .map(Self::Signature)
-                .map_err(|source| PeerPacketDecodeError::Sui { source }),
+            PeerOpcode::AichAnswer => Ok(Self::AichAnswer(AichAnswer::decode_packet(packet)?)),
+            PeerOpcode::AichFileHashReq => Ok(Self::AichFileHashReq(
+                AichFileHashReq::decode_packet(packet)?,
+            )),
+            PeerOpcode::AichFileHashAns => Ok(Self::AichFileHashAns(
+                AichFileHashAns::decode_packet(packet)?,
+            )),
+            PeerOpcode::SecIdentState => Ok(Self::SecIdentState(
+                SecIdentStatePacket::decode_packet(packet)?,
+            )),
+            PeerOpcode::PublicKey => Ok(Self::PublicKey(PublicKeyPacket::decode_packet(packet)?)),
+            PeerOpcode::Signature => Ok(Self::Signature(SignaturePacket::decode_packet(packet)?)),
             // OP_MULTIPACKET (0x92) and OP_MULTIPACKET_EXT (0xA4) both decode
             // through `MultiPacketRequest::decode_packet`, which tells the two
             // apart by opcode (the `size8` field is EXT-only) — the same
             // pattern `RequestParts | RequestPartsI64` uses above (ADR-0054).
-            PeerOpcode::MultiPacket | PeerOpcode::MultiPacketExt => {
-                MultiPacketRequest::decode_packet(packet, level)
-                    .map(Self::MultiPacketRequest)
-                    .map_err(|source| PeerPacketDecodeError::MultiPacket { source })
-            }
-            PeerOpcode::MultiPacketAnswer => MultiPacketAnswer::decode_packet(packet)
-                .map(Self::MultiPacketAnswer)
-                .map_err(|source| PeerPacketDecodeError::MultiPacket { source }),
+            PeerOpcode::MultiPacket | PeerOpcode::MultiPacketExt => Ok(Self::MultiPacketRequest(
+                MultiPacketRequest::decode_packet(packet, level)?,
+            )),
+            PeerOpcode::MultiPacketAnswer => Ok(Self::MultiPacketAnswer(
+                MultiPacketAnswer::decode_packet(packet)?,
+            )),
             // OP_KAD_FWTCPCHECK_ACK acks *our own* firewall check over the
             // dial-back's TCP link (ADR-0058 requester). aMule's ack is a null
             // packet; any trailing bytes are tolerated (ADR-0018 liberal
@@ -506,18 +484,16 @@ impl PeerPacket {
             PeerOpcode::PublicIpReq => Ok(Self::PublicIpReq),
             PeerOpcode::ChatCaptchaReq => Ok(Self::ChatCaptchaReq),
             PeerOpcode::ChatCaptchaRes => Ok(Self::ChatCaptchaRes),
-            PeerOpcode::PublicIpAnswer => PublicIpAnswer::decode_packet(packet)
-                .map(Self::PublicIpAnswer)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::Message => Message::decode_packet(packet)
-                .map(Self::Message)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::ChangeClientId => ChangeClientId::decode_packet(packet)
-                .map(Self::ChangeClientId)
-                .map_err(|source| PeerPacketDecodeError::HumanLayer { source }),
-            PeerOpcode::ChangeClientIpV6 => ChangeClientIpV6::decode_packet(packet)
-                .map(Self::ChangeClientIpV6)
-                .map_err(|source| PeerPacketDecodeError::Ipv6 { source }),
+            PeerOpcode::PublicIpAnswer => {
+                Ok(Self::PublicIpAnswer(PublicIpAnswer::decode_packet(packet)?))
+            }
+            PeerOpcode::Message => Ok(Self::Message(Message::decode_packet(packet)?)),
+            PeerOpcode::ChangeClientId => {
+                Ok(Self::ChangeClientId(ChangeClientId::decode_packet(packet)?))
+            }
+            PeerOpcode::ChangeClientIpV6 => Ok(Self::ChangeClientIpV6(
+                ChangeClientIpV6::decode_packet(packet)?,
+            )),
         }
     }
 
