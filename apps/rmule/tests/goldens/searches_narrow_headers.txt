@@ -6,7 +6,7 @@
 │Filters: none   o edit  │
 └────────────────────────┘
 [ubuntu · 3]
-┌ Results · Completed ───┐
+┌ Results ─── Enter menu ┐
 │  Name ▲                │
 │▸ clip_low.avi          │
 │  distro_hot.iso        │

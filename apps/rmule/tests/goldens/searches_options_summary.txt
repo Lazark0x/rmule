@@ -4,7 +4,7 @@
 │Filters: Audio · ≥4 MB · ≥25 src · .mp3   o edit                            │
 └────────────────────────────────────────────────────────────────────────────┘
 [ubuntu · 3]
-┌ Results · Completed · 3 ─── [ ] search  x close  s sort  S reverse  z zoom ┐
+┌ Results · Completed · 3 ────────── Enter menu  [ ] search  x close  s sort ┐
 │  Name ▲                                           Size    Sources Type     │
 │▸ clip_low.avi                                 700.0 MB          5 Videos   │
 │  distro_hot.iso                                 3.0 GB 1234 (900) CD-Images│

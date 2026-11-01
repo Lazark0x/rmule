@@ -1,7 +1,4 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared Files │ 5 Statistics │ 6 Settings ─────── rmule ┐
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
 │┌ Help ──────────────────────────────────────────────────────────────────────────────────────────┐│
 ││ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                                               ││
 ││                                                                                                ││
@@ -10,21 +7,27 @@
 ││ j/k  ↑/↓        select row in focused pane                                                     ││
 ││ g / G           top / bottom                                                                   ││
 ││ Tab / Shift-Tab cycle panes (accent border = focus)                                            ││
+││ z               zoom the focused pane to the whole tab, or back                                ││
 ││ m / Enter       row action menu                                                                ││
 ││ s / S           sort the focused table by next column / reverse                                ││
 ││ ?               this help; j/k, PgUp/PgDn scroll it when it is long                            ││
 ││ q               quit; asks first while a download runs                                         ││
 ││ Ctrl-C          quit, from anywhere                                                            ││
 ││ Esc             close a menu, a form or a question; leave the query                            ││
+││ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word                           ││
+││ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back                   ││
+││ Tab             in a path field: complete it; ~ is your home                                   ││
 ││ mouse           click tab/row selects, header sorts, wheel scrolls                             ││
 ││ a               Networks: add server                                                           ││
 ││ U               Networks: update server list from URL                                          ││
 ││ c               Networks: connect to the selected server, or disconnect from the one you are on││
 ││ K               Networks: start or stop Kad                                                    ││
+││ d               Networks: the selected server's grants, flags and health                       ││
 ││ /               Searches: focus query input                                                    ││
 ││ o               Searches: type/size/sources/extension filters                                  ││
 ││ [ / ]           Searches: previous / next held search                                          ││
 ││ x / n           Searches: stop or close a search / server's next page                          ││
+││ u               Searches: bring back the search closed last                                    ││
 ││ p               Transfers: pause or resume the selected download                               ││
 ││ C               Transfers: clear all completed                                                 ││
 ││ L               Transfers: add a download from a pasted eD2k link                              ││
@@ -34,7 +37,4 @@
 ││ Enter  ← / →    Settings: edit a field / step a selector                                       ││
 ││ x               Settings: stop sharing the selected directory                                  ││
 │└────────────────────────────────────────────────────────────────────────────────────────────────┘│
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─────────────────────? help ┘

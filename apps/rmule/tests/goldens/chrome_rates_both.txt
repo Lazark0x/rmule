@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-└ ▼ 123.4 KB/s ▲  45.6 KB/s │ ●eD2k HighID ●Kad: off │ upload s…granted─? help ┘
+└ ▼ 123.4 KB/s ▲  45.6 KB/s │ ●eD2k HighID ●Kad: off │ upload slo…anted─? help ┘

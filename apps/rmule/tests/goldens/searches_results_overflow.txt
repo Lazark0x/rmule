@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [episode · 40]
-┌ Results · Completed · 40 ── [ ] search  x close  s sort  S reverse  z zoom ┐
+┌ Results · Completed · 40 ───────── Enter menu  [ ] search  x close  s sort ┐
 │  Name ▲                                              Size Sources Type    ▲│
 │  episode_10.mkv                                   10.0 MB       3 Videos   │
 │  episode_11.mkv                                   11.0 MB       3 Videos   │

@@ -7,18 +7,18 @@
 │ j/k  ↑/↓        select row in focused pane                                  █│
 │ g / G           top / bottom                                                █│
 │ Tab / Shift-Tab cycle panes (accent border = focus)                         █│
+│ z               zoom the focused pane to the whole tab, or back             █│
 │ m / Enter       row action menu                                             █│
 │ s / S           sort the focused table by next column / reverse             █│
-│ ?               this help; j/k, PgUp/PgDn scroll it when it is long         █│
-│ q               quit; asks first while a download runs                      █│
-│ Ctrl-C          quit, from anywhere                                         █│
-│ Esc             close a menu, a form or a question; leave the query         ▆│
+│ ?               this help; j/k, PgUp/PgDn scroll it when it is long         ▄│
+│ q               quit; asks first while a download runs                       │
+│ Ctrl-C          quit, from anywhere                                          │
+│ Esc             close a menu, a form or a question; leave the query          │
+│ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word         │
+│ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back │
+│ Tab             in a path field: complete it; ~ is your home                 │
 │ mouse           click tab/row selects, header sorts, wheel scrolls           │
 │ a               Networks: add server                                         │
-│ U               Networks: update server list from URL                        │
-│ c               Networks: connect to the selected server, or disconnect from │
-│                 the one you are on                                           │
-│ K               Networks: start or stop Kad                                  │
-│ /               Searches: focus query input                                 ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 20 / 32 ┘
+│ U               Networks: update server list from URL                       ▼│
+└─────────────────────────────────────────────────────────────── j/k ─ 20 / 38 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

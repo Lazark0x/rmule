@@ -9,4 +9,4 @@
 │                                          │
 │                                          │
 │                                          │
-└ ▼ 123.4 KB/s ▲   0.0 KB/s │ ✱ no d…ttings┘
+└ ▼ 123.4 KB/s ▲   0.0 KB/s │ ✱ no dow…ings┘

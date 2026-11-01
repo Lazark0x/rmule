@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [ubuntu · 3]
-┌ Results · Completed · 3 ─── [ ] search  x close  s sort  S reverse  z zoom ┐
+┌ Results · Completed · 3 ────────── Enter menu  [ ] search  x close  s sort ┐
 │  Name ▲                                           Size    Sources Type     │
 │▸ clip_low.avi┌ Result actions ──────────────────────────────┐   5 Videos   │
 │  distro_hot.i│▸ Download                                    │900) CD-Images│

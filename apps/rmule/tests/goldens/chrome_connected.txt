@@ -21,4 +21,4 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-└ ▼ 123.4 KB/s ▲   0.0 KB/s │ ●eD2k HighID ●Kad: off │ download…mpleted─? help ┘
+└ ▼ 123.4 KB/s ▲   0.0 KB/s │ ●eD2k HighID ●Kad: off │ download c…leted─? help ┘
