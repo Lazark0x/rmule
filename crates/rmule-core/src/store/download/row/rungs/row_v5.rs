@@ -101,7 +101,7 @@ impl DownloadFailureV5 {
     }
 }
 
-/// [`StorageIntegrityFault`](crate::StorageIntegrityFault) as store versions 13 and 14 encoded it.
+/// [`StorageIntegrityFault`] as store versions 13 and 14 encoded it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum StorageIntegrityFaultV4 {
     PartFileMissing,
