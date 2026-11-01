@@ -103,7 +103,7 @@ fn compare(name: &str, actual: String) {
     ]
     .iter()
     .collect();
-    if std::env::var_os("UPDATE_GOLDENS").is_some() {
+    if blesses(std::env::var("UPDATE_GOLDENS").ok().as_deref()) {
         let dir = path.parent().expect("goldens dir");
         fs::create_dir_all(dir).expect("create goldens dir");
         fs::write(&path, &actual).expect("write golden");
@@ -119,6 +119,11 @@ fn compare(name: &str, actual: String) {
         actual, expected,
         "golden '{name}' drifted; re-bless with UPDATE_GOLDENS=1 if intended"
     );
+}
+
+/// Whether `UPDATE_GOLDENS` holds what asks for a bless: `1`, and nothing else.
+fn blesses(update_goldens: Option<&str>) -> bool {
+    update_goldens == Some("1")
 }
 
 /// What in a rendered frame reads as code rather than words: an
@@ -176,6 +181,14 @@ mod tests {
     use ratatui::widgets::{Block, Paragraph};
 
     use super::*;
+
+    #[test]
+    fn only_one_blesses() {
+        assert!(blesses(Some("1")));
+        for value in [None, Some("0"), Some(""), Some("true")] {
+            assert!(!blesses(value), "{value:?} asks for no bless");
+        }
+    }
 
     #[test]
     fn renders_glyphs_row_by_row_with_trailing_space_trimmed() {

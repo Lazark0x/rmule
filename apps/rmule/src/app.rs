@@ -581,14 +581,11 @@ mod tests {
     #[test]
     fn all_three_themes_render_the_same_glyph_structure() {
         // Spec §7 acceptance: themes differ in style only — the glyph
-        // layer must match the blessed dark golden exactly.
-        let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/goldens/app_full_frame.txt");
-        let dark = std::fs::read_to_string(golden).expect("dark golden blessed");
-        for theme in [Theme::light(), Theme::fallback_256()] {
+        // layer must match the dark theme's exactly.
+        let glyphs = |theme: Theme| {
             let mut app = App::new(theme);
             let now = Instant::now();
-            let lines = crate::golden::render_to_lines(80, 24, |frame| {
+            crate::golden::render_to_lines(80, 24, |frame| {
                 let content = chrome::draw_frame(frame, &app.state, &app.chrome, &app.theme, now);
                 app.views.draw(
                     app.chrome.active,
@@ -599,8 +596,15 @@ mod tests {
                     now,
                 );
                 chrome::draw_overlays(frame, &app.state, &app.chrome, &app.theme);
-            });
-            assert_eq!(lines, dark, "theme changed glyphs, not just styles");
+            })
+        };
+        let dark = glyphs(Theme::default_dark());
+        for theme in [Theme::light(), Theme::fallback_256()] {
+            assert_eq!(
+                glyphs(theme),
+                dark,
+                "theme changed glyphs, not just styles"
+            );
         }
     }
 

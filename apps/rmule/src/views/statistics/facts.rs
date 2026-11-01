@@ -378,22 +378,20 @@ mod tests {
     fn all_three_themes_render_the_same_statistics_glyphs() {
         let base = Instant::now();
         let state = busy(base);
-        let dark = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/goldens/statistics_populated.txt"),
-        )
-        .expect("dark golden blessed");
-        for theme in [Theme::light(), Theme::fallback_256()] {
-            let lines = render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
+        let glyphs = |theme: &Theme| {
+            render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
                 draw(
                     frame,
                     frame.area(),
                     &state,
-                    &theme,
+                    theme,
                     base + Duration::from_secs(90),
                 );
-            });
-            assert_eq!(lines, dark, "theme changed glyphs, not just styles");
+            })
+        };
+        let dark = glyphs(&Theme::default_dark());
+        for theme in [Theme::light(), Theme::fallback_256()] {
+            assert_eq!(glyphs(&theme), dark, "theme changed glyphs, not just styles");
         }
     }
 }
