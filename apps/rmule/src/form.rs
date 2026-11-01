@@ -35,6 +35,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::line_edit::LineEdit;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::words::Sentence;
 use crate::words::app as words;
@@ -292,6 +293,31 @@ impl Form {
             if self.fields[index].focusable() {
                 self.focus = index;
                 return;
+            }
+        }
+    }
+
+    /// Move the focus by a key's [`RowMove`]: a step wraps as [`Form::step_focus`]
+    /// does, a page walks `page` fields and stops at the end.
+    pub fn walk(&mut self, movement: RowMove, page: usize) {
+        match movement {
+            RowMove::Step(delta) => self.step_focus(delta > 0),
+            RowMove::First => self.focus_first(),
+            RowMove::Last => self.focus_last(),
+            RowMove::Page(pages) => {
+                let reachable: Vec<usize> = (0..self.fields.len())
+                    .filter(|index| self.fields[*index].focusable())
+                    .collect();
+                let at = reachable
+                    .iter()
+                    .position(|index| *index == self.focus)
+                    .unwrap_or(0);
+                let target = at.saturating_add_signed(pages.saturating_mul(
+                    isize::try_from(page.max(1)).unwrap_or(isize::MAX),
+                ));
+                if let Some(index) = reachable.get(target.min(reachable.len().saturating_sub(1))) {
+                    self.focus = *index;
+                }
             }
         }
     }

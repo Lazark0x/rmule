@@ -266,7 +266,8 @@ impl NetworksView {
         match self.focus {
             Pane::Servers => {
                 let before = self.server_sel;
-                self.cursor.apply(&self.server_ids(state), movement);
+                let page = self.viewport.page();
+                self.cursor.apply(&self.server_ids(state), movement, page);
                 self.clamp_selection(state);
                 if self.server_sel == before {
                     ViewOutcome::Ignored
@@ -398,6 +399,21 @@ mod tests {
         assert_eq!(view.focus, Pane::Log);
         view.handle_key(press(KeyCode::BackTab), &state);
         assert_eq!(view.focus, Pane::Servers);
+    }
+
+    /// Every list reads its page keys in one place, so one table proves them.
+    #[test]
+    fn the_page_and_end_keys_move_the_cursor() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.handle_key(press(KeyCode::End), &state);
+        assert_eq!(view.server_sel, 3);
+        view.handle_key(press(KeyCode::Home), &state);
+        assert_eq!(view.server_sel, 0);
+        view.handle_key(press(KeyCode::PageDown), &state);
+        assert_eq!(view.server_sel, 1, "a page of the one row a fresh view knows");
+        view.handle_key(press(KeyCode::PageUp), &state);
+        assert_eq!(view.server_sel, 0);
     }
 
     #[test]

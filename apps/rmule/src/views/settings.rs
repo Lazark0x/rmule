@@ -58,6 +58,7 @@ use crate::config::{
 use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
 use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
+use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::words::Sentence;
@@ -583,23 +584,12 @@ impl SettingsView {
             };
         }
 
+        if let Some(movement) = RowMove::of(key.code) {
+            let page = usize::try_from(self.viewport.page()).unwrap_or(1);
+            self.form.walk(movement, page);
+            return ViewOutcome::Redraw;
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.form.step_focus(true);
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.form.step_focus(false);
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('g') => {
-                self.form.focus_first();
-                ViewOutcome::Redraw
-            }
-            KeyCode::Char('G') => {
-                self.form.focus_last();
-                ViewOutcome::Redraw
-            }
             // A listed directory is not typed into.
             KeyCode::Enter if self.form.focus_is_item() => ViewOutcome::Redraw,
             KeyCode::Enter => {

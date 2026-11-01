@@ -310,11 +310,12 @@ impl TransfersView {
         match self.focus {
             Pane::Table => {
                 let before = self.cursor.place(ids);
-                self.cursor.apply(ids, movement);
+                self.cursor.apply(ids, movement, self.viewport.page());
                 self.table_selected(before, ids);
             }
             Pane::Sources => {
-                self.source_cursor.apply(sources, movement);
+                let page = self.source_viewport.page();
+                self.source_cursor.apply(sources, movement, page);
                 self.source_selected = self.source_cursor.place(sources);
             }
         }
@@ -456,6 +457,11 @@ impl TransfersView {
 
 #[cfg(test)]
 impl TransfersView {
+    /// The selected row's place, as the last key left it.
+    pub(crate) const fn selected_row(&self) -> Option<usize> {
+        self.selected
+    }
+
     /// A view sorted by name, the order most tests state their rows in.
     pub(crate) fn by_name() -> Self {
         let mut view = Self::new();

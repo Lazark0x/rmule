@@ -245,3 +245,18 @@ fn a_pair_compares_its_first_figure_then_its_second_at_any_magnitude() {
     assert!(key(1, 5) < key(1, 6));
     assert!(key(u64::from(u32::MAX) + 1, 0) > key(u64::from(u32::MAX), 9));
 }
+
+/// A page is the rows on screen and stops at the ends, never past them.
+#[test]
+fn a_page_moves_by_what_the_screen_holds_and_stops_at_the_ends() {
+    let ids: Vec<u8> = (0..10).collect();
+    let mut cursor = RowCursor::default();
+    cursor.apply(&ids, RowMove::Page(1), 4);
+    assert_eq!(cursor.place(&ids), Some(4));
+    cursor.apply(&ids, RowMove::Page(1), 40);
+    assert_eq!(cursor.place(&ids), Some(9));
+    cursor.apply(&ids, RowMove::Page(-1), 4);
+    assert_eq!(cursor.place(&ids), Some(5));
+    cursor.apply(&ids, RowMove::Page(-1), 40);
+    assert_eq!(cursor.place(&ids), Some(0));
+}

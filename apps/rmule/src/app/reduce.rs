@@ -16,6 +16,11 @@ use crate::action::Action;
 use crate::input;
 use crate::views::ViewOutcome;
 
+/// A key press of `code` alone, as the gate and the wheel hand one on.
+fn key_of(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
+    ratatui::crossterm::event::KeyEvent::new(code, ratatui::crossterm::event::KeyModifiers::NONE)
+}
+
 impl App {
     /// Route one action into the right state owner. Public shape kept
     /// test-driving-friendly: pure apart from what the action itself does.
@@ -27,8 +32,9 @@ impl App {
                         let overlay = self.chrome.help_open || self.chrome.quit_open;
                         let text_open =
                             !overlay && self.views.text_open(self.chrome.active, &self.state);
-                        match input::gate(&key, text_open) {
-                            input::KeyGate::Pass => {}
+                        let key = match input::gate(&key, text_open) {
+                            input::KeyGate::Pass => key,
+                            input::KeyGate::Page(code) => key_of(code),
                             input::KeyGate::Drop => return Flow::Continue,
                             input::KeyGate::Interrupt => {
                                 return self.reduce(Action::AskQuit, now);
@@ -39,7 +45,7 @@ impl App {
                             input::KeyGate::Repaint => {
                                 return self.reduce(Action::Repaint, now);
                             }
-                        }
+                        };
                         // Under the too-small screen no view is on show, so no
                         // view hears the key: the way out alone answers.
                         if self.too_small && !self.chrome.quit_open {

@@ -241,8 +241,15 @@ impl SharedView {
     /// Move the focused pane's cursor.
     fn move_selection(&mut self, state: &UiState, movement: RowMove) {
         match self.focus {
-            Pane::Files => self.cursor.apply(&self.file_ids(state), movement),
-            Pane::Peers => self.peer_cursor.apply(&self.peer_ids(state), movement),
+            Pane::Files => {
+                let page = self.files_viewport.page();
+                self.cursor.apply(&self.file_ids(state), movement, page);
+            }
+            Pane::Peers => {
+                let page = self.peers_viewport.page();
+                let ids = self.peer_ids(state);
+                self.peer_cursor.apply(&ids, movement, page);
+            }
         }
         self.clamp_selection(state);
     }

@@ -245,7 +245,7 @@ pub(crate) const fn confirm_key(code: KeyCode) -> Option<bool> {
 }
 
 /// Scroll a modal that only reads — a confirm, the details — by `code` when
-/// it is one of the list keys: `j` / `k` a line, `g` / `G` the ends.
+/// it is one of the list keys: a line, a page, the ends.
 pub(crate) fn scroll_key(viewport: &mut Cell<Viewport>, code: KeyCode) {
     if let Some(movement) = RowMove::of(code) {
         viewport.get_mut().scroll(movement);
@@ -256,12 +256,12 @@ pub(crate) fn scroll_key(viewport: &mut Cell<Viewport>, code: KeyCode) {
 /// the focus pull it back when a field takes a key. Whether `code` was one of
 /// them; the form's own keys are the caller's.
 pub(crate) fn scroll_form(viewport: &mut Cell<Viewport>, code: KeyCode) -> bool {
-    let movement = match code {
-        KeyCode::PageDown => RowMove::Step(viewport.get().page()),
-        KeyCode::PageUp => RowMove::Step(-viewport.get().page()),
-        _ => return false,
-    };
-    viewport.get_mut().hold(movement);
+    if !matches!(code, KeyCode::PageDown | KeyCode::PageUp) {
+        return false;
+    }
+    if let Some(movement) = RowMove::of(code) {
+        viewport.get_mut().hold(movement);
+    }
     true
 }
 

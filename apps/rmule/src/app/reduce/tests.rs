@@ -90,6 +90,22 @@ fn an_open_field_claims_its_chords_at_the_gate() {
     assert_eq!(app.views.searches.query_text(), "big ", "no field open");
 }
 
+/// Ctrl-D and Ctrl-U page a list outside a field, and never reach a view as
+/// the letter it binds: `u` brings a closed search back.
+#[test]
+fn ctrl_d_and_ctrl_u_page_and_reach_no_view_as_their_letter() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.state = crate::fixture::three_downloads();
+    app.chrome.active = ViewId::Transfers;
+    let down = chord(KeyCode::Char('d'), KeyModifiers::CONTROL);
+    let at = |app: &mut App| app.views.transfers.selected_row();
+    app.reduce(down, now);
+    assert_eq!(at(&mut app), Some(1));
+    app.reduce(chord(KeyCode::Char('u'), KeyModifiers::CONTROL), now);
+    assert_eq!(at(&mut app), Some(0));
+}
+
 /// A node serving a queue, or with a download waiting for a source, is under
 /// way as much as one moving bytes: one `q` must not throw that away.
 #[test]

@@ -8,6 +8,7 @@ use std::cell::Cell;
 use std::collections::BTreeSet;
 
 use crate::row_selection::viewport::Viewport;
+use crate::table_sort::RowMove;
 use crate::views::modal::{Modal, scroll_key};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -47,8 +48,8 @@ pub(crate) fn consent_key(
     let share = match key.code {
         KeyCode::Char('y' | 'Y') => true,
         KeyCode::Char('n' | 'N') => false,
-        KeyCode::Char('j' | 'k' | 'g' | 'G') | KeyCode::Up | KeyCode::Down => {
-            scroll_key(viewport, key.code);
+        code if RowMove::of(code).is_some() => {
+            scroll_key(viewport, code);
             return ViewOutcome::Redraw;
         }
         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('m' | 'x') => {

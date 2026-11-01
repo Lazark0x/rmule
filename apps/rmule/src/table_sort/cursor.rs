@@ -15,9 +15,12 @@ use ratatui::crossterm::event::KeyCode;
 pub enum RowMove {
     /// `j` / `↓` (`1`) and `k` / `↑` (`-1`): one row, stopping at the ends.
     Step(isize),
-    /// `g`: the first row.
+    /// `PgDn` (`1`) and `PgUp` (`-1`), which `Ctrl-D` and `Ctrl-U` arrive as:
+    /// the rows on screen, stopping at the ends.
+    Page(isize),
+    /// `g` / `Home`: the first row.
     First,
-    /// `G`: the last row.
+    /// `G` / `End`: the last row.
     Last,
 }
 
@@ -29,8 +32,10 @@ impl RowMove {
         match code {
             KeyCode::Char('j') | KeyCode::Down => Some(Self::Step(1)),
             KeyCode::Char('k') | KeyCode::Up => Some(Self::Step(-1)),
-            KeyCode::Char('g') => Some(Self::First),
-            KeyCode::Char('G') => Some(Self::Last),
+            KeyCode::PageDown => Some(Self::Page(1)),
+            KeyCode::PageUp => Some(Self::Page(-1)),
+            KeyCode::Char('g') | KeyCode::Home => Some(Self::First),
+            KeyCode::Char('G') | KeyCode::End => Some(Self::Last),
             _ => None,
         }
     }
@@ -91,10 +96,11 @@ impl<I: Eq + Clone> RowCursor<I> {
         }
     }
 
-    /// Carry out a [`RowMove`] over `ids`.
-    pub fn apply(&mut self, ids: &[I], movement: RowMove) {
+    /// Carry out a [`RowMove`] over `ids`, a page being `page` rows.
+    pub fn apply(&mut self, ids: &[I], movement: RowMove, page: isize) {
         match movement {
             RowMove::Step(delta) => self.step(ids, delta),
+            RowMove::Page(pages) => self.step(ids, pages.saturating_mul(page)),
             RowMove::First => self.select(ids, 0),
             RowMove::Last => self.select(ids, usize::MAX),
         }

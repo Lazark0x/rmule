@@ -212,7 +212,8 @@ impl SearchesView {
             .is_some_and(|pane| !pane.results.is_empty());
         if has_results && let Some(movement) = RowMove::of(key.code) {
             let ids = self.result_ids(state);
-            return self.with_cursor(|cursor| cursor.apply(&ids, movement));
+            let page = self.viewport.page();
+            return self.with_cursor(|cursor| cursor.apply(&ids, movement, page));
         }
         match key.code {
             KeyCode::Char('z') => {

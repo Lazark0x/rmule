@@ -219,6 +219,10 @@ impl Viewport {
         let last = self.total.saturating_sub(self.shown);
         let first = match movement {
             RowMove::Step(lines) => self.first.saturating_add_signed(lines).min(last),
+            RowMove::Page(pages) => self
+                .first
+                .saturating_add_signed(pages.saturating_mul(self.page()))
+                .min(last),
             RowMove::First => 0,
             RowMove::Last => last,
         };

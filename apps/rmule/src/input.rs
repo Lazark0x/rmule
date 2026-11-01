@@ -25,6 +25,9 @@ use crate::stop::Stop;
 pub enum KeyGate {
     /// A press the views and the globals may read.
     Pass,
+    /// `Ctrl-D` or `Ctrl-U` outside a text field: read below as this page key,
+    /// so no view has to know the chord, nor mistake it for its letter.
+    Page(KeyCode),
     /// Means nothing: a release, or a Ctrl or Alt chord nothing here binds.
     Drop,
     /// Ctrl-C: the quit path, from every surface.
@@ -43,6 +46,7 @@ pub enum KeyGate {
 /// on a character is AltGr on a Windows console, and that is typed text.
 /// With a text field holding the keyboard (`text_open`), a chord the line
 /// editor binds passes: only Ctrl-C, Ctrl-Z and Ctrl-L stay above any field.
+/// Outside one, `Ctrl-D` and `Ctrl-U` page every list.
 #[must_use]
 pub fn gate(key: &KeyEvent, text_open: bool) -> KeyGate {
     if key.kind == KeyEventKind::Release {
@@ -56,6 +60,8 @@ pub fn gate(key: &KeyEvent, text_open: bool) -> KeyGate {
         KeyCode::Char('z' | 'Z') if ctrl => KeyGate::Suspend,
         KeyCode::Char('l' | 'L') if ctrl => KeyGate::Repaint,
         _ if text_open && LineEdit::claims(key) => KeyGate::Pass,
+        KeyCode::Char('d' | 'D') if ctrl && !alt => KeyGate::Page(KeyCode::PageDown),
+        KeyCode::Char('u' | 'U') if ctrl && !alt => KeyGate::Page(KeyCode::PageUp),
         _ if ctrl || alt => KeyGate::Drop,
         _ => KeyGate::Pass,
     }
@@ -328,6 +334,15 @@ mod tests {
         let l = chord(KeyCode::Char('l'), ctrl);
         assert_eq!(gate(&l, false), KeyGate::Repaint);
         assert_eq!(gate(&chord(KeyCode::Char('p'), ctrl), false), KeyGate::Drop);
+        assert_eq!(
+            gate(&chord(KeyCode::Char('d'), ctrl), false),
+            KeyGate::Page(KeyCode::PageDown)
+        );
+        assert_eq!(
+            gate(&chord(KeyCode::Char('u'), ctrl), true),
+            KeyGate::Pass,
+            "a field cuts with Ctrl-U"
+        );
         assert_eq!(gate(&chord(KeyCode::Left, ctrl), false), KeyGate::Drop);
         let alt = KeyModifiers::ALT;
         assert_eq!(gate(&chord(KeyCode::Char('q'), alt), false), KeyGate::Drop);
