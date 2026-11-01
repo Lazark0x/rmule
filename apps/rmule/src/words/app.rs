@@ -62,6 +62,7 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         PrefEdit::LastTab(view) => format!("last tab → {}", view.title()),
         PrefEdit::TerminalTitle(on) => format!("terminal title → {}", on_off(*on)),
         PrefEdit::CompletionBell(on) => format!("completion bell → {}", on_off(*on)),
+        PrefEdit::Mouse(on) => format!("mouse → {}", on_off(*on)),
         PrefEdit::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
         PrefEdit::PlayerCommand(command) => super::player::receipt(command.as_deref()),
     };
@@ -529,3 +530,6 @@ pub fn tagged_marked_left(count: usize) -> Sentence {
         "{count} tagged left: they ask first, one at a time"
     ))
 }
+
+/// Beside the Settings row that takes the mouse from the terminal, or leaves it.
+pub const MOUSE_NOTE: &str = "off: a drag selects text; clicks and the wheel do nothing";

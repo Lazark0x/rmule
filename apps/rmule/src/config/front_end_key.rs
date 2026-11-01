@@ -39,6 +39,8 @@ pub enum FrontEndKey {
     /// Whether a finished download rings the terminal's bell
     /// (`"true"`/`"false"`, off when unset).
     CompletionBell,
+    /// Whether the app takes the mouse from the terminal.
+    Mouse,
 }
 
 impl FrontEndKey {
@@ -56,6 +58,7 @@ impl FrontEndKey {
             Self::LastTab => "last_tab",
             Self::TerminalTitle => "terminal_title",
             Self::CompletionBell => "completion_bell",
+            Self::Mouse => "mouse",
         }
     }
 }

@@ -35,6 +35,7 @@
 │ Theme        auto  auto = RMULE_THEME / COLORTERM                          │
 │ Terminal title off  rates and counts in the window title                   │
 │ Bell         off  rings the terminal when a download finishes              │
+│ Mouse        on  off: a drag selects text; clicks and the wheel do nothing │
 │                                                                            │
 │Diagnostics                                                                 │
 │ Full run log off  adds peers, files and paths to rmule.log                 │
@@ -56,5 +57,4 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                                                                            │
-└──────────────────────────────────────────────────────────────────── 1 / 23 ┘
+└──────────────────────────────────────────────────────────────────── 1 / 24 ┘

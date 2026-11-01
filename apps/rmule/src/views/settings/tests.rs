@@ -33,6 +33,7 @@ fn state() -> UiState {
             last_tab: crate::view::ViewId::default(),
             terminal_title: false,
             completion_bell: false,
+            mouse: true,
             dead_server_retries: 3,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,

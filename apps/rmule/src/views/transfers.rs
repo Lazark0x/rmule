@@ -421,6 +421,33 @@ impl TransfersView {
         Some((id, state.downloads.get(&id)?.status))
     }
 
+    /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
+    /// pointer; the focus stays where it is. A modal or a field takes it as a
+    /// key.
+    pub fn handle_wheel(
+        &mut self,
+        (column, row): (u16, u16),
+        key: KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let under = if !matches!(self.overlay, Overlay::None) || self.add_link.is_some() {
+            None
+        } else if crate::views::pane_hit(self.table_area, column, row) {
+            Some(Pane::Table)
+        } else if crate::views::pane_hit(self.sources_area, column, row) {
+            Some(Pane::Sources)
+        } else {
+            None
+        };
+        let Some(under) = under else {
+            return self.handle_key(key, state);
+        };
+        let focus = std::mem::replace(&mut self.focus, under);
+        let outcome = self.handle_key(key, state);
+        self.focus = focus;
+        outcome
+    }
+
     /// Row-click select (ADR-0072, Row Selection), against the pane areas cached
     /// by the last draw. The row menu takes its clicks; other modals keep to
     /// the keyboard.

@@ -293,6 +293,7 @@ impl UiState {
             | Action::SwitchView(_)
             | Action::CycleView(_)
             | Action::ToggleHelp
+            | Action::HelpKey(_)
             | Action::DismissOverlay
             | Action::ScrollHelp(_)
             | Action::Flash(_)

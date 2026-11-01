@@ -31,6 +31,8 @@ pub enum Action {
     AskQuit,
     /// `?` — open/close the help overlay.
     ToggleHelp,
+    /// A key for the text over the help overlay.
+    HelpKey(ratatui::crossterm::event::KeyEvent),
     /// `Esc`/`q` while a modal is up.
     DismissOverlay,
     /// Scroll the help overlay by this many lines (negative: up); it scrolls

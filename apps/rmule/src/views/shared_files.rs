@@ -322,6 +322,32 @@ impl SharedView {
         self.peers_selected = self.peer_cursor.place(&self.peer_ids(state)).unwrap_or(0);
     }
 
+    /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
+    /// pointer; the focus stays where it is. A modal takes it as a key.
+    pub fn handle_wheel(
+        &mut self,
+        (column, row): (u16, u16),
+        key: KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let under = if self.menu.is_some() || self.confirm.is_some() {
+            None
+        } else if crate::views::pane_hit(self.files_area, column, row) {
+            Some(Pane::Files)
+        } else if crate::views::pane_hit(self.peers_area, column, row) {
+            Some(Pane::Peers)
+        } else {
+            None
+        };
+        let Some(under) = under else {
+            return self.handle_key(key, state);
+        };
+        let focus = std::mem::replace(&mut self.focus, under);
+        let outcome = self.handle_key(key, state);
+        self.focus = focus;
+        outcome
+    }
+
     /// Render the view (spec §3.5): files table over the upload-peers pane,
     /// with the row menu / confirm modal on top when open.
     /// Click routing (ADR-0072, Row Selection): rows select + focus in either

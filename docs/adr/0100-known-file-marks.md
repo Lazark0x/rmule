@@ -21,7 +21,9 @@ A search result carries at most one of six marks, by this precedence:
 | Cancelled | a download dropped before it completed | mark colour, struck through |
 
 An unmarked row keeps the source-count tint; a marked row takes the mark's colour in its
-place, and the attribute is the second cue so a mark survives a monochrome terminal. Marks
+place, the attribute is the second cue, and the mark's word opens the Name cell
+(`have · name`), so a mark survives a monochrome terminal and a colour-blind reader, and a
+cut takes it last. The help overlay's Words table says what each word means. Marks
 hold no column and are no Table Sort key (ADR-0070). Failed ranks above Have because the
 store refuses a new download of the file while the failed row holds its place. Had and
 Cancelled stay apart: one says the content was worth finishing, the other that the operator

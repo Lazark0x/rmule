@@ -1,4 +1,4 @@
-┌ Search ─────── / focus ┐
+┌ Search ─────── i focus ┐
 │❯ ubuntu                │
 │Asks: nobody yet; a     │
 │search waits for a      │

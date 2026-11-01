@@ -317,6 +317,36 @@ impl NetworksView {
         }
     }
 
+    /// A wheel notch at (`column`, `row`), read as `key` on the pane under the
+    /// pointer; the focus stays where it is. A modal takes it as a key.
+    pub fn handle_wheel(
+        &mut self,
+        (column, row): (u16, u16),
+        key: KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        let modal = self.menu.is_some()
+            || self.confirm.is_some()
+            || self.form.is_some()
+            || self.details.is_some();
+        let under = if modal {
+            None
+        } else if crate::views::pane_hit(self.servers_area, column, row) {
+            Some(Pane::Servers)
+        } else if crate::views::pane_hit(self.log_area, column, row) {
+            Some(Pane::Log)
+        } else {
+            None
+        };
+        let Some(under) = under else {
+            return self.handle_key(key, state);
+        };
+        let focus = std::mem::replace(&mut self.focus, under);
+        let outcome = self.handle_key(key, state);
+        self.focus = focus;
+        outcome
+    }
+
     /// Click routing (ADR-0072, Row Selection): server rows select + focus, the
     /// log pane focuses (its rows scroll, they don't select). The Kad panel
     /// is display-only. The row menu takes its clicks; other modals keep to
@@ -456,6 +486,22 @@ mod tests {
         assert_eq!(view.server_sel, 1, "a page of the one row a fresh view knows");
         view.handle_key(press(KeyCode::PageUp), &state);
         assert_eq!(view.server_sel, 0);
+    }
+
+    /// The wheel scrolls what the pointer is over, and the focus stays put.
+    #[test]
+    fn the_wheel_moves_the_pane_under_the_pointer_not_the_focused_one() {
+        let state = listed_servers();
+        let mut view = NetworksView::new();
+        view.servers_area = Rect::new(0, 0, 80, 10);
+        view.log_area = Rect::new(0, 10, 40, 10);
+        let log = view.log_viewport;
+        view.handle_wheel((5, 14), press(KeyCode::Down), &state);
+        assert_eq!(view.server_sel, 0, "the focused table stayed");
+        assert_eq!(view.focus, Pane::Servers);
+        assert_eq!(view.log_viewport.first(), log.first());
+        view.handle_wheel((5, 4), press(KeyCode::Down), &state);
+        assert_eq!(view.server_sel, 1);
     }
 
     #[test]

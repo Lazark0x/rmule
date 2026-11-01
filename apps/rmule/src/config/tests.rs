@@ -263,8 +263,10 @@ fn the_last_tab_and_the_opt_ins_read_back() {
     let fresh = config.load(None).expect("load");
     assert_eq!(fresh.last_tab, crate::view::ViewId::Networks);
     assert!(!fresh.terminal_title && !fresh.completion_bell);
+    assert!(fresh.mouse, "an unset key takes the mouse");
 
     for edit in [
+        PrefEdit::Mouse(false),
         PrefEdit::LastTab(crate::view::ViewId::Transfers),
         PrefEdit::TerminalTitle(true),
         PrefEdit::CompletionBell(true),
@@ -274,4 +276,5 @@ fn the_last_tab_and_the_opt_ins_read_back() {
     let stored = config.load(None).expect("load");
     assert_eq!(stored.last_tab, crate::view::ViewId::Transfers);
     assert!(stored.terminal_title && stored.completion_bell);
+    assert!(!stored.mouse);
 }

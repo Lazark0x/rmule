@@ -36,6 +36,20 @@ pub(crate) struct RowFilter {
 }
 
 impl RowFilter {
+    /// A filter whose field holds the keyboard from the start: help's.
+    #[must_use]
+    pub(crate) fn typing_from_the_start() -> Self {
+        Self {
+            typing: true,
+            ..Self::default()
+        }
+    }
+
+    /// Keep the field holding the keyboard, whatever the last key said.
+    pub(crate) const fn keep_typing(&mut self) {
+        self.typing = true;
+    }
+
     /// Whether its field holds the keyboard.
     #[must_use]
     pub(crate) const fn typing(&self) -> bool {

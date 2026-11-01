@@ -2,39 +2,39 @@
 ┌ Help ────────────────────────────────────────────────────────────────────────────────────────────┐
 │ rmule 0.1.0 (0123456789ab, committed 2026-09-30)                                                ▲│
 │                                                                                                 █│
+│ Networks                                                                                        █│
+│ a               add server                                                                      █│
+│ U               update server list from URL                                                     █│
+│ c               connect to the selected server, or disconnect from the one you are on           █│
+│ K               start or stop Kad                                                               █│
+│ d               the selected server's grants, flags and health                                  █│
+│                                                                                                 █│
+│ Everywhere                                                                                      █│
 │ 1–6             switch view directly                                                            █│
 │ h / l  ← / →    previous / next view                                                            █│
 │ j/k  ↑/↓        select row in focused pane                                                      █│
-│ g / G           top / bottom                                                                    █│
-│ Tab / Shift-Tab cycle panes (accent border = focus)                                             █│
-│ z               zoom the focused pane to the whole tab, or back                                 █│
-│ m / Enter       row action menu                                                                 █│
-│ s / S           sort the focused table by next column / reverse                                 █│
-│ ?               this help; j/k, PgUp/PgDn scroll it when it is long                             █│
-│ q               quit; asks first while a download runs                                          █│
-│ Ctrl-C          quit, from anywhere                                                             █│
-│ Esc             close a menu, a form or a confirm; leave the query; a share question waits for y█│
-│                 or n                                                                            █│
-│ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word                            █│
-│ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back                    █│
-│ Tab             in a path field: complete it; ~ is your home                                    █│
-│ mouse           click tab/row selects, header sorts, wheel scrolls                              █│
-│ a               Networks: add server                                                            █│
-│ U               Networks: update server list from URL                                           █│
-│ c               Networks: connect to the selected server, or disconnect from the one you are on █│
-│ K               Networks: start or stop Kad                                                     █│
-│ d               Networks: the selected server's grants, flags and health                        █│
-│ /               Searches: focus query input                                                     █│
-│ o               Searches: type/size/sources/extension filters                                   █│
-│ [ / ]           Searches: previous / next held search                                           █│
-│ x / n           Searches: stop or close a search / server's next page                           █│
-│ u               Searches: bring back the search closed last                                     █│
-│ p               Transfers: pause or resume the selected download                                █│
-│ C               Transfers: clear all completed                                                  █│
-│ L               Transfers: add a download from a pasted eD2k link                               █│
-│ v               Transfers: preview the selected download in the player set in Settings          █│
-│ a               Shared: active files only, or every file                                        █│
-│ [ / ]           Shared: filter by directory                                                     ▇│
-│ Enter  ←→  h/l  Settings: edit a field / step a selector                                        ▼│
-└─────────────────────────────────────────────────────────────────────────────────── j/k ─ 36 / 37 ┘
-└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─────────────────────? help ┘
+│ PgUp / PgDn     a page; Ctrl-U / Ctrl-D too                                                     █│
+│ g / G           top / bottom; Home / End too                                                    █│
+│ /               filter the focused list as you type                                             █│
+│ Space / T       tag a row / every row on show                                                   ▆│
+│ Tab / Shift-Tab cycle panes (accent border = focus)                                              │
+│ z               zoom the focused pane to the whole tab, or back                                  │
+│ m / Enter       row action menu; acts on the tagged rows if any                                  │
+│ x               take the row away, or the tagged rows; asks first                                │
+│ s / S           sort the focused table by next column / reverse                                  │
+│ ?               this help; type to filter it, ↑/↓ and PgUp/PgDn scroll                           │
+│ q               quit; asks first while anything is under way                                     │
+│ Ctrl-C          quit, from anywhere                                                              │
+│ Esc             clear a filter or the tags; close a menu, a form or a confirm; leave the query;  │
+│                 a share question waits for y or n                                                │
+│ Ctrl-A / E      in a text field: to the start / end; Alt-←/→ by word                             │
+│ Ctrl-U/K/W/Y    in a text field: cut to start / to end / a word; put it back                     │
+│ Tab             in a path field: complete it; ~ is your home                                     │
+│ mouse           click tab/row selects, header sorts, a click runs a menu item, the wheel scrolls │
+│                 the pane under it                                                                │
+│ copy text       hold Shift, or Option on macOS, to drag; or turn Mouse off in Settings or start  │
+│                 with --no-mouse: clicks and the wheel then do nothing                            │
+│                                                                                                 ▼│
+│/                                                                                         58 of 58│
+└─────────────────────────────────────────────────────────────────────────────────── ↑/↓ ─ 35 / 76 ┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —──────────────────Esc leave ┘

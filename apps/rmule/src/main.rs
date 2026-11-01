@@ -215,6 +215,8 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         preferences.run_log_full = level == Level::Full;
     }
     run_log_level.set(Level::from_full(preferences.run_log_full));
+    // `--no-mouse` likewise.
+    preferences.mouse &= !run_args.no_mouse;
     let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
     stop.quit_core_when_asked(handle.clone());
     // The operator's connect, given ahead of time — or nothing

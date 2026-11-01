@@ -1,4 +1,4 @@
-┌ Search ──────────────────────────────────────────────── / focus  o options ┐
+┌ Search ──────────────────────────────────────────────── i focus  o options ┐
 │❯ alpha                                                                     │
 │Asks: nobody yet; a search waits for a server or Kad                        │
 │Filters: none   o edit                                                      │
@@ -6,7 +6,7 @@
 [alpha · 3…]
 ┌ Results · Running… ─── Enter menu  / filter  [ ] search  x stop  Space tag ┐
 │  Name ▲  ┌ Download again? ─────────────────────────────────────┐ Type     │
-│▸ clip_low│clip_low.avi                                          │ Videos   │
+│▸ have · c│clip_low.avi                                          │ Videos   │
 │  distro_h│You have this file, at                                │ CD-Images│
 │  song_mid│/home/me/Downloads/clip_low.avi                       │ Audio    │
 │          │                                                      │          │

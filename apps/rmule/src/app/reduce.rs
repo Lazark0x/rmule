@@ -30,8 +30,8 @@ impl App {
                 let mapped = match event {
                     Event::Key(key) => {
                         let overlay = self.chrome.help_open || self.chrome.quit_open;
-                        let text_open =
-                            !overlay && self.views.text_open(self.chrome.active, &self.state);
+                        let text_open = self.chrome.help_open
+                            || (!overlay && self.views.text_open(self.chrome.active, &self.state));
                         let key = match input::gate(&key, text_open) {
                             input::KeyGate::Pass => key,
                             input::KeyGate::Page(code) => key_of(code),
@@ -75,12 +75,10 @@ impl App {
                     }
                     Event::Mouse(_) if self.too_small => None,
                     Event::Mouse(mouse) => {
-                        // Wheel scrolls the focused table (ADR-0072, Row Selection) by
-                        // synthesizing the arrow the view already handles —
-                        // one scroll path, no per-view mouse geometry.
-                        use ratatui::crossterm::event::{
-                            KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
-                        };
+                        // The wheel scrolls the pane under the pointer (ADR-0072,
+                        // Row Selection): each view reads it as the arrow it
+                        // already handles, on that pane.
+                        use ratatui::crossterm::event::{KeyCode, MouseEventKind};
                         let synthesized = match mouse.kind {
                             MouseEventKind::ScrollUp => Some(KeyCode::Up),
                             MouseEventKind::ScrollDown => Some(KeyCode::Down),
@@ -88,8 +86,12 @@ impl App {
                         };
                         if let Some(code) = synthesized {
                             if !self.chrome.help_open && !self.chrome.quit_open {
-                                let key = KeyEvent::new(code, KeyModifiers::NONE);
-                                match self.views.handle_key(self.chrome.active, key, &self.state) {
+                                let at = (mouse.column, mouse.row);
+                                let key = key_of(code);
+                                match self
+                                    .views
+                                    .handle_wheel(self.chrome.active, at, key, &self.state)
+                                {
                                     ViewOutcome::Redraw => self.dirty = true,
                                     ViewOutcome::Emit(action) => return self.reduce(action, now),
                                     ViewOutcome::Ignored => {}
@@ -159,7 +161,10 @@ impl App {
             Action::Continued => {
                 self.pending_terminal = Some(TerminalWork::Reenter);
                 self.dirty = true;
-                self.reduce(Action::Note(crate::words::app::CONTINUED), now)
+                self.reduce(
+                    Action::Note(Severity::Info, crate::words::app::CONTINUED),
+                    now,
+                )
             }
             // A second ask while the confirm is up is its answer: Ctrl-C
             // twice leaves, whatever is running.
@@ -342,6 +347,7 @@ impl App {
             | Action::SwitchView(_)
             | Action::CycleView(_)
             | Action::ToggleHelp
+            | Action::HelpKey(_)
             | Action::DismissOverlay
             | Action::ScrollHelp(_)
             | Action::Flash(_)) => {

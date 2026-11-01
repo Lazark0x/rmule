@@ -98,13 +98,14 @@ pub(super) enum Row {
     Theme,
     TerminalTitle,
     CompletionBell,
+    Mouse,
     RunLogFull,
     UserHash,
     KadNodeId,
 }
 
 impl Row {
-    const ALL: [Row; 25] = [
+    const ALL: [Row; 26] = [
         Row::DownloadDir,
         Row::TempDir,
         Row::DataDir,
@@ -127,6 +128,7 @@ impl Row {
         Row::Theme,
         Row::TerminalTitle,
         Row::CompletionBell,
+        Row::Mouse,
         Row::RunLogFull,
         Row::UserHash,
         Row::KadNodeId,
@@ -385,6 +387,8 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 Field::choice("Bell", ON_OFF.to_vec(), usize::from(prefs.completion_bell))
                     .with_note(words::COMPLETION_BELL_NOTE)
             }
+            Row::Mouse => Field::choice("Mouse", ON_OFF.to_vec(), usize::from(prefs.mouse))
+                .with_note(words::MOUSE_NOTE),
             Row::RunLogFull => Field::choice(
                 "Full run log",
                 ON_OFF.to_vec(),
@@ -513,6 +517,7 @@ impl SettingsView {
             Some(Row::RunLogFull) => PrefEdit::RunLogFull(self.form.choice(index) == 1),
             Some(Row::TerminalTitle) => PrefEdit::TerminalTitle(self.form.choice(index) == 1),
             Some(Row::CompletionBell) => PrefEdit::CompletionBell(self.form.choice(index) == 1),
+            Some(Row::Mouse) => PrefEdit::Mouse(self.form.choice(index) == 1),
             Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
             Some(Row::AutoFetchServerMet) => {
                 PrefEdit::AutoFetchServerMet(self.form.choice(index) == 1)

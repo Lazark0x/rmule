@@ -2,7 +2,7 @@
 //! views name, so a label has one place to be translated; sorting never reads
 //! them.
 
-use crate::state::DownloadStatus;
+use crate::state::{DownloadStatus, KnownFileMark};
 
 /// A row menu's copy of the row's eD2k link.
 pub const COPY_LINK: &str = "Copy eD2k link";
@@ -70,6 +70,25 @@ pub const COPY_SERVER_LINK: &str = "Copy server link";
 pub const DETAILS: &str = "Details";
 /// A server row's removal, which asks first.
 pub const REMOVE: &str = "Remove…";
+
+/// The word a **Known-File Mark** wears on its row.
+#[must_use]
+pub const fn mark_word(mark: &KnownFileMark) -> &'static str {
+    match mark {
+        KnownFileMark::Downloading { .. } => "downloading",
+        KnownFileMark::Failed { .. } => "failed",
+        KnownFileMark::Have { .. } => "have",
+        KnownFileMark::Withheld { .. } => "withheld",
+        KnownFileMark::Had { .. } => "had",
+        KnownFileMark::Cancelled => "cancelled",
+    }
+}
+
+/// A result's name with its mark's word before it.
+#[must_use]
+pub fn marked(word: &str, name: &str) -> String {
+    format!("{word} · {name}")
+}
 
 /// A running download while core re-makes the operator's session.
 pub const RECONNECTING: &str = "Reconnecting";

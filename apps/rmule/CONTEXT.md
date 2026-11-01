@@ -32,12 +32,16 @@ _Avoid_: disabled control (that is the mechanism, not the rule), stub
 A render snapshot compared glyph-exactly against `tests/goldens/<name>.txt`, drawn through ratatui's `TestBackend` at a fixed size with trailing whitespace trimmed. Goldens are recorded evidence of what the view draws: they are re-blessed deliberately (`UPDATE_GOLDENS=1`), never as a way to make a failing test pass.
 _Avoid_: snapshot test (too generic), screenshot, visual test
 
+**Help**:
+The `?` overlay: the tab the operator came from first, then what every tab shares, the other tabs, and a Words table for the terms, Known-File Marks and bracketed figures the screens use unexplained. Letters type into its **Row Filter**, so `↑`/`↓`, the page keys, `Home` and `End` scroll it, `Esc` takes the text before it takes the overlay, and `?` closes it while nothing is typed.
+_Avoid_: manual, cheat sheet
+
 **Chrome**:
-Everything around the views: the tab bar, the status bar and its width budget, the help overlay, the flash, and the terminal's title and bell when the operator asks for them. It owns no core data — it reads the same `UiState` the views do.
+Everything around the views: the tab bar, the status bar and its width budget, the help overlay, the flash, the mouse's capture, and the terminal's title and bell when the operator asks for them. It owns no core data — it reads the same `UiState` the views do.
 _Avoid_: layout, shell, frame — as names for the chrome. `Frame` stays ratatui's word for the surface being drawn into, so `draw_frame(frame: &mut Frame, …)` reads right.
 
 **Status bar**:
-The bottom border's one row, which answers "is everything fine?" at any width and takes no rows from the frame. The rates sit first, in fixed cells, and are never pushed off: nothing else claims the row before them, and below 29 columns they read in a short form. What is left goes by claim: a flash or a stopped core, the way to help, the connection, the **Tally**, the note, the server's users; a segment is dropped whole, except a flash and a note, which give up their middle. The connection reads off edges, as the Servers title and its `c` hint do, so they agree in every frame: a dial is `connecting…`, off is dim when chosen, red when lost.
+The bottom border's one row, which answers "is everything fine?" at any width and takes no rows from the frame. The rates sit first, in fixed cells, and are never pushed off: nothing else claims the row before them, and below 29 columns they read in a short form. What is left goes by claim: a flash or a stopped core, the way to help, the connection, the **Tally**, the note, the server's users; a segment is dropped whole, except a flash and a note, which give up their middle. While a text field or help holds the keys the way to help reads `Esc leave`. The connection reads off edges, as the Servers title and its `c` hint do, so they agree in every frame: a dial is `connecting…`, off is dim when chosen, red when lost.
 _Avoid_: footer, status line
 
 **Log**:
@@ -65,7 +69,7 @@ One of the six top-level surfaces the chrome switches between, named by `ViewId`
 _Avoid_: page, screen, window
 
 **Pane**:
-A bounded region *inside* one view's content rect: the server table, the log and the Kad panel in Networks; the files and upload-peers halves of Shared Files. Focus inside a view lives at pane granularity — the focused pane takes the navigation keys, everything else bubbles to the globals. A view caches each pane's rect at draw time, so a click is hit-tested against the layout that was actually drawn rather than one recomputed from a stale width. A pane's title and its key hint share its top border and give way whole when it is narrow — the hint's keys first, last first, then the title's clauses, last first — never cut mid-word. Two panes stack by share and stand side by side from 160 cells; one with nothing to list takes the lines it says that in (`views::panes`).
+A bounded region *inside* one view's content rect: the server table, the log and the Kad panel in Networks; the files and upload-peers halves of Shared Files. Focus inside a view lives at pane granularity — the focused pane takes the navigation keys, everything else bubbles to the globals. A view caches each pane's rect at draw time, so a click is hit-tested against the layout that was actually drawn rather than one recomputed from a stale width. A pane's title and its key hint share its top border and give way whole when it is narrow — the hint's keys first, last first, then the title's clauses, last first — never cut mid-word, so a hint leads with the keys a person needs first. Two panes stack by share and stand side by side from 160 cells; one with nothing to list takes the lines it says that in (`views::panes`).
 _Avoid_: section, widget, subview
 
 **Zoom**:
@@ -99,6 +103,14 @@ _Avoid_: writer, render thread
 **Quit Confirm**:
 The chrome modal that asks before `q` or Ctrl-C stops what is under way, and counts it: a download moving bytes or waiting, an upload, a peer in the upload queue. `y` or a second Ctrl-C quits, `n` or `Esc` stays. A truly idle app, paused downloads at most, does not ask, and an OS stop never does.
 _Avoid_: exit prompt
+
+**Row Filter**:
+`/` in every list (`row_filter`): every table, the log and Settings narrow to the rows that hold what is typed, as it is typed, on the one **Line Edit**; each typed word must be found, case and accents folded, in the row's text columns. `Enter` keeps the filter and hands the keys back, `Esc` clears it, and the arrows and page keys move the list meanwhile. Its line, at the foot of the list, says how many rows hold it. On Searches `/` reaches the query while no result is on show and `i` always does. Help filters the same way, from the moment it opens.
+_Avoid_: search (a search asks the network), find
+
+**Tags**:
+The rows of a table an action takes together (`row_selection::tags`): `Space`, `T`, and `•` in the gutter. `p`, `x` and the **Row Menu** act on them, else on the row under the cursor, and an item that can only take one row greys with that reason. Tagged rows survive a Row Filter, and `P` on Transfers acts on every row on show.
+_Avoid_: selection (that is the cursor's row), marks (a **Known-File Mark** is something else), multi-select
 
 **Row Menu**:
 The one action list every table opens with `Enter` or `m` (`views::menu`): titled by the row it acts on, never a hash. An item is enabled, or greyed with its reason, which the cursor skips. The list wraps at its ends; `m`, `q` and `Esc` close it; an item shows the key that runs it from the table, and that key runs it from the open menu too. A click runs an item, a click outside closes the menu.
@@ -165,7 +177,7 @@ What orders two rows the sort column holds equal: name ascending, then the row's
 _Avoid_: secondary sort, stable sort, sort history
 
 **Known-File Mark**:
-What a search result says about the operator's own history with its file: **Downloading**, **Failed**, **Have**, **Withheld**, **Had** or **Cancelled**, at most one, in that precedence; no mark means the file is new to them. Drawn as the row's colour and a text attribute, in place of the source-count tint.
+What a search result says about the operator's own history with its file: **Downloading**, **Failed**, **Have**, **Withheld**, **Had** or **Cancelled**, at most one, in that precedence; no mark means the file is new to them. Drawn as the row's colour and a text attribute, in place of the source-count tint, with its word opening the Name cell; the help overlay's Words table says what each means.
 _Avoid_: file status, known flag, File-Known Predicate (core's serving gate, a different question)
 
 **Held Search**:

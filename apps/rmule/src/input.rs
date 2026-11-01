@@ -83,15 +83,16 @@ pub fn map_key(chrome: &ChromeState, key: KeyEvent) -> Option<Action> {
     }
     if chrome.help_open {
         let page = i16::try_from(chrome.help_page()).unwrap_or(i16::MAX);
+        let typed = chrome.help_typed();
         return match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => Some(Action::DismissOverlay),
-            KeyCode::Char('j') | KeyCode::Down => Some(Action::ScrollHelp(1)),
-            KeyCode::Char('k') | KeyCode::Up => Some(Action::ScrollHelp(-1)),
-            KeyCode::PageDown | KeyCode::Char(' ') => Some(Action::ScrollHelp(page)),
+            KeyCode::Esc | KeyCode::Char('?') if !typed => Some(Action::DismissOverlay),
+            KeyCode::Down => Some(Action::ScrollHelp(1)),
+            KeyCode::Up => Some(Action::ScrollHelp(-1)),
+            KeyCode::PageDown => Some(Action::ScrollHelp(page)),
             KeyCode::PageUp => Some(Action::ScrollHelp(-page)),
-            KeyCode::Char('g') | KeyCode::Home => Some(Action::ScrollHelp(i16::MIN)),
-            KeyCode::Char('G') | KeyCode::End => Some(Action::ScrollHelp(i16::MAX)),
-            _ => None,
+            KeyCode::Home => Some(Action::ScrollHelp(i16::MIN)),
+            KeyCode::End => Some(Action::ScrollHelp(i16::MAX)),
+            _ => Some(Action::HelpKey(key)),
         };
     }
     match key.code {
@@ -302,15 +303,18 @@ mod tests {
     fn an_open_help_overlay_captures_dismissal_keys() {
         let mut chrome = ChromeState::default();
         chrome.help_open = true;
-        for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('?')] {
+        for code in [KeyCode::Esc, KeyCode::Char('?')] {
             assert!(matches!(
                 map_key(&chrome, press(code)),
                 Some(Action::DismissOverlay)
             ));
         }
         assert!(
-            map_key(&chrome, press(KeyCode::Char('2'))).is_none(),
-            "views don't switch under a modal"
+            matches!(
+                map_key(&chrome, press(KeyCode::Char('2'))),
+                Some(Action::HelpKey(_))
+            ),
+            "views don't switch under a modal: a digit is typed"
         );
     }
 

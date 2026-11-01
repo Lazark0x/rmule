@@ -171,7 +171,19 @@ fn enter_bytes() -> Vec<u8> {
     }
     // Without bracketed paste a paste arrives as keys, and each runs as a
     // command. The legacy Windows console refuses it, which costs only that.
-    let _ = queue!(bytes, EnableMouseCapture, EnableBracketedPaste);
+    let _ = queue!(bytes, EnableBracketedPaste);
+    bytes
+}
+
+/// The bytes that take the mouse from the terminal, or leave it there. Nothing
+/// in [`enter_bytes`] takes it: a run that leaves it there never touches it.
+fn mouse_bytes(on: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let _ = if on {
+        queue!(bytes, EnableMouseCapture)
+    } else {
+        queue!(bytes, DisableMouseCapture)
+    };
     bytes
 }
 
@@ -201,6 +213,8 @@ pub struct Tui {
     repaint_owed: bool,
     /// The title in force, for the re-entry after a stop to take again.
     title: Option<String>,
+    /// Whether the mouse is taken, for that re-entry to take again.
+    mouse: bool,
 }
 
 impl Tui {
@@ -233,6 +247,7 @@ impl Tui {
             line,
             repaint_owed: false,
             title: None,
+            mouse: false,
         })
     }
 }
@@ -289,6 +304,10 @@ pub trait Surface {
     /// Ring the terminal's bell.
     fn ring_bell(&mut self);
 
+    /// Take the mouse from the terminal, or leave it there. It holds across
+    /// a stop.
+    fn capture_mouse(&mut self, on: bool);
+
     /// Give the terminal back and stop as a job. Answers once the job
     /// continues, or at once with why it cannot stop.
     ///
@@ -343,6 +362,11 @@ impl Surface for Tui {
         self.line.send(b"\x07".to_vec());
     }
 
+    fn capture_mouse(&mut self, on: bool) {
+        self.mouse = on;
+        self.line.send(mouse_bytes(on));
+    }
+
     fn suspend(&mut self) -> Result<(), NoStop> {
         if let Some(refused) = rmule_os::terminal::stop_refused() {
             return Err(refused);
@@ -369,13 +393,16 @@ impl Surface for Tui {
         if let Some(title) = &self.title {
             self.line.send(take_title(title));
         }
+        if self.mouse {
+            self.line.send(mouse_bytes(true));
+        }
         self.repaint_owed = true;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TITLE_POP, TITLE_PUSH, release_title, take_title};
+    use super::{TITLE_POP, TITLE_PUSH, enter_bytes, mouse_bytes, release_title, take_title};
 
     fn holds(bytes: &[u8], sequence: &str) -> bool {
         bytes
@@ -393,5 +420,14 @@ mod tests {
         assert!(release_title().is_empty(), "nothing held, nothing given");
         assert!(holds(&take_title("c"), TITLE_PUSH));
         assert!(holds(&release_title(), TITLE_POP));
+    }
+
+    /// `--no-mouse` must leave the terminal's mouse alone: taking the screen
+    /// asks for nothing of it, so only [`mouse_bytes`] ever does.
+    #[test]
+    fn taking_the_screen_leaves_the_mouse_to_the_setting() {
+        assert!(!holds(&enter_bytes(), "\x1b[?1000h"));
+        assert!(holds(&mouse_bytes(true), "\x1b[?1000h"));
+        assert!(holds(&mouse_bytes(false), "\x1b[?1000l"));
     }
 }

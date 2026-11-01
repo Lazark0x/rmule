@@ -194,36 +194,44 @@ port.
 | Key | Does |
 | --- | --- |
 | `1`–`6` | Networks · Searches · Transfers · Shared Files · Statistics · Settings |
-| `h` / `l` | previous / next tab |
+| `h` / `l`, `←` / `→` | previous / next tab |
 | `[` / `]` | Searches: previous / next search; Shared Files: filter by directory |
 | `j` / `k`, `↑` / `↓` | move the selection |
-| `g` / `G` | top / bottom |
+| `PgUp` / `PgDn`, `Ctrl-U` / `Ctrl-D` | a page |
+| `g` / `G`, `Home` / `End` | top / bottom |
+| `/` | filter the focused list as you type; `Enter` keeps it, `Esc` clears it |
+| `Space` / `T` | tag a row / every row on show; `p`, `x` and the menu act on the tagged rows |
 | `Tab` / `Shift-Tab` | move between panes |
 | `m` / `Enter` | the selected row's actions |
 | `s` / `S` | sort by the next column / reverse the sort |
-| `p` / `C` | Transfers: pause or resume a download / clear finished downloads |
+| `p` / `P` | Transfers: pause or resume a download / every download on show |
+| `x` | Transfers: cancel; Shared Files: unshare; Networks: remove; it asks first |
+| `d` / `C` | Transfers: a download's details / clear finished downloads |
 | `L` | Transfers: add a download from an `ed2k://` link; paste several, one a line |
 | `v` | Transfers: preview a download in the player set in Settings |
-| `/`, `o` | Searches: back to the query / filter by type, size, sources, extension |
+| `i`, `o` | Searches: back to the query / filter by type, size, sources, extension |
 | `x` / `n` | Searches: stop or close a search / ask the server for more results |
 | `a`, `U` | Networks: add a server / update the list from a URL |
 | `c`, `K` | Networks: connect or disconnect the server / start or stop Kad |
 | `d` | Networks: the selected server's grants, flags and health |
 | `f` | Networks, on the log: every line, warnings and failures, or failures |
 | `z` | Zoom the focused pane to the whole tab, or back |
-| `a` | Shared Files: active files only, or every file |
+| `f` | Shared Files: uploads: active only, or every peer |
 | `w` | Statistics: graph seconds, a minute a column, or an hour a column |
-| `Enter`, `←` / `→` | Settings: edit a field / step a choice |
+| `Enter`, `←` / `→`, `h` / `l` | Settings: edit a field / step a choice |
 | `x` | Settings: stop sharing the selected directory |
-| `?` | every key, with the version |
-| `q` | quit; asks first while a download runs |
+| `?` | this tab's keys first, then every key and word, with the version; type to filter |
+| `q` | quit; asks first while anything is under way |
 | `Ctrl-C` | quit, from anywhere |
 | `Ctrl-Z` | stop as a job; transfers stand still until `fg` |
 | `Ctrl-L` | repaint the screen |
-| `Esc` | close a menu, a form or a question; leave the query |
+| `Esc` | clear a filter or the tags; close a menu, a form or a confirm; leave the query |
 
-A click selects a tab or a row, a click on a header sorts, and the wheel
-scrolls. Settings marks the choices that take effect on restart.
+A click selects a tab or a row, a click on a header sorts, a click runs a menu
+item, and the wheel scrolls the pane under it. The mouse takes a plain drag from
+the terminal: hold Shift, or Option on macOS, to select text, or turn off *Mouse*
+in Settings or start with `--no-mouse`; clicks and the wheel then do nothing.
+Settings marks the choices that take effect on restart.
 
 ![The Settings tab: paths, shared directories, network, servers, downloads, Kad, appearance and diagnostics](assets/screenshots/settings.png)
 

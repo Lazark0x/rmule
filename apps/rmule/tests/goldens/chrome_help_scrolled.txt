@@ -1,24 +1,24 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
-│ a               Networks: add server                                        ▲│
-│ U               Networks: update server list from URL                        │
-│ c               Networks: connect to the selected server, or disconnect from │
-│                 the one you are on                                           │
-│ K               Networks: start or stop Kad                                  │
-│ d               Networks: the selected server's grants, flags and health     │
-│ /               Searches: focus query input                                  │
-│ o               Searches: type/size/sources/extension filters                │
-│ [ / ]           Searches: previous / next held search                        │
-│ x / n           Searches: stop or close a search / server's next page       ▂│
-│ u               Searches: bring back the search closed last                 █│
-│ p               Transfers: pause or resume the selected download            █│
-│ C               Transfers: clear all completed                              █│
-│ L               Transfers: add a download from a pasted eD2k link           █│
-│ v               Transfers: preview the selected download in the player set  █│
-│                 in Settings                                                 █│
-│ a               Shared: active files only, or every file                    █│
-│ [ / ]           Shared: filter by directory                                 █│
-│ Enter  ←→  h/l  Settings: edit a field / step a selector                    █│
-│ x               Settings: stop sharing the selected directory               ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 39 / 39 ┘
-└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘
+│                                                                             ▲│
+│ Words                                                                        │
+│ HighID          peers can reach you directly                                 │
+│ LowID           peers cannot reach you; the server relays for you            │
+│ Grants          what a server lets a client do: its limits and flags         │
+│ carried         a file a scan kept its hash for, unread                      │
+│ Stalled         holds a slot and has moved no bytes for 30 seconds           │
+│ Sources 42 (7)  peers that have the file (of them, with all of it)           │
+│ Requests 3 (12) this run (all time); Accepted, Transferred too               │
+│ Done 42%        bytes verified against the file's hashes                     │
+│ ▸  •            the row the cursor is on; a tagged row                       │
+│ downloading     a result in Transfers now: bold                              │
+│ failed          a result whose download failed and holds its place: bold,    │
+│                 underlined                                                   │
+│ have            a result on your disk, shared: dim                          █│
+│ withheld        a result rmule cannot read now, offered to nobody:          █│
+│                 underlined                                                  █│
+│ had             a result you downloaded once and no longer hold: italic     █│
+│ cancelled       a result you cancelled: struck through                      ▼│
+│/                                                                     58 of 58│
+└─────────────────────────────────────────────────────────────── ↑/↓ ─ 80 / 80 ┘
+└ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off────────────────────Esc leave ┘

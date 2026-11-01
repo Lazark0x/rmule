@@ -248,7 +248,7 @@ pub(super) fn render(
         )
     };
     // A field takes `?` as text, so the way out stands in for the way to help.
-    let (key, hint) = if chrome.text_open.get() {
+    let (key, hint) = if chrome.text_open.get() || chrome.help_open {
         (words::LEAVE_KEY, words::LEAVE_HINT)
     } else {
         (words::HELP_KEY, words::HELP_HINT)

@@ -28,7 +28,7 @@ pub fn version_line(build: Build) -> String {
 
 /// The two shapes of an invocation.
 pub const USAGE: &str =
-    "Usage: rmule [--data-dir <path>] [--log-level lean|detailed]\n       rmule --help | --version";
+    "Usage: rmule [--data-dir <path>] [--log-level lean|detailed] [--no-mouse]\n       rmule --help | --version";
 
 /// The pointer a refusal ends with.
 const MORE: &str = "Run rmule --help for the options, where the data lives, and the environment.";
@@ -172,6 +172,10 @@ Options:
                        Beats the Settings choice \"Full run log\" for this run
                        and is not stored. Without it, that choice decides; it is
                        lean until changed.
+  --no-mouse           Leave the mouse to the terminal this run: a drag selects
+                       text, and clicks and the wheel do nothing. Beats the
+                       Settings choice \"Mouse\" and is not stored. With the mouse
+                       on, Shift, or Option on macOS, selects text.
   -h, --help           Print this help and exit.
   -V, --version        Print the version, the commit and its date, and exit;
                        -dirty on the commit means the binary was built from

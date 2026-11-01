@@ -13,8 +13,10 @@ name a per-user data directory differently, and Git Bash sets `HOME` on Windows.
 is created, no Run Log installed and no store opened until the arguments have parsed and
 the run has a terminal.
 
-- **Options:** `--help` (`-h`), `--version` (`-V`), `--data-dir <path>` and
-  `--log-level lean|detailed`, as `--opt value` or `--opt=value`. Anything else — an
+- **Options:** `--help` (`-h`), `--version` (`-V`), `--data-dir <path>`,
+  `--log-level lean|detailed`, as `--opt value` or `--opt=value`, and the flag `--no-mouse`,
+  which leaves the mouse to the terminal this run, beats the stored *Mouse* setting and is
+  not stored. Anything else — an
   unknown argument, a missing or empty value, an unknown level, a repeated option — is a
   usage error: one sentence and the usage on stderr, exit code 2. `--help` and
   `--version` win and exit 0.

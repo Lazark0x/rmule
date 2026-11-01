@@ -135,6 +135,7 @@ impl SharedConfig {
             FrontEndEdit::LastTab(view) => set(FrontEndKey::LastTab, view.key())?,
             FrontEndEdit::TerminalTitle(on) => set(FrontEndKey::TerminalTitle, &on.to_string())?,
             FrontEndEdit::CompletionBell(on) => set(FrontEndKey::CompletionBell, &on.to_string())?,
+            FrontEndEdit::Mouse(on) => set(FrontEndKey::Mouse, &on.to_string())?,
             // Every table shares one value: re-read it so the write keeps the
             // other tables' entries as the store has them.
             FrontEndEdit::TableSort {
@@ -199,6 +200,7 @@ impl SharedConfig {
             terminal_title: text(FrontEndKey::TerminalTitle)?.is_some_and(|value| value == "true"),
             completion_bell: text(FrontEndKey::CompletionBell)?
                 .is_some_and(|value| value == "true"),
+            mouse: text(FrontEndKey::Mouse)?.is_none_or(|value| value == "true"),
             user_hash: Some(identity.user_hash()),
             kad_node_id: Some(kad.id),
         })
@@ -410,6 +412,10 @@ pub struct Preferences {
     pub terminal_title: bool,
     /// Whether a finished download rings the terminal's bell. Off by default.
     pub completion_bell: bool,
+    /// Whether the app takes the mouse from the terminal. On by default;
+    /// off, a drag selects text as in any terminal, and clicks and the wheel
+    /// do nothing.
+    pub mouse: bool,
     /// The **Dead Server Limit** (ADR-0052): failed tries in a row after
     /// which a listed server is dead. Live — core takes it up at once.
     pub dead_server_retries: u32,
@@ -463,6 +469,7 @@ impl Default for Preferences {
             last_tab: ViewId::default(),
             terminal_title: false,
             completion_bell: false,
+            mouse: true,
             dead_server_retries: rmule_core::DEFAULT_DEAD_AFTER,
             withhold_shares: false,
             remember_peers: rmule_core::RememberPeers::DEFAULT,
@@ -508,6 +515,7 @@ impl Preferences {
             PrefEdit::LastTab(view) => self.last_tab = *view,
             PrefEdit::TerminalTitle(on) => self.terminal_title = *on,
             PrefEdit::CompletionBell(on) => self.completion_bell = *on,
+            PrefEdit::Mouse(on) => self.mouse = *on,
             PrefEdit::DeadServerRetries(limit) => self.dead_server_retries = *limit,
             PrefEdit::WithholdShares(on) => self.withhold_shares = *on,
             PrefEdit::RememberPeers(peers) => self.remember_peers = *peers,
@@ -585,6 +593,8 @@ pub enum PrefEdit {
     TerminalTitle(bool),
     /// Whether a finished download rings the bell; the next one follows.
     CompletionBell(bool),
+    /// Whether the app takes the mouse from the terminal.
+    Mouse(bool),
     /// A table's sort, written by the table itself rather than the Settings
     /// form; the view already shows it.
     TableSort {
@@ -624,6 +634,8 @@ pub enum FrontEndEdit<'a> {
     TerminalTitle(bool),
     /// See [`PrefEdit::CompletionBell`].
     CompletionBell(bool),
+    /// See [`PrefEdit::Mouse`].
+    Mouse(bool),
     /// See [`PrefEdit::TableSort`].
     TableSort {
         /// The table's stored key.
@@ -679,6 +691,7 @@ impl PrefEdit {
             Self::LastTab(view) => return Keeper::FrontEnd(FrontEndEdit::LastTab(*view)),
             Self::TerminalTitle(on) => return Keeper::FrontEnd(FrontEndEdit::TerminalTitle(*on)),
             Self::CompletionBell(on) => return Keeper::FrontEnd(FrontEndEdit::CompletionBell(*on)),
+            Self::Mouse(on) => return Keeper::FrontEnd(FrontEndEdit::Mouse(*on)),
             Self::TableSort {
                 table,
                 column,

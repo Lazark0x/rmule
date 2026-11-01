@@ -20,6 +20,7 @@ use crate::table::{self, Cell, Rows, Table};
 use crate::table_sort::SortedTable;
 use crate::theme::Theme;
 use crate::views::human_size;
+use crate::words::labels;
 use crate::wrap::{clamp_u16, display_width, wrap_text};
 
 /// Results table columns: Name · Size · Sources · Type. `Name` is greedy: its
@@ -47,8 +48,7 @@ fn source_tint(count: u32, theme: &Theme) -> Color {
 }
 
 /// A marked row's look (ADR-0100): the mark's colour in place of the source
-/// tint, and an attribute as the second cue, so the mark survives a monochrome
-/// terminal and never reads as a source count.
+/// tint, and an attribute as the second cue, beside the mark's word.
 fn mark_style(mark: &KnownFileMark, theme: &Theme) -> Style {
     match mark {
         KnownFileMark::Downloading { .. } => Style::new()
@@ -356,14 +356,20 @@ impl SearchesView {
         // The tint — or the mark — colours the whole row (inventory parity).
         let cells = |index: usize, _: &[usize]| {
             let result = results[index];
-            let tint = marks
-                .get(result.file_hash(), result.file_size())
-                .map_or_else(
-                    || Style::new().fg(source_tint(result_source_count(result), theme)),
-                    |mark| mark_style(mark, theme),
-                );
+            let mark = marks.get(result.file_hash(), result.file_size());
+            let tint = mark.map_or_else(
+                || Style::new().fg(source_tint(result_source_count(result), theme)),
+                |mark| mark_style(mark, theme),
+            );
+            // The mark's word opens the name, so a row never leans on its
+            // colour and attribute alone, and is the last thing a cut takes.
+            let name = result.primary_name().to_display_string();
+            let name = mark.map_or_else(
+                || name.clone(),
+                |mark| labels::marked(labels::mark_word(mark), &name),
+            );
             vec![
-                Cell::new(result.primary_name().to_display_string(), tint),
+                Cell::new(name, tint),
                 Cell::new(human_size(result.file_size()), tint),
                 Cell::new(result_sources_text(result), tint),
                 Cell::new(result_type_text(result), tint),

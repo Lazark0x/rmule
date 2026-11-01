@@ -59,6 +59,9 @@ pub struct App {
     pending_bell: bool,
     /// The title the terminal shows now, so a frame writes only a change.
     shown_title: Option<String>,
+    /// Whether the terminal's mouse is taken, as last set; nothing before the
+    /// first frame.
+    shown_mouse: Option<bool>,
     /// The command door to the core; `None` until
     /// [`with_client`](Self::with_client).
     client: Option<BridgeHandle>,
@@ -120,6 +123,7 @@ impl App {
             pending_copy: None,
             pending_bell: false,
             shown_title: None,
+            shown_mouse: None,
             client: None,
             pending_commands: Vec::new(),
             kad_start: None,
@@ -388,6 +392,8 @@ impl App {
             .set(views.text_open(chrome_state.active, state));
         let title = chrome::terminal_title(state);
         let new_title = (title != self.shown_title).then_some(title);
+        let mouse = state.preferences.mouse;
+        let new_mouse = (Some(mouse) != self.shown_mouse).then_some(mouse);
         let drawn = tui.draw(|frame| {
             too_small = crate::views::too_small::holds(frame.area());
             let caret = if too_small {
@@ -397,19 +403,26 @@ impl App {
                 let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
                 views.draw(chrome_state.active, frame, content, state, theme, now)
             };
-            chrome::draw_overlays(frame, state, chrome_state, theme);
+            let overlay_caret = chrome::draw_overlays(frame, state, chrome_state, theme);
             // The terminal's own cursor, where an input method composes.
             // An overlay covers the field and takes the keys.
-            if let Some(caret) = caret
-                && !chrome_state.help_open
-                && !chrome_state.quit_open
-            {
+            let caret = if chrome_state.help_open || chrome_state.quit_open {
+                overlay_caret
+            } else {
+                caret
+            };
+            if let Some(caret) = caret {
                 frame.set_cursor_position(caret);
             }
         });
-        // A held frame rendered nothing: its size, caret and title all stay
-        // owed, and the next tick draws them with the state that holds then.
+        // A held frame rendered nothing: its size, caret, title and mouse all
+        // stay owed, and the next tick draws them with the state that holds
+        // then.
         if drawn == Drawn::Shown {
+            if let Some(on) = new_mouse {
+                tui.capture_mouse(on);
+                self.shown_mouse = Some(on);
+            }
             if let Some(title) = new_title {
                 tui.set_title(title.as_deref());
                 self.shown_title = title;
@@ -451,6 +464,7 @@ mod tests {
         suspends: usize,
         suspend_refused: Option<crate::tui::NoStop>,
         reentries: usize,
+        mouse: Vec<bool>,
     }
 
     impl Surface for RecordingSurface {
@@ -482,10 +496,29 @@ mod tests {
         fn reenter(&mut self) {
             self.reentries += 1;
         }
+
+        fn capture_mouse(&mut self, on: bool) {
+            self.mouse.push(on);
+        }
     }
 
     /// The title is the operator's until they give it up, follows the rates
     /// only when they change, and goes back when the setting is turned off.
+    /// The mouse is taken at the first frame and follows the setting, and an
+    /// unchanged setting writes nothing to the terminal.
+    #[test]
+    fn the_mouse_follows_the_setting_and_writes_only_a_change() {
+        let mut app = App::new(Theme::default_dark());
+        let mut surface = RecordingSurface::default();
+        let now = Instant::now();
+        app.draw(&mut surface, now);
+        app.draw(&mut surface, now);
+        assert_eq!(surface.mouse, [true]);
+        app.state.preferences.mouse = false;
+        app.draw(&mut surface, now);
+        assert_eq!(surface.mouse, [true, false]);
+    }
+
     #[test]
     fn the_terminal_title_follows_the_setting_and_writes_only_a_change() {
         let mut app = App::new(Theme::default_dark());
@@ -689,6 +722,8 @@ mod tests {
         fn ring_bell(&mut self) {}
 
         fn reenter(&mut self) {}
+
+        fn capture_mouse(&mut self, _on: bool) {}
     }
 
     /// A held frame stays owed, title with it: the title goes out behind the

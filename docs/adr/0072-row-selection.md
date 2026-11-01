@@ -10,11 +10,18 @@ row, and its rows re-order live while the operator reads.
 One **Row Selection** in every table the Table Sort names; the keys and the mark live in
 `row_selection` and `table_sort/cursor.rs`.
 
-- `j` / `↓` and `k` / `↑` move one row and stop at the ends; `g` / `G` go to the first and
-  last row; the wheel is `↑` / `↓` on the focused pane. Home, End and the page keys are
-  unbound. An empty table takes the keys and does nothing.
+- `j` / `↓` and `k` / `↑` move one row and stop at the ends; `g` / `Home` and `G` / `End` go
+  to the first and last row; `PgDn` / `Ctrl-D` and `PgUp` / `Ctrl-U` move by the rows on
+  screen. `RowMove::of` reads them once, for every table, the log, the Settings rows and a
+  modal that only reads. The wheel is `↑` / `↓` on the pane under the pointer, and leaves
+  the focus where it is. An empty table takes the keys and does nothing.
 - A click selects and focuses; it never acts. `Enter` and `m` open the row menu, pinned to
-  the selected row until it closes.
+  the selected row until it closes; over the open menu a click runs an item, and a click
+  outside closes it.
+- `Space` tags the row and steps on, `T` tags every row on show or none, `Esc` lets them
+  go. With a tag standing `p`, `x` and the row menu act on the tagged rows, else on the
+  selected one; a tagged row wears `•` in its gutter, and the confirm counts them. A table
+  with no row action, Sources and Uploads, has no tags.
 - The selected row wears `▸` in the gutter and the selection background, bold in the
   focused pane and dimmed but still marked in the others.
 - The cursor is an identity: it follows its row through every re-order, and when its row

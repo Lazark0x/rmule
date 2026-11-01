@@ -1,26 +1,29 @@
-//! The help overlay: this build's version line, then the spec's global
-//! bindings in a two-column list.
+//! The help overlay: this build's version line, then the tab the operator
+//! came from, what every tab shares, the other tabs and the words the screens
+//! use, each a table under its title. What is typed narrows them, on the one
+//! Row Filter, so help is also how a key is found.
 //!
 //! Drawn over the frame without disturbing it — the tab bar and the status
 //! bar stay whole outside it, so dismissing the overlay restores exactly what
 //! was there. When the bindings outgrow the frame it scrolls rather than
-//! dropping a row to fit:
-//! `j`/`k` a line, `PgDn`/`PgUp` a page, `g`/`G` the ends, and its
-//! Viewport draws its bar and says which lines show.
+//! dropping a row to fit: `↑`/`↓` a line, `PgDn`/`PgUp` a page, `Home`/`End`
+//! the ends, and its Viewport draws its bar and says which lines show.
 
 use std::cell::Cell;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+use crate::row_filter::RowFilter;
 use crate::row_selection::viewport::{self, Viewport};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
+use crate::view::ViewId;
 use crate::views::centered;
-use crate::words::help::{Binding, TABLES};
+use crate::words::help::{Binding, Section, sections};
 use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// Where the help overlay is scrolled to, as the last draw laid it out: its
@@ -71,28 +74,48 @@ impl Default for HelpVersion {
 /// Key-column width of the help overlay; descriptions wrap to the right of it.
 const KEY_COL_W: usize = 16;
 
-/// The `?` overlay: this build's version line, then every binding, modal over
-/// the frame, between the tab bar and the status bar.
+/// A table's rows that hold what is typed; its title holding it keeps them all.
+fn kept(section: &Section, filter: &RowFilter) -> Vec<Binding> {
+    let whole = filter.keeps([section.title]);
+    section
+        .rows
+        .iter()
+        .copied()
+        .filter(|(key, what)| whole || filter.keeps([*key, *what]))
+        .collect()
+}
+
+/// The `?` overlay: this build's version line, then the tables `active` asks
+/// for, narrowed to what is typed, modal over the frame, between the tab bar
+/// and the status bar. Where the caret is.
 pub(super) fn draw_help(
     frame: &mut Frame,
     area: Rect,
-    scroll: &HelpScroll,
-    version: &HelpVersion,
+    (scroll, filter): (&HelpScroll, &RowFilter),
+    (version, active): (&HelpVersion, ViewId),
     theme: &Theme,
-) {
+) -> Option<Position> {
     let area = Rect::new(
         area.x,
         area.y.saturating_add(1),
         area.width,
         area.height.saturating_sub(2),
     );
-    let rows: Vec<Binding> = TABLES.concat();
+    let tables: Vec<(&str, Vec<Binding>)> = sections(active)
+        .iter()
+        .map(|section| (section.title, kept(section, filter)))
+        .filter(|(_, rows)| !rows.is_empty())
+        .collect();
+    let kept_rows = tables.iter().map(|(_, rows)| rows.len()).sum();
+    let total_rows = sections(active).iter().map(|section| section.rows.len()).sum();
     // Greedy width: the overlay takes whatever it needs to show every
     // binding whole, and only wraps the description column when the frame is
-    // narrower than that.
+    // narrower than that. Its width does not follow the filter: the panel
+    // stands still as the operator types.
     let key_w = KEY_COL_W;
-    let natural = rows
+    let natural = sections(active)
         .iter()
+        .flat_map(|section| section.rows.iter())
         .map(|(_, what)| key_w + 3 + display_width(what))
         .max()
         .unwrap_or(0)
@@ -111,22 +134,28 @@ pub(super) fn draw_help(
             Style::new().fg(theme.fg),
             inner_w.saturating_sub(1).max(1),
         );
-        lines.push(Line::default());
-        // Continuation lines hang under the description column, so a wrapped
-        // binding still reads as one row.
-        lines.extend(rows.iter().flat_map(|(key, what)| {
-            labeled_lines(
-                Span::styled(format!(" {key:<key_w$}"), Style::new().fg(theme.accent)),
-                what,
-                Style::new().fg(theme.fg),
-                desc_w,
-            )
-        }));
+        for (title, rows) in &tables {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                format!(" {title}"),
+                Style::new().fg(theme.highlight),
+            )));
+            // Continuation lines hang under the description column, so a
+            // wrapped binding still reads as one row.
+            lines.extend(rows.iter().flat_map(|(key, what)| {
+                labeled_lines(
+                    Span::styled(format!(" {key:<key_w$}"), Style::new().fg(theme.accent)),
+                    what,
+                    Style::new().fg(theme.fg),
+                    desc_w,
+                )
+            }));
+        }
         lines
     };
     let inner_w = usize::from(width).saturating_sub(2);
     let mut lines = lines_at(inner_w);
-    let room = clamp_u16(lines.len()).min(area.height.saturating_sub(2));
+    let room = clamp_u16(lines.len()).min(area.height.saturating_sub(3));
     // Outgrowing the frame, it takes a column for its bar: one more when the
     // frame has it, else one of its own, re-wrapped.
     let bar = lines.len() > usize::from(room);
@@ -138,8 +167,8 @@ pub(super) fn draw_help(
         lines = lines_at(inner_w.saturating_sub(usize::from(viewport::BAR_W)));
         width
     };
-    let height = room.saturating_add(2).min(area.height);
-    let room = height.saturating_sub(2);
+    let height = room.saturating_add(3).min(area.height);
+    let room = height.saturating_sub(3);
     let modal = centered(area, width, height);
     frame.render_widget(Clear, modal);
     let block = Block::bordered()
@@ -148,6 +177,8 @@ pub(super) fn draw_help(
         .title_top(Line::from(Span::styled(" Help ", theme.tab_active())));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
+    let (inner, filter_line) = filter.carve(inner);
+    let caret = filter.draw(frame, filter_line, (kept_rows, total_rows), theme);
     let mut place = scroll.0.get();
     let shown = place.show(lines.len(), room);
     scroll.0.set(place);
@@ -162,10 +193,11 @@ pub(super) fn draw_help(
             rest,
         );
     }
+    caret
 }
 
 /// The help's scroll keys, on its bottom border while it overflows.
-const SCROLL_HINT: &str = " j/k ";
+const SCROLL_HINT: &str = " ↑/↓ ";
 
 #[cfg(test)]
 mod tests {
@@ -266,15 +298,15 @@ mod tests {
             })
         };
         let top = draw(&chrome);
-        assert!(top.contains("1–6"), "{top}");
-        assert!(!top.contains("stop sharing"), "{top}");
+        assert!(top.contains("add server"), "{top}");
+        assert!(!top.contains("struck through"), "{top}");
         assert!(chrome.update(&Action::ScrollHelp(i16::MAX), now()));
         assert_golden("chrome_help_scrolled", 80, 24, |frame| {
             draw_frame(frame, &UiState::default(), &chrome, &theme, now());
             draw_overlays(frame, &UiState::default(), &chrome, &theme);
         });
         let end = draw(&chrome);
-        assert!(end.contains("stop sharing"), "{end}");
+        assert!(end.contains("struck through"), "{end}");
         let rows: Vec<&str> = end.lines().collect();
         assert!(rows[0].starts_with("┌ 1 Networks"), "{}", rows[0]);
         assert!(rows[23].starts_with("└ ▼"), "{}", rows[23]);
@@ -286,23 +318,73 @@ mod tests {
         assert_eq!(draw(&chrome), top);
     }
 
-    /// While help is up its keys scroll it; everything else but the ways out
-    /// stays inert.
+    /// While help is up the arrows and page keys scroll it, a typed letter
+    /// narrows it, and `Esc` takes the text before it takes the overlay.
     #[test]
-    fn help_keys_scroll_the_overlay() {
+    fn help_scrolls_by_the_arrows_and_a_typed_letter_filters() {
         use ratatui::crossterm::event::KeyCode;
         let mut chrome = chrome();
         chrome.update(&Action::ToggleHelp, now());
-        let map = |code| crate::input::map_key(&chrome, press(code));
+        let map = |chrome: &ChromeState, code| crate::input::map_key(chrome, press(code));
         assert!(matches!(
-            map(KeyCode::Char('j')),
+            map(&chrome, KeyCode::Down),
             Some(Action::ScrollHelp(1))
         ));
-        assert!(matches!(map(KeyCode::Up), Some(Action::ScrollHelp(-1))));
         assert!(matches!(
-            map(KeyCode::Char('G')),
+            map(&chrome, KeyCode::End),
             Some(Action::ScrollHelp(i16::MAX))
         ));
-        assert!(map(KeyCode::Char('1')).is_none());
+        let Some(typed) = map(&chrome, KeyCode::Char('w')) else {
+            panic!("a letter goes to the filter");
+        };
+        chrome.update(&typed, now());
+        assert!(!chrome.help_filter.is_empty());
+        assert!(matches!(
+            map(&chrome, KeyCode::Esc),
+            Some(Action::HelpKey(_))
+        ));
+        assert!(matches!(
+            map(&chrome, KeyCode::Char('?')),
+            Some(Action::HelpKey(_)),
+        ));
+        let clear = map(&chrome, KeyCode::Esc).expect("Esc clears");
+        chrome.update(&clear, now());
+        assert!(matches!(
+            map(&chrome, KeyCode::Esc),
+            Some(Action::DismissOverlay)
+        ));
+    }
+
+    /// Help opens on the tab it came from.
+    #[test]
+    fn help_opens_on_the_current_tabs_keys() {
+        let theme = Theme::default_dark();
+        let mut chrome = chrome();
+        chrome.active = crate::view::ViewId::Transfers;
+        chrome.update(&Action::ToggleHelp, now());
+        let shown = crate::golden::render_to_lines(80, 24, |frame| {
+            draw_frame(frame, &UiState::default(), &chrome, &theme, now());
+            draw_overlays(frame, &UiState::default(), &chrome, &theme);
+        });
+        assert!(shown.contains("clear all completed"), "{shown}");
+        assert!(!shown.contains("add server"), "{shown}");
+    }
+
+    /// Typing keeps the rows that hold it, in every table, words too.
+    #[test]
+    fn typing_finds_a_key_and_a_word() {
+        let theme = Theme::default_dark();
+        let mut chrome = chrome();
+        chrome.update(&Action::ToggleHelp, now());
+        for letter in "struck".chars() {
+            let key = Action::HelpKey(press(ratatui::crossterm::event::KeyCode::Char(letter)));
+            chrome.update(&key, now());
+        }
+        let shown = crate::golden::render_to_lines(80, 24, |frame| {
+            draw_frame(frame, &UiState::default(), &chrome, &theme, now());
+            draw_overlays(frame, &UiState::default(), &chrome, &theme);
+        });
+        assert!(shown.contains("cancelled"), "{shown}");
+        assert!(!shown.contains("add server"), "{shown}");
     }
 }

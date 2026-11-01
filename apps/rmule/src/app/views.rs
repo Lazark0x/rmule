@@ -51,6 +51,22 @@ impl Views {
         }
     }
 
+    /// A wheel notch at `at`, read as `key` on the pane under the pointer.
+    pub(super) fn handle_wheel(
+        &mut self,
+        active: ViewId,
+        at: (u16, u16),
+        key: ratatui::crossterm::event::KeyEvent,
+        state: &UiState,
+    ) -> ViewOutcome {
+        match active {
+            ViewId::Transfers => self.transfers.handle_wheel(at, key, state),
+            ViewId::Networks => self.networks.handle_wheel(at, key, state),
+            ViewId::SharedFiles => self.shared.handle_wheel(at, key, state),
+            _ => self.handle_key(active, key, state),
+        }
+    }
+
     /// A bracketed paste, whole, to the surface that holds a text field. The
     /// other surfaces have nowhere to put it, and it acts on nothing.
     pub(super) fn handle_paste(

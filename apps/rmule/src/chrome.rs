@@ -53,6 +53,8 @@ pub struct ChromeState {
     help_scroll: help::HelpScroll,
     /// The build line the help overlay opens with.
     help_version: help::HelpVersion,
+    /// What is typed over the help overlay, which narrows it.
+    help_filter: crate::row_filter::RowFilter,
     /// Whether a view's text field holds the keyboard, as the app read it
     /// before this frame: the status bar then names the way out of it.
     pub text_open: std::cell::Cell<bool>,
@@ -95,18 +97,27 @@ pub fn draw_frame(
     content
 }
 
-/// Chrome-owned overlays, drawn after the view so they sit on top.
-pub fn draw_overlays(frame: &mut Frame, state: &UiState, chrome: &ChromeState, theme: &Theme) {
+/// Chrome-owned overlays, drawn after the view so they sit on top. Where the
+/// caret of the overlay's text field is.
+pub fn draw_overlays(
+    frame: &mut Frame,
+    state: &UiState,
+    chrome: &ChromeState,
+    theme: &Theme,
+) -> Option<ratatui::layout::Position> {
     if chrome.quit_open {
         quit_confirm::draw(frame, state.quit_cost(), theme);
+        None
     } else if chrome.help_open {
         draw_help(
             frame,
             frame.area(),
-            &chrome.help_scroll,
-            &chrome.help_version,
+            (&chrome.help_scroll, &chrome.help_filter),
+            (&chrome.help_version, chrome.active),
             theme,
-        );
+        )
+    } else {
+        None
     }
 }
 
@@ -147,6 +158,14 @@ impl ChromeState {
             }
             Action::ToggleHelp => {
                 self.help_open = !self.help_open;
+                self.help_scroll.top();
+                self.help_filter = crate::row_filter::RowFilter::typing_from_the_start();
+                true
+            }
+            Action::HelpKey(key) => {
+                self.help_filter.key(key, true);
+                // Enter takes nothing from a list: the field stays.
+                self.help_filter.keep_typing();
                 self.help_scroll.top();
                 true
             }
@@ -190,6 +209,12 @@ impl ChromeState {
             | Action::Suspend
             | Action::Continued => false,
         }
+    }
+
+    /// Whether anything is typed over the help overlay.
+    #[must_use]
+    pub(crate) fn help_typed(&self) -> bool {
+        !self.help_filter.is_empty()
     }
 
     /// How many lines a page of the help overlay is, as last drawn.

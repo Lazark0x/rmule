@@ -57,7 +57,7 @@ impl SearchesView {
         } else if focused {
             " Enter search  Esc leave "
         } else {
-            " / focus  o options "
+            " i focus  o options "
         };
         let block = crate::views::title::titled(
             Block::bordered().border_style(Style::new().fg(border)),

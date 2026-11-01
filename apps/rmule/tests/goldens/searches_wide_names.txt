@@ -1,4 +1,4 @@
-┌ Search ──────────────────────────────────────────────── / focus  o options ┐
+┌ Search ──────────────────────────────────────────────── i focus  o options ┐
 │❯ ペ ガ サ ス                                                                   │
 │Asks: nobody yet; a search waits for a server or Kad                        │
 │Filters: none   o edit                                                      │
