@@ -797,7 +797,7 @@ impl DownloadRepository for DurableDownloadRepository {
         self.store.read(|txn| {
             let row = read_row(txn, id)?;
             let provisional = read_provisional(txn, id)?;
-            Ok(resolve_hash_authority(&row.canonical_link, &provisional))
+            Ok(resolve_hash_authority(&row.link.0, &provisional))
         })
     }
 

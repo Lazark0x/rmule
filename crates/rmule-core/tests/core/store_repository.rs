@@ -147,7 +147,13 @@ fn created_download_persists_canonical_file_link() {
         .unwrap();
 
     assert_eq!(
-        repo.load_download(created.id()).unwrap().canonical_link(),
+        rmule_primitives::Ed2kLink::File(
+            repo.load_download(created.id())
+                .unwrap()
+                .file_link()
+                .clone()
+        )
+        .to_string(),
         canonical
     );
 }

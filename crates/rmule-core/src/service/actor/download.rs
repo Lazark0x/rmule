@@ -264,13 +264,7 @@ where
         if record.lifecycle() == DownloadLifecycle::Completing {
             return self.resume_completing(&record, remembered).await;
         }
-        let file = match record.file_link() {
-            Ok(file) => file,
-            Err(reason) => {
-                self.fail_at_rest(download_id, reason).await;
-                return Ok(());
-            }
-        };
+        let file = record.file_link().clone();
         let restart = (record.lifecycle() == DownloadLifecycle::Failed).then(|| Restart {
             failure: record.failure().cloned(),
             moved_to: self.moved_part_candidate(&record),

@@ -31,6 +31,7 @@ use crate::hashing::ResolvedHashSet;
 use crate::hello_facts::HelloFacts;
 use crate::ip_filter::IpFilter;
 use crate::service::DownloadId;
+use crate::storage::DownloadRepository;
 
 /// A file of 440 parts, what a 4 GiB file carries.
 const FILE_SIZE: u64 = 440 * rmule_primitives::ED2K_PART_SIZE;
@@ -135,8 +136,9 @@ fn popular_book() -> DownloadState {
 
 /// What one arrival of `chunk` bytes costs, in nanoseconds per MiB: `WALKED`
 /// bytes, split over the live workers as the fleet loop would take them,
-/// through the brain, the drain and the next wake.
-async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
+/// through the brain, the drain and the next wake; `to_file` writes them to
+/// the part file too, so the number is the disk's once the disk is the slower.
+async fn nanos_per_mib(chunk: u64, gated: bool, to_file: bool) -> u64 {
     let diagnostics = crate::diagnostics::DiagnosticsState::default();
     let (runner, _held) = crate::download::runner::test_context::runner_context(
         NeverLooksUp,
@@ -155,11 +157,18 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
         crate::DownloadMetadata::from_link(&file),
     );
     let dir = tempfile::tempdir().expect("a directory");
-    let (held, _) = HeldPartFile::hold(&dir.path().join("rig.part"), 0)
+    let paths = crate::DownloadPaths::from_final_path(dir.path().join("rig.bin"));
+    let record = runner
+        .rt
+        .store
+        .create_download(&file, None, &paths, None)
+        .expect("the rig's row");
+    let (held, _) = HeldPartFile::hold(paths.part_path(), 0)
         .await
         .expect("a part file");
     *runner.part_file.lock().await = Some(held);
     let mut ctx = loop_ctx(&runner, &file, popular_book());
+    ctx.download_id = record.id();
     let mut wake = WakeReading::default();
     enact_drain(&mut VecDeque::new(), &mut ctx)
         .await
@@ -186,6 +195,9 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
             .diagnostics
             .add_received_bytes(ctx.download_id, chunk);
         let mut queue: VecDeque<Decision> = ctx.state.on_worker_event(at, peer, event).into();
+        if !to_file {
+            queue.retain(|decision| !matches!(decision, Decision::WriteBytes { .. }));
+        }
         if !gated {
             ctx.republished = None;
         }
@@ -223,8 +235,12 @@ async fn nanos_per_mib(chunk: u64, gated: bool) -> u64 {
 #[ignore = "by hand, in release: prints what the brain costs per MiB"]
 async fn drain_bench() {
     for (label, chunk) in [("packet 10,240", 10_240), ("block 184,320", 184_320)] {
-        for (gate, gated) in [("every drain republishes", false), ("gated", true)] {
-            let nanos = nanos_per_mib(chunk, gated).await;
+        for (gate, gated, to_file) in [
+            ("every drain republishes", false, false),
+            ("gated", true, false),
+            ("gated, to the file", true, true),
+        ] {
+            let nanos = nanos_per_mib(chunk, gated, to_file).await;
             let ceiling = 1_000_000_000 / nanos.max(1);
             println!("{label}, {gate}: {nanos} ns per MiB, tops at {ceiling} MiB/s");
         }

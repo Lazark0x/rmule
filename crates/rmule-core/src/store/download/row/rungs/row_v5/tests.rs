@@ -169,6 +169,41 @@ fn a_version_fourteen_row_climbs_with_the_name_it_was_placed_under() {
     );
 }
 
+/// A row's link is typed from the climb on: text that no longer parses costs
+/// the row its hints and its `p=`, never the row, since the row's own hash and
+/// size name the file.
+#[test]
+fn a_version_fourteen_row_with_damaged_link_text_keeps_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = DownloadPaths::new(
+        dir.path().join("dl/have.bin"),
+        dir.path().join("temp/have.bin.part"),
+    );
+    let have = rmule_testkit::file_link("have.bin", b"have");
+    let key = {
+        let v14 = DurableStore::open(
+            dir.path().join(DURABLE_STORE_FILE),
+            &declared_v5::schema_v5_rows(),
+            &Ladder::new(14, 14, &[]),
+        )
+        .unwrap();
+        v14.write(|txn| {
+            let key = declared_v5::seed_v5(txn, &have, &paths)?;
+            let (_, mut row) = DOWNLOADS_V5.iter(txn)?.remove(0);
+            row.canonical_link = "not a link".into();
+            DOWNLOADS_V5.set(txn, &key, &row)?;
+            Ok::<_, rmule_store::StoreError>(key)
+        })
+        .unwrap()
+    };
+
+    let repo = DurableDownloadRepository::new(open_durable_store(dir.path()).unwrap());
+    let record = repo.load_download(DownloadId::from_u64(key)).unwrap();
+    assert_eq!(record.file_link().file_hash, have.file_hash);
+    assert_eq!(record.file_link().size(), have.size());
+    assert_eq!(repo.unreadable_rows().unwrap(), 0);
+}
+
 /// A row failed with a part fault climbs to the live reason it stood for.
 #[test]
 fn a_version_fourteen_part_fault_climbs_to_the_live_fault() {

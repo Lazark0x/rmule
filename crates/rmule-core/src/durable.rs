@@ -7,8 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use rmule_primitives::{
-    AichRootHash, Ed2kFileClass, Ed2kFileLink, Ed2kLink, Ed2kText, FileHash, PartHash,
-    ServerEndpoint,
+    AichRootHash, Ed2kFileClass, Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint,
 };
 use serde::{Deserialize, Serialize};
 
@@ -280,7 +279,7 @@ pub struct DurableDownloadRecord {
     id: DownloadId,
     file_hash: FileHash,
     metadata: DownloadMetadata,
-    canonical_link: String,
+    link: Ed2kFileLink,
     source_hint: Option<ServerEndpoint>,
     paths: DownloadPaths,
     standing: Standing,
@@ -294,7 +293,7 @@ impl DurableDownloadRecord {
             id: input.id,
             file_hash: input.file_hash,
             metadata: input.metadata,
-            canonical_link: input.canonical_link,
+            link: input.link,
             source_hint: input.source_hint,
             paths: input.paths,
             standing: Standing::of(input.lifecycle, input.failure),
@@ -327,21 +326,11 @@ impl DurableDownloadRecord {
         &self.metadata
     }
 
-    /// The `ed2k://` link the download was created from, stored verbatim. It is
-    /// what a resume re-parses to recover the file's part hashes and AICH root.
+    /// The link the download was created from: its part hashes and AICH root
+    /// are what a resume starts from.
     #[must_use]
-    pub fn canonical_link(&self) -> &str {
-        &self.canonical_link
-    }
-
-    /// The stored link as the file link it records. The one reading of the
-    /// link's text: the text repeats the row's hash and size, and text that
-    /// does not parse is a damaged row.
-    ///
-    /// # Errors
-    /// [`DownloadFailure::StoredLinkUnreadable`].
-    pub(crate) fn file_link(&self) -> Result<Ed2kFileLink, DownloadFailure> {
-        stored_file_link(&self.canonical_link)
+    pub const fn file_link(&self) -> &Ed2kFileLink {
+        &self.link
     }
 
     /// The server the download's link was found on, kept as a source hint;
@@ -404,17 +393,6 @@ impl DurableDownloadRecord {
     }
 }
 
-/// The file link `text` stores, as a row keeps it.
-///
-/// # Errors
-/// [`DownloadFailure::StoredLinkUnreadable`].
-pub(crate) fn stored_file_link(text: &str) -> Result<Ed2kFileLink, DownloadFailure> {
-    match Ed2kLink::parse(text) {
-        Ok(Ed2kLink::File(file)) => Ok(file),
-        _ => Err(DownloadFailure::StoredLinkUnreadable),
-    }
-}
-
 /// Where a download stands: its lifecycle, with the reason only a failed one
 /// has. The row keeps the two apart, so one may name no reason (a row from
 /// before reasons were kept). Built by [`Standing::of`] alone.
@@ -453,7 +431,7 @@ pub(crate) struct DurableDownloadRecordInput {
     pub id: DownloadId,
     pub file_hash: FileHash,
     pub metadata: DownloadMetadata,
-    pub canonical_link: String,
+    pub link: Ed2kFileLink,
     pub source_hint: Option<ServerEndpoint>,
     pub paths: DownloadPaths,
     pub lifecycle: DownloadLifecycle,
@@ -479,12 +457,17 @@ mod tests {
         }
     }
 
-    fn record_of(canonical_link: &str, lifecycle: DownloadLifecycle) -> DurableDownloadRecord {
+    fn record_of(lifecycle: DownloadLifecycle) -> DurableDownloadRecord {
         DurableDownloadRecord::new(DurableDownloadRecordInput {
             id: DownloadId::from_u64(1),
             file_hash: FileHash::from_bytes([1; 16]),
             metadata: named(b"a.bin"),
-            canonical_link: canonical_link.to_owned(),
+            link: rmule_primitives::Ed2kFileLink::new(
+                rmule_primitives::Ed2kText::from_utf8("a.bin"),
+                1,
+                FileHash::from_bytes([1; 16]),
+            )
+            .unwrap(),
             source_hint: None,
             paths: DownloadPaths::from_final_path("/dl/a.bin".into()),
             lifecycle,
@@ -494,23 +477,13 @@ mod tests {
         })
     }
 
-    /// A stored link that does not parse is a damaged row, and says so: no
-    /// part failed anything.
-    #[test]
-    fn a_stored_link_that_does_not_parse_is_named() {
-        assert_eq!(
-            record_of("not a link", DownloadLifecycle::Queued).file_link(),
-            Err(DownloadFailure::StoredLinkUnreadable)
-        );
-    }
-
     /// A reason lives only on a failed download, whatever the row kept.
     #[test]
     fn only_a_failed_download_has_a_reason() {
-        let failed = record_of("x", DownloadLifecycle::Failed);
+        let failed = record_of(DownloadLifecycle::Failed);
         assert_eq!(failed.lifecycle(), DownloadLifecycle::Failed);
         assert_eq!(failed.failure(), Some(&DownloadFailure::Paused));
-        let queued = record_of("x", DownloadLifecycle::Queued);
+        let queued = record_of(DownloadLifecycle::Queued);
         assert_eq!(queued.lifecycle(), DownloadLifecycle::Queued);
         assert_eq!(queued.failure(), None);
     }

@@ -96,7 +96,7 @@ fn line_for_the_run<S, P>(
         Ok(hashes) if !hashes.is_empty() => hash_set_learned(runner, download_id, &hashes),
         _ => {
             let part_path = record.paths().part_path().to_path_buf();
-            let link = record.canonical_link().to_owned();
+            let link = Ed2kLink::File(record.file_link().clone()).to_string();
             tokio::task::spawn_blocking(move || {
                 if part_link::beside(&part_path).is_some_and(|line| !line.exists()) {
                     keep_or_warn(&part_path, &link);
@@ -116,9 +116,7 @@ pub(crate) fn hash_set_learned<S, P>(
     let Ok(record) = runner.rt.store.load_download(download_id) else {
         return;
     };
-    let Ok(mut link) = record.file_link() else {
-        return;
-    };
+    let mut link = record.file_link().clone();
     let Ok(set) = PartHashSet::from_hashes(link.size(), hashes.to_vec()) else {
         return;
     };

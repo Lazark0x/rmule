@@ -105,13 +105,7 @@ where
         remembered: Vec<SourceSeed>,
     ) -> Result<(), CoreCommandRejectReason> {
         let download_id = record.id();
-        let file = match record.file_link() {
-            Ok(file) => file,
-            Err(reason) => {
-                self.fail_at_rest(download_id, reason).await;
-                return Ok(());
-            }
-        };
+        let file = record.file_link().clone();
         let Ok(parts) = self.wiring.store.verified_parts(download_id) else {
             return Err(CoreCommandRejectReason::UnknownDownload);
         };

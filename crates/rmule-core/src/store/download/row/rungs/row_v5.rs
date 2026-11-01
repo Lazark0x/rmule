@@ -5,13 +5,13 @@
 
 use std::path::Path;
 
-use rmule_primitives::{Ed2kText, FileHash, PartHash, ServerEndpoint};
+use rmule_primitives::{Ed2kFileLink, Ed2kText, FileHash, PartHash, ServerEndpoint};
 use rmule_store::redb::TableDefinition;
 use rmule_store::{Indexed, Packed, Record, StoreError, WriteTransaction};
 use serde::{Deserialize, Serialize};
 
 use super::row_enums::{DownloadLifecycleV5, DownloadMetadataOriginV1, VerificationAuthorityV1};
-use crate::store::download::row::{DOWNLOADS, DownloadRow, HomePath, PartPathSlot};
+use crate::store::download::row::{DOWNLOADS, DownloadRow, HomePath, PartPathSlot, StoredLink};
 use crate::{DownloadFailure, PartFault, StorageIntegrityFault};
 
 /// The row as record version 5 wrote it, before it kept the Download Name.
@@ -162,10 +162,21 @@ pub(crate) fn grow_from_v14(txn: &WriteTransaction) -> Result<(), StoreError> {
     DOWNLOADS.create(txn)?;
     for (key, row) in old {
         let name = placed_name(&row.final_path, &row.part_path);
+        // Damaged text costs its hints and its `p=`, never the row: the row's
+        // own hash and size name the file.
+        let parsed = StoredLink::try_from(row.canonical_link).ok();
+        let Some(link) = parsed.or_else(|| {
+            Ed2kFileLink::new(row.file_name.clone(), row.file_size, row.file_hash)
+                .ok()
+                .map(StoredLink)
+        }) else {
+            tracing::warn!(key, "a row of a size eD2k does not address left the store");
+            continue;
+        };
         let grown = DownloadRow {
             file_hash: row.file_hash,
             file_size: row.file_size,
-            canonical_link: row.canonical_link,
+            link,
             source_hint: row.source_hint,
             final_path: HomePath::from_stored(row.final_path),
             part_path: PartPathSlot::from_stored(row.part_path),

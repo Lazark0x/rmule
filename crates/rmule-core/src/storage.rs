@@ -74,12 +74,10 @@ pub(crate) fn recorded_part_hashes<R: DownloadRepository + ?Sized>(
 /// both adapters so it resolves identically: the canonical link's `p=` set
 /// wins, else the recorded provisional hashes, else file-hash-only.
 pub(crate) fn resolve_hash_authority(
-    canonical_link: &str,
+    link: &Ed2kFileLink,
     provisional: &[PartHash],
 ) -> ResolvedAuthority {
-    if let Ok(file) = crate::durable::stored_file_link(canonical_link)
-        && let Some(set) = file.part_hash_set
-    {
+    if let Some(set) = &link.part_hash_set {
         return ResolvedAuthority::Link(set.hashes().to_vec());
     }
     if provisional.is_empty() {

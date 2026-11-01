@@ -33,6 +33,31 @@ use crate::{
     DownloadPaths, DurableDownloadRecord, KadAichRoot, VerificationAuthority, VerifiedPartRecord,
 };
 
+/// The link a row keeps: typed in hand, the `ed2k://` text on disk, whose round
+/// trip the `link` fuzz target pins. Nothing reads the text again, and text
+/// that does not parse is a row that does not decode, which costs that row
+/// and a line in the Run Log (ADR-0083).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub(super) struct StoredLink(pub(super) Ed2kFileLink);
+
+impl TryFrom<String> for StoredLink {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        match Ed2kLink::parse(&text) {
+            Ok(Ed2kLink::File(file)) => Ok(Self(file)),
+            _ => Err("the stored link does not parse"),
+        }
+    }
+}
+
+impl From<StoredLink> for String {
+    fn from(link: StoredLink) -> Self {
+        Ed2kLink::File(link.0).to_string()
+    }
+}
+
 /// One download as the store holds it, keyed by its [`DownloadId`]'s `u64`.
 /// Paths are kept as text, [`HomePath`]s, because the part path is also a
 /// unique index value.
@@ -40,7 +65,7 @@ use crate::{
 pub(super) struct DownloadRow {
     pub file_hash: FileHash,
     pub file_size: u64,
-    pub canonical_link: String,
+    pub link: StoredLink,
     /// The server the link was found on, `None` for a Kad-only start:
     /// a hint, never dialed.
     pub source_hint: Option<ServerEndpoint>,
@@ -156,7 +181,7 @@ impl DownloadRow {
         Self {
             file_hash: file.file_hash,
             file_size: metadata.size,
-            canonical_link: Ed2kLink::File(file.clone()).to_string(),
+            link: StoredLink(file.clone()),
             source_hint: source_hint.cloned(),
             final_path: HomePath::new(paths.final_path(), home),
             part_path: PartPathSlot::held(paths.part_path(), home),
@@ -238,7 +263,7 @@ impl DownloadRow {
                 size: self.file_size,
                 origin: self.metadata_origin,
             },
-            canonical_link: self.canonical_link.clone(),
+            link: self.link.0.clone(),
             source_hint: self.source_hint.clone(),
             paths: self.paths(home),
             lifecycle: self.lifecycle,
