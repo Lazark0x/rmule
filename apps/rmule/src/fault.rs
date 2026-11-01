@@ -64,10 +64,7 @@ pub fn install_hook(
                 let (file, line) = info
                     .location()
                     .map_or(("unknown", 0), |site| (site.file(), site.line()));
-                eprintln!(
-                    "{}",
-                    app_words::fault_at(file, line, run_log.as_deref())
-                );
+                eprintln!("{}", app_words::fault_at(file, line, run_log.as_deref()));
             }
         }
     }));
