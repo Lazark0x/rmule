@@ -8,6 +8,7 @@ use rmule_primitives::{
     FileHash, Packet, PacketProtocol, PeerSource, SourceListTail, SourceLookupTarget,
 };
 
+use super::datagram_body;
 use crate::source_record;
 use crate::{Ed2kError, Opcode, Result};
 
@@ -129,24 +130,7 @@ impl GlobFoundSources {
     /// sentinel was met ends the datagram. Cite-and-rewrite only (ADR-0004).
     pub fn decode_udp(bytes: &[u8]) -> Result<(Self, usize)> {
         let opcode = Opcode::GlobFoundSources.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBFOUNDSOURCES datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBFOUNDSOURCES",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         if body.len() < FileHash::BYTE_LEN + 1 {
             return Err(Ed2kError::InvalidPayload {
                 opcode,

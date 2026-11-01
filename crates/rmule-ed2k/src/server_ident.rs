@@ -54,20 +54,7 @@ impl ServerIdent {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::ServerIdent.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_SERVERIDENT",
-            });
-        }
-
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < FIXED_PREFIX_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,

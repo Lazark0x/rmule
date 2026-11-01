@@ -112,19 +112,7 @@ impl PeerCallback {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::PeerCallback.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_CALLBACKREQUESTED",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < MIN_PAYLOAD_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
@@ -221,19 +209,7 @@ impl PeerCallbackIpv6 {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::PeerCallbackIpv6.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_CALLBACKREQUESTED_IPV6",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < Self::MIN_PAYLOAD_LEN {
             return Err(Ed2kError::InvalidPayload {
                 opcode,

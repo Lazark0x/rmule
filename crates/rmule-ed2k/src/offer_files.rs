@@ -210,19 +210,7 @@ impl OfferFiles {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::OfferFiles.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_OFFERFILES",
-            });
-        }
-        let mut reader = WireReader::new(packet.payload());
+        let mut reader = WireReader::new(packet.body_of(PacketProtocol::Edonkey, opcode)?);
         let truncated = |error: WireTruncated| Ed2kError::InvalidPayload {
             opcode,
             reason: error.field,

@@ -70,7 +70,7 @@ impl HolepunchRequest {
     /// [`Ed2kError::InvalidPayload`] unless the body is exactly six bytes
     /// under this opcode.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(
+        let body = sized_body(
             packet,
             Opcode::LowIdHolepunchRequest,
             REQUEST_LEN..=REQUEST_LEN,
@@ -186,7 +186,7 @@ impl HolepunchInfo {
     /// endpoint is somewhere a punch may be aimed is the precedence rule's
     /// question, and it is asked where the punch is decided.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(
+        let body = sized_body(
             packet,
             Opcode::LowIdHolepunchInfo,
             INFO_MIN_LEN..=usize::MAX,
@@ -292,7 +292,7 @@ impl HolepunchFail {
     /// [`Ed2kError::InvalidPayload`] unless the body is exactly five bytes
     /// under this opcode.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
-        let body = body_of(packet, Opcode::LowIdHolepunchFail, FAIL_LEN..=FAIL_LEN)?;
+        let body = sized_body(packet, Opcode::LowIdHolepunchFail, FAIL_LEN..=FAIL_LEN)?;
         Ok(Self {
             target: ClientId::from_u32(u32::from_le_bytes([body[0], body[1], body[2], body[3]])),
             reason: HolepunchFailReason::from_u8(body[4]),
@@ -326,21 +326,15 @@ pub const fn natt_keepalive_port(server_tcp_port: u16) -> Option<u16> {
     server_tcp_port.checked_add(4)
 }
 
-fn body_of(packet: &Packet, opcode: Opcode, len: RangeInclusive<usize>) -> Result<&[u8]> {
-    let invalid = |reason| Ed2kError::InvalidPayload {
-        opcode: opcode.as_u8(),
-        reason,
-    };
-    if packet.protocol() != PacketProtocol::Edonkey {
-        return Err(invalid("unsupported packet protocol"));
+fn sized_body(packet: &Packet, opcode: Opcode, len: RangeInclusive<usize>) -> Result<&[u8]> {
+    let body = packet.body_of(PacketProtocol::Edonkey, opcode.as_u8())?;
+    if !len.contains(&body.len()) {
+        return Err(Ed2kError::InvalidPayload {
+            opcode: opcode.as_u8(),
+            reason: "server-punch payload has the wrong width",
+        });
     }
-    if packet.opcode() != opcode.as_u8() {
-        return Err(invalid("wrong opcode for a server-punch packet"));
-    }
-    if !len.contains(&packet.payload().len()) {
-        return Err(invalid("server-punch payload has the wrong width"));
-    }
-    Ok(packet.payload())
+    Ok(body)
 }
 
 #[cfg(test)]

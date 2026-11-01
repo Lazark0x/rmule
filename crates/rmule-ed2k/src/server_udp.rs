@@ -21,9 +21,30 @@ mod search;
 mod sources;
 mod status;
 
+use rmule_primitives::{PacketProtocol, WrongFrame};
+
+use crate::Result;
+
 pub use self::description::{ServerDescReq, ServerDescRes, ServerDescTags};
 pub use self::search::{GlobSearchReq, GlobSearchRes, GlobSearchVariant};
 pub use self::sources::{GlobFoundSources, GlobGetSources, GlobGetSources2};
 pub use self::status::{
     GlobServStatReq, GlobServStatRes, crypt_ping_challenge, crypt_ping_padding_len,
 };
+
+/// A UDP datagram's body, once its `[protocol 0xE3][opcode]` head proves to be
+/// `opcode`'s.
+fn datagram_body(bytes: &[u8], opcode: u8) -> Result<&[u8]> {
+    match bytes {
+        [protocol, op, body @ ..]
+            if *protocol == PacketProtocol::Edonkey.as_byte() && *op == opcode =>
+        {
+            Ok(body)
+        }
+        _ => Err(WrongFrame {
+            protocol: PacketProtocol::Edonkey,
+            opcode,
+        }
+        .into()),
+    }
+}

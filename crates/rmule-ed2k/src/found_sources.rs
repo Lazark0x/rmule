@@ -96,19 +96,7 @@ impl FoundSources {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::FoundSources.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_FOUNDSOURCES",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < FileHash::BYTE_LEN + 1 {
             return Err(Ed2kError::InvalidPayload {
                 opcode,
@@ -229,19 +217,7 @@ impl FoundSourcesObfu {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::FoundSourcesObfu.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_FOUNDSOURCES_OBFU",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet.body_of(PacketProtocol::Edonkey, opcode)?;
         if payload.len() < FileHash::BYTE_LEN + 1 {
             return Err(Ed2kError::InvalidPayload {
                 opcode,

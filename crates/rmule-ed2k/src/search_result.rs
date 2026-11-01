@@ -134,13 +134,10 @@ impl SearchResults {
     /// [`SearchResultSkipReason::MalformedPayload`] when the packet is not a
     /// result batch at all: another opcode, or no row count.
     pub fn try_decode_packet(packet: &Packet) -> std::result::Result<Self, SearchResultSkipReason> {
-        if packet.protocol() != PacketProtocol::Edonkey
-            || packet.opcode() != Opcode::SearchResult.as_u8()
-        {
-            return Err(SearchResultSkipReason::MalformedPayload);
-        }
-
-        let mut reader = WireReader::new(packet.payload());
+        let body = packet
+            .body_of(PacketProtocol::Edonkey, Opcode::SearchResult.as_u8())
+            .map_err(|_| SearchResultSkipReason::MalformedPayload)?;
+        let mut reader = WireReader::new(body);
         let count = reader
             .read_u32_le("result count")
             .map_err(|_| SearchResultSkipReason::MalformedPayload)?;

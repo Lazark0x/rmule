@@ -168,20 +168,7 @@ impl SearchRequest {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::SearchRequest.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if packet.opcode() != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_SEARCHREQUEST",
-            });
-        }
-
-        let mut reader = WireReader::new(packet.payload());
+        let mut reader = WireReader::new(packet.body_of(PacketProtocol::Edonkey, opcode)?);
         let terms = parse_expression(&mut reader, 0)?;
         if !reader.is_exhausted() {
             return Err(Ed2kError::InvalidPayload {

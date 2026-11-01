@@ -76,6 +76,17 @@ impl PacketProtocol {
     }
 }
 
+/// A decoder was handed some other packet's frame: its protocol byte or its
+/// opcode is not the one the decoder reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("not a {} frame of opcode 0x{opcode:02X}", protocol.name())]
+pub struct WrongFrame {
+    /// The protocol the decoder reads.
+    pub protocol: PacketProtocol,
+    /// The opcode the decoder reads.
+    pub opcode: u8,
+}
+
 /// One eD2k frame: its protocol marker, its opcode, and the payload bytes
 /// left uninterpreted.
 ///
@@ -241,6 +252,23 @@ impl Packet {
     #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
+    }
+
+    /// The payload, once this frame proves to be `opcode` under `protocol`.
+    /// The one check a decoder of a single packet makes of its frame.
+    ///
+    /// # Errors
+    /// [`WrongFrame`] when it is any other frame.
+    pub fn body_of(
+        &self,
+        protocol: PacketProtocol,
+        opcode: u8,
+    ) -> core::result::Result<&[u8], WrongFrame> {
+        if self.protocol == protocol && self.opcode == opcode {
+            Ok(&self.payload)
+        } else {
+            Err(WrongFrame { protocol, opcode })
+        }
     }
 
     /// The value the TCP frame's length field carries: the payload plus the

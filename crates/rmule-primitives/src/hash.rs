@@ -157,10 +157,10 @@ fixed_hash!(ServerHash, 16, "server", from_hex, to_hex_upper);
 /// decoded:
 ///
 /// * **self-validating** (`Name, Err, opcode, "OP_LABEL"`) — the decoder is
-///   handed a raw [`Packet`](crate::Packet) and checks the protocol byte (must
-///   be eDonkey), the opcode, and that the payload is empty, mapping each
-///   failure onto `Err::InvalidPayload { opcode, reason }`. The error strings
-///   are byte-identical to the hand-rolled originals.
+///   handed a raw [`Packet`](crate::Packet), takes its body with
+///   [`Packet::body_of`](crate::Packet::body_of) (the protocol must be eDonkey,
+///   and `Err` must read a [`WrongFrame`](crate::WrongFrame)) and refuses a
+///   non-empty one as `Err::InvalidPayload { opcode, reason }`.
 /// * **self-validating, body-tolerant** — as above with a trailing
 ///   `, tolerate_body`, which drops the empty-payload check for a packet whose
 ///   body is documented as ignorable (`OP_CALLBACK_FAIL`'s "null notverified").
@@ -213,22 +213,10 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// `InvalidPayload` if the protocol byte, the opcode, or (where
-            /// this codec checks it) the empty body does not match.
+            /// What `$err` makes of a [`WrongFrame`](crate::WrongFrame), or
+            /// `InvalidPayload` if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
-                let opcode = $opcode;
-                if packet.protocol() != $crate::PacketProtocol::Edonkey {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: "unsupported packet protocol",
-                    });
-                }
-                if packet.opcode() != opcode {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: ::core::concat!("wrong opcode for ", $label),
-                    });
-                }
+                packet.body_of($crate::PacketProtocol::Edonkey, $opcode)?;
                 ::core::result::Result::Ok(Self)
             }
 
@@ -255,23 +243,11 @@ macro_rules! empty_body_codec {
             /// Decode the packet, checking it is this protocol and opcode.
             ///
             /// # Errors
-            /// `InvalidPayload` if the protocol byte, the opcode, or (where
-            /// this codec checks it) the empty body does not match.
+            /// What `$err` makes of a [`WrongFrame`](crate::WrongFrame), or
+            /// `InvalidPayload` if this codec checks the empty body and it is not.
             pub fn decode_packet(packet: &$crate::Packet) -> ::core::result::Result<Self, $err> {
                 let opcode = $opcode;
-                if packet.protocol() != $crate::PacketProtocol::Edonkey {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: "unsupported packet protocol",
-                    });
-                }
-                if packet.opcode() != opcode {
-                    return ::core::result::Result::Err($err::InvalidPayload {
-                        opcode,
-                        reason: ::core::concat!("wrong opcode for ", $label),
-                    });
-                }
-                if !packet.payload().is_empty() {
+                if !packet.body_of($crate::PacketProtocol::Edonkey, opcode)?.is_empty() {
                     return ::core::result::Result::Err($err::InvalidPayload {
                         opcode,
                         reason: ::core::concat!($label, " must have empty payload"),

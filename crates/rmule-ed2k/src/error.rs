@@ -51,3 +51,12 @@ pub enum Ed2kError {
         source: rmule_primitives::PrimitiveError,
     },
 }
+
+impl From<rmule_primitives::WrongFrame> for Ed2kError {
+    fn from(wrong: rmule_primitives::WrongFrame) -> Self {
+        Self::InvalidPayload {
+            opcode: wrong.opcode,
+            reason: "not this packet's frame",
+        }
+    }
+}

@@ -10,6 +10,7 @@
 
 use rmule_primitives::{Packet, PacketProtocol, ServerUdpFlags};
 
+use super::datagram_body;
 use crate::{Ed2kError, Opcode, Result};
 
 /// `OP_GLOBSERVSTATREQ` (0x96): the plain status ping, client → server. Body is
@@ -58,24 +59,7 @@ impl GlobServStatReq {
     /// `[protocol 0xE3][opcode 0x96]` then the fixed body `[challenge u32 LE]`.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::GlobServStatReq.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBSERVSTATREQ datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBSERVSTATREQ",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         let challenge: [u8; 4] = body.try_into().map_err(|_| Ed2kError::InvalidPayload {
             opcode,
             reason: "OP_GLOBSERVSTATREQ payload must be [challenge u32]",
@@ -252,24 +236,7 @@ impl GlobServStatRes {
     /// beyond the deepest field are ignored.
     pub fn decode_udp(bytes: &[u8]) -> Result<Self> {
         let opcode = Opcode::GlobServStatRes.as_u8();
-        let [protocol, op, body @ ..] = bytes else {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "OP_GLOBSERVSTATRES datagram missing header",
-            });
-        };
-        if *protocol != PacketProtocol::Edonkey.as_byte() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
-        if *op != opcode {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GLOBSERVSTATRES",
-            });
-        }
+        let body = datagram_body(bytes, opcode)?;
         // aMule's `size >=` thresholds measure the body: `OnPacketReceived`
         // hands `ProcessPacket` a `CMemFile(pBuffer + 2, nPayLoadLen - 2)`,
         // so its `size < 12` minimum is challenge + users + files.

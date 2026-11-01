@@ -76,22 +76,12 @@ impl GetSourcesRequest {
     /// body layout is not this packet's.
     pub fn decode_packet(packet: &Packet) -> Result<Self> {
         let opcode = Opcode::GetSources.as_u8();
-        if packet.protocol() != PacketProtocol::Edonkey {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "unsupported packet protocol",
-            });
-        }
         // `OP_GETSOURCES` (`0x19`) and `OP_GETSOURCES_OBFU` (`0x23`) carry a
         // byte-identical body; the obfu opcode only asks the server to answer
         // with the obfuscation-aware `0x44` reply (ADR-0046). Accept both.
-        if packet.opcode() != opcode && packet.opcode() != Opcode::GetSourcesObfu.as_u8() {
-            return Err(Ed2kError::InvalidPayload {
-                opcode,
-                reason: "wrong opcode for OP_GETSOURCES",
-            });
-        }
-        let payload = packet.payload();
+        let payload = packet
+            .body_of(PacketProtocol::Edonkey, opcode)
+            .or_else(|_| packet.body_of(PacketProtocol::Edonkey, Opcode::GetSourcesObfu.as_u8()))?;
         let mut hash_bytes = [0u8; FileHash::BYTE_LEN];
         match payload.len() {
             LEGACY_LEN => {
