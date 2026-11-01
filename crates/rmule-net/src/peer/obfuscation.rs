@@ -10,7 +10,7 @@ use crate::driver::{HandshakeProgress, ObfuscationTransport, random_marker, rand
 use rand::RngCore;
 use rand::rngs::OsRng;
 use rmule_peer::{MiscOptions2, PeerObfuscation, PeerObfuscationStep};
-use rmule_primitives::UserHash;
+use rmule_primitives::{ObfuscationStream, UserHash};
 
 // The obfuscation policy/config are shared with the server runtime, so they
 // live in the shared `driver` module (the crypt-layer home); re-exported here so
@@ -80,15 +80,23 @@ impl PeerObfuscationTransport {
 }
 
 impl ObfuscationTransport for PeerObfuscationTransport {
+    type Stream = ObfuscationStream;
+
     fn initial_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.initial)
     }
-    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress {
+    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress<ObfuscationStream> {
         match self.inner.feed(input) {
             PeerObfuscationStep::NeedMore => HandshakeProgress::NeedMore { write: Vec::new() },
-            PeerObfuscationStep::Done { write, leftover } => {
-                HandshakeProgress::Done { write, leftover }
-            }
+            PeerObfuscationStep::Done {
+                write,
+                leftover,
+                stream,
+            } => HandshakeProgress::Done {
+                write,
+                leftover,
+                stream,
+            },
             PeerObfuscationStep::Failed => {
                 let (role, hash) = self.keyed_on;
                 tracing::debug!(
@@ -103,12 +111,6 @@ impl ObfuscationTransport for PeerObfuscationTransport {
                 HandshakeProgress::Failed
             }
         }
-    }
-    fn transform_outgoing(&mut self, buf: &mut [u8]) {
-        self.inner.transform_send(buf);
-    }
-    fn transform_incoming(&mut self, buf: &mut [u8]) {
-        self.inner.transform_recv(buf);
     }
 }
 

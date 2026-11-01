@@ -10,6 +10,8 @@
 //! pinned `[pending]` in `docs/reference/notes/obfuscation.md` until a
 //! captured decrypt vector confirms them.
 
+use std::fmt;
+
 use crypto_bigint::modular::runtime_mod::{DynResidue, DynResidueParams};
 use crypto_bigint::{Encoding, U768};
 use md5::{Digest, Md5};
@@ -132,46 +134,57 @@ pub enum HandshakeScan {
     Complete(usize),
 }
 
-/// A TCP obfuscation leg's two streams and the handshake bytes decrypted so far:
-/// what peer and server links share below their own message orders.
-#[derive(Default)]
+/// A TCP obfuscation leg's keyed pair of streams: only a finished handshake
+/// hands one over, so a link believed encrypted holds keys by type and no
+/// call on it can pass bytes through in the clear.
 pub struct ObfuscationStream {
-    keys: Option<ObfuscationKeys>,
-    decrypted: Vec<u8>,
+    keys: ObfuscationKeys,
+}
+
+impl fmt::Debug for ObfuscationStream {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ObfuscationStream").finish_non_exhaustive()
+    }
 }
 
 impl ObfuscationStream {
-    /// A leg holding its keys from the start.
-    #[must_use]
-    pub fn keyed(keys: ObfuscationKeys) -> Self {
-        Self {
-            keys: Some(keys),
-            decrypted: Vec::new(),
-        }
-    }
-
-    /// Take the keys the handshake derived.
-    pub fn set_keys(&mut self, keys: ObfuscationKeys) {
-        self.keys = Some(keys);
-    }
-
     /// Encrypt bytes we send, the send stream running on past the handshake.
     pub fn transform_send(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.send.apply(buf);
-        }
+        self.keys.send.apply(buf);
     }
 
     /// Decrypt bytes we receive, the recv stream running on past the handshake.
     pub fn transform_recv(&mut self, buf: &mut [u8]) {
-        if let Some(keys) = self.keys.as_mut() {
-            keys.recv.apply(buf);
+        self.keys.recv.apply(buf);
+    }
+}
+
+/// A keyed leg still in its handshake, with the bytes decrypted so far: what
+/// peer and server links share below their own message orders.
+pub struct ObfuscationHandshake {
+    stream: ObfuscationStream,
+    decrypted: Vec<u8>,
+}
+
+impl ObfuscationHandshake {
+    /// A handshake holding its keys.
+    #[must_use]
+    pub const fn keyed(keys: ObfuscationKeys) -> Self {
+        Self {
+            stream: ObfuscationStream { keys },
+            decrypted: Vec::new(),
         }
+    }
+
+    /// Encrypt a handshake block we send, in place: the send stream runs on
+    /// from it into the app bytes.
+    pub fn transform_send(&mut self, buf: &mut [u8]) {
+        self.stream.transform_send(buf);
     }
 
     /// Decrypt `chunk` in place and hold it as handshake bytes.
     pub fn absorb(&mut self, chunk: &mut [u8]) {
-        self.transform_recv(chunk);
+        self.stream.transform_recv(chunk);
         self.decrypted.extend_from_slice(chunk);
     }
 
@@ -205,6 +218,12 @@ impl ObfuscationStream {
     #[must_use]
     pub fn leftover(&self, total: usize) -> Vec<u8> {
         self.decrypted[total..].to_vec()
+    }
+
+    /// The handshake is done: the streams, running on from its last byte.
+    #[must_use]
+    pub fn into_stream(self) -> ObfuscationStream {
+        self.stream
     }
 }
 

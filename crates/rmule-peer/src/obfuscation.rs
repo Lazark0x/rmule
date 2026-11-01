@@ -18,7 +18,8 @@
 //! continue the stream.
 
 use rmule_primitives::{
-    ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_SYNC, ObfuscationRole, ObfuscationStream, UserHash,
+    ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_SYNC, ObfuscationHandshake, ObfuscationRole,
+    ObfuscationStream, UserHash,
     derive_peer_keys,
 };
 
@@ -42,6 +43,8 @@ pub enum PeerObfuscationStep {
         /// App bytes that trailed the handshake in the same feed, already
         /// decrypted.
         leftover: Vec<u8>,
+        /// The keyed streams, for every byte from here on.
+        stream: ObfuscationStream,
     },
     /// The handshake did not authenticate (sync mismatch — wrong key/hash) or
     /// was otherwise malformed. The caller drops the connection.
@@ -58,18 +61,17 @@ pub struct PeerObfuscation {
     /// Undecrypted inbound (only holds the marker+rk prefix for a responder
     /// before keys exist).
     raw: Vec<u8>,
-    stream: ObfuscationStream,
 }
 
 enum Flow {
     /// Responder before the initiator's random key has arrived.
     ResponderAwaitKey,
     /// Responder with keys, reading the encrypted opening.
-    ResponderReadOpening,
+    ResponderReadOpening(ObfuscationHandshake),
     /// Initiator, awaiting the responder's encrypted reply.
-    InitiatorAwaitReply,
-    Done,
-    Failed,
+    InitiatorAwaitReply(ObfuscationHandshake),
+    /// Done or failed: nothing more is read.
+    Ended,
 }
 
 impl PeerObfuscation {
@@ -99,11 +101,10 @@ impl PeerObfuscation {
         opening.extend_from_slice(&random_key);
         opening.append(&mut block);
         let this = Self {
-            flow: Flow::InitiatorAwaitReply,
+            flow: Flow::InitiatorAwaitReply(ObfuscationHandshake::keyed(keys)),
             own_hash: target,
             reply_padding: Vec::new(),
             raw: Vec::new(),
-            stream: ObfuscationStream::keyed(keys),
         };
         (this, opening)
     }
@@ -118,99 +119,86 @@ impl PeerObfuscation {
             own_hash: own,
             reply_padding: reply_padding.to_vec(),
             raw: Vec::new(),
-            stream: ObfuscationStream::default(),
         }
     }
 
     /// Feed inbound bytes through the handshake state machine.
     pub fn feed(&mut self, input: &[u8]) -> PeerObfuscationStep {
-        match self.flow {
-            Flow::Failed | Flow::Done => PeerObfuscationStep::Failed,
+        match std::mem::replace(&mut self.flow, Flow::Ended) {
+            Flow::Ended => PeerObfuscationStep::Failed,
             Flow::ResponderAwaitKey => {
                 self.raw.extend_from_slice(input);
                 if self.raw.len() < 5 {
+                    self.flow = Flow::ResponderAwaitKey;
                     return PeerObfuscationStep::NeedMore;
                 }
                 let rk = [self.raw[1], self.raw[2], self.raw[3], self.raw[4]];
-                self.stream.set_keys(derive_peer_keys(
+                let mut handshake = ObfuscationHandshake::keyed(derive_peer_keys(
                     &self.own_hash,
                     rk,
                     ObfuscationRole::Responder,
                 ));
                 let mut rest = self.raw.split_off(5);
                 self.raw.clear();
-                self.stream.absorb(&mut rest);
-                self.flow = Flow::ResponderReadOpening;
-                self.parse_opening()
+                handshake.absorb(&mut rest);
+                self.parse_opening(handshake)
             }
-            Flow::ResponderReadOpening => {
-                let mut chunk = input.to_vec();
-                self.stream.absorb(&mut chunk);
-                self.parse_opening()
+            Flow::ResponderReadOpening(mut handshake) => {
+                handshake.absorb(&mut input.to_vec());
+                self.parse_opening(handshake)
             }
-            Flow::InitiatorAwaitReply => {
-                let mut chunk = input.to_vec();
-                self.stream.absorb(&mut chunk);
-                self.parse_reply()
+            Flow::InitiatorAwaitReply(mut handshake) => {
+                handshake.absorb(&mut input.to_vec());
+                self.parse_reply(handshake)
             }
         }
-    }
-
-    /// Encrypt app bytes we send, continuing the send stream past the handshake.
-    pub fn transform_send(&mut self, buf: &mut [u8]) {
-        self.stream.transform_send(buf);
-    }
-
-    /// Decrypt app bytes we receive, continuing the recv stream.
-    pub fn transform_recv(&mut self, buf: &mut [u8]) {
-        self.stream.transform_recv(buf);
     }
 
     /// Responder: parse the decrypted opening; on completion, build the reply.
-    fn parse_opening(&mut self) -> PeerObfuscationStep {
-        match self.stream.scan(OPENING_HEADER_LEN) {
-            HandshakeScan::NeedMore => PeerObfuscationStep::NeedMore,
-            HandshakeScan::BadSync => {
-                self.flow = Flow::Failed;
-                PeerObfuscationStep::Failed
+    fn parse_opening(&mut self, mut handshake: ObfuscationHandshake) -> PeerObfuscationStep {
+        match handshake.scan(OPENING_HEADER_LEN) {
+            HandshakeScan::NeedMore => {
+                self.flow = Flow::ResponderReadOpening(handshake);
+                PeerObfuscationStep::NeedMore
             }
+            HandshakeScan::BadSync => PeerObfuscationStep::Failed,
             HandshakeScan::Complete(total) => {
-                let leftover = self.stream.leftover(total);
-                let write = self.build_reply();
-                self.flow = Flow::Done;
-                PeerObfuscationStep::Done { write, leftover }
-            }
-        }
-    }
-
-    /// Initiator: parse the decrypted reply; no bytes to write back.
-    fn parse_reply(&mut self) -> PeerObfuscationStep {
-        match self.stream.scan(REPLY_HEADER_LEN) {
-            HandshakeScan::NeedMore => PeerObfuscationStep::NeedMore,
-            HandshakeScan::BadSync => {
-                self.flow = Flow::Failed;
-                PeerObfuscationStep::Failed
-            }
-            HandshakeScan::Complete(total) => {
-                let leftover = self.stream.leftover(total);
-                self.flow = Flow::Done;
+                let leftover = handshake.leftover(total);
+                let write = self.build_reply(&mut handshake);
                 PeerObfuscationStep::Done {
-                    write: Vec::new(),
+                    write,
                     leftover,
+                    stream: handshake.into_stream(),
                 }
             }
         }
     }
 
+    /// Initiator: parse the decrypted reply; no bytes to write back.
+    fn parse_reply(&mut self, handshake: ObfuscationHandshake) -> PeerObfuscationStep {
+        match handshake.scan(REPLY_HEADER_LEN) {
+            HandshakeScan::NeedMore => {
+                self.flow = Flow::InitiatorAwaitReply(handshake);
+                PeerObfuscationStep::NeedMore
+            }
+            HandshakeScan::BadSync => PeerObfuscationStep::Failed,
+            HandshakeScan::Complete(total) => PeerObfuscationStep::Done {
+                write: Vec::new(),
+                leftover: handshake.leftover(total),
+                stream: handshake.into_stream(),
+            },
+        }
+    }
+
     /// Responder reply block: sync(4) ‖ selected(1) ‖ padlen(1) ‖ pad, encrypted
     /// in place with the send stream (which continues into the app stream).
-    fn build_reply(&mut self) -> Vec<u8> {
+    fn build_reply(&self, handshake: &mut ObfuscationHandshake) -> Vec<u8> {
         let mut block = Vec::with_capacity(REPLY_HEADER_LEN + self.reply_padding.len());
         block.extend_from_slice(&MAGICVALUE_SYNC.to_le_bytes());
         block.push(ENM_OBFUSCATION);
         block.push(self.reply_padding.len() as u8);
         block.extend_from_slice(&self.reply_padding);
-        self.stream.transform_send(&mut block);
+        handshake.transform_send(&mut block);
         block
     }
 }
@@ -220,9 +208,13 @@ mod tests {
     use super::*;
     use rmule_primitives::is_plaintext_marker;
 
-    fn done(step: PeerObfuscationStep) -> (Vec<u8>, Vec<u8>) {
+    fn done(step: PeerObfuscationStep) -> (Vec<u8>, Vec<u8>, ObfuscationStream) {
         match step {
-            PeerObfuscationStep::Done { write, leftover } => (write, leftover),
+            PeerObfuscationStep::Done {
+                write,
+                leftover,
+                stream,
+            } => (write, leftover, stream),
             other => panic!("expected Done, got {other:?}"),
         }
     }
@@ -240,29 +232,29 @@ mod tests {
         assert_eq!(&opening[1..5], &rk, "random key is sent in the clear");
 
         let mut resp = PeerObfuscation::respond(hash, &[9, 9]);
-        let (reply, resp_leftover) = done(resp.feed(&opening));
+        let (reply, resp_leftover, mut resp_stream) = done(resp.feed(&opening));
         assert!(resp_leftover.is_empty());
         assert!(
             !reply.is_empty(),
             "responder answers with an encrypted reply"
         );
 
-        let (init_write, init_leftover) = done(init.feed(&reply));
+        let (init_write, init_leftover, mut init_stream) = done(init.feed(&reply));
         assert!(init_write.is_empty() && init_leftover.is_empty());
 
         // initiator → responder
         let mut a = b"hello from initiator".to_vec();
         let plain_a = a.clone();
-        init.transform_send(&mut a);
+        init_stream.transform_send(&mut a);
         assert_ne!(a, plain_a, "app bytes are encrypted");
-        resp.transform_recv(&mut a);
+        resp_stream.transform_recv(&mut a);
         assert_eq!(a, plain_a, "responder decrypts initiator app stream");
 
         // responder → initiator
         let mut b = b"hello from responder".to_vec();
         let plain_b = b.clone();
-        resp.transform_send(&mut b);
-        init.transform_recv(&mut b);
+        resp_stream.transform_send(&mut b);
+        init_stream.transform_recv(&mut b);
         assert_eq!(b, plain_b, "initiator decrypts responder app stream");
     }
 
@@ -298,14 +290,17 @@ mod tests {
     fn app_bytes_trailing_the_opening_surface_as_leftover() {
         let hash = UserHash::from_bytes([3; 16]);
         let rk = [1, 1, 1, 1];
-        let (mut init, mut opening) = PeerObfuscation::initiate(hash, 0x80, rk, &[]);
-        // initiator pipelines an app byte immediately after the opening
+        let (_, mut opening) = PeerObfuscation::initiate(hash, 0x80, rk, &[]);
+        // initiator pipelines an app byte immediately after the opening: its
+        // send stream, run on past the opening block
+        let mut keys = derive_peer_keys(&hash, rk, ObfuscationRole::Initiator);
+        keys.send.apply(&mut opening[5..].to_vec());
         let mut app = b"X".to_vec();
-        init.transform_send(&mut app);
+        keys.send.apply(&mut app);
         opening.extend_from_slice(&app);
 
         let mut resp = PeerObfuscation::respond(hash, &[]);
-        let (_reply, leftover) = done(resp.feed(&opening));
+        let (_reply, leftover, _) = done(resp.feed(&opening));
         assert_eq!(leftover, b"X", "trailing app byte decrypts as leftover");
     }
 }

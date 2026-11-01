@@ -68,7 +68,8 @@ pub use link::{
 };
 pub use obfuscation::{
     DH_PRIME_SIZE, ENM_OBFUSCATION, HandshakeScan, MAGICVALUE_REQUESTER, MAGICVALUE_SERVER,
-    MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationKeys, ObfuscationRole, ObfuscationStream,
+    MAGICVALUE_SYNC, ObfuscationDhKeypair, ObfuscationHandshake, ObfuscationKeys, ObfuscationRole,
+    ObfuscationStream,
     Rc4, derive_peer_keys, derive_server_keys, is_plaintext_marker,
 };
 pub use packed_frame::{SkipReason, inflate, pack_if_smaller};

@@ -23,7 +23,7 @@ pub use capture::{
 };
 pub use crypt::{
     CryptStream, HandshakeProgress, ObfuscationConfig, ObfuscationPolicy, ObfuscationTransport,
-    random_marker, random_padding,
+    StreamCipher, random_marker, random_padding,
 };
 
 use outgoing::Outgoing;

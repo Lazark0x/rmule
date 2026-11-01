@@ -7,6 +7,7 @@
 
 use crate::driver::{HandshakeProgress, ObfuscationTransport, random_marker, random_padding};
 use rmule_ed2k::{ServerObfuscation, ServerObfuscationStep};
+use rmule_primitives::ObfuscationStream;
 
 /// Runtime adapter: an [`ObfuscationTransport`] backed by rmule-ed2k's
 /// [`ServerObfuscation`] Diffie-Hellman handshake.
@@ -39,22 +40,24 @@ impl ServerObfuscationTransport {
 }
 
 impl ObfuscationTransport for ServerObfuscationTransport {
+    type Stream = ObfuscationStream;
+
     fn initial_output(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.initial)
     }
-    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress {
+    fn feed_handshake(&mut self, input: &[u8]) -> HandshakeProgress<ObfuscationStream> {
         match self.inner.feed(input) {
             ServerObfuscationStep::NeedMore { write } => HandshakeProgress::NeedMore { write },
-            ServerObfuscationStep::Done { write, leftover } => {
-                HandshakeProgress::Done { write, leftover }
-            }
+            ServerObfuscationStep::Done {
+                write,
+                leftover,
+                stream,
+            } => HandshakeProgress::Done {
+                write,
+                leftover,
+                stream,
+            },
             ServerObfuscationStep::Failed => HandshakeProgress::Failed,
         }
-    }
-    fn transform_outgoing(&mut self, buf: &mut [u8]) {
-        self.inner.transform_send(buf);
-    }
-    fn transform_incoming(&mut self, buf: &mut [u8]) {
-        self.inner.transform_recv(buf);
     }
 }
