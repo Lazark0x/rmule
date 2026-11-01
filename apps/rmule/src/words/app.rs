@@ -11,6 +11,7 @@ use std::path::Path;
 use super::Sentence;
 use crate::config::{PrefEdit, UnfitDirectory};
 use rmule_core::Opening;
+use rmule_os::terminal::NoStop;
 
 use crate::state::AttachFailure;
 
@@ -400,6 +401,15 @@ pub const TERMINAL_TITLE_NOTE: &str = "rates and counts in the window title";
 
 /// What the Settings row for the completion bell does.
 pub const COMPLETION_BELL_NOTE: &str = "rings the terminal when a download finishes";
+
+/// Why Ctrl-Z did not stop this run (ADR-0118).
+#[must_use]
+pub const fn no_suspend(why: NoStop) -> Sentence {
+    Sentence::fixed(match why {
+        NoStop::NoJobControl => "this system cannot stop a program; rmule keeps running",
+        NoStop::NoShell => "no shell here could bring rmule back; it keeps running",
+    })
+}
 
 #[cfg(test)]
 mod tests {

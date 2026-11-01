@@ -52,6 +52,15 @@ pub const INTERNAL_FAULT: Sentence =
 pub const NO_STOP_SIGNALS: Sentence =
     Sentence::fixed("rmule cannot hear a stop signal this run; quit with q");
 
+/// The OS refused job control's handlers (ADR-0118).
+pub const NO_JOB_CONTROL: Sentence =
+    Sentence::fixed("rmule cannot hear a job stop this run; after fg, press Ctrl-L");
+
+/// The run was stopped as a job and is going again (ADR-0118): no transfer
+/// moved while it stood. Short, so the bar's elision leaves the words that
+/// matter.
+pub const CONTINUED: Sentence = Sentence::fixed("transfers stood still");
+
 /// What the normal screen says after a panic (ADR-0118): where it happened,
 /// and the log that holds it.
 #[must_use]

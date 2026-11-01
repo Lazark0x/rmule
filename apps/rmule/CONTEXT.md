@@ -65,7 +65,7 @@ What a terminal under 60×20 shows in place of the tab: its size, the size rmule
 _Avoid_: minimum size error
 
 **Key gate**:
-The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone.
+The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path, Ctrl-Z the job stop and Ctrl-L the full repaint from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone.
 _Avoid_: per-view key filter
 
 **Line Edit**:
@@ -75,6 +75,14 @@ _Avoid_: text input, input box, prompt
 **Directory Field**:
 A **Line Edit** that names a directory: a leading `~` is the operator's home, `Tab` completes from the disk and says what is left to choose from, and a path with nothing at it is said before it is set: a Download dir or Temp dir that core would make asks a second `Enter`, and a directory to share is refused.
 _Avoid_: path picker
+
+**Stop**:
+The value every way out of a run sets, from any thread and without blocking: a signal, the terminal's loss, the input pump's end, the operator's quit. It wakes the loop, starts the core's quit from its own task and arms the deadline that ends the process, so a stop depends on neither the loop nor the terminal (ADR-0118).
+_Avoid_: shutdown flag, exit path
+
+**Line**:
+The one thread that writes to the terminal. A frame it is not ready for is held, whole, and a failed write is the terminal's loss, told to the Stop and never returned as an error (ADR-0118).
+_Avoid_: writer, render thread
 
 **Quit Confirm**:
 The chrome modal that asks before `q` or Ctrl-C stops a running download: `y` or a second Ctrl-C quits, `n` or `Esc` stays. With nothing running neither asks, and an OS stop never does.

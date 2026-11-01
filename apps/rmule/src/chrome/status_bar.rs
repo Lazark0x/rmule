@@ -20,9 +20,9 @@ use ratatui::text::{Line, Span};
 use super::{ChromeState, spans_width};
 use crate::rates::{RATE_CELLS, SHORT_RATE_CELLS, format_rate, format_rate_short};
 use crate::state::{Ed2kConnection, NOTE_AGE_SHOWN, Tally, TallyPart, UiState};
+use crate::table::cut_middle;
 use crate::theme::Theme;
 use crate::words::app as words;
-use crate::table::cut_middle;
 use crate::wrap::display_width;
 
 /// The status bar laid out for one frame width: the two ends of the bottom

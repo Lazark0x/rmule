@@ -18,8 +18,9 @@ use crate::bridge::BridgeHandle;
 use crate::chrome::{self, ChromeState};
 use crate::client::CoreClient;
 use crate::state::UiState;
+use crate::stop::Stop;
 use crate::theme::Theme;
-use crate::tui::Surface;
+use crate::tui::{Drawn, Surface};
 use views::Views;
 
 mod history;
@@ -88,6 +89,11 @@ pub struct App {
     run_log: rmule_core::run_log::LevelHandle,
     /// The File History's ask, kept to one out at a time.
     history: history::HistoryPoll,
+    /// What ends the loop from outside it; a test's arms no deadline.
+    stop: Stop,
+    /// A key or signal's work on the terminal (which `reduce` never sees);
+    /// done by the run loop.
+    pending_terminal: Option<TerminalWork>,
 }
 
 /// What one action did to the loop.
@@ -124,6 +130,8 @@ impl App {
             last_tab_unsaved_told: false,
             run_log: rmule_core::run_log::LevelHandle::default(),
             history: history::HistoryPoll::default(),
+            stop: Stop::default(),
+            pending_terminal: None,
         }
     }
 
@@ -195,31 +203,33 @@ impl App {
         self
     }
 
-    /// Drive the UI until quit, until every action producer is gone or until
-    /// the surface stops drawing. Each of those is a Quit (ADR-0118): a
-    /// surface that failed ends the run, not the core's flush.
-    pub async fn run<S: Surface>(
-        mut self,
-        tui: &mut S,
-        mut actions: mpsc::Receiver<Action>,
-    ) -> std::io::Result<()> {
-        let ended = self.drive(tui, &mut actions).await;
-        let quit = self.graceful_quit(tui, &mut actions).await;
-        ended.and(quit)
+    /// Hand the run its [`Stop`]: what ends the loop from outside it.
+    #[must_use]
+    pub fn with_stop(mut self, stop: Stop) -> Self {
+        self.stop = stop;
+        self
     }
 
-    /// The loop: `Ok` on a Quit or on a bus with no producers left.
-    async fn drive<S: Surface>(
-        &mut self,
-        tui: &mut S,
-        actions: &mut mpsc::Receiver<Action>,
-    ) -> std::io::Result<()> {
+    /// Drive the UI until quit, until every action producer is gone or until
+    /// a stop is asked for: a signal, or the terminal's loss. Each of those
+    /// is a Quit (ADR-0118).
+    pub async fn run<S: Surface>(mut self, tui: &mut S, mut actions: mpsc::Receiver<Action>) {
+        self.drive(tui, &mut actions).await;
+        self.graceful_quit(tui, &mut actions).await;
+    }
+
+    /// The loop, until something ends the run. It waits on nothing but these
+    /// arms: the terminal's writes are the line's, so a stop always finds it.
+    async fn drive<S: Surface>(&mut self, tui: &mut S, actions: &mut mpsc::Receiver<Action>) {
         let mut render = tokio::time::interval(RENDER_INTERVAL);
         render.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut last_frame = None;
+        let stop = self.stop.clone();
 
         loop {
             tokio::select! {
+                biased;
+                () = stop.requested() => break,
                 maybe = actions.recv() => {
                     let Some(action) = maybe else { break };
                     let now = Instant::now();
@@ -229,11 +239,9 @@ impl App {
                         Flow::Continue => {}
                     }
                     if let Some(link) = self.pending_copy.take() {
-                        tui.copy_to_clipboard(&link)?;
+                        tui.copy_to_clipboard(&link);
                     }
-                    if std::mem::take(&mut self.pending_bell) {
-                        tui.ring_bell()?;
-                    }
+                    self.terminal_work(tui, now);
                     self.flush_commands();
                     // ADR-0069: input redraws immediately; core bursts wait
                     // for the render tick and collapse into one frame. So
@@ -241,7 +249,7 @@ impl App {
                     // tick's own rate.
                     let due = last_frame.is_none_or(|at: Instant| at.elapsed() >= RENDER_INTERVAL);
                     if immediate && self.dirty && due {
-                        self.draw(tui, now)?;
+                        self.draw(tui, now);
                         last_frame = Some(now);
                     }
                 }
@@ -252,13 +260,29 @@ impl App {
                         self.dirty = true;
                     }
                     if self.dirty {
-                        self.draw(tui, now)?;
+                        self.draw(tui, now);
                         last_frame = Some(now);
                     }
                 }
             }
         }
-        Ok(())
+    }
+
+    /// Do what a key or a signal parked for the terminal.
+    fn terminal_work<S: Surface>(&mut self, tui: &mut S, now: Instant) {
+        if std::mem::take(&mut self.pending_bell) {
+            tui.ring_bell();
+        }
+        match self.pending_terminal.take() {
+            None => {}
+            Some(TerminalWork::Repaint) => tui.repaint(),
+            Some(TerminalWork::Reenter) => tui.reenter(),
+            Some(TerminalWork::Suspend) => {
+                if let Err(refused) = tui.suspend() {
+                    let _ = self.reduce(Action::Flash(crate::words::app::no_suspend(refused)), now);
+                }
+            }
+        }
     }
 
     /// The graceful sequence `Flow::Quit` runs before the loop breaks
@@ -272,8 +296,7 @@ impl App {
     /// it (`CoreEvent::Quitting`, reduced like any other event). The terminal
     /// is restored only once this returns and the loop breaks. With no client
     /// there is no core to quit, and it returns at once, drawing nothing. A
-    /// frame that cannot be drawn stops no step of the
-    /// quit; the first such error is answered once the quit has run.
+    /// frame the terminal cannot take stops no step of the quit.
     ///
     /// `actions` is the same bus `App::run` reads — the only door onto
     /// core's events this app has, since the bridge is single-consumer; it
@@ -283,15 +306,16 @@ impl App {
         &mut self,
         tui: &mut S,
         actions: &mut mpsc::Receiver<Action>,
-    ) -> std::io::Result<()> {
+    ) {
+        self.stop.request();
         let Some(client) = self.client.clone() else {
-            return Ok(());
+            return;
         };
         let now = Instant::now();
         self.chrome
             .update(&Action::Flash(crate::words::app::SHUTTING_DOWN), now);
         self.dirty = true;
-        let mut drawn = self.draw(tui, now);
+        self.draw(tui, now);
 
         let quit = client.graceful_shutdown();
         tokio::pin!(quit);
@@ -300,7 +324,7 @@ impl App {
                 biased;
                 _ = &mut quit => break,
                 action = actions.recv() => match action {
-                    Some(step) => drawn = drawn.and(self.draw_quit_step(tui, step)),
+                    Some(step) => self.draw_quit_step(tui, step),
                     None => {
                         quit.await;
                         break;
@@ -313,25 +337,23 @@ impl App {
         // race with them still on the bus: draw whatever is queued before
         // the terminal is restored.
         while let Ok(step) = actions.try_recv() {
-            drawn = drawn.and(self.draw_quit_step(tui, step));
+            self.draw_quit_step(tui, step);
         }
-        drawn
     }
 
     /// Reduce and draw one bus action during quit if it is the status bar's
     /// receipt for the wait: a quit step is the core's own progress, and a
     /// Flash is the bridge's grace-elapsed notice. Every other action is
     /// dropped — nothing else is drawn while the core is stopping.
-    fn draw_quit_step<S: Surface>(&mut self, tui: &mut S, step: Action) -> std::io::Result<()> {
+    fn draw_quit_step<S: Surface>(&mut self, tui: &mut S, step: Action) {
         if matches!(
             step,
             Action::Core(rmule_core::CoreEvent::Quitting { .. }) | Action::Flash(_)
         ) {
             let now = Instant::now();
             let _ = self.reduce(step, now);
-            self.draw(tui, now)?;
+            self.draw(tui, now);
         }
-        Ok(())
     }
 
     /// Forward queued commands through the client, in order. A send failing
@@ -352,7 +374,9 @@ impl App {
         }
     }
 
-    fn draw<S: Surface>(&mut self, tui: &mut S, now: Instant) -> std::io::Result<()> {
+    /// Draw if the terminal can take a frame; if not, the state stays dirty
+    /// and the next tick asks again.
+    fn draw<S: Surface>(&mut self, tui: &mut S, now: Instant) {
         let state = &self.state;
         let chrome_state = &self.chrome;
         let theme = &self.theme;
@@ -360,47 +384,47 @@ impl App {
         let mut too_small = false;
         let title = chrome::terminal_title(state);
         let new_title = (title != self.shown_title).then_some(title);
-        off_the_workers(|| {
-            tui.draw(|frame| {
-                too_small = crate::views::too_small::holds(frame.area());
-                let caret = if too_small {
-                    crate::views::too_small::draw(frame, theme);
-                    None
-                } else {
-                    let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
-                    views.draw(chrome_state.active, frame, content, state, theme, now)
-                };
-                chrome::draw_overlays(frame, state, chrome_state, theme);
-                // The terminal's own cursor, where an input method composes.
-                // An overlay covers the field and takes the keys.
-                if let Some(caret) = caret
-                    && !chrome_state.help_open
-                    && !chrome_state.quit_open
-                {
-                    frame.set_cursor_position(caret);
-                }
-            })?;
-            new_title
-                .as_ref()
-                .map_or(Ok(()), |title| tui.set_title(title.as_deref()))
-        })?;
-        if let Some(title) = new_title {
-            self.shown_title = title;
+        let drawn = tui.draw(|frame| {
+            too_small = crate::views::too_small::holds(frame.area());
+            let caret = if too_small {
+                crate::views::too_small::draw(frame, theme);
+                None
+            } else {
+                let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
+                views.draw(chrome_state.active, frame, content, state, theme, now)
+            };
+            chrome::draw_overlays(frame, state, chrome_state, theme);
+            // The terminal's own cursor, where an input method composes.
+            // An overlay covers the field and takes the keys.
+            if let Some(caret) = caret
+                && !chrome_state.help_open
+                && !chrome_state.quit_open
+            {
+                frame.set_cursor_position(caret);
+            }
+        });
+        // A held frame rendered nothing: its size, caret and title all stay
+        // owed, and the next tick draws them with the state that holds then.
+        if drawn == Drawn::Shown {
+            if let Some(title) = new_title {
+                tui.set_title(title.as_deref());
+                self.shown_title = title;
+            }
+            self.too_small = too_small;
+            self.dirty = false;
         }
-        self.too_small = too_small;
-        self.dirty = false;
-        Ok(())
     }
 }
 
-/// Run a terminal write, which lasts as long as the terminal does (Ctrl-S, a
-/// stalled ssh), off the runtime's workers: the node's tasks share them.
-fn off_the_workers<T>(write: impl FnOnce() -> T) -> T {
-    let flavor = tokio::runtime::Handle::try_current().map(|runtime| runtime.runtime_flavor());
-    match flavor {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(write),
-        _ => write(),
-    }
+/// What a reduced action parked for the terminal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalWork {
+    /// Ctrl-L.
+    Repaint,
+    /// Ctrl-Z, or a stop from outside.
+    Suspend,
+    /// The run was continued.
+    Reenter,
 }
 
 #[cfg(test)]
@@ -418,26 +442,41 @@ mod tests {
     struct RecordingSurface {
         frames: Vec<String>,
         titles: Vec<Option<String>>,
+        bells: usize,
+        repaints: usize,
+        suspends: usize,
+        suspend_refused: Option<crate::tui::NoStop>,
+        reentries: usize,
     }
 
     impl Surface for RecordingSurface {
-        fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame)) -> std::io::Result<()> {
+        fn draw(&mut self, render: impl FnOnce(&mut ratatui::Frame)) -> Drawn {
             self.frames
                 .push(crate::golden::render_to_lines(80, 24, render));
-            Ok(())
+            Drawn::Shown
         }
 
-        fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
-            Ok(())
+        fn repaint(&mut self) {
+            self.repaints += 1;
         }
 
-        fn set_title(&mut self, title: Option<&str>) -> std::io::Result<()> {
+        fn set_title(&mut self, title: Option<&str>) {
             self.titles.push(title.map(str::to_owned));
-            Ok(())
         }
 
-        fn ring_bell(&mut self) -> std::io::Result<()> {
-            Ok(())
+        fn ring_bell(&mut self) {
+            self.bells += 1;
+        }
+
+        fn copy_to_clipboard(&mut self, _text: &str) {}
+
+        fn suspend(&mut self) -> Result<(), crate::tui::NoStop> {
+            self.suspends += 1;
+            self.suspend_refused.map_or(Ok(()), Err)
+        }
+
+        fn reenter(&mut self) {
+            self.reentries += 1;
         }
     }
 
@@ -449,13 +488,13 @@ mod tests {
         let mut surface = RecordingSurface::default();
         let now = Instant::now();
 
-        app.draw(&mut surface, now).expect("draw");
+        app.draw(&mut surface, now);
         assert!(surface.titles.is_empty(), "off leaves the title alone");
 
         app.state.preferences.terminal_title = true;
         app.state.rates.down_total_bps = 8.0 * 1024.0 * 1024.0;
-        app.draw(&mut surface, now).expect("draw");
-        app.draw(&mut surface, now).expect("draw");
+        app.draw(&mut surface, now);
+        app.draw(&mut surface, now);
         assert_eq!(
             surface.titles,
             [Some("rmule ▼ 8.0 MB/s ▲ 0.0 KB/s".to_string())],
@@ -463,29 +502,8 @@ mod tests {
         );
 
         app.state.preferences.terminal_title = false;
-        app.draw(&mut surface, now).expect("draw");
+        app.draw(&mut surface, now);
         assert_eq!(surface.titles.last(), Some(&None), "given back");
-    }
-
-    /// A stalled terminal keeps its own task, not a worker: on a runtime of
-    /// one worker the node's other tasks still run.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn a_stalled_terminal_holds_no_runtime_worker() {
-        let (stalled, is_stalled) = tokio::sync::oneshot::channel();
-        let (released, release) = std::sync::mpsc::channel();
-        let drawn = tokio::spawn(async move {
-            let (stalled, release) = (stalled, release);
-            off_the_workers(move || {
-                let _ = stalled.send(());
-                release.recv_timeout(Duration::from_secs(2))
-            })
-        });
-        tokio::spawn(async move {
-            let _ = is_stalled.await;
-            let _ = released.send(());
-        });
-
-        assert_eq!(drawn.await.expect("draw task"), Ok(()));
     }
 
     #[test]
@@ -638,9 +656,7 @@ mod tests {
 
         let mut app = App::new(Theme::default_dark()).with_client(handle);
         let mut surface = RecordingSurface::default();
-        app.graceful_quit(&mut surface, &mut actions_rx)
-            .await
-            .expect("draw succeeds");
+        app.graceful_quit(&mut surface, &mut actions_rx).await;
 
         assert!(
             dir.path().join("clients.met").exists(),
@@ -648,31 +664,79 @@ mod tests {
         );
     }
 
-    /// A terminal that has gone away, as a hangup leaves it.
-    struct DeadSurface;
+    /// A terminal that takes no frame, stalled or gone.
+    struct HeldSurface;
 
-    impl Surface for DeadSurface {
-        fn draw(&mut self, _render: impl FnOnce(&mut ratatui::Frame)) -> std::io::Result<()> {
-            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    impl Surface for HeldSurface {
+        fn draw(&mut self, _render: impl FnOnce(&mut ratatui::Frame)) -> Drawn {
+            Drawn::Held
         }
 
-        fn copy_to_clipboard(&mut self, _text: &str) -> std::io::Result<()> {
+        fn repaint(&mut self) {}
+
+        fn copy_to_clipboard(&mut self, _text: &str) {}
+
+        fn suspend(&mut self) -> Result<(), crate::tui::NoStop> {
             Ok(())
         }
 
-        fn set_title(&mut self, _title: Option<&str>) -> std::io::Result<()> {
-            Ok(())
-        }
+        fn set_title(&mut self, _title: Option<&str>) {}
 
-        fn ring_bell(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+        fn ring_bell(&mut self) {}
+
+        fn reenter(&mut self) {}
     }
 
-    /// A draw error used to return before the Quit: the flush of a run whose
-    /// terminal went away is exactly the one a hangup must not lose.
+    /// A held frame stays owed, title with it: the title goes out behind the
+    /// frame the terminal takes next, never ahead of it.
+    #[test]
+    fn a_held_frame_leaves_the_state_dirty_and_its_title_owed() {
+        let mut app = App::new(Theme::default_dark());
+        app.dirty = true;
+        app.state.preferences.terminal_title = true;
+        let now = Instant::now();
+
+        app.draw(&mut HeldSurface, now);
+        assert!(app.dirty);
+
+        let mut surface = RecordingSurface::default();
+        app.draw(&mut surface, now);
+        assert!(!app.dirty);
+        assert_eq!(surface.titles.len(), 1, "the title was still owed");
+    }
+
+    /// A key or a signal parks the terminal's work, and the loop does it.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_surface_that_stops_drawing_ends_the_run_through_the_quit() {
+    async fn ctrl_z_and_ctrl_l_and_a_continue_reach_the_surface() {
+        use ratatui::crossterm::event::{Event, KeyEvent, KeyModifiers};
+
+        let ctrl = |code| Event::Key(KeyEvent::new(code, KeyModifiers::CONTROL));
+        let (actions_tx, actions_rx) = mpsc::channel(64);
+        for action in [
+            Action::Input(ctrl(KeyCode::Char('l'))),
+            Action::Input(ctrl(KeyCode::Char('z'))),
+            Action::Continued,
+            Action::Quit,
+        ] {
+            actions_tx.send(action).await.expect("the bus is open");
+        }
+        let mut surface = RecordingSurface::default();
+        surface.suspend_refused = Some(crate::tui::NoStop::NoShell);
+        let app = App::new(Theme::default_dark());
+
+        app.run(&mut surface, actions_rx).await;
+
+        assert_eq!(
+            (surface.repaints, surface.suspends, surface.reentries),
+            (1, 1, 1)
+        );
+    }
+
+    /// The flush of a run whose terminal went away is exactly the one a hangup
+    /// must not lose: a stop from outside ends the loop through the quit, with
+    /// a queued action and a surface that never takes a frame.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stop_ends_the_run_through_the_quit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let core = rmule_core::Core::builder(
             rmule_core::CoreConfig::default(),
@@ -691,16 +755,14 @@ mod tests {
             .send(Action::Note(crate::words::app::INTERNAL_FAULT))
             .await
             .expect("the bus is open");
-        let app = App::new(Theme::default_dark()).with_client(handle);
+        let stop = Stop::default();
+        stop.request();
+        let app = App::new(Theme::default_dark())
+            .with_stop(stop)
+            .with_client(handle);
 
-        let ended = app.run(&mut DeadSurface, actions_rx).await;
+        app.run(&mut HeldSurface, actions_rx).await;
 
-        assert_eq!(
-            ended
-                .expect_err("the draw's failure is the run's answer")
-                .kind(),
-            std::io::ErrorKind::BrokenPipe
-        );
         assert!(dir.path().join("clients.met").exists());
     }
 
@@ -754,9 +816,7 @@ mod tests {
         );
         let mut app = App::new(Theme::default_dark()).with_client(handle);
         let mut surface = RecordingSurface::default();
-        app.graceful_quit(&mut surface, &mut actions_rx)
-            .await
-            .expect("draw succeeds");
+        app.graceful_quit(&mut surface, &mut actions_rx).await;
 
         let last = surface.frames.last().expect("quit drew");
         assert!(
@@ -772,9 +832,7 @@ mod tests {
         let mut app = App::new(Theme::default_dark());
         let mut surface = RecordingSurface::default();
         let (_tx, mut actions_rx) = mpsc::channel(1);
-        app.graceful_quit(&mut surface, &mut actions_rx)
-            .await
-            .expect("draw succeeds");
+        app.graceful_quit(&mut surface, &mut actions_rx).await;
         assert!(surface.frames.is_empty(), "nothing to announce");
     }
 }

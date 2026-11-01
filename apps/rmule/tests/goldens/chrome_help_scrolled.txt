@@ -9,7 +9,7 @@
 │ /               Searches: focus query input                                  │
 │ o               Searches: type/size/sources/extension filters                │
 │ [ / ]           Searches: previous / next held search                        │
-│ x / n           Searches: stop or close a search / server's next page       ▄│
+│ x / n           Searches: stop or close a search / server's next page        │
 │ u               Searches: bring back the search closed last                 █│
 │ p               Transfers: pause or resume the selected download            █│
 │ C               Transfers: clear all completed                              █│
@@ -20,5 +20,5 @@
 │ [ / ]           Shared: filter by directory                                 █│
 │ Enter  ← / →    Settings: edit a field / step a selector                    █│
 │ x               Settings: stop sharing the selected directory               ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 38 / 38 ┘
+└─────────────────────────────────────────────────────────────── j/k ─ 40 / 40 ┘
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘

@@ -238,7 +238,7 @@ mod tests {
     fn golden_help_overlay_fits_a_tall_frame() {
         let mut chrome = chrome();
         chrome.update(&Action::ToggleHelp, now());
-        assert_golden("chrome_help_fits", 100, 40, |frame| {
+        assert_golden("chrome_help_fits", 100, 42, |frame| {
             draw_frame(
                 frame,
                 &UiState::default(),

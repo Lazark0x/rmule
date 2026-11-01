@@ -1,6 +1,7 @@
 //! The OS asking a run to stop (ADR-0118): every signal a front end turns into
-//! a Quit, in one place. SIGTERM, SIGHUP and SIGINT on Unix; Ctrl-C,
-//! Ctrl-Break and the console's close on Windows. Installed once, ahead of
+//! a Quit, in one place. SIGTERM, SIGHUP, SIGINT and the signals whose default
+//! would end the run with nothing restored, SIGQUIT, SIGUSR1, SIGUSR2 and
+//! SIGALRM, on Unix; Ctrl-C, Ctrl-Break and the console's close on Windows. Installed once, ahead of
 //! whatever waits on it, so a request that lands between two turns of a loop
 //! is held, not lost.
 
@@ -11,6 +12,10 @@ pub struct StopRequest {
     terminate: tokio::signal::unix::Signal,
     hangup: tokio::signal::unix::Signal,
     interrupt: tokio::signal::unix::Signal,
+    quit: tokio::signal::unix::Signal,
+    user_1: tokio::signal::unix::Signal,
+    user_2: tokio::signal::unix::Signal,
+    alarm: tokio::signal::unix::Signal,
 }
 
 #[cfg(unix)]
@@ -26,6 +31,10 @@ impl StopRequest {
             terminate: signal(SignalKind::terminate())?,
             hangup: signal(SignalKind::hangup())?,
             interrupt: signal(SignalKind::interrupt())?,
+            quit: signal(SignalKind::quit())?,
+            user_1: signal(SignalKind::user_defined1())?,
+            user_2: signal(SignalKind::user_defined2())?,
+            alarm: signal(SignalKind::alarm())?,
         })
     }
 
@@ -35,6 +44,10 @@ impl StopRequest {
             _ = self.terminate.recv() => {}
             _ = self.hangup.recv() => {}
             _ = self.interrupt.recv() => {}
+            _ = self.quit.recv() => {}
+            _ = self.user_1.recv() => {}
+            _ = self.user_2.recv() => {}
+            _ = self.alarm.recv() => {}
         }
     }
 }

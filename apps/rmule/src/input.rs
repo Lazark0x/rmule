@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::chrome::{self, ChromeState};
 use crate::line_edit::LineEdit;
+use crate::stop::Stop;
 
 /// What the reducer does with a key before anything else reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +29,10 @@ pub enum KeyGate {
     Drop,
     /// Ctrl-C: the quit path, from every surface.
     Interrupt,
+    /// Ctrl-Z: stop as a job, from every surface.
+    Suspend,
+    /// Ctrl-L: draw the whole frame again, from every surface.
+    Repaint,
 }
 
 /// The one reading of a key's kind and modifiers, so no view has to.
@@ -37,7 +42,7 @@ pub enum KeyGate {
 /// view that read the code alone would take it for its own `c`. Ctrl with Alt
 /// on a character is AltGr on a Windows console, and that is typed text.
 /// With a text field holding the keyboard (`text_open`), a chord the line
-/// editor binds passes: Ctrl-C alone stays above any field.
+/// editor binds passes: only Ctrl-C, Ctrl-Z and Ctrl-L stay above any field.
 #[must_use]
 pub fn gate(key: &KeyEvent, text_open: bool) -> KeyGate {
     if key.kind == KeyEventKind::Release {
@@ -48,6 +53,8 @@ pub fn gate(key: &KeyEvent, text_open: bool) -> KeyGate {
     match key.code {
         KeyCode::Char(_) if ctrl && alt => KeyGate::Pass,
         KeyCode::Char('c' | 'C') if ctrl => KeyGate::Interrupt,
+        KeyCode::Char('z' | 'Z') if ctrl => KeyGate::Suspend,
+        KeyCode::Char('l' | 'L') if ctrl => KeyGate::Repaint,
         _ if text_open && LineEdit::claims(key) => KeyGate::Pass,
         _ if ctrl || alt => KeyGate::Drop,
         _ => KeyGate::Pass,
@@ -113,51 +120,71 @@ pub fn map_mouse(chrome: &ChromeState, mouse: MouseEvent) -> Option<Action> {
     }
 }
 
+/// The running pump.
+pub struct InputPump {
+    ended: std::sync::mpsc::Receiver<()>,
+}
+
+impl InputPump {
+    /// Wait for the pump to end, at most `bound`. Crossterm's reader never
+    /// comes back from a dead descriptor, and the pump is not worth a run
+    /// that ends: past the bound the process goes without it.
+    pub fn wait(self, bound: Duration) {
+        let _ = self.ended.recv_timeout(bound);
+    }
+}
+
 /// Blocking poll/read pump: forwards terminal events onto the action bus
 /// until told to stop or the bus closes. 100 ms poll keeps shutdown prompt
 /// without busy-waiting.
+#[must_use]
 pub fn spawn_input_pump(
     actions: mpsc::Sender<Action>,
     shutdown: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
+    stop: Stop,
+) -> InputPump {
+    let (ended_tx, ended) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("rmule-input".into())
         .spawn(move || {
-            pump(actions, shutdown, || {
+            pump(actions, shutdown, stop, || {
                 if ratatui::crossterm::event::poll(Duration::from_millis(100))? {
                     ratatui::crossterm::event::read().map(Some)
                 } else {
                     Ok(None)
                 }
             });
+            let _ = ended_tx.send(());
         })
-        .expect("spawn input pump thread")
+        .expect("spawn input pump thread");
+    InputPump { ended }
 }
 
 /// Feed what `next` reads onto the bus until the run's end is asked for. A
 /// pump that ends any other way, a read failure or its own panic, leaves the
-/// operator no key to quit with, so its end is a Quit (ADR-0118).
+/// operator no key to quit with, so its end is a stop (ADR-0118).
 fn pump(
     actions: mpsc::Sender<Action>,
     shutdown: Arc<AtomicBool>,
+    stop: Stop,
     mut next: impl FnMut() -> std::io::Result<Option<Event>>,
 ) {
-    struct QuitAtEnd {
-        actions: mpsc::Sender<Action>,
+    struct StopAtEnd {
+        stop: Stop,
         shutdown: Arc<AtomicBool>,
     }
-    impl Drop for QuitAtEnd {
+    impl Drop for StopAtEnd {
         fn drop(&mut self) {
             if !self.shutdown.load(Ordering::Relaxed) {
-                let _ = self.actions.blocking_send(Action::Quit);
+                self.stop.request();
             }
         }
     }
-    let end = QuitAtEnd { actions, shutdown };
+    let end = StopAtEnd { stop, shutdown };
     while !end.shutdown.load(Ordering::Relaxed) {
         match next() {
             Ok(Some(event)) => {
-                if end.actions.blocking_send(Action::Input(event)).is_err() {
+                if actions.blocking_send(Action::Input(event)).is_err() {
                     return; // UI gone
                 }
             }
@@ -173,33 +200,42 @@ mod tests {
     use crate::fixture::press;
     use crate::view::ViewId;
 
-    fn a_quit_follows(
+    fn a_stop_follows(
         next: impl FnMut() -> std::io::Result<Option<Event>> + Send + 'static,
     ) -> bool {
-        let (actions, mut bus) = mpsc::channel(4);
+        let (actions, _bus) = mpsc::channel(4);
         let shutdown = Arc::new(AtomicBool::new(false));
-        let pump = std::thread::spawn(move || pump(actions, shutdown, next));
+        let stop = Stop::default();
+        let asked = stop.clone();
+        let pump = std::thread::spawn(move || pump(actions, shutdown, stop, next));
         let _ = pump.join();
-        matches!(bus.try_recv(), Ok(Action::Quit))
+        asked.was_requested()
     }
 
     #[test]
-    fn a_pump_whose_read_fails_quits_the_run() {
-        assert!(a_quit_follows(|| Err(std::io::Error::from(
+    fn a_pump_whose_read_fails_stops_the_run() {
+        assert!(a_stop_follows(|| Err(std::io::Error::from(
             std::io::ErrorKind::BrokenPipe
         ))));
     }
 
     #[test]
-    fn a_pump_that_panics_quits_the_run() {
-        assert!(a_quit_follows(|| panic!("a defect in the pump")));
+    fn a_pump_that_panics_stops_the_run() {
+        assert!(a_stop_follows(|| panic!("a defect in the pump")));
     }
 
     #[test]
     fn a_pump_told_to_stop_says_nothing() {
         let (actions, mut bus) = mpsc::channel(4);
-        pump(actions, Arc::new(AtomicBool::new(true)), || Ok(None));
+        let stop = Stop::default();
+        pump(
+            actions,
+            Arc::new(AtomicBool::new(true)),
+            stop.clone(),
+            || Ok(None),
+        );
         assert!(bus.try_recv().is_err());
+        assert!(!stop.was_requested());
     }
 
     #[test]
@@ -279,6 +315,10 @@ mod tests {
         let ctrl = KeyModifiers::CONTROL;
         let c = chord(KeyCode::Char('c'), ctrl);
         assert_eq!(gate(&c, false), KeyGate::Interrupt);
+        let z = chord(KeyCode::Char('z'), ctrl);
+        assert_eq!(gate(&z, false), KeyGate::Suspend);
+        let l = chord(KeyCode::Char('l'), ctrl);
+        assert_eq!(gate(&l, false), KeyGate::Repaint);
         assert_eq!(gate(&chord(KeyCode::Char('p'), ctrl), false), KeyGate::Drop);
         assert_eq!(gate(&chord(KeyCode::Left, ctrl), false), KeyGate::Drop);
         let alt = KeyModifiers::ALT;
@@ -306,6 +346,16 @@ mod tests {
             gate(&chord_of(KeyCode::Char('c'), ctrl), true),
             KeyGate::Interrupt,
             "Ctrl-C quits from every surface"
+        );
+        assert_eq!(
+            gate(&chord_of(KeyCode::Char('z'), ctrl), true),
+            KeyGate::Suspend,
+            "a field does not hold the job stop"
+        );
+        assert_eq!(
+            gate(&chord_of(KeyCode::Char('l'), ctrl), true),
+            KeyGate::Repaint,
+            "a field does not hold the repaint"
         );
     }
 

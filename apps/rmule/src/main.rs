@@ -15,11 +15,13 @@
 //! gracefully (`App::graceful_quit`): the core's own quit
 //! stops every activity in order and flushes the credit checkpoint,
 //! bounded so a stuck core cannot hang the terminal. A stop signal is the
-//! same Quit, and the panic hook decides what a panic costs (ADR-0118).
+//! same Quit, on one stop path that needs neither the UI loop nor the
+//! terminal ([`rmule::stop`]), and the panic hook decides what a panic costs
+//! (ADR-0118).
 
 #![warn(missing_docs)]
 
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,7 @@ use rmule::args::{self, BUILD, Invocation, MissingTerminal, RunArgs};
 use rmule::attach::{Attachment, Live, attach};
 use rmule::bridge::{self, BridgeConfig};
 use rmule::input::spawn_input_pump;
+use rmule::stop::Stop;
 use rmule::theme::{Colours, Theme};
 use rmule::tui::Tui;
 use rmule::words::front_door;
@@ -46,21 +49,25 @@ const EXIT_FAILURE: u8 = 1;
 /// own grace a walk still on it has no one left to answer, and must not keep
 /// the process alive behind a restored terminal.
 const RUNTIME_SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
+/// How long the end of a run waits for the input pump's poll tick: past it
+/// the pump is on a dead descriptor, and it dies with the process.
+const INPUT_PUMP_BOUND: Duration = Duration::from_millis(250);
 
 fn main() -> ExitCode {
     // Nothing above the terminal check may touch the data directory.
     let run_args = match args::parse(std::env::args_os().skip(1)) {
         Ok(Invocation::Run(run_args)) => run_args,
         Ok(Invocation::Help(run_args)) => {
-            print!("{}", front_door::help(BUILD, data_dir(&run_args).as_ref()));
+            let help = front_door::help(BUILD, data_dir(&run_args).as_ref());
+            let _ = write!(std::io::stdout(), "{help}");
             return ExitCode::SUCCESS;
         }
         Ok(Invocation::Version) => {
-            println!("{}", front_door::version_line(BUILD));
+            let _ = writeln!(std::io::stdout(), "{}", front_door::version_line(BUILD));
             return ExitCode::SUCCESS;
         }
         Err(error) => {
-            eprintln!("{}", front_door::args_error(&error));
+            say(&front_door::args_error(&error));
             return ExitCode::from(EXIT_USAGE);
         }
     };
@@ -68,7 +75,7 @@ fn main() -> ExitCode {
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
     ) {
-        eprintln!("{}", front_door::no_terminal(missing));
+        say(front_door::no_terminal(missing));
         return ExitCode::from(EXIT_FAILURE);
     }
     // One multi-thread runtime for UI loop, bridge, and core tasks.
@@ -81,13 +88,16 @@ fn main() -> ExitCode {
     match result {
         Ok(code) => code,
         Err(error) => {
-            eprintln!(
-                "{}",
-                front_door::run_failed(error.kind(), error.raw_os_error())
-            );
+            say(&front_door::run_failed(error.kind(), error.raw_os_error()));
             ExitCode::from(EXIT_FAILURE)
         }
     }
+}
+
+/// Say a line on stderr, however stderr is: a run ending behind a closed
+/// terminal must not panic on the way out.
+fn say(line: &str) {
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 /// The data directory this invocation names, and the rule that picked it.
@@ -159,30 +169,32 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     let attachment = match attach(data_dir, &Live, run_log_level.clone()).await {
         Ok(attachment) => attachment,
         Err(failure) => {
-            eprintln!(
+            say(&format!(
                 "rmule: {}",
                 rmule::words::app::attach_failure_words(failure)
-            );
+            ));
             return Ok(ExitCode::from(EXIT_FAILURE));
         }
     };
 
-    // Every stop the OS can ask for is the operator's `q`; held on the bus
-    // until the UI reads it, however early it comes.
+    // Every stop the OS can ask for is the operator's `q`, with no question
+    // asked, and held however early it comes.
+    let stop = Stop::with_deadline();
     let stop_signals_refused = match StopRequest::install() {
-        Ok(mut stop) => {
-            let actions_tx = actions_tx.clone();
+        Ok(mut signals) => {
+            let stop = stop.clone();
             tokio::spawn(async move {
-                stop.recv().await;
-                let _ = actions_tx.send(Action::Quit).await;
+                signals.recv().await;
+                stop.request();
             });
             false
         }
         Err(_) => true,
     };
 
-    let mut tui = Tui::enter()?;
-    let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown));
+    let mut tui = Tui::enter(&stop)?;
+    let pump = spawn_input_pump(actions_tx.clone(), Arc::clone(&shutdown), stop.clone());
+    let job_control_refused = rmule::job::listen(actions_tx.clone()).is_err();
 
     let mut app = App::new(theme);
     let Attachment {
@@ -201,6 +213,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     }
     run_log_level.set(Level::from_full(preferences.run_log_full));
     let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
+    stop.quit_core_when_asked(handle.clone());
     // The operator's connect, given ahead of time — or nothing
     // (ADR-0095): no other road in the app dials a server.
     let cannot_connect = match at_start {
@@ -232,6 +245,7 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     let notes = rmule::start_notes::start_notes(rmule::start_notes::StartFacts {
         no_run_log: run_log.err().map(rmule::words::app::no_run_log),
         stop_signals_refused,
+        job_control_refused,
         ceiling_lowered: ceiling_lowered.map(rmule::words::download::ceiling_lowered),
         cannot_connect,
         download_dir_set: session.download_dir.is_some(),
@@ -268,16 +282,17 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         }
     });
     app = app
+        .with_stop(stop)
         .with_client(handle)
         .with_session(session)
         .with_run_log(run_log_level)
         .with_config(config, preferences)
         .with_kad_start(kad_start)
         .with_player(player);
-    let result = app.run(&mut tui, actions_rx).await;
+    app.run(&mut tui, actions_rx).await;
 
     shutdown.store(true, Ordering::Relaxed);
     drop(tui); // restore the terminal before waiting on the pump's poll tick
-    let _ = pump.join();
-    result.map(|()| ExitCode::SUCCESS)
+    pump.wait(INPUT_PUMP_BOUND);
+    Ok(ExitCode::SUCCESS)
 }

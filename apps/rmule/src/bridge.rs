@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use rmule_core::diagnostics::DiagnosticsSnapshot;
 use rmule_core::{CommandSender, Core, CoreCommand, CoreError, CoreEvent, EventStream, LongTask};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
@@ -157,7 +157,7 @@ type ShutdownAck = oneshot::Sender<()>;
 /// with nothing wedged (ADR-0118), so only a wedged quit reaches it. Past it
 /// the run ends and the runtime takes the actor with it: quit's opening credit
 /// flush has already landed by then, and its closing one is what is lost.
-const CORE_SHUTDOWN_GRACE: Duration = Duration::from_secs(45);
+pub(crate) const CORE_SHUTDOWN_GRACE: Duration = Duration::from_secs(45);
 
 /// Told, not swallowed: the status-bar flash
 /// [`run`]'s shutdown arm sends when [`CORE_SHUTDOWN_GRACE`] elapses before
@@ -171,10 +171,10 @@ const SHUTDOWN_GRACE_ELAPSED_FLASH: crate::words::Sentence =
 pub struct BridgeHandle {
     cmd_tx: mpsc::UnboundedSender<CoreCommand>,
     /// The one-shot graceful-shutdown door, shared across
-    /// clones so only the first caller's request is honoured; a second call
-    /// (or one after the bridge task already ended on its own) finds it
-    /// empty and answers `false` at once.
+    /// clones so only the first caller's request is honoured.
     shutdown: Arc<Mutex<Option<oneshot::Sender<ShutdownAck>>>>,
+    /// How the door's one use ended, for every later caller to wait on.
+    quit_end: Arc<watch::Sender<Option<bool>>>,
 }
 
 impl std::fmt::Debug for BridgeHandle {
@@ -199,19 +199,20 @@ impl BridgeHandle {
     /// inside the grace — a grace-elapsed run sends
     /// [`Action::Flash`] on the action bus
     /// before answering, so the caller is not left thinking the flush
-    /// confirmed when it did not); `false` if this door was already used —
-    /// by this clone or another — or the bridge task had already ended on
-    /// its own.
+    /// confirmed when it did not); `false` if the bridge task had already
+    /// ended on its own. A caller after the first waits for the same quit
+    /// and gets the same answer, so the stop path and the UI can both ask.
     pub async fn graceful_shutdown(&self) -> bool {
         let request = self.shutdown.lock().take();
         let Some(request) = request else {
-            return false;
+            let mut end = self.quit_end.subscribe();
+            let answer = end.wait_for(Option::is_some).await;
+            return answer.is_ok_and(|end| *end == Some(true));
         };
         let (ack_tx, ack_rx) = oneshot::channel();
-        if request.send(ack_tx).is_err() {
-            return false;
-        }
-        ack_rx.await.is_ok()
+        let answered = request.send(ack_tx).is_ok() && ack_rx.await.is_ok();
+        self.quit_end.send_replace(Some(answered));
+        answered
     }
 }
 
@@ -239,6 +240,7 @@ pub fn spawn<H: CoreHandle>(
     BridgeHandle {
         cmd_tx,
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
+        quit_end: Arc::new(watch::Sender::new(None)),
     }
 }
 
@@ -325,7 +327,7 @@ async fn run<H: CoreHandle>(
             ack = &mut shutdown_rx => {
                 // The graceful-shutdown door: honour at most
                 // once — a second `graceful_shutdown` call never reaches
-                // here, `BridgeHandle` already refused it.
+                // here, `BridgeHandle` has it wait for this one.
                 if let Ok(ack) = ack {
                     let drained = tokio::time::timeout(
                         CORE_SHUTDOWN_GRACE,

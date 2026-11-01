@@ -182,7 +182,10 @@ impl ChromeState {
             | Action::SearchRelated(_)
             | Action::StartKad
             | Action::Preview(_)
-            | Action::Quit => false,
+            | Action::Quit
+            | Action::Repaint
+            | Action::Suspend
+            | Action::Continued => false,
         }
     }
 

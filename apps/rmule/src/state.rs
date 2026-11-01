@@ -279,6 +279,9 @@ impl UiState {
             // Chrome/input/outbound arms belong to `ChromeState`/the app
             // loop, never to the core-facing state.
             Action::Input(_)
+            | Action::Repaint
+            | Action::Suspend
+            | Action::Continued
             | Action::SwitchView(_)
             | Action::CycleView(_)
             | Action::ToggleHelp

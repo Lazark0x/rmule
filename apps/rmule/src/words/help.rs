@@ -18,6 +18,8 @@ pub const EVERYWHERE: &[Binding] = &[
     ("?", "this help; j/k, PgUp/PgDn scroll it when it is long"),
     ("q", "quit; asks first while a download runs"),
     ("Ctrl-C", "quit, from anywhere"),
+    ("Ctrl-Z", "stop as a job; transfers stand still until fg"),
+    ("Ctrl-L", "repaint the screen"),
     ("Esc", "close a menu, a form or a question; leave the query"),
     (
         "Ctrl-A / E",

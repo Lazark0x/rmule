@@ -90,4 +90,11 @@ pub enum Action {
     Preview(rmule_core::DownloadId),
     /// `q` at the top level.
     Quit,
+    /// Ctrl-L: draw the whole frame again, over whatever the screen shows.
+    Repaint,
+    /// Ctrl-Z, or a SIGTSTP from outside: give the terminal back and stop as
+    /// a job.
+    Suspend,
+    /// A SIGCONT: the run stood still and is going again.
+    Continued,
 }

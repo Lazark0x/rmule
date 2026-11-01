@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::Event;
 
-use super::{App, Flow};
+use super::{App, Flow, TerminalWork};
 use crate::action::Action;
 use crate::input;
 use crate::views::ViewOutcome;
@@ -31,6 +31,12 @@ impl App {
                             input::KeyGate::Drop => return Flow::Continue,
                             input::KeyGate::Interrupt => {
                                 return self.reduce(Action::AskQuit, now);
+                            }
+                            input::KeyGate::Suspend => {
+                                return self.reduce(Action::Suspend, now);
+                            }
+                            input::KeyGate::Repaint => {
+                                return self.reduce(Action::Repaint, now);
                             }
                         }
                         // Under the too-small screen no view is on show, so no
@@ -134,6 +140,20 @@ impl App {
                 }
             }
             Action::Quit => Flow::Quit,
+            Action::Repaint => {
+                self.pending_terminal = Some(TerminalWork::Repaint);
+                self.dirty = true;
+                Flow::Continue
+            }
+            Action::Suspend => {
+                self.pending_terminal = Some(TerminalWork::Suspend);
+                Flow::Continue
+            }
+            Action::Continued => {
+                self.pending_terminal = Some(TerminalWork::Reenter);
+                self.dirty = true;
+                self.reduce(Action::Note(crate::words::app::CONTINUED), now)
+            }
             // A second ask while the confirm is up is its answer: Ctrl-C
             // twice leaves, whatever is running.
             Action::AskQuit if self.chrome.quit_open || self.state.running_downloads() == 0 => {

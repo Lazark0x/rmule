@@ -11,6 +11,9 @@ pub struct StartFacts {
     pub no_run_log: Option<Sentence>,
     /// The OS refused the stop signals' handlers.
     pub stop_signals_refused: bool,
+    /// The OS refused job control's handlers: Ctrl-Z may stop nothing and a
+    /// continue will not repaint.
+    pub job_control_refused: bool,
     /// The Connection Ceiling the OS held the run under.
     pub ceiling_lowered: Option<Sentence>,
     /// Why the connect at start found nothing to connect to.
@@ -28,6 +31,7 @@ pub fn start_notes(facts: StartFacts) -> Vec<Sentence> {
         facts.cannot_connect,
         facts.ceiling_lowered,
         facts.stop_signals_refused.then_some(app::NO_STOP_SIGNALS),
+        facts.job_control_refused.then_some(app::NO_JOB_CONTROL),
         facts.no_run_log,
     ]
     .into_iter()

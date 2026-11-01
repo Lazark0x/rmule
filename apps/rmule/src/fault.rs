@@ -2,7 +2,9 @@
 //! then decides by what the panic costs: a worker's panic in a build that
 //! unwinds leaves the frame alone and reaches the status line as a note; a
 //! panic of the UI thread, or any panic in a dist build, gives the terminal
-//! back and says on the normal screen what happened.
+//! back and says on the normal screen what happened. Stderr may be gone by
+//! then, and a panic in this hook is an abort with a crash report: nothing
+//! here writes with `eprintln!`.
 
 use std::panic::PanicHookInfo;
 use std::path::PathBuf;
@@ -64,7 +66,7 @@ pub fn install_hook(
                 let (file, line) = info
                     .location()
                     .map_or(("unknown", 0), |site| (site.file(), site.line()));
-                eprintln!("{}", app_words::fault_at(file, line, run_log.as_deref()));
+                tui::last_words(app_words::fault_at(file, line, run_log.as_deref()));
             }
         }
     }));

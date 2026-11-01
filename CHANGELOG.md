@@ -46,6 +46,15 @@ All notable changes to rmule are recorded here. The format follows
 - One peer holds one link and one place in a queue across several downloads,
   and rmule asks each source on one clock.
 
+### Terminal
+
+- Closing the window or losing ssh ends rmule with its usual quit, and no
+  crash report; a terminal that stops reading no longer holds a stop.
+- Ctrl-Z stops rmule as a job, and `fg` brings the screen back and says the
+  transfers stood still. Ctrl-L repaints.
+- SIGQUIT, SIGUSR1, SIGUSR2 and SIGALRM quit and give the terminal back. A
+  crash restores the cursor.
+
 ### Interop harness
 
 - Every flow writes one typed verdict to one TOML file, and the harness exits

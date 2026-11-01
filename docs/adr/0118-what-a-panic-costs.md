@@ -60,7 +60,9 @@ Kad's watchdog and serve's liveness cell keep their shape: both already reach th
 the panic costs. A worker's panic leaves the terminal alone and prints nothing onto the frame: it
 is a Run Log record and a note on the action bus. A panic on the UI thread, or any panic in a dist
 build, restores the terminal first and then says on the normal screen what happened, where, and
-where the record is.
+where the record is. Stderr may be gone by then, and a panic in the hook is an abort with a crash
+report, so the hook and every drop path write without `eprintln!`, and what they say is not
+waited for past a bound.
 
 ### Locks
 
@@ -70,15 +72,48 @@ it.
 
 ### Quit's reach
 
-Every way out of a run is a Quit: `q`, SIGTERM, SIGHUP, SIGINT, the Windows Ctrl-C, Ctrl-Break and
-console close, a failed draw, and the same signals around `rmule-cli`'s wait for a download.
-`CORE_SHUTDOWN_GRACE` covers the sum of quit's own bounds, 33 s with nothing wedged, so a quit
-that is merely slow is not cut off.
+Every way out of a run is a Quit: `q`, SIGTERM, SIGHUP, SIGINT, SIGQUIT, SIGUSR1, SIGUSR2,
+SIGALRM, the Windows Ctrl-C, Ctrl-Break and console close, the terminal's loss, the input pump's
+end, and the same signals around `rmule-cli`'s wait for a download. `CORE_SHUTDOWN_GRACE` covers
+the sum of quit's own bounds, 33 s with nothing wedged, so a quit that is merely slow is not cut
+off.
 
 What the grace can still cut short is written first: quit opens with a credit checkpoint and the
 `clients.met` snapshot, ahead of every step that can be slow, and closes with them again for what
 the stops themselves accrued. Past the grace the runtime is shut down within a short bound, so a
 blocking walk cannot keep the process alive after the terminal is back.
+
+### Losing the terminal
+
+Closing a window is an ordinary way out, not a panic and not an error: it ends with the same
+Quit, a status of success and no crash report.
+
+- `crate::tui`'s line is one thread that makes every terminal write. The run hands it bytes and
+  goes on, and a frame it cannot take yet is held, whole, for the next tick. A terminal nobody
+  reads stalls that thread and no other.
+- A failed write, or a hang-up on standard input, is the terminal's loss. Raw mode goes back on
+  whatever remains, and the standard streams are blanked: input becomes a pipe nobody writes,
+  output and error the null device.
+- `crate::stop` is a value any thread sets without blocking. A request wakes the loop, starts the
+  core's quit from a task of its own and arms a deadline, so a stop waits on neither the UI loop
+  nor the terminal. Past the grace, or five seconds past the core's stop, the process ends.
+- The restore is bounded by a second, then by discarding what the terminal did not read. The
+  input pump is waited for by a quarter of a second and never past it.
+
+Crossterm's reader loops without end on a descriptor that reads EOF or EIO, inside `poll`, past
+its timeout, so a thread that is there cannot be told to stop. Blanking standard input parks it
+in a read that never answers. Nothing else in the run depends on that thread ending.
+
+### Job control
+
+Ctrl-Z and a SIGTSTP from outside take one path: the terminal is given back and the process group
+stops. A SIGCONT is the run going again, whoever stopped it: raw mode and the screen are taken
+anew, the next frame is drawn whole, and the status bar says the transfers stood still. The stop
+is SIGSTOP, since the run holds a handler for SIGTSTP and the group has to stop whatever that
+handler does.
+
+A group that leads its session has no shell above it to continue it, so a stop there, and any stop
+on Windows, is refused and said on the status bar. Ctrl-L draws the frame whole from any surface.
 
 ### After the core stops
 
@@ -91,6 +126,12 @@ A stopped core claims nothing. The connection dots, the rates and the row speeds
 - The bench and the tests run the unwinding path, so the supervisor is proved where it runs, and
   a bench run keeps its other activities' evidence past one task's panic.
 - `DownloadFailure::TaskPanicked` is appended, so rows already stored decode as they did.
+- A terminal write no longer holds a task, so the loop has no write to take off the runtime's
+  workers.
+- A stalled terminal keeps the frame it last read until it reads again; only the last state is
+  ever drawn.
+- SIGXCPU, SIGXFSZ, SIGVTALRM and SIGPROF keep their defaults and end a run with nothing restored:
+  no operator sends them, and each is a limit the run does not set.
 
 ## Considered options
 
@@ -98,5 +139,9 @@ A stopped core claims nothing. The connection dots, the rates and the row speeds
   supervisor proved by nothing.
 - **Unwind everywhere.** Keeps a node running past a broken invariant, with locks read
   through poison; the half-dead node this decision exists to end.
+- **The stop task calling the terminal's restore itself.** The UI still holds a write, so the
+  restore would race a frame. The line orders both.
+- **Reading the terminal with a parser of our own.** Would end the spin at its source, and takes on
+  every key and mouse encoding crossterm carries, to fix what an upstream fix ends.
 - **A second task per watched future** (the shape `run_watched` had). Aborting the watcher then
   leaves the real run ending some time later, so a join stops meaning the run ended.

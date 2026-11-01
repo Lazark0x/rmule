@@ -362,10 +362,10 @@ async fn graceful_shutdown_runs_core_quit_exactly_once() {
     );
 
     // Idempotent across the door and across clones: a second call, from
-    // either handle, finds nothing left to fire.
+    // either handle, has the first one's answer and fires nothing.
     assert!(
-        !handle.clone().graceful_shutdown().await,
-        "a second call must not re-run shutdown"
+        handle.clone().graceful_shutdown().await,
+        "a second call must answer as the first did"
     );
     assert_eq!(controls.shutdown_calls.load(Ordering::SeqCst), 1);
 }

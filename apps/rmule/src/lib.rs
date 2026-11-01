@@ -36,7 +36,10 @@
 //! - [`args`] — the command line, read before anything touches the data
 //!   directory, and the one rule that resolves that directory.
 //! - [`tui`] — terminal lifecycle: raw mode, alternate screen, and the
-//!   optional enhancements this terminal admits to supporting.
+//!   optional enhancements this terminal admits to supporting, with every
+//!   byte written on a thread of its own.
+//! - [`stop`] — the one stop path: every way out of a run, and its deadline.
+//! - [`job`] — the shell's job control, heard as actions on the bus.
 //! - [`input`] — key and mouse events mapped to [`action::Action`]s against
 //!   the current chrome, so no view sees a raw terminal event.
 //! - [`app`] — the loop: one `select!` over the action bus and the render
@@ -66,6 +69,7 @@ pub mod connect;
 pub mod fault;
 pub(crate) mod form;
 pub mod input;
+pub mod job;
 pub mod kad;
 pub(crate) mod line_edit;
 pub mod player;
@@ -73,6 +77,7 @@ pub mod rates;
 pub mod row_selection;
 pub mod start_notes;
 pub mod state;
+pub mod stop;
 pub(crate) mod table;
 pub mod table_sort;
 pub mod theme;

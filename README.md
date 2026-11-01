@@ -216,6 +216,8 @@ port.
 | `?` | every key, with the version |
 | `q` | quit; asks first while a download runs |
 | `Ctrl-C` | quit, from anywhere |
+| `Ctrl-Z` | stop as a job; transfers stand still until `fg` |
+| `Ctrl-L` | repaint the screen |
 | `Esc` | close a menu, a form or a question; leave the query |
 
 A click selects a tab or a row, a click on a header sorts, and the wheel

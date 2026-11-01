@@ -39,7 +39,8 @@ unicode-width.workspace = true
 rmule-bootstrap = { path = "../../crates/rmule-bootstrap", features = ["reqwest-fetcher"] }
 rmule-core = { path = "../../crates/rmule-core" }
 # Preview's Default App on macOS and Windows: the system's app for a
-# file-name extension (ADR-0114).
+# file-name extension (ADR-0114); and the terminal's hang-up and job control
+# (ADR-0118).
 rmule-os = { path = "../../crates/rmule-os" }
 rmule-primitives = { path = "../../crates/rmule-primitives" }
 rmule-words = { path = "../../crates/rmule-words" }
@@ -48,8 +49,9 @@ shlex.workspace = true
 thiserror.workspace = true
 # `rt-multi-thread` on top of the workspace set: one multi-thread runtime for
 # UI loop, bridge, and core tasks alike (ADR-0069 §Runtime). `process`: the
-# player lane starts Preview's player and awaits its exit (ADR-0114).
-tokio = { workspace = true, features = ["rt-multi-thread", "process"] }
+# player lane starts Preview's player and awaits its exit (ADR-0114). `signal`:
+# job control's stop and continue (ADR-0118).
+tokio = { workspace = true, features = ["rt-multi-thread", "process", "signal"] }
 tracing.workspace = true
 
 [dev-dependencies]

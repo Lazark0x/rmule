@@ -16,6 +16,8 @@
 //!   driver's write clock reads on a socket that took no write.
 //! - [`volume`]: the free bytes under a part file and whether its volume is
 //!   FAT.
+//! - [`terminal`]: a terminal's hang-up, the standard streams left behind it,
+//!   and stopping as a shell's job, for the TUI's stop path.
 //!
 //! The crate's lint table relaxes the workspace's `unsafe_code` ban to `deny`.
 //! Only the functions `scripts/guards.sh` pins waive it, each for one `unsafe`
@@ -31,5 +33,6 @@ pub mod descriptors;
 pub mod fs;
 pub mod sparse;
 pub mod tcp_send;
+pub mod terminal;
 pub mod volume;
 pub mod winsock;
