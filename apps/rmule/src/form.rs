@@ -439,7 +439,7 @@ impl Form {
                     self.step_choice(true);
                     FormKey::Consumed
                 }
-                KeyCode::Backspace | KeyCode::Char(_) => FormKey::Consumed,
+                KeyCode::Char(_) => FormKey::Consumed,
                 _ => FormKey::Ignored,
             },
             Some(FieldKind::Display { .. } | FieldKind::Item { .. }) | None => match key.code {

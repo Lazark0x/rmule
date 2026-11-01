@@ -71,12 +71,12 @@ impl Views {
     }
 
     /// Whether a text field on the active view holds the keyboard.
-    pub(super) fn text_open(&self, active: ViewId) -> bool {
+    pub(super) fn text_open(&self, active: ViewId, state: &UiState) -> bool {
         match active {
             ViewId::Transfers => self.transfers.text_open(),
             ViewId::Searches => self.searches.text_open(),
             ViewId::Networks => self.networks.text_open(),
-            ViewId::Settings => self.settings.text_open(),
+            ViewId::Settings => self.settings.text_open(state),
             ViewId::SharedFiles | ViewId::Statistics => false,
         }
     }

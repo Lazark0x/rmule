@@ -266,7 +266,7 @@ fn the_caret_of_an_open_field_is_where_the_cursor_goes() {
     });
     assert!(!closed.contains(crate::golden::CARET), "nothing open");
     view.handle_key(press(KeyCode::Enter), &state);
-    assert!(view.text_open());
+    assert!(view.text_open(&state));
     view.handle_key(press(KeyCode::Home), &state);
     let open = crate::golden::render_with_caret(78, 30, |frame| {
         view.draw(

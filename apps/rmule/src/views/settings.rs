@@ -495,9 +495,12 @@ impl SettingsView {
         Ok(Some(edit))
     }
 
-    /// Whether an open field holds the keyboard, with no question over it.
-    pub(crate) fn text_open(&self) -> bool {
-        self.editing && self.removing.is_none()
+    /// Whether an open field holds the keyboard. A question over it reads
+    /// key codes alone, so no chord may reach it as its letter.
+    pub(crate) fn text_open(&self, state: &UiState) -> bool {
+        self.editing
+            && self.removing.is_none()
+            && crate::views::shared_files::scan::open_consent(state, &self.answered, true).is_none()
     }
 
     /// A paste into the field open for editing, whole.

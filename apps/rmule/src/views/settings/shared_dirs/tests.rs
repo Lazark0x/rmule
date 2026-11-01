@@ -301,3 +301,23 @@ fn a_directory_core_refuses_comes_back_to_its_row_with_the_reason() {
     view.handle_key(press(KeyCode::Null), &state);
     assert!(!view.editing, "the old refusal is not this one's");
 }
+
+/// A question that opens over a field answers to `y`, so the field's `Ctrl-Y`
+/// must not reach it.
+#[test]
+fn a_question_over_an_open_field_takes_the_keyboard_back() {
+    let mut state = UiState::default();
+    let mut view = SettingsView::new();
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.text_open(&state));
+    crate::state::fold(
+        &mut state,
+        CoreEvent::Scan(ScanEvent::ConsentRequested {
+            dir: crate::fixture::rooted("srv/media"),
+            offer: DirectoryOffer::default(),
+            adding: true,
+            replaces: Vec::new(),
+        }),
+    );
+    assert!(!view.text_open(&state));
+}
