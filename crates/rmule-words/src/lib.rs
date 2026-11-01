@@ -32,6 +32,7 @@ pub mod scan;
 pub mod search;
 pub mod serve;
 pub mod server;
+pub mod severity;
 pub mod software;
 pub mod store;
 pub mod units;

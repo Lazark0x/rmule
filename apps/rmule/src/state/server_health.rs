@@ -16,6 +16,7 @@ use rmule_primitives::ServerEndpoint;
 
 use super::UiState;
 use crate::words::server as words;
+use crate::words::severity::Severity;
 
 /// What moved on the server list between two levels, as a code the Networks
 /// log words.
@@ -101,7 +102,13 @@ impl HealthLevel {
 /// Log what moved between the level on show and `next`.
 pub(super) fn log_edges(state: &mut UiState, next: &DiagnosticsSnapshot, now: Instant) {
     for edge in HealthLevel::of(&state.diagnostics).edges(next) {
-        state.push_log(words::health_edge(&edge), now);
+        let severity = match edge {
+            HealthEdge::AnsweredAgain { .. } => Severity::Info,
+            HealthEdge::MarkedDead { .. } | HealthEdge::SweepUnheard | HealthEdge::Shares(_) => {
+                Severity::Warning
+            }
+        };
+        state.push_log(severity, words::health_edge(&edge), now);
     }
 }
 

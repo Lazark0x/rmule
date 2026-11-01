@@ -233,6 +233,7 @@ impl App {
                 maybe = actions.recv() => {
                     let Some(action) = maybe else { break };
                     let now = Instant::now();
+                    self.state.log.set_wall(now, chrono::Local::now().fixed_offset());
                     let immediate = matches!(action, Action::Input(_));
                     match self.reduce(action, now) {
                         Flow::Quit => break,
@@ -754,7 +755,10 @@ mod tests {
             crate::bridge::BridgeConfig::default(),
         );
         actions_tx
-            .send(Action::Note(crate::words::app::INTERNAL_FAULT))
+            .send(Action::Note(
+                crate::words::severity::Severity::Failure,
+                crate::words::app::INTERNAL_FAULT,
+            ))
             .await
             .expect("the bus is open");
         let stop = Stop::default();

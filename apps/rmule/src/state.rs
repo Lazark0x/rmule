@@ -17,6 +17,7 @@ use rmule_primitives::{FileHash, PeerEndpoint, ServerEndpoint};
 use crate::action::Action;
 use crate::bridge::BridgeSnapshot;
 use crate::rates::TransferRates;
+use crate::words::severity::Severity;
 use crate::words::{Sentence, app as app_words, reach};
 
 mod download;
@@ -44,7 +45,7 @@ pub use download::{
     part_fault_words, release_words, restart_failed_again, retirement_words,
 };
 pub use known_file::{KnownFileMark, KnownFileMarks};
-pub use log::LogLine;
+pub use log::{Log, LogLine};
 pub use note::{NOTE_AGE_SHOWN, NOTE_STANDS, Note};
 pub use rate_history::RateSample;
 pub use search::{MoreEnded, SearchPane, SearchStatus};
@@ -147,7 +148,7 @@ pub struct UiState {
     /// The Networks log pane feed (spec §3.4): every core event, rendered
     /// compact by `log::line` in [`UiState::apply`] *before* the fold, capped
     /// at 200 lines (oldest drops). `CoreClosed` appends "core stopped".
-    pub log: VecDeque<LogLine>,
+    pub log: Log,
     /// Session config for real command construction.
     pub session: SessionConfig,
     /// The durable preferences as the config store holds them: what the
@@ -199,7 +200,7 @@ impl Default for UiState {
             notable: None,
             kad_lost: false,
             core_alive: true,
-            log: VecDeque::new(),
+            log: Log::default(),
             session: SessionConfig::default(),
             preferences: crate::config::Preferences::default(),
             server_list_updating: false,
@@ -236,7 +237,11 @@ impl UiState {
                     CoreEvent::FileHistory { .. }
                         | CoreEvent::Download(rmule_core::DownloadEvent::SeedsDialled { .. })
                 ) {
-                    self.push_log(crate::words::event::log_line(&event), now);
+                    self.push_log(
+                        crate::words::severity::of(&event),
+                        crate::words::event::log_line(&event),
+                        now,
+                    );
                 }
                 fold(self, event);
                 // The log pane repaints on any core event, so the frame is
@@ -245,7 +250,7 @@ impl UiState {
             }
             Action::Snapshot(frame) => self.apply_snapshot(frame, now),
             Action::CoreClosed => {
-                self.push_log(app_words::CORE_STOPPED, now);
+                self.push_log(Severity::Failure, app_words::CORE_STOPPED, now);
                 self.core_alive = false;
                 self.connected_server = None;
                 self.reconnect = None;
@@ -257,8 +262,8 @@ impl UiState {
             }
             // An app-learned fact: same two surfaces a core event's
             // would reach, since the app owns no log of its own.
-            Action::Note(text) => {
-                self.push_log(text.clone(), now);
+            Action::Note(severity, text) => {
+                self.push_log(severity, text.clone(), now);
                 note(self, text)
             }
             Action::ForgetSearch(search_id) => {
@@ -325,7 +330,7 @@ impl UiState {
     /// Keep a flash's whole sentence: the status bar may shorten it, and it
     /// is gone in seconds.
     pub fn log_flash(&mut self, text: Sentence, now: Instant) {
-        self.push_log(text, now);
+        self.push_log(Severity::Info, text, now);
         self.revision = self.revision.wrapping_add(1);
     }
 

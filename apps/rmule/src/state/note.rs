@@ -99,13 +99,14 @@ mod tests {
     use crate::action::Action;
     use crate::fixture::now;
     use crate::words::app::CORE_STOPPED;
+    use crate::words::severity::Severity;
 
     /// A note leaves the bar on its own and stays in the log.
     #[test]
     fn a_note_ages_out_of_the_bar_and_stays_in_the_log() {
         let mut state = UiState::default();
         let t0 = now();
-        state.apply(Action::Note(CORE_STOPPED), t0);
+        state.apply(Action::Note(Severity::Failure, CORE_STOPPED), t0);
 
         assert!(state.standing_note(t0 + NOTE_STANDS / 2).is_some());
         assert!(!state.expire_note(t0 + NOTE_STANDS / 2), "it still stands");
@@ -120,9 +121,12 @@ mod tests {
     fn a_newer_note_is_timed_from_its_own_moment() {
         let mut state = UiState::default();
         let t0 = now();
-        state.apply(Action::Note(CORE_STOPPED), t0);
+        state.apply(Action::Note(Severity::Failure, CORE_STOPPED), t0);
         state.notable = None;
-        state.apply(Action::Note(CORE_STOPPED), t0 + NOTE_STANDS);
+        state.apply(
+            Action::Note(Severity::Failure, CORE_STOPPED),
+            t0 + NOTE_STANDS,
+        );
         let note = state
             .standing_note(t0 + NOTE_STANDS + NOTE_AGE_SHOWN)
             .expect("the newer note");

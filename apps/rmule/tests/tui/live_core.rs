@@ -221,7 +221,10 @@ async fn the_armed_kad_join_starts_a_real_node_and_the_panel_fact_goes_live() {
     // (stdout is the alternate screen), so the seed outcome rides the same two
     // surfaces a core event's would — the log pane and the info feed.
     state.apply(
-        Action::Note(rmule::words::kad::seed_outcome_words(&outcome)),
+        Action::Note(
+            rmule::words::severity::Severity::Info,
+            rmule::words::kad::seed_outcome_words(&outcome),
+        ),
         Instant::now(),
     );
     assert_eq!(

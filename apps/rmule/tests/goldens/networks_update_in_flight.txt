@@ -9,10 +9,10 @@
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
 ┌ Log (1) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
-│11:59:58 updating server list from  ││● Kad: off                            │
-│         http://upd.emule-security.o││Joined    — (node not started)        │
-│         rg/server.met              ││Contacts  —                           │
-│                                    ││Firewall  — (never run)               │
+│2026-01-01                          ││● Kad: off                            │
+│12:00:00 · updating server list from││Joined    — (node not started)        │
+│           http://upd.emule-security││Contacts  —                           │
+│           .org/server.met          ││Firewall  — (never run)               │
 │                                    ││UDP       — (never run)               │
 │                                    ││Keywords  —                           │
 │                                    ││Node id   —                           │

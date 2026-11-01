@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::tui;
 use crate::words::app as app_words;
+use crate::words::severity::Severity;
 
 /// What the hook does once the Run Log holds the panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +58,8 @@ pub fn install_hook(
         match response(on_ui_thread, cfg!(panic = "unwind"), tui::entered()) {
             Response::Note => {
                 if let Some(notes) = notes.upgrade() {
-                    let _ = notes.try_send(Action::Note(app_words::INTERNAL_FAULT));
+                    let _ =
+                        notes.try_send(Action::Note(Severity::Failure, app_words::INTERNAL_FAULT));
                 }
             }
             Response::Print => previous(info),

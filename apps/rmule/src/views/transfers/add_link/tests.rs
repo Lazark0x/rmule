@@ -102,7 +102,7 @@ fn a_pasted_link_starts_its_download_and_names_the_fields_it_skipped() {
                     if_taken,
                     ..
                 })),
-                Action::Note(note),
+                Action::Note(_, note),
             ] => {
                 assert_eq!(
                     file.file_hash.to_hex_upper(),

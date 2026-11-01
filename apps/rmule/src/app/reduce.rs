@@ -5,6 +5,7 @@
 //! separately — so the whole reduction tests without a terminal or a live
 //! core.
 
+use crate::words::severity::Severity;
 use crate::words::{Sentence, app as app_words};
 use std::time::Instant;
 
@@ -203,7 +204,7 @@ impl App {
             Action::CopyLink(link) => {
                 let note = app_words::link_sent(&link);
                 self.pending_copy = Some(link);
-                self.dirty |= self.state.apply(Action::Note(note), now);
+                self.dirty |= self.state.apply(Action::Note(Severity::Info, note), now);
                 self.reduce(Action::Flash(app_words::LINK_SENT), now)
             }
             Action::Preference(edit) => match self.write_preference(edit) {
@@ -251,7 +252,7 @@ impl App {
             Action::Core(_)
             | Action::Snapshot(_)
             | Action::CoreClosed
-            | Action::Note(_)
+            | Action::Note(..)
             | Action::ForgetSearch(_)
             | Action::RestoreSearch(_) => {
                 // Sequencing, not state: the Kad join rides the run's
@@ -364,9 +365,10 @@ impl App {
     /// once, however many starts follow.
     fn tell_kad_join_ended(&mut self, now: Instant) {
         if !std::mem::replace(&mut self.kad_join_ended_told, true) {
-            self.dirty |= self
-                .state
-                .apply(Action::Note(crate::words::kad::JOIN_ENDED), now);
+            self.dirty |= self.state.apply(
+                Action::Note(Severity::Warning, crate::words::kad::JOIN_ENDED),
+                now,
+            );
         }
     }
 
@@ -377,7 +379,10 @@ impl App {
         let edit = crate::config::PrefEdit::LastServer(server);
         if !self.remember(&edit) && !std::mem::replace(&mut self.last_server_unsaved_told, true) {
             self.dirty |= self.state.apply(
-                Action::Note(crate::words::store::LAST_SERVER_NOT_SAVED),
+                Action::Note(
+                    Severity::Warning,
+                    crate::words::store::LAST_SERVER_NOT_SAVED,
+                ),
                 now,
             );
         }
@@ -388,9 +393,10 @@ impl App {
     fn remember_tab(&mut self, now: Instant) {
         let edit = crate::config::PrefEdit::LastTab(self.chrome.active);
         if !self.remember(&edit) && !std::mem::replace(&mut self.last_tab_unsaved_told, true) {
-            self.dirty |= self
-                .state
-                .apply(Action::Note(crate::words::store::LAST_TAB_NOT_SAVED), now);
+            self.dirty |= self.state.apply(
+                Action::Note(Severity::Warning, crate::words::store::LAST_TAB_NOT_SAVED),
+                now,
+            );
         }
     }
 

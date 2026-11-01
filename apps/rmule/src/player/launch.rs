@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 
 use super::default_app::{self, DefaultApp};
 use crate::action::Action;
+use crate::words::severity::Severity;
 use crate::words::{Sentence, player as words};
 
 /// One player to start, and the name of the download it previews, captured
@@ -105,7 +106,10 @@ async fn find(extension: String) -> Result<Option<DefaultApp>, ErrorKind> {
 
 /// A refusal the operator sees at once and finds again in the log.
 fn flashed(refused: Sentence) -> Action {
-    Action::Actions(vec![Action::Flash(refused.clone()), Action::Note(refused)])
+    Action::Actions(vec![
+        Action::Flash(refused.clone()),
+        Action::Note(Severity::Warning, refused),
+    ])
 }
 
 /// Run `argv` with standard input, output and error null — the terminal
@@ -126,8 +130,13 @@ async fn run(argv: &[OsString], name: &str) -> Option<Action> {
     command.process_group(0);
     match command.spawn() {
         Ok(mut child) => match child.wait().await {
-            Ok(status) => words::exit_note(name, status).map(Action::Note),
-            Err(error) => Some(Action::Note(words::unwatched(name, error.kind()))),
+            Ok(status) => {
+                words::exit_note(name, status).map(|note| Action::Note(Severity::Info, note))
+            }
+            Err(error) => Some(Action::Note(
+                Severity::Warning,
+                words::unwatched(name, error.kind()),
+            )),
         },
         Err(error) => Some(flashed(words::spawn_refused(name, error.kind()))),
     }

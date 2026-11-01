@@ -38,6 +38,7 @@ use crate::table::Drawn;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::views::{ViewOutcome, connect_toggle, say_gave_way};
+use crate::words::severity::Severity;
 use form::{ServerForm, draw_form};
 use kad::draw_kad;
 use menu::{Confirm, Menu, draw_confirm, draw_menu};
@@ -105,11 +106,8 @@ pub struct NetworksView {
     /// What part of the log is on screen, in *wrapped* lines, not entries:
     /// it opens on the newest line and keeps it in view until scrolled back.
     log_viewport: Viewport,
-    /// Wall clock stamped by the app each frame (`None` in goldens/tests → a
-    /// fixed fallback, keeping renders deterministic). Log lines carry only
-    /// injected `Instant`s; the wall stamp is derived at draw time as
-    /// `wall_now − age`, so state stays clock-free.
-    pub(crate) wall_now: Option<chrono::DateTime<chrono::FixedOffset>>,
+    /// The least severe line the log shows: `f` walks it.
+    log_floor: Severity,
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
@@ -133,7 +131,7 @@ impl Default for NetworksView {
             viewport: Viewport::default(),
             drawn: Drawn::default(),
             log_viewport: Viewport::at_end(),
-            wall_now: None,
+            log_floor: Severity::Info,
             menu: None,
             confirm: None,
             form: None,
@@ -237,6 +235,7 @@ impl NetworksView {
                 self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
+            KeyCode::Char('f') if self.focus == Pane::Log => self.narrow_log(),
             KeyCode::Char('d') if self.focus == Pane::Servers => self.open_details(state),
             KeyCode::Char('s') if self.focus == Pane::Servers && !servers(state).is_empty() => {
                 self.sort.key(true)
@@ -327,7 +326,7 @@ impl NetworksView {
         area: Rect,
         state: &UiState,
         theme: &Theme,
-        now: Instant,
+        _now: Instant,
     ) -> Option<Position> {
         self.clamp_selection(state);
 
@@ -356,7 +355,7 @@ impl NetworksView {
             draw_kad(frame, kad_area, state, theme);
         }
         if !log_area.is_empty() {
-            self.draw_log(frame, log_area, state, theme, now);
+            self.draw_log(frame, log_area, state, theme);
         }
         if kad_w == 0 && !self.zoomed {
             say_gave_way(frame, crate::views::bottom_border(log_area), &[KAD], theme);

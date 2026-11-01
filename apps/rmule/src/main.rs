@@ -37,6 +37,7 @@ use rmule::stop::Stop;
 use rmule::theme::{Colours, Theme};
 use rmule::tui::Tui;
 use rmule::words::front_door;
+use rmule::words::severity::Severity;
 use rmule_core::run_log::{self, Level, RunLog, RunLogFailure};
 use rmule_core::{CoreCommand, StopRequest};
 
@@ -158,8 +159,10 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
             let actions_tx = actions_tx.clone();
             std::thread::spawn(move || {
                 if let Ok(failure) = failures.recv() {
-                    let _ = actions_tx
-                        .blocking_send(Action::Note(rmule::words::app::no_run_log(failure)));
+                    let _ = actions_tx.blocking_send(Action::Note(
+                        Severity::Warning,
+                        rmule::words::app::no_run_log(failure),
+                    ));
                 }
             });
             Ok(())
@@ -250,8 +253,8 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
         cannot_connect,
         download_dir_set: session.download_dir.is_some(),
     });
-    for note in notes {
-        let _ = actions_tx.send(Action::Note(note)).await;
+    for (severity, note) in notes {
+        let _ = actions_tx.send(Action::Note(severity, note)).await;
     }
     let kad_client = handle.clone();
     tokio::spawn(async move {
@@ -268,9 +271,10 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
             match joined {
                 Ok(outcome) => {
                     let _ = actions_tx
-                        .send(Action::Note(rmule::words::kad::seed_outcome_words(
-                            &outcome,
-                        )))
+                        .send(Action::Note(
+                            Severity::Info,
+                            rmule::words::kad::seed_outcome_words(&outcome),
+                        ))
                         .await;
                 }
                 // The core stopped; the bus already carries `CoreClosed`.

@@ -94,13 +94,7 @@ impl Views {
         match active {
             ViewId::Transfers => self.transfers.draw(frame, area, state, theme, now),
             ViewId::Searches => self.searches.draw(frame, area, state, theme, now),
-            ViewId::Networks => {
-                // The one impure stamp in the draw path: the log gutter shows
-                // wall-clock event times, derived at draw from `wall − age`.
-                // Goldens call the view directly and use its fixed fallback.
-                self.networks.wall_now = Some(chrono::Local::now().fixed_offset());
-                self.networks.draw(frame, area, state, theme, now)
-            }
+            ViewId::Networks => self.networks.draw(frame, area, state, theme, now),
             ViewId::SharedFiles => {
                 self.shared.draw(frame, area, state, theme, now);
                 None

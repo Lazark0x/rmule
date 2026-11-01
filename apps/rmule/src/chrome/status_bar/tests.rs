@@ -8,6 +8,7 @@ use crate::fixture::*;
 use crate::golden::assert_golden;
 use crate::state::NOTE_STANDS;
 use crate::words::Sentence;
+use crate::words::severity::Severity;
 use std::time::Duration;
 
 /// Both ends of the border, as they read.
@@ -197,7 +198,10 @@ fn a_note_past_a_minute_says_its_age_until_it_leaves() {
     let chrome = ChromeState::default();
     let t0 = now();
     let mut state = connected_state();
-    state.apply(Action::Note(Sentence::for_test("search completed")), t0);
+    state.apply(
+        Action::Note(Severity::Info, Sentence::for_test("search completed")),
+        t0,
+    );
     let at = |offset: Duration| read(&status_bar(&state, &chrome, &theme, t0 + offset, 120));
     assert!(at(Duration::from_secs(59)).contains("search completed"));
     assert!(!at(Duration::from_secs(59)).contains("ago"));

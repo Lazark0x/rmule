@@ -46,7 +46,7 @@ pub enum Action {
     /// installs no tracing subscriber (stdout is the alternate screen).
     /// Reserved for facts, not chatter — a [`Flash`](Self::Flash) is the right
     /// arm for anything that may safely scroll away.
-    Note(crate::words::Sentence),
+    Note(crate::words::severity::Severity, crate::words::Sentence),
     /// A core command produced by a view (row menu, query commit); the app
     /// forwards it through the `CoreClient` once one is bound — until then
     /// it flashes the honest "core not attached".

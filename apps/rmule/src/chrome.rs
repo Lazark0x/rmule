@@ -168,7 +168,7 @@ impl ChromeState {
             Action::Core(_)
             | Action::Snapshot(_)
             | Action::CoreClosed
-            | Action::Note(_)
+            | Action::Note(..)
             | Action::Input(_)
             | Action::Command(_)
             | Action::Commands(_)

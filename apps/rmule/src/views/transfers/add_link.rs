@@ -30,6 +30,7 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::{Modal, release_form, scroll_form};
 use crate::words::download::{self as words, LinkRefusal};
+use crate::words::severity::Severity;
 use crate::wrap::clamp_u16;
 
 /// Floor width of the form; a long pasted link wraps inside it.
@@ -122,7 +123,7 @@ fn start(
     }));
     Ok(ViewOutcome::Emit(
         match words::link_fields_skipped(skipped) {
-            Some(note) => Action::Actions(vec![command, Action::Note(note)]),
+            Some(note) => Action::Actions(vec![command, Action::Note(Severity::Info, note)]),
             None => command,
         },
     ))
