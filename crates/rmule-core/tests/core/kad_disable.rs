@@ -42,7 +42,7 @@ async fn diagnostics(core: &mut Core) -> DiagnosticsSnapshot {
     })
     .await
     {
-        CoreEvent::DiagnosticsSnapshot { snapshot } => snapshot,
+        CoreEvent::DiagnosticsSnapshot { snapshot } => *snapshot,
         _ => unreachable!("filtered above"),
     }
 }

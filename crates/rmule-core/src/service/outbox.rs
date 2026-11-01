@@ -30,6 +30,10 @@ use crate::run_log::LevelHandle;
 /// stall this long has lost the reader its place; the Run Log holds the rest.
 const ROOM: usize = 1 << 16;
 
+/// The slots an empty queue keeps ready: a stall's room goes back as the
+/// reader catches up, and an ordinary burst does not pay to grow again.
+const KEPT: usize = 1 << 10;
+
 /// A new Outbox over a Run Log `level` and the one stream that reads it.
 pub(crate) fn outbox(level: LevelHandle) -> (Outbox, EventStream) {
     outbox_with_room(level, ROOM)
@@ -295,6 +299,8 @@ impl Queue {
                 Slot::Superseded => {}
             }
         }
+        self.slots.shrink_to(KEPT);
+        self.levels.shrink_to(KEPT);
         None
     }
 

@@ -718,7 +718,7 @@ async fn await_snapshot(
         };
         let Some(event) = event else { return Ok(None) };
         if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
-            return Ok(Some(snapshot));
+            return Ok(Some(*snapshot));
         }
         println!("{}", event.record().render(Level::Full));
         row::observe(&event, row);

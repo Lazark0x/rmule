@@ -725,8 +725,9 @@ pub enum CoreEvent {
     /// ignore this variant; it is intended for hang investigation by tools
     /// and tests. Cross-activity.
     DiagnosticsSnapshot {
-        /// The levels as they read at the moment the dump was served.
-        snapshot: crate::diagnostics::DiagnosticsSnapshot,
+        /// The levels as they read at the moment the dump was served. Boxed:
+        /// every queued event pays for the largest variant.
+        snapshot: Box<crate::diagnostics::DiagnosticsSnapshot>,
     },
     /// The **File History** as the store holds it, answering
     /// [`CoreCommand::DumpFileHistory`](crate::CoreCommand::DumpFileHistory)

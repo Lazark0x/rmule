@@ -155,3 +155,22 @@ fn a_dropped_reader_keeps_nothing() {
     outbox.send(paused(2));
     assert!(shared.lock().slots.is_empty());
 }
+
+/// What the queue's room costs, whatever it holds.
+fn held_bytes(stream: &EventStream) -> usize {
+    stream.shared.lock().slots.capacity() * size_of::<Slot>()
+}
+
+#[test]
+fn a_stalled_reader_holds_a_bounded_queue_and_a_drain_gives_it_back() {
+    let (outbox, mut stream) = outbox(LevelHandle::default());
+    for port in 0..ROOM {
+        outbox.send(note(u16::try_from(port % 60_000).unwrap()));
+    }
+    let stalled = held_bytes(&stream);
+    assert!(stalled < 16 << 20, "a stall holds {stalled} bytes");
+
+    assert_eq!(drain(&mut stream).len(), ROOM);
+    let drained = held_bytes(&stream);
+    assert!(drained < 1 << 20, "a drain left {drained} bytes held");
+}

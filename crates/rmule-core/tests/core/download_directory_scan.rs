@@ -58,7 +58,7 @@ async fn diagnostics(core: &mut Core) -> DiagnosticsSnapshot {
             .expect("a snapshot")
             .expect("stream open");
         if let CoreEvent::DiagnosticsSnapshot { snapshot } = event {
-            return snapshot;
+            return *snapshot;
         }
     }
 }

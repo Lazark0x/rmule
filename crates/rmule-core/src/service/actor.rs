@@ -546,7 +546,7 @@ where
                             crate::adapters::request_kad_recheck(&self.wiring.kad_pump);
                         }
                         CoreCommand::DumpDiagnostics => {
-                            let snapshot = self.diagnostics.snapshot();
+                            let snapshot = Box::new(self.diagnostics.snapshot());
                             send_event(&self.evt_tx, CoreEvent::DiagnosticsSnapshot { snapshot });
                         }
                         CoreCommand::DumpFileHistory => {
