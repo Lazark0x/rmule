@@ -402,6 +402,34 @@ fn aich_only_bundle_flushes_once_its_answer_arrives() {
     }
 }
 
+/// An open bundle takes only what it asked for: a standalone name ask answered
+/// while an AICH-only bundle waits goes out by itself, rather than into a
+/// composition that never names it.
+#[test]
+fn a_standalone_answer_never_composes_into_a_bundle_that_did_not_ask_for_it() {
+    let fh = FileHash::from_bytes([0xBA; FileHash::BYTE_LEN]);
+    let mut session = identified_inbound_session();
+    let request = MultiPacketRequest {
+        file_hash: fh,
+        file_size: None,
+        items: vec![RequestItem::AichRoot],
+        unknown_sub: None,
+        cut: None,
+    };
+    session.handle_bytes(&request.encode_packet().encode());
+    let _ = drain(|| session.poll_output());
+
+    session.handle_command(PeerCommand::Server(ServerCommand::AnswerFileName {
+        file_hash: fh,
+        file_name: rmule_primitives::Ed2kText::from_utf8("alone.bin"),
+    }));
+    let written = writes(&drain(|| session.poll_output()));
+    assert_eq!(
+        written.iter().map(Packet::opcode).collect::<Vec<_>>(),
+        vec![PeerOpcode::ReqFileNameAnswer.as_u8()],
+    );
+}
+
 #[test]
 fn bundle_with_only_source_items_never_sends_an_answer() {
     let fh = FileHash::from_bytes([0xB6; FileHash::BYTE_LEN]);

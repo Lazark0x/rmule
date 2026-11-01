@@ -289,3 +289,40 @@ fn a_bundle_cut_short_is_gated_before_it_ends_the_connection() {
         ],
     );
 }
+
+/// A plain bundle names no size, so its walker follows the wire's count. A
+/// count that is not the file's is one aMule clears after its two bytes
+/// (`UploadClient.cpp:418-422`): its bytes never ran out, and the name ask is
+/// answered, link kept.
+#[test]
+fn a_status_that_counts_another_file_never_cuts_a_plain_bundle() {
+    let file = hash(0x5E);
+    let t = Instant::now();
+    let mut state = serving_state(1, vec![entry(file, 4096, "served.bin")]);
+    let asker = identify_claiming(&mut state, [8, 8, 8, 9], 1, 0, t);
+    let wrong_count = rmule_peer::WireStatus::decode(9, &[0, 0]).expect("a status");
+    let decisions = state.on_conn_event(
+        t,
+        asker,
+        ServeInput::Server(ServerEvent::FileBundleRequested {
+            file_hash: file,
+            file_size: None,
+            asks: Vec::new(),
+            cut: Some(rmule_peer::BundleCut::NameStatus(Some(wrong_count))),
+        }),
+        &no_modifiers(),
+    );
+    assert!(
+        !decisions
+            .iter()
+            .any(|decision| matches!(decision, ServeDecision::Disconnect { .. })),
+        "{decisions:?}"
+    );
+    assert!(decisions.iter().any(|decision| matches!(
+        decision,
+        ServeDecision::Send {
+            command: ServerCommand::AnswerFileName { .. },
+            ..
+        }
+    )));
+}
