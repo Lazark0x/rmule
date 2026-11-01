@@ -205,8 +205,9 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
 
 | The run ended by | What a claimed byte is | What is lost |
 |---|---|---|
-| Pause, Stop, Quit, a Volume Stop's pause once its lane stands | synced before the last commit | nothing the brain merged |
-| kill -9, a panic, a rebuild of the core | on the file, as the kernel holds it | bytes since the last checkpoint: 30 s or 256 MiB of them per download, and a part that had not committed. They count as absent and are fetched over themselves |
+| Pause, Stop, Quit, any other end the run reaches itself | synced before the last commit | nothing the brain merged |
+| A refused write: a Volume Stop | synced before the last commit | bytes since the last checkpoint, since the lane ends at the refusal and claims nothing past it |
+| kill -9, a panic, a rebuild of the core, a Quit past its grace | on the file, as the kernel holds it | bytes since the last checkpoint: 30 s or 256 MiB of them per download, and a part that had not committed. They count as absent and are fetched over themselves |
 | A power cut | synced before the commit that claims it | the same, and whatever the writeback window held of verified parts: their records are re-hashed at the run's start (ADR-0094) |
 | A foreign write or a bad disk | whatever the file holds | the part's check fails, and the part refetches as any bad part does |
 
