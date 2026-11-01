@@ -237,7 +237,7 @@ impl SearchesView {
             let sort = if pane.results.is_empty() {
                 ""
             } else {
-                "  s sort  S reverse"
+                "  s sort  S reverse  z zoom"
             };
             let next = if more.is_some_and(|more| more.asks_left > 0) {
                 "  n more"

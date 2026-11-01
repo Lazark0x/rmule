@@ -21,6 +21,7 @@
 pub(crate) mod modal;
 pub mod networks;
 pub(crate) mod off_screen;
+pub(crate) mod panes;
 pub(crate) mod related;
 pub mod searches;
 pub mod settings;
@@ -32,6 +33,7 @@ pub(crate) use crate::words::software::label as software_label;
 pub(crate) use crate::words::units::human_size;
 pub mod statistics;
 pub(crate) mod title;
+pub(crate) mod too_small;
 pub mod transfers;
 
 use std::ops::Range;

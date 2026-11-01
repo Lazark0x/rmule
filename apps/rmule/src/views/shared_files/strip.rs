@@ -53,8 +53,8 @@ impl SharedView {
         self.dir_filter = choices.swap_remove(next);
     }
 
-    /// Draw the strip at the top of `area`, one entry a line, wrapped rather
-    /// than cut, over its hint line, which carries the strip's count; the
+    /// Draw the strip at the top of `area`, one entry a line, over its hint
+    /// line, which carries the strip's count; the
     /// rest of `area` is returned for the table. Entries the strip has no
     /// room for scroll under the Viewport, which follows the selection.
     /// Nothing is drawn while no directory is listed.

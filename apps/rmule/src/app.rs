@@ -48,6 +48,9 @@ pub struct App {
     /// [`with_config`](Self::with_config).
     config: Option<crate::config::SharedConfig>,
     dirty: bool,
+    /// The terminal as last drawn is under the minimum: the too-small screen
+    /// is up, and only the way out answers.
+    too_small: bool,
     /// A link waiting for the OSC 52 write (needs the terminal, which
     /// `reduce` never sees); flushed by the run loop.
     pending_copy: Option<String>,
@@ -101,6 +104,7 @@ impl App {
             auto_theme: theme,
             config: None,
             dirty: true, // first frame always paints
+            too_small: false,
             pending_copy: None,
             client: None,
             pending_commands: Vec::new(),
@@ -340,10 +344,17 @@ impl App {
         let chrome_state = &self.chrome;
         let theme = &self.theme;
         let views = &mut self.views;
+        let mut too_small = false;
         off_the_workers(|| {
             tui.draw(|frame| {
-                let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
-                let caret = views.draw(chrome_state.active, frame, content, state, theme, now);
+                too_small = crate::views::too_small::holds(frame.area());
+                let caret = if too_small {
+                    crate::views::too_small::draw(frame, theme);
+                    None
+                } else {
+                    let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
+                    views.draw(chrome_state.active, frame, content, state, theme, now)
+                };
                 chrome::draw_overlays(frame, state, chrome_state, theme);
                 // The terminal's own cursor, where an input method composes.
                 // An overlay covers the field and takes the keys.
@@ -355,6 +366,7 @@ impl App {
                 }
             })
         })?;
+        self.too_small = too_small;
         self.dirty = false;
         Ok(())
     }

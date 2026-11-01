@@ -284,9 +284,6 @@ impl TransfersView {
     ) {
         let focused = self.focus == Pane::Table;
         let title = format!(" Downloads ({}) ", lines.len());
-        // Nothing to click until a table is drawn.
-        self.drawn = table::Drawn::default();
-
         if lines.is_empty() {
             let block = pane_block(area.width, (&title, " L add link "), focused, theme);
             let inner = block.inner(area);

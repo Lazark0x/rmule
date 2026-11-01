@@ -207,6 +207,8 @@ port.
 | `x` / `n` | Searches: stop or close a search / ask the server for more results |
 | `a`, `U` | Networks: add a server / update the list from a URL |
 | `c`, `K` | Networks: connect or disconnect the server / start or stop Kad |
+| `d` | Networks: the selected server's grants, flags and health |
+| `z` | Zoom the focused pane to the whole tab, or back |
 | `a` | Shared Files: active files only, or every file |
 | `Enter`, `←` / `→` | Settings: edit a field / step a choice |
 | `x` | Settings: stop sharing the selected directory |

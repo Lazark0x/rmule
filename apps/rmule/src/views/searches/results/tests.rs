@@ -1,4 +1,4 @@
-//! Unit tests for the results table: columns, tints, wrapping and goldens.
+//! Unit tests for the results table: columns, tints, the cut and goldens.
 
 use ratatui::crossterm::event::KeyCode;
 use std::time::Instant;
@@ -133,7 +133,7 @@ fn golden_searches_narrow_headers_whole() {
 }
 
 #[test]
-fn golden_wrap_overlong_result_name() {
+fn golden_cut_overlong_result_name() {
     let state = state_with(
         vec![
             server_result(0x44, &long_name(), 1_073_741_824, 250, 12),

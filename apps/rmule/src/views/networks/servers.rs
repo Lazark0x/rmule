@@ -147,8 +147,6 @@ impl NetworksView {
         state: &UiState,
         theme: &Theme,
     ) {
-        // No rows or header until this draw says so.
-        self.drawn = table::Drawn::default();
         let focused = self.focus == Pane::Servers;
         let border = if focused { theme.accent } else { theme.dim };
         let rows = self.ordered(state);

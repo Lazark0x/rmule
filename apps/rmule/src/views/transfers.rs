@@ -1,8 +1,8 @@
 //! Transfers view (spec §3.2): the third tab, as in aMule.
 //!
-//! A 62/38 vertical split — a downloads table over a sources pane for the
-//! selected download — plus the row-action menu, the cancel confirm, and the
-//! file-details modal. Rendering is pure (`UiState` + view state + injected
+//! A downloads table and a sources pane for the selected download, shared out
+//! by [`crate::views::panes`], plus the row-action menu, the cancel confirm,
+//! and the file-details modal. Rendering is pure (`UiState` + view state + injected
 //! `now` → widgets) so every screen goldens under `TestBackend`; key handling
 //! is a pure state machine over the same view state.
 //!
@@ -50,7 +50,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Paragraph};
@@ -64,7 +64,8 @@ use crate::table::Drawn;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::wrap::{clamp_u16, wrapped_lines};
+use crate::views::panes::{self, Zoomed};
+use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
 use menu::{MenuAction, pause_toggle_action};
 use sort::DownloadsTable;
 use sources::sort::{SourceKey, SourcesTable};
@@ -79,6 +80,9 @@ mod link;
 mod menu;
 mod sort;
 mod sources;
+
+/// The downloads table's share of the tab.
+const SHARE: u16 = 62;
 
 /// Which pane holds selection focus; the focused pane wears the accent border
 /// (every pane's focus cue). Row actions always target the selected *download*, whichever
@@ -154,6 +158,8 @@ pub struct TransfersView {
     /// back to its first line each time one opens.
     confirm_viewport: std::cell::Cell<Viewport>,
     focus: Pane,
+    /// `z`: the focused pane has the whole tab.
+    zoomed: bool,
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.
     add_link: Option<add_link::AddLink>,
@@ -245,6 +251,10 @@ impl TransfersView {
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = self.focus.toggled();
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
             KeyCode::Char('s') if self.focus == Pane::Table && !ids.is_empty() => {
@@ -404,12 +414,27 @@ impl TransfersView {
         let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
         self.clamp(&ids, state);
 
-        let [table_area, sources_area] =
-            Layout::vertical([Constraint::Percentage(62), Constraint::Percentage(38)]).areas(area);
+        // A pane with nothing to list says so in the lines that takes, and
+        // the downloads keep the rest.
+        let idle = self.idle_sources_text(state, &ids, now).map(|text| {
+            let width = usize::from(area.width.saturating_sub(2)).max(1);
+            clamp_u16(wrap_text(&text, width).len()).saturating_add(2)
+        });
+        let zoomed = self.zoomed.then_some(match self.focus {
+            Pane::Table => Zoomed::First,
+            Pane::Sources => Zoomed::Second,
+        });
+        let (table_area, sources_area) = panes::split(area, SHARE, idle, zoomed);
         self.table_area = table_area;
         self.sources_area = sources_area;
-        self.draw_downloads(frame, table_area, state, theme, &lines);
-        self.draw_sources(frame, sources_area, state, theme, &ids, now);
+        self.drawn = Drawn::default();
+        self.source_drawn = Drawn::default();
+        if !table_area.is_empty() {
+            self.draw_downloads(frame, table_area, state, theme, &lines);
+        }
+        if !sources_area.is_empty() {
+            self.draw_sources(frame, sources_area, state, theme, &ids, now);
+        }
 
         match &self.overlay {
             Overlay::None => {}

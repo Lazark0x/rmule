@@ -11,7 +11,7 @@
 │Off-screen: Desc — · Fail 0 · Static no                                     │
 │Health: not reached yet — no answer and no failed try so far                │
 └ too narrow to show: Desc, Fail, Static ─────────────────────────── 26 / 40 ┘
-┌ Log (0) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
 │                                    ││Joined    — (node not started)        │
 │                                    ││Contacts  —                           │

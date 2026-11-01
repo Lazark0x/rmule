@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 
@@ -37,6 +37,7 @@ use crate::state::UiState;
 use crate::table::Drawn;
 use crate::table_sort::{Memo, RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
+use crate::views::panes::{self, Zoomed};
 use crate::wrap::{clamp_u16, wrap_text};
 use menu::{Confirm, FileMenu, draw_confirm};
 use sort::SharedTable;
@@ -55,6 +56,8 @@ const GUTTER_W: usize = 2;
 /// [`UiState`] (ADR-0069).
 pub struct SharedView {
     focus: Pane,
+    /// `z`: the focused pane has the whole tab.
+    zoomed: bool,
     /// The files table's order.
     sort: TableSort<SharedTable>,
     /// The table's lines, in that order.
@@ -104,6 +107,7 @@ impl Default for SharedView {
         Self {
             lines_memo: Memo::default(),
             focus: Pane::Files,
+            zoomed: false,
             sort: TableSort::default(),
             cursor: RowCursor::default(),
             files_selected: 0,
@@ -132,6 +136,9 @@ enum Pane {
     Files,
     Peers,
 }
+
+/// The files table's share of the tab.
+const FILES_SHARE: u16 = 55;
 
 fn pane_border(theme: &Theme, focused: bool) -> Style {
     if focused {
@@ -203,6 +210,10 @@ impl SharedView {
                     Pane::Files => Pane::Peers,
                     Pane::Peers => Pane::Files,
                 };
+                ViewOutcome::Redraw
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
                 ViewOutcome::Redraw
             }
             KeyCode::Char('a') => {
@@ -293,12 +304,23 @@ impl SharedView {
         _now: Instant, // no time-varying content; kept for the view contract
     ) {
         self.clamp_selection(state);
-        let rows =
-            Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
-        self.files_area = rows[0];
-        self.peers_area = rows[1];
-        self.draw_files(frame, rows[0], state, theme);
-        self.draw_peers(frame, rows[1], state, theme);
+        // No upload activity is said on one line, and the files keep the rest.
+        let idle = state.upload_peers.is_empty().then_some(3);
+        let zoomed = self.zoomed.then_some(match self.focus {
+            Pane::Files => Zoomed::First,
+            Pane::Peers => Zoomed::Second,
+        });
+        let (files, peers) = panes::split(area, FILES_SHARE, idle, zoomed);
+        self.files_area = files;
+        self.peers_area = peers;
+        self.drawn_files = Drawn::default();
+        self.drawn_peers = Drawn::default();
+        if !files.is_empty() {
+            self.draw_files(frame, files, state, theme);
+        }
+        if !peers.is_empty() {
+            self.draw_peers(frame, peers, state, theme);
+        }
         if self.menu.is_some() {
             self.draw_menu(frame, area, state, theme);
         }

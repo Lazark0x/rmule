@@ -362,12 +362,14 @@ pub(crate) fn draw(
     }
     frame.render_widget(Paragraph::new(lines), list);
     let foot = viewport.draw(frame, pane, bar, theme);
-    say_gave_way(
-        frame,
-        foot,
-        &gave_way(table.labels.iter().copied(), &widths),
-        theme,
-    );
+    if rows.count > 0 {
+        say_gave_way(
+            frame,
+            foot,
+            &gave_way(table.labels.iter().copied(), &widths),
+            theme,
+        );
+    }
     let gutter_w = clamp_u16(table.gutter);
     Drawn {
         header: Rect::new(

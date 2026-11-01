@@ -7,8 +7,8 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-└ too narrow to show: Desc, Fail, Static ────────────────────────────────────┘
-┌ Log (2) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+└────────────────────────────────────────────────────────────────────────────┘
+┌ Log (2) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │11:59:55 part 3 verified            ││● Kad: off                            │
 │11:59:55 download failed: the file  ││Joined    — (node not started)        │
 │         on disk no longer backs the││Contacts  —                           │

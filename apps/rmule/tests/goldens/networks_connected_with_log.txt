@@ -8,7 +8,7 @@
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
-┌ Log (4) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+┌ Log (4) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │11:50:00 connected to 10.0.0.1:4661 ││● Kad: off                            │
 │         (HighID)                   ││Joined    — (node not started)        │
 │11:55:00 42 sources found (12       ││Contacts  —                           │

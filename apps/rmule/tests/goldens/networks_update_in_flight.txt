@@ -8,7 +8,7 @@
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
-┌ Log (1) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
+┌ Log (1) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │11:59:58 updating server list from  ││● Kad: off                            │
 │         http://upd.emule-security.o││Joined    — (node not started)        │
 │         rg/server.met              ││Contacts  —                           │

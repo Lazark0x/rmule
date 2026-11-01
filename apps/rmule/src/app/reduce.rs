@@ -33,6 +33,16 @@ impl App {
                                 return self.reduce(Action::AskQuit, now);
                             }
                         }
+                        // Under the too-small screen no view is on show, so no
+                        // view hears the key: the way out alone answers.
+                        if self.too_small && !self.chrome.quit_open {
+                            return match key.code {
+                                ratatui::crossterm::event::KeyCode::Char('q') => {
+                                    self.reduce(Action::AskQuit, now)
+                                }
+                                _ => Flow::Continue,
+                            };
+                        }
                         // View-first routing (views/mod.rs contract): the
                         // active view sees keys before the globals — that is
                         // what lets a focused query input treat `h`/`q` as
@@ -50,6 +60,7 @@ impl App {
                             }
                         }
                     }
+                    Event::Mouse(_) if self.too_small => None,
                     Event::Mouse(mouse) => {
                         // Wheel scrolls the focused table (ADR-0072, Row Selection) by
                         // synthesizing the arrow the view already handles —

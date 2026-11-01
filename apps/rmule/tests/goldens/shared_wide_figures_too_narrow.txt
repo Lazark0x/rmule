@@ -11,11 +11,11 @@
 │500.0 GB (999.0 GB)                                                           │
 └ too narrow to show: Requests, Accepted, Transferred ────────────────── 1 / 2 ┘
 ┌ Uploads · active only ──────────────────────────── s sort  S reverse  z zoom ┐
-│  Peer ▲                Software     State             Speed File             │
-│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — film.mkv         │
+│  Peer ▲                State             Speed File                          │
+│▸ 10.0.0.1:4662         Uploading             — film.mkv                      │
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│                                                                              │
+│Off-screen: Software aMule v2.3.3                                             │
 │  2 hidden queued                                                             │
-└─────────────────────────────────────────────────────────────────────── 1 / 1 ┘
+└ too narrow to show: Software ───────────────────────────────────────── 1 / 1 ┘

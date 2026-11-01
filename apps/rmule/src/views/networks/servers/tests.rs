@@ -215,7 +215,7 @@ fn golden_networks_connected_with_log() {
 }
 
 #[test]
-fn golden_networks_wrap_long_row() {
+fn golden_networks_cut_long_row() {
     let state = long_row();
     let mut view = NetworksView::new();
     let now = Instant::now();

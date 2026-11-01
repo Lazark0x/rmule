@@ -328,6 +328,13 @@ pub fn temp_dir_default(default: Option<&Path>) -> String {
     }
 }
 
+/// What a terminal too small for the views says: its size, the size it
+/// takes, and the way out, the one key that still answers.
+#[must_use]
+pub fn too_small((width, height): (u16, u16), (need_w, need_h): (u16, u16)) -> String {
+    format!("Terminal {width}×{height} is too small. rmule needs {need_w}×{need_h}. q quits.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

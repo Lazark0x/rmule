@@ -469,16 +469,14 @@ fn golden_transfers_stalled_row() {
 }
 
 #[test]
-fn golden_wrap_narrow_frame_grows_rows_instead_of_cutting_cells() {
-    // A pane too narrow for the name column and a rate too wide for the
-    // Speed column: both wrap down rather than being clipped.
+fn golden_a_narrow_frame_gives_columns_way_and_keeps_the_rows() {
     let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     state
         .rates
         .download_bps
         .insert(download_id(1), 12_345.6 * 1024.0);
-    assert_golden("transfers_wrap_narrow", 62, 18, |frame| {
+    assert_golden("transfers_narrow", 62, 18, |frame| {
         let area = frame.area();
         view.draw(frame, area, &state, &Theme::default_dark(), now());
     });

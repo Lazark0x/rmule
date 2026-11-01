@@ -11,11 +11,11 @@
 │Off-screen: Requests 9 (0) · Accepted 6 (0) · Transferred 0 B (0 B)         │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 4 ┘
 ┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
-│  Peer ▲                Software     State             Speed File           │
-│▸ 10.0.0.20:4662        —            Uploading             — bravo.song….mp3│
-│  10.0.0.21:4662        —            Uploading             — bravo.song….mp3│
-│  10.0.0.30:4662        —            Uploading             — charlie.im….iso│
-│  10.0.0.31:4662        —            Uploading             — charlie.im….iso│
+│  Peer ▲                State             Speed File                        │
+│▸ 10.0.0.20:4662        Uploading             — bravo.song.name.mp3         │
+│  10.0.0.21:4662        Uploading             — bravo.song.name.mp3         │
+│  10.0.0.30:4662        Uploading             — charlie.image.name.iso      │
+│  10.0.0.31:4662        Uploading             — charlie.image.name.iso      │
 │                                                                            │
-│Off-screen: File bravo.song.name.mp3                                        │
-└───────────────────────────────────────────────────────────────────── 1 / 4 ┘
+│Off-screen: Software —                                                      │
+└ too narrow to show: Software ─────────────────────────────────────── 1 / 4 ┘

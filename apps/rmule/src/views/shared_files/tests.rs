@@ -220,8 +220,6 @@ fn clicks_select_rows_in_either_pane() {
         })
         .expect("draw");
     view.focus = Pane::Peers;
-    // The second row starts where it was drawn: a row whose all-time
-    // figures wrap is two lines tall.
     let second = view
         .drawn_files
         .line_of(1)

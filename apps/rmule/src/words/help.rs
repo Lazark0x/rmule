@@ -12,6 +12,7 @@ pub const EVERYWHERE: &[Binding] = &[
     ("j/k  ↑/↓", "select row in focused pane"),
     ("g / G", "top / bottom"),
     ("Tab / Shift-Tab", "cycle panes (accent border = focus)"),
+    ("z", "zoom the focused pane to the whole tab, or back"),
     ("m / Enter", "row action menu"),
     ("s / S", "sort the focused table by next column / reverse"),
     ("?", "this help; j/k, PgUp/PgDn scroll it when it is long"),
@@ -42,6 +43,10 @@ pub const NETWORKS: &[Binding] = &[
         "Networks: connect to the selected server, or disconnect from the one you are on",
     ),
     ("K", "Networks: start or stop Kad"),
+    (
+        "d",
+        "Networks: the selected server's grants, flags and health",
+    ),
 ];
 
 /// Searches.

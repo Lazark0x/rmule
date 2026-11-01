@@ -67,6 +67,8 @@ pub struct SearchesView {
     /// Focus came to the input with the tab, not with a `/`: until a key is
     /// typed the navigation keys are still the app's.
     arrived: bool,
+    /// `z`: the results have the whole tab, until the input is asked for.
+    zoomed: bool,
     query: LineEdit,
     /// Why the typed query was not sent, under it until the typing changes.
     refusal: Option<Sentence>,
@@ -213,13 +215,19 @@ impl SearchesView {
             return self.with_cursor(|cursor| cursor.apply(&ids, movement));
         }
         match key.code {
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                ViewOutcome::Redraw
+            }
             // Two panes (input, results): Tab and Shift-Tab both cross to
             // the input, mirroring `/`.
             KeyCode::Char('/') | KeyCode::Tab | KeyCode::BackTab => {
                 self.input_focused = true;
+                self.zoomed = false;
                 ViewOutcome::Redraw
             }
             KeyCode::Char('o') => {
+                self.zoomed = false;
                 self.filters.form.error = None;
                 self.filters.form.focus_first();
                 self.filters_open = true;
@@ -379,12 +387,16 @@ impl SearchesView {
         // long query.
         let input_h = self.input_height(usize::from(area.width.saturating_sub(2)), state, theme);
         let strip_h = u16::from(held::strip_shown(&self.held, state));
-        let [input_area, strip_area, results_area] = Layout::vertical([
-            Constraint::Length(input_h.min(area.height)),
-            Constraint::Length(strip_h),
-            Constraint::Min(0),
-        ])
-        .areas(area);
+        let [input_area, strip_area, results_area] = if self.zoomed {
+            [Rect::default(), Rect::default(), area]
+        } else {
+            Layout::vertical([
+                Constraint::Length(input_h.min(area.height)),
+                Constraint::Length(strip_h),
+                Constraint::Min(0),
+            ])
+            .areas(area)
+        };
         self.input_area = input_area;
         self.results_area = results_area;
 

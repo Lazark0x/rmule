@@ -11,11 +11,11 @@
 │Off-screen: Requ│ Stops serving it; peers lose the source. │.0 MB (4.0 MB)  │
 └ too narrow to s│                                          │───────── 1 / 2 ┘
 ┌ Uploads · activ│ y confirm    Esc cancel                  │reverse  z zoom ┐
-│  Peer ▲        └──────────────────────────────────────────┘ File           │
-│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — 0101010101…    │
+│  Peer ▲        └──────────────────────────────────────────┘                │
+│▸ 10.0.0.1:4662         Uploading             — 0101010101…                 │
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                                                                            │
+│Off-screen: Software aMule v2.3.3                                           │
 │  2 hidden queued                                                           │
-└───────────────────────────────────────────────────────────────────── 1 / 1 ┘
+└ too narrow to show: Software ─────────────────────────────────────── 1 / 1 ┘

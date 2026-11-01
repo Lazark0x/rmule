@@ -47,7 +47,7 @@ impl NetworksView {
                 &format!(" Log ({}) ", state.log.len()),
                 Style::new().fg(theme.fg),
             ),
-            ("", theme.dim_text()),
+            (" z zoom ", theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);

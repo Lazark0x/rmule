@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                      │
 └────────────────────────────────────────────────────────────────────────────┘
 [ペ ガ サ ス  · 2…]
-┌ Results · Running… ───────────────── [ ] search  x stop  s sort  S reverse ┐
+┌ Results · Running… ───────── [ ] search  x stop  s sort  S reverse  z zoom ┐
 │  Name ▲                                               Size Sources Type    │
 │▸ plain_name.avi                                      512 B       5 Videos  │
 │  聖 闘 士 星 矢 ペ ガ サ ス 幻 想 オ ー プ ニ ン …テ ー マ 曲 集 .mp3    4.0 MB  42 (7) Audio   │

@@ -41,8 +41,16 @@ One of the six top-level surfaces the chrome switches between, named by `ViewId`
 _Avoid_: page, screen, window
 
 **Pane**:
-A bounded region *inside* one view's content rect: the server table, the log and the Kad panel in Networks; the files and upload-peers halves of Shared Files. Focus inside a view lives at pane granularity — the focused pane takes the navigation keys, everything else bubbles to the globals. A view caches each pane's rect at draw time, so a click is hit-tested against the layout that was actually drawn rather than one recomputed from a stale width. A pane's title and its key hint share its top border and give way whole when it is narrow — the hint's keys first, last first, then the title's clauses, last first — never cut mid-word.
+A bounded region *inside* one view's content rect: the server table, the log and the Kad panel in Networks; the files and upload-peers halves of Shared Files. Focus inside a view lives at pane granularity — the focused pane takes the navigation keys, everything else bubbles to the globals. A view caches each pane's rect at draw time, so a click is hit-tested against the layout that was actually drawn rather than one recomputed from a stale width. A pane's title and its key hint share its top border and give way whole when it is narrow — the hint's keys first, last first, then the title's clauses, last first — never cut mid-word. Two panes stack by share and stand side by side from 160 cells; one with nothing to list takes the lines it says that in (`views::panes`).
 _Avoid_: section, widget, subview
+
+**Zoom**:
+`z`: the focused pane takes the whole tab and the other draws nothing and takes no click, until `z` again. `Tab` carries it across; Searches gives its results the tab and drops the zoom when the query is asked for.
+_Avoid_: maximize, fullscreen
+
+**Too-small screen**:
+What a terminal under 60×20 shows in place of the tab: its size, the size rmule needs, and `q`. No view is on show, so no view hears a key; only the way out answers (ADR-0119).
+_Avoid_: minimum size error
 
 **Key gate**:
 The one reading of a key's kind and modifiers, at the reducer before any view: a release and an unbound Ctrl or Alt chord act on nothing, Ctrl-C takes the quit path from every surface, and Ctrl with Alt on a character is AltGr, which is text. While a **Line Edit** holds the keyboard the chords it binds pass, and it alone reads them; every other view reads key codes alone.

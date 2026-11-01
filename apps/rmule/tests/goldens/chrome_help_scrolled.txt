@@ -6,11 +6,11 @@
 │ c               Networks: connect to the selected server, or disconnect from │
 │                 the one you are on                                           │
 │ K               Networks: start or stop Kad                                  │
+│ d               Networks: the selected server's grants, flags and health     │
 │ /               Searches: focus query input                                  │
-│ o               Searches: type/size/sources/extension filters                │
-│ [ / ]           Searches: previous / next held search                        │
+│ o               Searches: type/size/sources/extension filters               ▅│
+│ [ / ]           Searches: previous / next held search                       █│
 │ x / n           Searches: stop or close a search / server's next page       █│
-│ u               Searches: bring back the search closed last                 █│
 │ p               Transfers: pause or resume the selected download            █│
 │ C               Transfers: clear all completed                              █│
 │ L               Transfers: add a download from a pasted eD2k link           █│
@@ -20,5 +20,5 @@
 │ [ / ]           Shared: filter by directory                                 █│
 │ Enter  ← / →    Settings: edit a field / step a selector                    █│
 │ x               Settings: stop sharing the selected directory               ▼│
-└─────────────────────────────────────────────────────────────── j/k ─ 36 / 36 ┘
+└─────────────────────────────────────────────────────────────── j/k ─ 34 / 34 ┘
 └ — │ ▼ 0.0 KB/s ▲ 0.0 KB/s │ ●eD2k off ●Kad off  │ ? help─────────────────────┘

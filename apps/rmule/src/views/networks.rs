@@ -37,7 +37,7 @@ use crate::state::UiState;
 use crate::table::Drawn;
 use crate::table_sort::{RowCursor, RowMove, TableSort};
 use crate::theme::Theme;
-use crate::views::{ViewOutcome, connect_toggle};
+use crate::views::{ViewOutcome, connect_toggle, say_gave_way};
 use form::{ServerForm, draw_form};
 use kad::draw_kad;
 use menu::{Confirm, Menu, draw_confirm, draw_menu};
@@ -58,10 +58,16 @@ mod sort;
 /// Nine inner rows is exactly what the Kad panel's body needs — status, six
 /// facts, and the Received and Sent traffic rows.
 const BOTTOM_H: u16 = 11;
+/// The narrowest tab that keeps the Kad panel beside the log; narrower, the
+/// log needs the width and the panel gives way, saying so.
+const KAD_PANE_MIN_TAB_W: u16 = 78;
 /// Width of the Kad panel — its longest value row ("firewalled · not checked
 /// yet", the verdict and why on one line) under a ten-column label, plus
 /// borders.
 const KAD_PANE_W: u16 = 40;
+
+/// How the bottom border names the panel when it gave way.
+const KAD: &str = "Kad";
 
 /// The two focusable panes (spec §3.4: the Kad panel is display-only).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,6 +113,8 @@ pub struct NetworksView {
     menu: Option<Menu>,
     confirm: Option<Confirm>,
     form: Option<ServerForm>,
+    /// `z`: the focused pane has the whole tab.
+    zoomed: bool,
     /// The selected server's details modal (`d`), while it is up; what part
     /// of it is on screen in a frame too short for it.
     details: Option<std::cell::Cell<Viewport>>,
@@ -129,6 +137,7 @@ impl Default for NetworksView {
             menu: None,
             confirm: None,
             form: None,
+            zoomed: false,
             details: None,
             servers_area: Rect::default(),
             log_area: Rect::default(),
@@ -223,6 +232,10 @@ impl NetworksView {
                 // does not move its target.
                 self.cursor.pin(&self.server_ids(state));
                 self.open_menu(state)
+            }
+            KeyCode::Char('z') => {
+                self.zoomed = !self.zoomed;
+                ViewOutcome::Redraw
             }
             KeyCode::Char('d') if self.focus == Pane::Servers => self.open_details(state),
             KeyCode::Char('s') if self.focus == Pane::Servers && !servers(state).is_empty() => {
@@ -320,14 +333,34 @@ impl NetworksView {
 
         let [servers_area, bottom] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(BOTTOM_H)]).areas(area);
+        let kad_w = if area.width < KAD_PANE_MIN_TAB_W {
+            0
+        } else {
+            KAD_PANE_W
+        };
         let [log_area, kad_area] =
-            Layout::horizontal([Constraint::Min(0), Constraint::Length(KAD_PANE_W)]).areas(bottom);
+            Layout::horizontal([Constraint::Min(0), Constraint::Length(kad_w)]).areas(bottom);
+        let (servers_area, log_area, kad_area) = match (self.zoomed, self.focus) {
+            (false, _) => (servers_area, log_area, kad_area),
+            (true, Pane::Servers) => (area, Rect::default(), Rect::default()),
+            (true, Pane::Log) => (Rect::default(), area, Rect::default()),
+        };
         self.servers_area = servers_area;
         self.log_area = log_area;
+        self.drawn = Drawn::default();
 
-        self.draw_servers(frame, servers_area, state, theme);
-        draw_kad(frame, kad_area, state, theme);
-        self.draw_log(frame, log_area, state, theme, now);
+        if !servers_area.is_empty() {
+            self.draw_servers(frame, servers_area, state, theme);
+        }
+        if !kad_area.is_empty() {
+            draw_kad(frame, kad_area, state, theme);
+        }
+        if !log_area.is_empty() {
+            self.draw_log(frame, log_area, state, theme, now);
+        }
+        if kad_w == 0 && !self.zoomed {
+            say_gave_way(frame, crate::views::bottom_border(log_area), &[KAD], theme);
+        }
 
         if let (Some(viewport), Some(row)) = (self.details.as_ref(), self.selected(state)) {
             menu::draw_details(frame, area, row, state, viewport, theme);
@@ -457,8 +490,6 @@ mod tests {
             })
             .expect("draw");
         view.focus = Pane::Log;
-        // The second listed row's first display line, whatever height the
-        // rows above it wrapped to.
         let row1 = view.drawn.line_of(1).expect("row 1 on screen");
         assert!(
             matches!(view.handle_click(3, row1, &state), ViewOutcome::Redraw),

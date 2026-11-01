@@ -9,13 +9,13 @@
 │            │  Cancel…                                         │            │
 │            │  Show file details                               │            │
 │            │  Preview  details not known yet                  │            │
-│Off-screen: │  Copy eD2k link  no metadata yet                 │            │
-└ too narrow │  Search related  not connected                   │───── 4 / 4 ┘
-┌ Sources · 3└─────────────────────────────────────────── 1 / 6 ┘────────────┐
+│            │  Copy eD2k link  no metadata yet                 │            │
+│            │  Search related  not connected                   │            │
+│            └─────────────────────────────────────────── 1 / 6 ┘            │
 │                                                                            │
 │                                                                            │
+│Off-screen: Done — · ETA — · Src —                                          │
+└ too narrow to show: Done, ETA, Src ───────────────────────────────── 4 / 4 ┘
+┌ Sources · 3C3C3C3C3C… ─────────────────────────────────────────────────────┐
 │                              no active sources                             │
-│                                                                            │
-│                                                                            │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

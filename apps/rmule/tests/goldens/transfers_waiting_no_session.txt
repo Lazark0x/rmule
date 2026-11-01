@@ -9,13 +9,13 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
+│                                                                            │
 │Off-screen: Done 42% · ETA — · Src 8                                        │
 └ too narrow to show: Done, ETA, Src ───────────────────────────────── 1 / 3 ┘
 ┌ Sources · bunny.mp4 ───────────────────────────────────────────────────────┐
-│                                                                            │
-│                                                                            │
 │  no source left to try; waiting for a server session or Kad: connect to a  │
 │                            server, or enable Kad                           │
-│                                                                            │
-│                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘

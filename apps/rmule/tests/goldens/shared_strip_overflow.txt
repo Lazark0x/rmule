@@ -7,8 +7,8 @@
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Uploads · active only ────────────────────────── s sort  S reverse  z zoom ┐
-│  Peer ▲                Software     State             Speed File           │
-│▸ 10.0.0.1:4662         aMule v2.3.3 Uploading             — album.flac     │
-│                                                                            │
+│  Peer ▲                State             Speed File                        │
+│▸ 10.0.0.1:4662         Uploading             — album.flac                  │
+│Off-screen: Software aMule v2.3.3                                           │
 │  2 hidden queued                                                           │
-└───────────────────────────────────────────────────────────────────── 1 / 1 ┘
+└ too narrow to show: Software ─────────────────────────────────────── 1 / 1 ┘

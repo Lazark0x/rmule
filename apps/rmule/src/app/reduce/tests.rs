@@ -582,8 +582,8 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
         .with_config(config.clone(), config.load(None).expect("load"));
     with_rows(&mut app);
     let now = Instant::now();
-    // Transfers by size; its sources pane, focused, by software; the
-    // servers by address, reversed.
+    // Transfers by speed, the column after its opening one; its sources
+    // pane, focused, by software; the servers by address, reversed.
     for key in [
         KeyCode::Char('3'),
         KeyCode::Char('s'),
@@ -599,7 +599,7 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
     let reloaded = config.load(None).expect("reload");
     assert_eq!(
         reloaded.table_sorts.get("transfers"),
-        Some(("size", Direction::Descending))
+        Some(("speed", Direction::Descending))
     );
     assert_eq!(
         reloaded.table_sorts.get("servers"),
@@ -620,7 +620,7 @@ fn two_tables_keep_their_own_sorts_across_a_restart() {
         });
         screen.lines().nth(1).unwrap_or_default().to_string()
     };
-    assert!(header(&mut restarted, ViewId::Transfers).contains("Size ▼"));
+    assert!(header(&mut restarted, ViewId::Transfers).contains("Speed ▼"));
     let screen = crate::golden::render_to_lines(78, 21, |frame| {
         restarted.views.draw(
             ViewId::Transfers,
@@ -817,4 +817,23 @@ fn c_outside_networks_is_unbound() {
             "`c` is global"
         );
     }
+}
+
+/// Under the too-small screen no view is on show, so a key reaches none of
+/// them, and `q` still leaves.
+#[test]
+fn a_terminal_too_small_answers_only_the_way_out() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.too_small = true;
+    let before = app.chrome.active;
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('l')), now),
+        Flow::Continue
+    ));
+    assert_eq!(app.chrome.active, before, "the tab keys are not heard");
+    assert!(matches!(
+        app.reduce(key_action(KeyCode::Char('q')), now),
+        Flow::Quit
+    ));
 }

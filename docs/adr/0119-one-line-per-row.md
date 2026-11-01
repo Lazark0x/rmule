@@ -37,6 +37,12 @@ middle, keeping its file extension. The selected row's full value rides the Off-
 - **A row is never dropped.** A row cannot be taller than its pane. A pane with one line for the
   table shows the cursor's row and lets the header give way, so keys act on what is seen.
 
+- **The list keeps the screen.** Two panes stack by share and stand side by side from 160 cells;
+  a pane with nothing to list takes the lines it says that in; `z` gives the focused pane the
+  whole tab, and `Tab` carries the zoom across. The Kad panel gives way under 78 cells of tab and
+  the log's border says so. Below 60×20 no view fits, and the terminal says so in place of panes
+  that vanish: its size, the size it takes, and `q`, the one key that answers.
+
 Prose still folds: a modal, the help, a log line and the Off-screen line itself are sentences,
 not rows.
 

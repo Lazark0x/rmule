@@ -108,8 +108,6 @@ impl SharedView {
         state: &UiState,
         theme: &Theme,
     ) {
-        // Nothing to click until a table is drawn.
-        self.drawn_files = table::Drawn::default();
         let focused = self.focus == Pane::Files;
         let lines_in_order = self.sorted_lines(state);
 

@@ -59,7 +59,6 @@ impl TransfersView {
         now: Instant,
     ) {
         let focused = self.focus == Pane::Sources;
-        self.source_drawn = table::Drawn::default();
         let selected = selected_id(ids, self.selected);
         let title = match selected {
             Some(id) => {
@@ -72,30 +71,17 @@ impl TransfersView {
             }
             None => " Sources ".to_string(),
         };
-        let block = pane_block(area.width, (&title, ""), focused, theme);
-        let inner = block.inner(area);
-
-        // A row waiting for sources or a network has none to list, and the
-        // pane says what would end the wait rather than only that it is empty.
-        let selected_row = selected.and_then(|id| state.downloads.get(&id));
-        let (Some(id), Some(diag)) = (selected, self.selected_diag(state, ids)) else {
+        if let Some(text) = self.idle_sources_text(state, ids, now) {
+            let block = pane_block(area.width, (&title, ""), focused, theme);
+            let inner = block.inner(area);
             frame.render_widget(block, area);
-            let reconnect_wait = reconnect_wait(state, now);
-            let text = match selected {
-                Some(_) => idle_text(selected_row, reconnect_wait.as_ref()),
-                None => "no download selected",
-            };
-            draw_centered(frame, inner, text, theme.dim_text());
+            draw_centered(frame, inner, &text, theme.dim_text());
+            return;
+        }
+        let (Some(id), Some(diag)) = (selected, self.selected_diag(state, ids)) else {
             return;
         };
         let listed = source_rows(diag);
-        if listed.is_empty() {
-            frame.render_widget(block, area);
-            let reconnect_wait = reconnect_wait(state, now);
-            let text = idle_text(selected_row, reconnect_wait.as_ref());
-            draw_centered(frame, inner, text, theme.dim_text());
-            return;
-        }
 
         let block = pane_block(
             area.width,
@@ -164,8 +150,35 @@ impl TransfersView {
     }
 }
 
-/// What a download waiting for a network waits for while core re-makes the
-/// operator's lost session.
+impl TransfersView {
+    /// What the pane says in place of a table with no source to list, a row
+    /// waiting for sources or a network saying what would end the wait.
+    /// `None` while there are rows.
+    pub(super) fn idle_sources_text(
+        &self,
+        state: &UiState,
+        ids: &[DownloadId],
+        now: Instant,
+    ) -> Option<String> {
+        let selected = selected_id(ids, self.selected);
+        let selected_row = selected.and_then(|id| state.downloads.get(&id));
+        let listed = self
+            .selected_diag(state, ids)
+            .is_some_and(|diag| !source_rows(diag).is_empty());
+        if listed {
+            return None;
+        }
+        let reconnect_wait = reconnect_wait(state, now);
+        Some(
+            match selected {
+                Some(_) => idle_text(selected_row, reconnect_wait.as_ref()),
+                None => "no download selected",
+            }
+            .to_string(),
+        )
+    }
+}
+
 /// What the pane says of a selected download with no source to list: what
 /// its run waits on, when it said so — a reconnect under way first, as that
 /// is what ends a wait for a network — else that none is active.
@@ -224,7 +237,7 @@ mod tests {
             .expect("the first row");
         row.handed_over.insert(handed);
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -264,7 +277,7 @@ mod tests {
         let waiting = worker.peer_endpoint().expect("the slot holds a peer");
         worker.mark_link_turn(rmule_core::LinkTurn::Waiting);
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -314,7 +327,7 @@ mod tests {
         worker.attach_peer(peer_endpoint(77));
         worker.transition(rmule_core::diagnostics::WorkerPhase::Connecting);
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 24)).expect("terminal");
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(150, 24)).expect("terminal");
         terminal
             .draw(|frame| {
                 let area = frame.area();

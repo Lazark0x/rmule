@@ -21,7 +21,7 @@
 │Off-scr└──────────────────────────────────────────────────────────────┘       │
 │Health: dead since 45m ago — 7 tries in a row went unanswered (limit 3)       │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 2 / 4 ┘
-┌ Log (0) ─────────────────────────────┐┌ Kad ──────────────────────── K start ┐
+┌ Log (0) ───────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │
 │                                      ││Joined    — (node not started)        │
 │                                      ││Contacts  —                           │

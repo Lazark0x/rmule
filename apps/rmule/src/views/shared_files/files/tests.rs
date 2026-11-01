@@ -177,11 +177,8 @@ fn wide_figures_state() -> UiState {
     state
 }
 
-/// At 80 columns the declared floors (94 + 6 gaps + the gutter + the
-/// border = 104) do not fit: the run-and-all-time pair drops its
-/// all-time figure rather than wrapping, and the dropped
-/// figures reprint in full, wrapped, on the "Off-screen:" note under the
-/// header.
+/// At 80 columns the counters give way, and the selected row's pairs read in
+/// full on the Off-screen line.
 #[test]
 fn golden_shared_wide_figures_too_narrow() {
     let state = wide_figures_state();
@@ -191,8 +188,7 @@ fn golden_shared_wide_figures_too_narrow() {
     });
 }
 
-/// At 120 columns every floor fits: the same pair stays whole, on one
-/// line, right-aligned, never a wrapped, overprinted pair.
+/// At 120 columns every floor fits: the same pair stays whole, right-aligned.
 #[test]
 fn golden_shared_wide_figures_fit_one_line() {
     let state = wide_figures_state();

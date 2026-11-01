@@ -32,11 +32,12 @@ use crate::wrap::{display_width, wrapped_lines};
 pub(super) mod sort;
 
 /// Floors of the peers table's columns: Peer · Software · State · Speed ·
-/// File. `File` holds the free text and is greedy: it takes the slack left
+/// File. `File` holds the free text and is greedy: its entry is the room it
+/// keeps before other columns give way to it, and it takes the slack left
 /// after the others. They are bounded and floored at their usual widest value
 /// — an IPv4 endpoint, `aMule v2.3.3`, `Queued #99`, a rate to `999.9 KB/s` —
 /// and asked for the widest drawn, up to [`PEER_CAPS`].
-const PEER_COLS: [usize; 5] = [21, 12, 12, 10, 12];
+const PEER_COLS: [usize; 5] = [21, 12, 12, 10, 24];
 
 /// The most each bounded column asks for: an IPv6 endpoint with its port,
 /// a client name with a short mod, a queue rank of five digits, a rate of
@@ -115,7 +116,6 @@ impl SharedView {
         state: &UiState,
         theme: &Theme,
     ) {
-        self.drawn_peers = table::Drawn::default();
         let focused = self.focus == Pane::Peers;
         let mode = if self.active_only {
             "active only"
@@ -308,7 +308,7 @@ mod tests {
         state.rates.upload_bps.insert(peer, 2255.1 * 1024.0);
         let words: Vec<&str> = name.split(' ').collect();
         // (pane width, most lines the file name may take)
-        for (width, name_lines) in [(150u16, 1usize), (80, 5)] {
+        for (width, name_lines) in [(150u16, 1usize), (80, 3)] {
             let mut view = SharedView::default();
             let drawn = render_to_lines(width, 10, |frame| {
                 view.draw_peers(frame, frame.area(), &state, &theme());

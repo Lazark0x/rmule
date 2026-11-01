@@ -64,7 +64,7 @@ async fn from_a_search_result() {
     );
     let mut app = attached(state);
     app.chrome.active = ViewId::Searches;
-    // g: first row by name, clip_low.avi.
+    // g: the first row, most sources on top.
     keys(
         &mut app,
         &[
@@ -75,7 +75,7 @@ async fn from_a_search_result() {
             KeyCode::Enter,
         ],
     );
-    assert_landed(&app, file_hash(0x11), "clip_low.avi");
+    assert_landed(&app, file_hash(0x33), "distro_hot.iso");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -96,7 +96,6 @@ async fn from_a_download_whose_name_is_not_known() {
     keys(
         &mut app,
         &[
-            DOWN,
             DOWN,
             KeyCode::Char('m'),
             DOWN,

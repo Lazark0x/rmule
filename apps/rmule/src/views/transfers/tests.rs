@@ -161,3 +161,47 @@ fn a_click_on_a_table_row_selects_it_and_focuses_the_pane() {
         ViewOutcome::Ignored
     ));
 }
+
+/// `z` gives the focused pane the tab, the other draws nothing and takes no
+/// click, and `Tab` carries the zoom to the other pane.
+#[test]
+fn z_zooms_the_focused_pane_and_tab_carries_it_across() {
+    let state = three_downloads();
+    let mut view = TransfersView::by_name();
+    view.handle_key(press(KeyCode::Char('z')), &state);
+    let shown = crate::golden::render_to_lines(78, 22, |frame| {
+        view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+    });
+    assert!(shown.contains("Downloads"), "{shown}");
+    assert!(!shown.contains("Sources ·"), "{shown}");
+    assert_eq!(view.sources_area, Rect::default());
+
+    view.handle_key(press(KeyCode::Tab), &state);
+    let shown = crate::golden::render_to_lines(78, 22, |frame| {
+        view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+    });
+    assert!(shown.contains("Sources ·"), "{shown}");
+    assert!(!shown.contains("Downloads ("), "{shown}");
+
+    view.handle_key(press(KeyCode::Char('z')), &state);
+    let shown = crate::golden::render_to_lines(78, 22, |frame| {
+        view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+    });
+    assert!(
+        shown.contains("Downloads (") && shown.contains("Sources ·"),
+        "{shown}"
+    );
+}
+
+/// A pane with no source to list takes the lines it says that in, and the
+/// downloads keep the rest of the tab.
+#[test]
+fn an_idle_sources_pane_gives_its_rows_to_the_downloads() {
+    let state = waiting_downloads();
+    let mut view = TransfersView::by_name();
+    crate::golden::render_to_lines(78, 22, |frame| {
+        view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+    });
+    assert!(view.sources_area.height <= 4, "{:?}", view.sources_area);
+    assert_eq!(view.table_area.height + view.sources_area.height, 22);
+}
