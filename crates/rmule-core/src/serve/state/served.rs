@@ -11,11 +11,10 @@
 //! drops a file between two: an entry the cell no longer holds keeps answering
 //! from its last copy until the next trigger.
 
-use std::collections::HashMap;
-
 use rmule_peer::{PeerIdentity, WireStatus};
 use rmule_primitives::{
-    Ed2kFileClass, Ed2kText, FileHash, PartHashList, PartHashSet, PeerEndpoint, is_large_file,
+    Ed2kFileClass, Ed2kText, FileHash, OwnFileMap, PartHashList, PartHashSet, PeerEndpoint,
+    is_large_file,
 };
 
 use super::reask::full_bitmap;
@@ -147,7 +146,7 @@ impl ServeState {
     /// Refresh the brain's copy of the **Served Downloads** with every entry
     /// as the cell holds it now. A level, like our own position: an entry the
     /// cell no longer holds keeps its last copy until the next share trigger.
-    pub(crate) fn on_served(&mut self, fresh: HashMap<FileHash, ServedLook>) {
+    pub(crate) fn on_served(&mut self, fresh: OwnFileMap<ServedLook>) {
         let stale: Vec<(FileHash, ServedLook)> = self
             .served
             .drain()

@@ -58,6 +58,12 @@ download directory names a file inside it. The one way a remote name becomes
 a local path; the **Ed2k Text** it came from stays byte-faithful.
 _Avoid_: sanitized name, filename, basename
 
+**Own File Table**:
+A table of the node's own files by **File Hash**, the shares and downloads a
+peer's every ask looks up (`OwnFileMap`, `OwnFileSet`). A digest needs no
+keyed hash, so these tables skip it; only the node fills them, so a peer cannot
+pick their keys. A hash a peer states and a table keeps never goes in one.
+
 **File Hash Summary**:
 The result of hashing a local file the eD2k way: the file hash plus, for files
 over one part, the **Part Hash Set** it is folded from. The one place the

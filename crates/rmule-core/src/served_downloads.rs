@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmule_peer::PartBitmap;
-use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, PartHash, SourceSighting};
+use rmule_primitives::{ED2K_PART_SIZE, Ed2kText, FileHash, OwnFileMap, PartHash, SourceSighting};
 use tokio::sync::{mpsc, watch};
 
 use crate::download::RunNumber;
@@ -224,7 +224,7 @@ pub(crate) struct ServedRead {
     /// The version the read was made at.
     pub(crate) version: u64,
     /// Each entry, by file hash.
-    pub(crate) entries: HashMap<FileHash, ServedLook>,
+    pub(crate) entries: OwnFileMap<ServedLook>,
 }
 
 /// One change the actor's look found since the last.

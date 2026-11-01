@@ -90,7 +90,7 @@ fn an_in_range_request_reads_its_part_file_and_a_re_request_checks_only_the_unse
     // again, so only the rest is checked, and it lies inside the range.
     let mut look = download(true, &[1], true);
     look.served.identity = Some(identity());
-    state.on_served([(file, look)].into());
+    state.on_served([(file, look)].into_iter().collect());
     assert_eq!(
         state.on_conn_event(
             t,
@@ -228,7 +228,7 @@ fn a_read_refused_after_its_entry_moved_is_aimed_again_and_nothing_is_withdrawn(
         let (mut state, holder, aimed) = a_read_out(file, t);
         let mut swapped = state.served[&file].clone();
         swapped.served.bytes_at = crate::served_downloads::BytesAt::FinalFile;
-        state.on_served([(file, swapped)].into());
+        state.on_served([(file, swapped)].into_iter().collect());
         let read_out = (block(file, 0, 100), Some(aimed));
         assert_eq!(
             refused(&mut state, t, holder, 1, read_out, &no_modifiers()),
@@ -238,7 +238,7 @@ fn a_read_refused_after_its_entry_moved_is_aimed_again_and_nothing_is_withdrawn(
         let (mut state, holder, aimed) = a_read_out(file, t);
         let mut numbered = state.served[&file].clone();
         numbered.served.final_path = "/downloads/download (1).bin".into();
-        state.on_served([(file, numbered)].into());
+        state.on_served([(file, numbered)].into_iter().collect());
         let read_out = (block(file, 0, 100), Some(aimed));
         assert_eq!(
             refused(&mut state, t, holder, 1, read_out, &no_modifiers()),
@@ -254,7 +254,7 @@ fn a_read_refused_after_its_entry_ended_waits_for_the_trigger() {
     let file = hash(0x02);
     let t = Instant::now();
     let (mut state, holder, _) = a_read_out(file, t);
-    state.on_served(HashMap::new());
+    state.on_served(OwnFileMap::default());
 
     let gone = (block(file, 0, 100), None);
     assert_eq!(

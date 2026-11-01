@@ -19,17 +19,16 @@
 //! hashes balances: each start inserts its hash, its retire removes that hash.
 
 use parking_lot::Mutex;
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use rmule_primitives::FileHash;
+use rmule_primitives::{FileHash, OwnFileSet};
 
 /// The mirrored state: the Shared File Registry's key set, and the Download
 /// Set's file hashes.
 #[derive(Default)]
 struct Known {
-    shared: HashSet<FileHash>,
-    downloading: HashSet<FileHash>,
+    shared: OwnFileSet,
+    downloading: OwnFileSet,
 }
 
 /// The cell itself — cloned into `FirewalledWiring` (the one reader) and the

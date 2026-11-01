@@ -39,7 +39,9 @@ use std::time::{Duration, Instant};
 use rmule_ed2k::{FileCompleteness, OfferedFile};
 use rmule_peer::peer_udp::crypt::PeerUdpCryptTarget;
 use rmule_peer::{ClientSoftware, PartBitmap, PeerIdentity, ServerCommand};
-use rmule_primitives::{Ed2kText, FileHash, PeerEndpoint, SourceSighting, UserHash};
+use rmule_primitives::{
+    Ed2kText, FileHash, OwnFileMap, OwnFileSet, PeerEndpoint, SourceSighting, UserHash,
+};
 
 pub(super) use self::aich::AichBuilt;
 use self::aich::AichTrees;
@@ -235,17 +237,17 @@ pub(super) struct ServeState {
     /// The **Shared File Registry** snapshot every probe answers from,
     /// replaced by [`ServeState::on_share_set`] on the share-changed trigger
     /// — no per-probe registry round trips.
-    shared: HashMap<FileHash, SharedFileEntry>,
+    shared: OwnFileMap<SharedFileEntry>,
     /// The brain's copy of the **Served Downloads** (ADR-0113): every
     /// download answering probes, refreshed by [`ServeState::on_served`].
-    served: HashMap<FileHash, ServedLook>,
+    served: OwnFileMap<ServedLook>,
     /// Entries the cell no longer holds, answering from their last copy
     /// until the next share trigger drops them.
-    ended: HashSet<FileHash>,
+    ended: OwnFileSet,
     /// The **Partial Share**s: the Served Downloads offered at the last share
     /// trigger whose content no registry row offers whole. With the rows,
     /// the share set.
-    partials: HashSet<FileHash>,
+    partials: OwnFileSet,
     queue: UploadSlotQueue,
     /// The identity each connected peer's session read off its hello and
     /// keeps current (ADR-0055 §Serving): its User Hash keys credit
@@ -310,10 +312,10 @@ pub(super) struct ServeState {
 impl ServeState {
     pub(super) fn new(queue: UploadSlotQueue) -> Self {
         Self {
-            shared: HashMap::new(),
-            served: HashMap::new(),
-            ended: HashSet::new(),
-            partials: HashSet::new(),
+            shared: OwnFileMap::default(),
+            served: OwnFileMap::default(),
+            ended: OwnFileSet::default(),
+            partials: OwnFileSet::default(),
             queue,
             identities: Arc::default(),
             identified: HashSet::new(),
@@ -391,7 +393,7 @@ impl ServeState {
             self.served.remove(&file_hash);
         }
         let rows: HashSet<FileHash> = entries.iter().map(|entry| entry.file_hash).collect();
-        let partials: HashSet<FileHash> = self
+        let partials: OwnFileSet = self
             .served
             .iter()
             .filter(|(file_hash, look)| look.offered && !rows.contains(file_hash))

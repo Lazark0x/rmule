@@ -440,7 +440,7 @@ fn a_partial_share_the_cell_dropped_answers_until_the_next_share_trigger() {
     let _ = slot_request(&mut state, waiter, file, t);
 
     // The download ended; the cell no longer holds it.
-    state.on_served(HashMap::new());
+    state.on_served(OwnFileMap::default());
     assert!(matches!(
         ask(
             &mut state,
@@ -487,7 +487,11 @@ fn a_compression_server_reads_a_row_complete_and_a_partial_share_incomplete_in_o
 
     let (row, partial) = (hash(0x01), hash(0x02));
     let mut state = ServeState::new(UploadSlotQueue::new(1, 8));
-    state.on_served([(partial, download(true, &[0], false))].into());
+    state.on_served(
+        [(partial, download(true, &[0], false))]
+            .into_iter()
+            .collect(),
+    );
     let decisions = state.on_share_set(vec![entry(row, 42, "r")], Instant::now(), &no_modifiers());
     let Some(ServeDecision::Announce(files)) = decisions.last() else {
         panic!("an announce: {decisions:?}");

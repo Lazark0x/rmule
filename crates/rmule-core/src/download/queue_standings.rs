@@ -675,4 +675,6 @@ impl Drop for StandingSeat {
 }
 
 #[cfg(test)]
+mod publish_bench;
+#[cfg(test)]
 mod tests;

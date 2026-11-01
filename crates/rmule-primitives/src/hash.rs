@@ -3,6 +3,9 @@
 //! file is chunked by, and the summary that folds a whole file's bytes into a
 //! file hash plus its part hash set.
 
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+
 use data_encoding::{BASE32_NOPAD, HEXUPPER};
 use ed2k::digest::Digest;
 
@@ -147,6 +150,38 @@ fixed_hash!(FileHash, 16, "file", from_hex, to_hex_upper);
 fixed_hash!(PartHash, 16, "part", from_hex, to_hex_upper);
 fixed_hash!(UserHash, 16, "user", from_hex, to_hex_upper);
 fixed_hash!(ServerHash, 16, "server", from_hex, to_hex_upper);
+
+/// A [`HashMap`] of the node's own files, by [`FileHash`], hashed by
+/// [`OwnFileHasher`].
+pub type OwnFileMap<V> = HashMap<FileHash, V, BuildHasherDefault<OwnFileHasher>>;
+
+/// A [`HashSet`] of the node's own files, hashed by [`OwnFileHasher`].
+pub type OwnFileSet = HashSet<FileHash, BuildHasherDefault<OwnFileHasher>>;
+
+/// The hasher of a table only the node itself fills: a [`FileHash`] is already
+/// a digest, so its last eight bytes serve as they stand. The last, because a
+/// table often fills in byte order, from the store.
+///
+/// Unkeyed, so a peer who picks a table's keys could pick them to collide. Keep
+/// it to tables whose keys come from the files the node shares or downloads: a
+/// peer's ask is a lookup there, one probe whatever it names. A hash a peer
+/// states and the table keeps, its own User Hash above all, stays on the
+/// standard keyed hasher.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OwnFileHasher(u64);
+
+impl Hasher for OwnFileHasher {
+    /// The key's bytes arrive last, after the length of its array.
+    fn write(&mut self, bytes: &[u8]) {
+        if let Some(tail) = bytes.last_chunk() {
+            self.0 = u64::from_le_bytes(*tail);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
 
 /// Declarative codec for an empty-payload packet — a unit struct whose wire
 /// form is opcode-only (no body). Generates the `struct`, a `decode_packet`,
@@ -577,4 +612,21 @@ fn decode_fixed_hex<const N: usize>(input: &str, kind: &'static str) -> Result<[
             expected: N,
             actual: bytes.len(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::hash::BuildHasher;
+
+    use super::*;
+
+    /// The key's own bytes decide, not the array length hashed before them.
+    #[test]
+    fn an_own_file_hasher_reads_the_key_past_its_length() {
+        let build = BuildHasherDefault::<OwnFileHasher>::default();
+        let mut bytes = [0; 16];
+        let first = build.hash_one(FileHash::from_bytes(bytes));
+        bytes[15] = 1;
+        assert_ne!(first, build.hash_one(FileHash::from_bytes(bytes)));
+    }
 }
