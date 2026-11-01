@@ -3,6 +3,10 @@
 //! nobody's controlling terminal here, so no SIGHUP helps: the run has only
 //! the hang-up itself to hear. It must end by itself, by the usual Quit, and
 //! neither crash on a stderr that is gone nor spin on a reader that is.
+//!
+//! A plain start is not offline: on an empty list it fetches `server.met` and
+//! pings what it got, and it maps ports on the router. So the store is seeded
+//! with both off, and the Run Log has to show neither happened.
 
 use std::fs::File;
 use std::io::Read;
@@ -12,6 +16,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use rmule_core::port_mapping::PortMappingMode;
+use rmule_core::{CoreSettingsHandle, Setting, open_durable_store};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use tempfile::TempDir;
@@ -35,6 +41,28 @@ fn pty() -> (OwnedFd, File) {
         .open(path)
         .expect("the terminal end");
     (master, terminal)
+}
+
+/// A data directory whose run touches no network, closed again before the
+/// run opens it.
+fn offline_data_dir(home: &Path) {
+    let data = home.join("data");
+    std::fs::create_dir_all(&data).expect("the data directory");
+    let settings = CoreSettingsHandle::open(open_durable_store(&data).expect("the store"));
+    rmule_testkit::scratch_ports(&settings);
+    for setting in [
+        Setting::AutoFetchServerMet(false),
+        Setting::PortMapping(PortMappingMode::Off),
+    ] {
+        settings.set(setting).expect("the setting");
+    }
+}
+
+fn assert_stayed_offline(home: &Path) {
+    let log = std::fs::read_to_string(home.join("data").join("rmule.log")).expect("the Run Log");
+    for reached_out in ["server_list.update_started", "status=probing"] {
+        assert!(!log.contains(reached_out), "the run logged {reached_out}");
+    }
 }
 
 fn run_on(terminal: &File, stderr: Stdio, home: &Path) -> Child {
@@ -87,6 +115,7 @@ fn assert_ends_by_itself(mut child: Child) {
 fn a_closed_terminal_ends_the_run_whatever_stderr_is() {
     for stderr_on_the_terminal in [true, false] {
         let home = TempDir::new().expect("a scratch home");
+        offline_data_dir(home.path());
         let (master, terminal) = pty();
         let stderr = if stderr_on_the_terminal {
             Stdio::from(terminal.try_clone().expect("stderr"))
@@ -99,5 +128,6 @@ fn a_closed_terminal_ends_the_run_whatever_stderr_is() {
         close_once_up(master);
 
         assert_ends_by_itself(child);
+        assert_stayed_offline(home.path());
     }
 }
