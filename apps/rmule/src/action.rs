@@ -16,7 +16,7 @@ pub enum Action {
     Core(CoreEvent),
     /// The 1 Hz data tick's *levels* + synthesized rates; latest wins, and
     /// the bridge drops a frame rather than queue behind a slow UI.
-    Snapshot(BridgeSnapshot),
+    Snapshot(Box<BridgeSnapshot>),
     /// The core's event stream ended: the core has stopped. Terminal — no
     /// further `Core` or `Snapshot` actions follow.
     CoreClosed,

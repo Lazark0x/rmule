@@ -246,7 +246,7 @@ mod tests {
     fn w_walks_the_graphs_from_seconds_to_days_and_back() {
         let base = Instant::now();
         let mut state = UiState::default();
-        state.apply(Action::Snapshot(snapshot_at(base)), base);
+        state.apply(Action::Snapshot(Box::new(snapshot_at(base))), base);
         rate_ticks(
             &mut state,
             base,

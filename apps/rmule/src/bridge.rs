@@ -311,11 +311,11 @@ async fn run<H: CoreHandle>(
                 let diagnostics = core.diagnostics_snapshot();
                 let synthesized = rates.observe(&diagnostics, taken_at);
                 // Levels are droppable: the next tick supersedes this one.
-                let _ = actions.try_send(Action::Snapshot(BridgeSnapshot {
+                let _ = actions.try_send(Action::Snapshot(Box::new(BridgeSnapshot {
                     diagnostics,
                     rates: synthesized,
                     taken_at,
-                }));
+                })));
             }
             ended = &mut forwarder, if forwarding => {
                 forwarding = false;

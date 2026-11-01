@@ -16,11 +16,11 @@ fn snapshot_frames_replace_levels_and_stamp_injected_time() {
         ..TransferRates::default()
     };
     let dirty = state.apply(
-        Action::Snapshot(BridgeSnapshot {
+        Action::Snapshot(Box::new(BridgeSnapshot {
             diagnostics: DiagnosticsSnapshot::default(),
             rates: rates.clone(),
             taken_at: now,
-        }),
+        })),
         now,
     );
     assert!(dirty);

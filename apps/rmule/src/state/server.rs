@@ -334,11 +334,11 @@ mod tests {
         );
         let frame_at = t0 + std::time::Duration::from_millis(37_400);
         state.apply(
-            Action::Snapshot(BridgeSnapshot {
+            Action::Snapshot(Box::new(BridgeSnapshot {
                 diagnostics: rmule_core::diagnostics::DiagnosticsSnapshot::default(),
                 rates: crate::rates::TransferRates::default(),
                 taken_at: frame_at,
-            }),
+            })),
             frame_at,
         );
         assert_eq!(

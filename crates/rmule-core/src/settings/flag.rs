@@ -1,6 +1,6 @@
 //! **Flags**: the preferences that are on or off, each one line of a table.
 //!
-//! [`flag_table!`] declares a closed set of them: name, stored key and the
+//! `flag_table!` declares a closed set of them: name, stored key and the
 //! value an unset key reads as. Core declares [`Flag`], its own; a front end
 //! declares the flags it keeps itself the same way. [`Flags`] holds which of
 //! one set are on, and is the one place a flag's stored text is read.
@@ -12,7 +12,7 @@
 
 use std::collections::BTreeSet;
 
-/// What [`flag_table!`] declares: one closed set of flags.
+/// What `flag_table!` declares: one closed set of flags.
 pub trait FlagTable: Copy + Ord + 'static {
     /// Every flag of the set.
     const ALL: &'static [Self];
@@ -23,7 +23,7 @@ pub trait FlagTable: Copy + Ord + 'static {
     fn default_on(self) -> bool;
 }
 
-/// Declare a closed set of [`Flags`](crate::Flags): one row per flag, its
+/// Declare a closed set of [`Flags`]: one row per flag, its
 /// name, its stored key and whether it is on while unset. The set is an enum,
 /// so a table of its words is checked for a missing row at compile time.
 #[macro_export]

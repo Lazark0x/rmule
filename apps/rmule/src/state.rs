@@ -251,7 +251,7 @@ impl UiState {
                 // dirty regardless of the fold's finer spine-level hint.
                 true
             }
-            Action::Snapshot(frame) => self.apply_snapshot(frame, now),
+            Action::Snapshot(frame) => self.apply_snapshot(*frame, now),
             Action::CoreClosed => {
                 self.push_log(Severity::Failure, app_words::CORE_STOPPED, now);
                 self.core_alive = false;

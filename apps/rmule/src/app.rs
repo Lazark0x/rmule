@@ -563,14 +563,14 @@ mod tests {
     #[test]
     fn reader_mode_repaints_for_a_key_and_not_for_the_data_tick() {
         let tick = |now| {
-            Action::Snapshot(crate::bridge::BridgeSnapshot {
+            Action::Snapshot(Box::new(crate::bridge::BridgeSnapshot {
                 diagnostics: rmule_core::diagnostics::DiagnosticsSnapshot::default(),
                 rates: crate::rates::TransferRates {
                     down_total_bps: 1234.5,
                     ..crate::rates::TransferRates::default()
                 },
                 taken_at: now,
-            })
+            }))
         };
         let now = Instant::now();
         let mut app = App::new(Theme::default_dark());

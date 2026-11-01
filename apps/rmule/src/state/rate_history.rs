@@ -260,7 +260,7 @@ mod tests {
         for tick in 0..3u64 {
             let at = t0 + Duration::from_secs(tick);
             state.apply(
-                Action::Snapshot(BridgeSnapshot {
+                Action::Snapshot(Box::new(BridgeSnapshot {
                     diagnostics: DiagnosticsSnapshot::default(),
                     rates: TransferRates {
                         down_total_bps: tick as f64 * 1024.0,
@@ -268,7 +268,7 @@ mod tests {
                         ..TransferRates::default()
                     },
                     taken_at: at,
-                }),
+                })),
                 at,
             );
         }
