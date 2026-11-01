@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn copy_link_is_enabled_once_metadata_names_the_file_and_emits_the_canonical_link() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads(); // download_id(1): "bunny.mp4", 92_000_000, hash 0x07.
         view.select_row(&state, 0);
         view.handle_key(press(KeyCode::Char('m')), &state); // open (cursor 0 = Pause)

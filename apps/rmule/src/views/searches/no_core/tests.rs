@@ -30,7 +30,7 @@ fn render(view: &mut SearchesView, state: &UiState) -> String {
 #[test]
 fn a_query_with_no_core_is_held_as_not_sent_and_stays_in_the_input() {
     let state = stopped();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "big buck bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -58,7 +58,7 @@ fn a_related_search_with_no_core_opens_a_not_sent_entry_in_view() {
     // The level last read lit the item; the core has stopped since.
     let mut state = session_state();
     state.core_alive = false;
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let query = RelatedFilesQuery::new(
         FileHash::from_bytes([0x5A; FileHash::BYTE_LEN]),
         Ed2kText::from_utf8("a.avi"),
@@ -87,7 +87,7 @@ fn golden_a_running_search_stops_with_the_core() {
         SearchStatus::Running,
     );
     state.core_alive = false;
-    let mut view = SearchesView::new().having_sent("linux");
+    let mut view = SearchesView::by_name().having_sent("linux");
     assert_golden("searches_stopped_with_the_core", 90, 12, |frame| {
         view.draw(frame, frame.area(), &state, &theme(), Instant::now());
     });

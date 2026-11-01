@@ -257,12 +257,15 @@ fn eta_cell(eta: Eta) -> String {
     }
 }
 
-fn status_style(status: DownloadStatus, theme: &Theme) -> Style {
+/// A status's colour. Green says bytes are moving, so a stalled row and a
+/// finished one read plain.
+fn status_style(status: DownloadStatus, stalled: bool, theme: &Theme) -> Style {
     let color = match status {
-        DownloadStatus::Downloading | DownloadStatus::Completing | DownloadStatus::Completed => {
-            theme.good
+        DownloadStatus::Downloading if stalled => theme.fg,
+        DownloadStatus::Downloading => theme.good,
+        DownloadStatus::Waiting | DownloadStatus::Completing | DownloadStatus::Completed => {
+            theme.fg
         }
-        DownloadStatus::Waiting => theme.fg,
         DownloadStatus::NoConnection => theme.highlight,
         DownloadStatus::Paused => theme.highlight,
         DownloadStatus::Failed => theme.bad,
@@ -373,7 +376,10 @@ fn download_cells(
         Cell::new(speed_text, speed_style),
         Cell::new(eta_cell(line.eta), plain),
         Cell::new(line.sources_cell(), plain),
-        Cell::new(line.status_text.clone(), status_style(line.status, theme)),
+        Cell::new(
+            line.status_text.clone(),
+            status_style(line.status, line.stalled, theme),
+        ),
     ]
 }
 
@@ -393,11 +399,13 @@ pub(super) fn swarm_exhausted(status: DownloadStatus, diag: Option<&DownloadDiag
 /// last waited on; a completing one says what its move waits for or has
 /// copied, from its diagnostics row. Each wording keeps the rank of the
 /// status it words. A row the volume stopped says so where a Pause would, and a
-/// run reading its parts back says how far, ahead of what it will wait on.
+/// run reading its parts back says how far, ahead of what it will wait on. A
+/// Downloading row with nothing moving says **Stalled**.
 pub(super) fn status_text(
     status: DownloadStatus,
     row: Option<&DownloadRow>,
     diag: Option<&DownloadDiagnostics>,
+    stalled: bool,
     state: &UiState,
 ) -> String {
     let volume_stop = row.and_then(|row| row.volume_stop.as_ref());
@@ -424,6 +432,7 @@ pub(super) fn status_text(
                 part_check_status(level.checked, level.of)
             }),
         _ if swarm_exhausted(status, diag) => NO_NEEDED_PARTS_STATUS.to_string(),
+        (DownloadStatus::Downloading, _) if stalled => labels::STALLED.to_string(),
         (DownloadStatus::Waiting, Some(SourceWait::KadAlone)) => labels::ASKING_KAD.to_string(),
         (DownloadStatus::Waiting, Some(SourceWait::OnStanding)) => labels::QUEUED.to_string(),
         (DownloadStatus::Completing, _) => completing_status(diag.and_then(|diag| diag.completion)),

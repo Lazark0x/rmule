@@ -9,7 +9,7 @@ use crate::fixture::*;
 
 #[test]
 fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     // A first key selects row 0 (clamp seeds it) and G jumps to the last.
     view.handle_key(press(KeyCode::Char('G')), &state);
@@ -30,7 +30,7 @@ fn selection_starts_at_the_top_and_clamps_when_rows_vanish() {
 
 #[test]
 fn up_and_down_walk_the_rows_within_bounds() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     view.handle_key(press(KeyCode::Down), &state);
     assert_eq!(view.selected, Some(1));
@@ -45,7 +45,7 @@ fn up_and_down_walk_the_rows_within_bounds() {
 
 #[test]
 fn tab_cycles_focus_between_the_two_panes() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     assert_eq!(view.focus, Pane::Table);
     assert!(matches!(
@@ -59,7 +59,7 @@ fn tab_cycles_focus_between_the_two_panes() {
 
 #[test]
 fn focus_on_sources_moves_the_source_selection_not_the_table() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     view.handle_key(press(KeyCode::Tab), &state); // focus sources
     view.handle_key(press(KeyCode::Char('j')), &state);
@@ -80,7 +80,7 @@ fn the_focused_pane_wears_the_accent_border() {
     let sources_corner = (0u16, 13u16);
 
     let border_fg = |focus: Pane| {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.focus = focus;
         let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
         terminal
@@ -112,7 +112,7 @@ fn the_focused_pane_wears_the_accent_border() {
 
 #[test]
 fn golden_empty_state() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = UiState::default();
     assert_golden("transfers_empty", GOLDEN_W, GOLDEN_H, |frame| {
         let area = frame.area();
@@ -122,7 +122,7 @@ fn golden_empty_state() {
 
 #[test]
 fn golden_populated() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     assert_golden("transfers_populated", GOLDEN_W, GOLDEN_H, |frame| {
         let area = frame.area();
@@ -133,7 +133,7 @@ fn golden_populated() {
 #[test]
 fn a_click_on_a_table_row_selects_it_and_focuses_the_pane() {
     use ratatui::{Terminal, backend::TestBackend};
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     let mut terminal = Terminal::new(TestBackend::new(78, 21)).expect("terminal");
     terminal

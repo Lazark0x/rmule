@@ -81,7 +81,7 @@ fn type_cell_classifies_by_name_then_tag_then_falls_back_to_an_em_dash() {
 fn result_rows_are_tinted_by_their_source_count() {
     let theme = Theme::default_dark();
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let buffer = draw_golden(&mut view, &state);
     let area = buffer.area;
     // Find each row by its unique name, then read the first content cell's
@@ -112,7 +112,7 @@ fn result_rows_are_tinted_by_their_source_count() {
 fn golden_searches_results() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state); // select the first row
     assert_golden("searches_results", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
@@ -125,7 +125,7 @@ fn golden_searches_results() {
 fn golden_searches_narrow_headers_whole() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
     assert_golden("searches_narrow_headers", 26, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
@@ -142,7 +142,7 @@ fn golden_wrap_overlong_result_name() {
         SearchStatus::Completed { total: 2 },
     );
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
     assert_golden("searches_cut_long_name", 80, 24, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
@@ -158,7 +158,7 @@ fn an_overlong_result_name_is_cut_and_every_row_keeps_one_line() {
         .map(|n| server_result(0x44 + n, &name, 1_073_741_824, 250, 12))
         .collect();
     let state = state_with(results, SearchStatus::Completed { total: 40 });
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let rows = screen_lines(&draw_searches(&mut view, &state, 80, 24));
     let cut = rows.iter().filter(|row| row.contains('…')).count();
     assert!(
@@ -307,7 +307,7 @@ fn a_search_completed_with_no_server_says_its_server_legs_were_not_sent() {
 fn golden_searches_legs_counted() {
     let state = swept_state();
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('g')), &state);
     assert!(
         results_title(state.searches.get(&search_id(1)), None, true, false, false)
@@ -328,7 +328,7 @@ fn golden_searches_results_overflow() {
         .collect();
     let state = state_with(results, SearchStatus::Completed { total: 40 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("episode");
+    let mut view = SearchesView::by_name().having_sent("episode");
     view.handle_key(press(KeyCode::Char('g')), &state);
     for _ in 0..20 {
         view.handle_key(press(KeyCode::Char('j')), &state);

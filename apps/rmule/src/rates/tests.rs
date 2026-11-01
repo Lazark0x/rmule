@@ -492,3 +492,33 @@ fn rate_text_is_kb_per_second_at_one_decimal() {
     assert_eq!(format_rate(0.0), "0.0 KB/s");
     assert_eq!(format_rate(123.4 * 1024.0), "123.4 KB/s");
 }
+
+/// The stall signal is the counter's own last move: it counts from the run's
+/// first sighting, and a byte resets it.
+#[test]
+fn a_download_says_how_long_its_bytes_have_stood_still() {
+    let mut rates = RateSynthesizer::new(Duration::from_secs(4));
+    let start = Instant::now();
+    let quiet = |rates: &TransferRates| rates.download_quiet[&download_id()];
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 100, start)),
+        Duration::ZERO,
+        "a first sighting has stood still for nothing yet"
+    );
+    let at = start + Duration::from_secs(10);
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 100, at)),
+        Duration::from_secs(10)
+    );
+    let at = start + Duration::from_secs(11);
+    assert_eq!(quiet(&rates_at(&mut rates, 200, at)), Duration::ZERO);
+    let at = start + Duration::from_secs(41);
+    assert_eq!(
+        quiet(&rates_at(&mut rates, 200, at)),
+        Duration::from_secs(30)
+    );
+}
+
+fn rates_at(rates: &mut RateSynthesizer, received: u64, at: Instant) -> TransferRates {
+    rates.observe(&downloading(received, &[]), at)
+}

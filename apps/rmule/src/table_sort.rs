@@ -165,9 +165,12 @@ pub trait SortedTable {
     const TABLE: &'static str;
     /// The visible columns, left to right — the order `s` walks.
     const COLUMNS: &'static [ColumnSpec<Self::Column>];
-    /// The name column: the default sort, and the Tie Chain's first link.
-    /// Must be a [`ColumnKind::Text`] column.
+    /// The name column: the Tie Chain's first link. Must be a
+    /// [`ColumnKind::Text`] column.
     const NAME: Self::Column;
+    /// The column the table opens sorted by, in its Natural Direction: the
+    /// name, unless a table is read by another fact.
+    const OPENS_BY: Self::Column = Self::NAME;
 
     /// The column's listing.
     ///
@@ -210,8 +213,8 @@ pub trait SortedTable {
     fn identity(row: &Self::Row) -> Self::Identity;
 }
 
-/// One table's sort: a column and a direction. The default is name ascending,
-/// in every table.
+/// One table's sort: a column and a direction. The default is the table's
+/// [`SortedTable::OPENS_BY`] in its Natural Direction.
 pub struct TableSort<T: SortedTable> {
     column: T::Column,
     direction: Direction,
@@ -243,8 +246,8 @@ impl<T: SortedTable> PartialEq for TableSort<T> {
 impl<T: SortedTable> Default for TableSort<T> {
     fn default() -> Self {
         Self {
-            column: T::NAME,
-            direction: T::kind(T::NAME).natural_direction(),
+            column: T::OPENS_BY,
+            direction: T::kind(T::OPENS_BY).natural_direction(),
         }
     }
 }

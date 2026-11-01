@@ -118,7 +118,7 @@ pub(crate) fn connected_granting(mut state: UiState, related_search: bool) -> Ui
 /// Drive `o`, then a scripted key sequence, on a fresh view.
 pub(crate) fn view_with_filters(keys: &[KeyCode]) -> (SearchesView, UiState) {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('o')), &state);
     for code in keys {
         view.handle_key(press(*code), &state);

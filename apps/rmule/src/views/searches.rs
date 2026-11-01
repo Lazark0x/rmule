@@ -401,4 +401,14 @@ impl SearchesView {
 }
 
 #[cfg(test)]
+impl SearchesView {
+    /// A view sorted by name, the order most tests state their rows in.
+    pub(crate) fn by_name() -> Self {
+        let mut view = Self::new();
+        view.sort.click(sort::ResultColumn::Name);
+        view
+    }
+}
+
+#[cfg(test)]
 mod tests;

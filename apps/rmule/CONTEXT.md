@@ -88,6 +88,10 @@ _Avoid_: fixed layout, shrink, wrap (a row does not)
 What free text does in a cell too narrow for it (`table::cut_middle`, ADR-0119): its start and end around `…`, the file extension kept, measured in display cells and walked by grapheme cluster, so a wide glyph or a combining mark is never split. A figure with a shorter form draws that first. The whole value rides the **Off-screen line**.
 _Avoid_: truncation, ellipsis, clipping
 
+**Stalled**:
+What a Downloading row says when its received bytes have stood still for 30 seconds (`UiState::download_stalled`, from `TransferRates::download_quiet`, the counter's own last move): the row holds a slot or an assigned part, and nothing arrives. Green is kept for bytes moving, so it reads plain, ranks with the waiting rows in Progress's activity groups by that fact, and keeps Downloading's rank under Status.
+_Avoid_: idle, hung, frozen
+
 **Data directory**:
 What the app resolves before anything else, by core's rule (`--data-dir`, `RMULE_DATA`, then `$XDG_DATA_HOME` or `$HOME` on Unix and `%LOCALAPPDATA%` on Windows): rmule's Durable Store (`rmule.redb`, ADR-0083) and the data files beside it (`clients.met`, `nodes.dat`, the IP filter). The TUI opens that one store and hands its seams to the embedded core, so a directory carries exactly one running client — the engine holds the file lock.
 _Avoid_: profile, workspace, config dir (the config is a seam of the store, not a file of its own)

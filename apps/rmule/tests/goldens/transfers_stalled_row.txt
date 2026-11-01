@@ -1,6 +1,6 @@
 ┌ Downloads (3) ─── s sort  S reverse  C clear completed  L add link  z zoom ┐
 │  File ▲                              Size Progress        Speed Status     │
-│▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░          — Downloading│
+│▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░          — Stalled    │
 │  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
 │  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
 │                                                                            │

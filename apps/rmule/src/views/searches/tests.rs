@@ -15,7 +15,7 @@ fn typed(view: &mut SearchesView, state: &UiState, text: &str) {
 #[test]
 fn slash_focuses_the_input_and_esc_returns_to_the_results() {
     let state = UiState::default();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     assert!(!view.input_focused);
     assert!(matches!(
         view.handle_key(press(KeyCode::Char('/')), &state),
@@ -34,7 +34,7 @@ fn tab_cycles_focus_between_results_and_input_and_shift_tab_agrees() {
     // Two panes only: Tab and Shift-Tab both cross the boundary, the same
     // convention as Shared Files.
     let state = UiState::default();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     assert!(!view.input_focused);
 
     assert!(matches!(
@@ -71,7 +71,7 @@ fn tab_cycles_focus_between_results_and_input_and_shift_tab_agrees() {
 #[test]
 fn tab_leaves_the_input_without_being_typed() {
     let state = UiState::default();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "eels".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -85,7 +85,7 @@ fn tab_leaves_the_input_without_being_typed() {
 #[test]
 fn a_focused_input_captures_printables_including_binding_letters() {
     let state = UiState::default();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     // h/l/q/j/1 are bindings when unfocused but plain text here.
     for c in "h l q j 1".chars().filter(|c| *c != ' ') {
@@ -280,7 +280,7 @@ fn a_search_needs_no_server() {
     let mut state = session_state();
     state.session.server = None;
 
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -301,7 +301,7 @@ fn a_download_needs_no_server() {
     state.session = session_state().session;
     state.session.server = None;
     state.connected_server = None;
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('g')), &state);
     view.handle_key(press(KeyCode::Char('m')), &state);
     match view.handle_key(press(KeyCode::Enter), &state) {
@@ -315,7 +315,7 @@ fn a_download_needs_no_server() {
 #[test]
 fn enter_with_a_session_emits_the_real_start_search() {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -334,7 +334,7 @@ fn enter_with_a_session_emits_the_real_start_search() {
 #[test]
 fn unfocused_binding_keys_bubble_to_the_globals() {
     let state = UiState::default();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     // With no input focused and no results, h/l/1/q are the app's, not the
     // view's — the view must ignore them so the globals fire.
     for code in [
@@ -354,7 +354,7 @@ fn unfocused_binding_keys_bubble_to_the_globals() {
 fn golden_searches_empty() {
     let state = UiState::default();
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     assert_golden("searches_empty", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
@@ -375,7 +375,7 @@ fn golden_searches_wide_names() {
     ];
     let state = state_with(results, SearchStatus::Running);
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ペガサス");
+    let mut view = SearchesView::by_name().having_sent("ペガサス");
     assert_golden("searches_wide_names", 78, 21, |frame| {
         view.draw(frame, frame.area(), &state, &theme, Instant::now());
     });
@@ -384,7 +384,7 @@ fn golden_searches_wide_names() {
 #[test]
 fn clicks_focus_the_input_or_select_a_result_row() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     draw_golden(&mut view, &state);
     // Input block occupies the top rows; clicking it focuses the query.
     assert!(matches!(
@@ -418,7 +418,7 @@ fn a_download_started_from_a_kad_rooted_row_carries_its_root() {
     }
     let mut state = state_with(results, SearchStatus::Completed { total: 3 });
     state.session = session_state().session;
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('g')), &state);
     view.handle_key(press(KeyCode::Char('m')), &state);
     match view.handle_key(press(KeyCode::Enter), &state) {

@@ -9,7 +9,7 @@ use crate::fixture::*;
 
 #[test]
 fn p_on_an_active_row_emits_a_real_pause_command() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     view.handle_key(press(KeyCode::Char('j')), &state); // ensure a selection
     view.select_row(&state, 0); // download_id(1), Downloading
@@ -23,7 +23,7 @@ fn p_on_an_active_row_emits_a_real_pause_command() {
 
 #[test]
 fn p_on_a_paused_row_resumes_it() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     view.select_row(&state, 1); // download_id(2), Paused
     match view.handle_key(press(KeyCode::Char('p')), &state) {
@@ -58,7 +58,7 @@ fn a_failed_row_offers_restart_and_resumes_the_same_download() {
 
 #[test]
 fn the_menu_cursor_skips_greyed_items_and_clamps() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     // download_id(2) carries no metadata, so Copy eD2k link stays greyed here too
     // (a row with real metadata has a fourth enabled stop — covered by
@@ -86,7 +86,7 @@ fn the_menu_cursor_skips_greyed_items_and_clamps() {
 
 #[test]
 fn menu_pause_entry_emits_and_closes() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     view.select_row(&state, 0);
     view.handle_key(press(KeyCode::Enter), &state); // open menu (cursor 0 = Pause)
@@ -101,7 +101,7 @@ fn menu_pause_entry_emits_and_closes() {
 
 #[test]
 fn an_open_modal_swallows_stray_keys_but_a_closed_view_bubbles_them() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     // Closed: an unclaimed key bubbles to the globals.
     assert!(matches!(
@@ -126,7 +126,7 @@ fn an_open_modal_swallows_stray_keys_but_a_closed_view_bubbles_them() {
 
 #[test]
 fn menu_wont_open_on_an_empty_view() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let empty = UiState::default();
     assert!(matches!(
         view.handle_key(press(KeyCode::Char('m')), &empty),
@@ -166,7 +166,7 @@ fn search_related_is_dimmed_with_each_reason_and_sends_nothing() {
             "Search related  server does not offer it",
         ),
     ] {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         assert!(
             !matches!(
                 choose_related(&mut view, &state, 0),
@@ -185,7 +185,7 @@ fn search_related_is_dimmed_with_each_reason_and_sends_nothing() {
 #[test]
 fn search_related_asks_about_the_download_by_hash_and_name() {
     let state = connected_granting(three_downloads(), true);
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     match choose_related(&mut view, &state, 0) {
         ViewOutcome::Emit(Action::SearchRelated(query)) => {
             assert_eq!(query.file_hash(), file_hash(0x07));
@@ -201,7 +201,7 @@ fn search_related_asks_about_the_download_by_hash_and_name() {
 #[test]
 fn a_download_whose_name_is_not_known_asks_by_hash_alone() {
     let state = connected_granting(three_downloads(), true);
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     match choose_related(&mut view, &state, 2) {
         ViewOutcome::Emit(Action::SearchRelated(query)) => {
             assert_eq!(query.file_hash(), file_hash(0x5C));
@@ -213,7 +213,7 @@ fn a_download_whose_name_is_not_known_asks_by_hash_alone() {
 
 #[test]
 fn golden_menu_open() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.overlay = Overlay::Menu {
         cursor: MenuAction::Pause,
     };
@@ -237,7 +237,7 @@ fn golden_menu_of_a_download_failed_on_a_missing_part_file() {
         StorageIntegrityFault::PartFileMissing,
     ));
     state.downloads.insert(download_id(9), row);
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let index = view
         .download_ids(&state)
         .iter()
@@ -257,7 +257,7 @@ fn golden_menu_of_a_download_failed_on_a_missing_part_file() {
 /// instead of running whatever now sits at the same place.
 #[test]
 fn a_status_change_under_an_open_menu_never_runs_another_action() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     view.select_row(&state, 0); // download_id(1), Downloading
     view.handle_key(press(KeyCode::Char('m')), &state);
@@ -281,7 +281,7 @@ fn a_status_change_under_an_open_menu_never_runs_another_action() {
 /// row and flashes why a blocked one cannot start.
 #[test]
 fn v_asks_for_the_selected_rows_preview() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = preview_ready();
     view.select_row(&state, 0);
     assert!(matches!(
@@ -304,7 +304,7 @@ fn golden_menu_with_preview_greyed_by_its_longest_reason() {
         .diagnostics
         .downloads
         .insert(download_id(1), diag(download_id(1), 0x4D, "IM", 0, vec![]));
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.select_row(&state, 0);
     view.overlay = Overlay::Menu {
         cursor: MenuAction::Pause,
@@ -319,7 +319,7 @@ fn golden_menu_with_preview_greyed_by_its_longest_reason() {
 /// panel grows a column for the bar, and the border counts the cursor's row.
 #[test]
 fn golden_menu_overflows_a_short_frame() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.overlay = Overlay::Menu {
         cursor: MenuAction::CopyLink,
     };

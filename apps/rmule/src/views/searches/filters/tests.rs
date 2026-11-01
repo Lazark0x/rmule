@@ -94,7 +94,7 @@ fn the_typed_filters_reach_the_start_search_query() {
 #[test]
 fn enter_in_the_editor_applies_and_searches() {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -169,7 +169,7 @@ fn a_max_below_the_min_is_refused_rather_than_dropped() {
 #[test]
 fn untouched_options_add_no_constraints() {
     let state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -250,7 +250,7 @@ fn the_summary_row_names_only_the_constraints_that_are_set() {
 fn golden_searches_options_editor() {
     let state = UiState::default();
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.handle_key(press(KeyCode::Char('/')), &state);
     for c in "big buck bunny".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
@@ -274,7 +274,7 @@ fn golden_searches_options_editor() {
 fn golden_searches_options_summary() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
     let theme = Theme::default_dark();
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     view.handle_key(press(KeyCode::Char('o')), &state);
     view.handle_key(press(KeyCode::Right), &state); // Type → Audio
     view.handle_key(press(KeyCode::Tab), &state);

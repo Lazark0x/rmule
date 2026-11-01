@@ -61,6 +61,8 @@ pub(super) struct DownloadLine {
     pub(super) status: DownloadStatus,
     /// The status as the cell words it; the same rank as [`Self::status`].
     pub(super) status_text: String,
+    /// A Downloading row with nothing moving ([`UiState::download_stalled`]).
+    pub(super) stalled: bool,
 }
 
 impl DownloadLine {
@@ -74,6 +76,7 @@ impl DownloadLine {
             .and_then(|row| row.part_count)
             .map(|parts| (parts as u64).saturating_mul(ED2K_PART_SIZE));
         let status = row.map_or(DownloadStatus::Waiting, |row| row.status);
+        let stalled = status == DownloadStatus::Downloading && state.download_stalled(id);
         Self {
             id,
             name,
@@ -91,7 +94,8 @@ impl DownloadLine {
             eta: row_eta(row, diag, state.download_eta_speed(id)),
             sources: source_counts(diag),
             status,
-            status_text: status_text(status, row, diag, state),
+            status_text: status_text(status, row, diag, stalled, state),
+            stalled,
         }
     }
 
@@ -127,9 +131,12 @@ const fn status_rank(status: DownloadStatus) -> u64 {
 /// ones, then the rest — led by those whose run is alive
 /// but moves no bytes (waiting for a source, a slot or a network), then
 /// those with no run (paused, failed). The operator's reading of aMule: what
-/// is happening now, what just finished, what waits on them.
-const fn activity_rank(status: DownloadStatus) -> u8 {
+/// is happening now, what just finished, what waits on them. A stalled row
+/// moves no bytes, so it ranks with the waiting ones, by the fact and never by
+/// its word.
+const fn activity_rank(status: DownloadStatus, stalled: bool) -> u8 {
     match status {
+        DownloadStatus::Downloading if stalled => 3,
         DownloadStatus::Downloading => 0,
         DownloadStatus::Completing => 1,
         DownloadStatus::Completed => 2,
@@ -169,6 +176,8 @@ impl SortedTable for DownloadsTable {
         ColumnSpec::new(DownloadColumn::Status, "status", "Status", ColumnKind::Rank),
     ];
     const NAME: DownloadColumn = DownloadColumn::File;
+    /// Transfers is watched: what is moving first, by share within its group.
+    const OPENS_BY: DownloadColumn = DownloadColumn::Progress;
 
     fn value(column: DownloadColumn, row: &DownloadLine) -> Option<SortValue<'_>> {
         let fraction = |(part, whole)| SortValue::Fraction { part, whole };
@@ -193,7 +202,9 @@ impl SortedTable for DownloadsTable {
 
     fn rank(column: DownloadColumn, row: &DownloadLine) -> u8 {
         match column {
-            DownloadColumn::Done | DownloadColumn::Progress => activity_rank(row.status),
+            DownloadColumn::Done | DownloadColumn::Progress => {
+                activity_rank(row.status, row.stalled)
+            }
             _ => 0,
         }
     }

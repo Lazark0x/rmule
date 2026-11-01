@@ -431,6 +431,13 @@ impl TransfersView {
 
 #[cfg(test)]
 impl TransfersView {
+    /// A view sorted by name, the order most tests state their rows in.
+    pub(crate) fn by_name() -> Self {
+        let mut view = Self::new();
+        view.sort.click(sort::DownloadColumn::File);
+        view
+    }
+
     /// Put the cursor on display row `index`, as the operator would.
     fn select_row(&mut self, state: &UiState, index: usize) {
         let ids = self.download_ids(state);

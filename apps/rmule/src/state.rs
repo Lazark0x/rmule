@@ -20,6 +20,8 @@ use crate::rates::TransferRates;
 use crate::words::{Sentence, app as app_words, reach};
 
 mod download;
+#[cfg(test)]
+pub(crate) use download::STALL_AFTER;
 mod known_file;
 mod log;
 mod rate_history;

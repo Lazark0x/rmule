@@ -54,7 +54,7 @@ fn asked(outcome: ViewOutcome) -> usize {
 #[test]
 fn a_paste_of_several_links_asks_for_each() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.open_add_link(&state);
     let paste = format!("{SKIPPING_LINK}\r\n{OTHER_LINK}\n");
     assert_eq!(asked(view.handle_paste(&paste, &state)), 2);
@@ -66,7 +66,7 @@ fn a_paste_of_several_links_asks_for_each() {
 #[test]
 fn links_refused_in_a_paste_come_up_in_turn() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.open_add_link(&state);
     let paste = format!("not a link\n{SKIPPING_LINK}\nnor this\n");
     assert_eq!(asked(view.handle_paste(&paste, &state)), 1);
@@ -90,7 +90,7 @@ fn links_refused_in_a_paste_come_up_in_turn() {
 #[test]
 fn a_pasted_link_starts_its_download_and_names_the_fields_it_skipped() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     typed(&mut view, &state, SKIPPING_LINK);
     match view.handle_key(press(KeyCode::Enter), &state) {
@@ -133,7 +133,7 @@ fn a_pasted_link_starts_its_download_and_names_the_fields_it_skipped() {
 #[test]
 fn what_cannot_be_added_is_refused_in_the_form_with_the_typing_kept() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
 
     view.handle_key(press(KeyCode::Enter), &state);
@@ -196,7 +196,7 @@ fn bunny_link() -> String {
 #[test]
 fn a_link_for_a_download_already_in_transfers_is_refused_by_name() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     typed(&mut view, &state, &bunny_link());
     view.handle_key(press(KeyCode::Enter), &state);
@@ -209,7 +209,7 @@ fn a_link_for_a_download_already_in_transfers_is_refused_by_name() {
 #[test]
 fn a_second_link_with_sources_is_sent_for_core_to_add_them() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     let link = format!(
         "ed2k://|file|bunny.mp4|92000000|{}|/|sources,198.51.100.23:4662|/",
@@ -227,7 +227,7 @@ fn a_second_link_with_sources_is_sent_for_core_to_add_them() {
 #[test]
 fn golden_transfers_add_link_form() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     let now = Instant::now();
     assert_golden_caret("transfers_add_link_form", 100, 24, |frame| {
@@ -239,7 +239,7 @@ fn golden_transfers_add_link_form() {
 #[test]
 fn golden_transfers_add_link_refused() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     typed(&mut view, &state, &bunny_link());
     view.handle_key(press(KeyCode::Enter), &state);
@@ -255,7 +255,7 @@ fn golden_transfers_add_link_refused() {
 #[test]
 fn golden_transfers_add_link_scrolls_in_a_short_frame() {
     let state = with_session();
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     view.handle_key(press(KeyCode::Char('L')), &state);
     let shown = |view: &mut TransfersView| {
         crate::golden::render_to_lines(70, 4, |frame| {

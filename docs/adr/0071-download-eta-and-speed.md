@@ -22,6 +22,9 @@ slow second.
   and an ETA dash from the first frame that knows its status. A Downloading row that
   moved no bytes for one meter window reads Speed 0 at the window's end and ETA *slow*.
   Every meter — the status bar, sources, upload peers — follows the same cut.
+- **Green is for bytes moving.** A Downloading row whose received bytes stood still for
+  30 seconds, longer than the gaps between blocks from a slow source, reads *Stalled* in
+  plain text. The signal is the counter's own last move, carried in `download_quiet`.
 
 ## Consequences
 

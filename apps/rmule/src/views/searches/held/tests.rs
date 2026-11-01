@@ -53,7 +53,7 @@ fn results(state: &mut UiState, id: SearchId, results: Vec<SearchResult>) {
 /// they went under, in order.
 fn holding(queries: &[&str]) -> (SearchesView, UiState, Vec<SearchId>) {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let mut ids = Vec::new();
     for query in queries {
         let id = send(&mut view, &state, query);
@@ -102,7 +102,7 @@ fn every_query_opens_a_new_entry_at_the_right_end_and_makes_it_current() {
 #[test]
 fn an_outcome_settles_the_entry_it_names_whatever_the_order() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let first = send(&mut view, &state, "alpha");
     let second = send(&mut view, &state, "beta");
     started(&mut state, second);
@@ -309,7 +309,7 @@ fn a_label_is_capped_at_twenty_characters() {
 #[test]
 fn a_related_files_search_is_labelled_by_its_file_with_a_tilde() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let related = rmule_primitives::RelatedFilesQuery::new(
         rmule_primitives::FileHash::from_bytes([7; 16]),
         rmule_primitives::Ed2kText::from_utf8("abcdefghijklmnopqrstuvwxyz.avi"),
@@ -395,7 +395,7 @@ fn the_strip_says_how_many_rows_answered_no_running_search_only_when_some_did() 
 #[test]
 fn a_late_event_for_a_closed_search_opens_no_entry() {
     let mut state = session_state();
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let id = send(&mut view, &state, "alpha");
     assert_eq!(view.held.close_current(), Some(id));
     started(&mut state, id);

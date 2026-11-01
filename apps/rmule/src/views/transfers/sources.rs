@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn golden_sources_focus() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.focus = Pane::Sources;
         let state = three_downloads();
         assert_golden("transfers_sources_focus", GOLDEN_W, GOLDEN_H, |frame| {
@@ -211,7 +211,7 @@ mod tests {
     /// (ADR-0090).
     #[test]
     fn a_handed_over_source_has_a_row_saying_so() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let handed = rmule_primitives::PeerEndpoint::V4(rmule_primitives::Ipv4Endpoint::new(
             std::net::Ipv4Addr::new(198, 51, 100, 40),
@@ -253,7 +253,7 @@ mod tests {
     /// link, and its row says so (ADR-0107).
     #[test]
     fn a_source_waiting_on_its_peers_link_says_so_on_its_row() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let row = state
             .diagnostics
@@ -294,7 +294,7 @@ mod tests {
     /// "the cause outlives the slot").
     #[test]
     fn a_dial_that_ended_before_the_hello_says_why_after_its_slot_moved_on() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let row = state
             .diagnostics
@@ -348,7 +348,7 @@ mod tests {
     /// would be, what would end the wait.
     #[test]
     fn a_row_waiting_for_a_network_says_what_would_end_the_wait() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         state
             .downloads

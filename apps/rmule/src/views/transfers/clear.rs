@@ -146,7 +146,7 @@ mod tests {
     /// while the question is up is left for the next one.
     #[test]
     fn a_download_completing_under_the_question_is_not_cleared() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         view.handle_key(press(KeyCode::Char('C')), &state);
         state
@@ -162,7 +162,7 @@ mod tests {
 
     #[test]
     fn capital_c_asks_then_clears_every_completed_download() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads();
         assert!(matches!(
             view.handle_key(press(KeyCode::Char('C')), &state),
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn capital_c_with_nothing_completed_says_so_instead_of_asking() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         state
             .downloads
@@ -203,7 +203,7 @@ mod tests {
     /// with its reason, and Enter clears that one download.
     #[test]
     fn a_completed_rows_menu_clears_that_row_and_cancel_is_greyed() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads();
         let completed: DownloadId = download_id(3);
         let at = view
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn golden_confirm_clear_completed() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::ConfirmClearCompleted {
             counted: vec![download_id(3)],
         };
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn golden_confirm_clear_completed_scrolls_in_a_short_frame() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::ConfirmClearCompleted {
             counted: vec![download_id(3)],
         };

@@ -23,6 +23,10 @@ pub use crate::words::download::{
 };
 use crate::words::{Sentence, download as words};
 
+/// How long a running download's bytes stand still before its row says
+/// **Stalled**: longer than the gaps between blocks from a slow source.
+pub(crate) const STALL_AFTER: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Spec §3.2 status column vocabulary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DownloadStatus {
@@ -155,6 +159,19 @@ impl UiState {
             .get(&download_id)
             .copied()
             .unwrap_or(0.0)
+    }
+
+    /// Whether a running download has moved no bytes for [`STALL_AFTER`],
+    /// by the bytes its diagnostics row counts: a granted slot or an assigned
+    /// part says Downloading, this says nothing is arriving.
+    #[must_use]
+    pub fn download_stalled(&self, download_id: DownloadId) -> bool {
+        self.download_running(download_id)
+            && self
+                .rates
+                .download_quiet
+                .get(&download_id)
+                .is_some_and(|quiet| *quiet >= STALL_AFTER)
     }
 
     /// The speed the download's ETA divides by: the minute's average while

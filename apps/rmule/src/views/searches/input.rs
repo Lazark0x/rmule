@@ -147,7 +147,7 @@ mod tests {
     fn golden_searches_typing() {
         let state = UiState::default();
         let theme = Theme::default_dark();
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('/')), &state);
         for c in "big buck bunny".chars() {
             view.handle_key(press(KeyCode::Char(c)), &state);
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn a_long_query_left_alone_wraps_the_input_block_open() {
         let state = UiState::default();
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('/')), &state);
         for c in "a-very-long-search-phrase ".repeat(5).chars() {
             view.handle_key(press(KeyCode::Char(c)), &state);

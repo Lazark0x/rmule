@@ -28,8 +28,10 @@ publishes sets, not orders.
   (receiving, verifying, requesting, hash set, queued, handshaking, connecting, idle,
   releasing, retired, shut down); an upload peer's **State** ranks slot-holders first,
   then the queue in its own order.
-- **The default is name ascending in every table**, and the sort is per table and
-  durable, a preference in the store. It is not per search.
+- **A table opens by name ascending unless it is read by another fact**: Transfers, which
+  is watched, by Progress, moving bytes first; Searches, where a result is picked by its
+  availability, by Sources, most first. The sort is per table and durable, a preference in
+  the store, and a kept sort outranks the opening one. It is not per search.
 - **Tie Chain.** Rows equal on the sort column order by name ascending, then by identity
   (file hash, download id, server endpoint), so the order is total and a glyph golden is
   deterministic. Reversing the sort does not reverse the chain.

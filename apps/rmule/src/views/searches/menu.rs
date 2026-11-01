@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn the_row_menu_skips_the_greyed_item() {
         let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('g')), &state); // select row 0
         view.handle_key(press(KeyCode::Char('m')), &state); // open menu at Download
         assert_eq!(view.menu, Some(0));
@@ -224,7 +224,7 @@ mod tests {
     fn the_download_menu_item_emits_the_start() {
         let mut state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
         state.session = session_state().session;
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('g')), &state);
         view.handle_key(press(KeyCode::Char('m')), &state);
         match view.handle_key(press(KeyCode::Enter), &state) {
@@ -247,7 +247,7 @@ mod tests {
             vec![server_result(0xAB, "video.avi", 1000, 42, 0)],
             SearchStatus::Completed { total: 1 },
         );
-        let mut view = SearchesView::new();
+        let mut view = SearchesView::by_name();
         view.handle_key(press(KeyCode::Char('g')), &state); // select row 0
         view.handle_key(press(KeyCode::Char('m')), &state); // open menu (Download)
         view.handle_key(press(KeyCode::Char('j')), &state); // → Copy eD2k link
@@ -264,7 +264,7 @@ mod tests {
     fn golden_searches_menu() {
         let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });
         let theme = Theme::default_dark();
-        let mut view = SearchesView::new().having_sent("ubuntu");
+        let mut view = SearchesView::by_name().having_sent("ubuntu");
         view.handle_key(press(KeyCode::Char('g')), &state);
         view.handle_key(press(KeyCode::Char('m')), &state);
         assert_golden("searches_menu", 78, 21, |frame| {

@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn every_source_column_orders_by_its_value_with_the_pane_focused() {
         let state = four_sources();
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.handle_key(press(KeyCode::Tab), &state);
         // Endpoints compare digit runs as numbers: .2, .3, .9, .10.
         assert_eq!(slots(&view, &state), [2, 3, 1, 0]);
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn the_source_cursor_follows_its_peer_and_a_header_click_sorts_the_pane() {
         let mut state = four_sources();
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.handle_key(press(KeyCode::Tab), &state);
         view.handle_key(press(KeyCode::Char('j')), &state); // onto 10.0.0.3
         let lines = draw(&mut view, &state);

@@ -56,6 +56,9 @@ pub const ASKING_KAD: &str = "Asking Kad";
 /// A download parked on its queue standings at peers.
 pub const QUEUED: &str = "Queued";
 
+/// A download that holds a slot and has moved no bytes for a while.
+pub const STALLED: &str = "Stalled";
+
 /// A download's status in its cell of eleven cells.
 #[must_use]
 pub const fn status(status: DownloadStatus) -> &'static str {

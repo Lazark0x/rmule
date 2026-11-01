@@ -41,7 +41,7 @@ mod tests {
 
     #[test]
     fn a_first_run_is_not_promised_a_walk_of_kad() {
-        let view = SearchesView::new();
+        let view = SearchesView::by_name();
         let lines = view.asks_lines(70, &UiState::default(), &Theme::default_dark());
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "Asks: nobody yet; a search waits for a server or Kad");

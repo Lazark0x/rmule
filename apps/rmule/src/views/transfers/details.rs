@@ -193,7 +193,7 @@ mod tests {
     /// A row that failed before rmule kept why says so in words (ADR-0094).
     #[test]
     fn a_failed_row_with_no_reason_says_the_reason_was_not_recorded() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         for row in state.downloads.values_mut() {
             row.status = crate::state::DownloadStatus::Failed;
@@ -210,7 +210,7 @@ mod tests {
     /// A row whose run waits with no server session says on what, in words.
     #[test]
     fn a_waiting_row_says_what_it_waits_on() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::Details;
         let state = waiting_downloads();
         let screen = crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
@@ -225,7 +225,7 @@ mod tests {
     /// whatever the run last waited on.
     #[test]
     fn golden_every_source_holds_no_needed_part() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let diag = state
             .diagnostics
@@ -262,7 +262,7 @@ mod tests {
     /// One source still able to feed the file leaves the row its own status.
     #[test]
     fn one_source_that_may_hold_a_needed_part_keeps_the_rows_status() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let mut state = three_downloads();
         let diag = state
             .diagnostics
@@ -284,7 +284,7 @@ mod tests {
 
     /// The details modal over the active download, its On disk levels set.
     fn assert_on_disk_golden(name: &str, allocated: Option<u64>, verdict: Option<HoleVerdict>) {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::Details;
         let mut state = three_downloads();
         let diag = state
@@ -346,7 +346,7 @@ mod tests {
     /// The details modal over the active download, its completion move at
     /// `step` with `copied` bytes written.
     fn assert_completing_golden(name: &str, step: rmule_core::CompletionStep, copied: u64) {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::Details;
         let mut state = three_downloads();
         state
@@ -404,7 +404,7 @@ mod tests {
     /// counts the last line on screen.
     #[test]
     fn golden_details_overflow_a_short_frame() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::Details;
         let state = three_downloads();
         let draw = |view: &mut TransfersView| {
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn golden_details_modal() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::Details;
         let state = three_downloads();
         assert_golden("transfers_details_modal", GOLDEN_W, GOLDEN_H, |frame| {

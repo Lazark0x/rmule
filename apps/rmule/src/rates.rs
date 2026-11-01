@@ -42,6 +42,10 @@ pub struct TransferRates {
     /// download's run has one measured interval; 0 once its Speed meter
     /// reads a stall.
     pub download_avg_bps: BTreeMap<DownloadId, f64>,
+    /// How long each download's received bytes have stood still in its run,
+    /// from the run's first sighting while it has moved nothing — what says a
+    /// row that holds a slot is **Stalled**.
+    pub download_quiet: BTreeMap<DownloadId, Duration>,
     /// Per-worker-slot receive rate, bytes/sec — the sources pane's per-peer
     /// **Speed**. Keyed by slot rather than by peer: the slot is the identity
     /// a download's diagnostics are indexed by, and one peer may hold slots in
@@ -141,9 +145,14 @@ impl Meter {
         }
     }
 
+    /// How long the counter has stood still.
+    fn quiet(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.moved_at)
+    }
+
     /// Whether the counter stood still for the whole last time constant.
     fn stalled(&self, now: Instant, tau: Duration) -> bool {
-        now.saturating_duration_since(self.moved_at) >= tau
+        self.quiet(now) >= tau
     }
 
     /// Fold a monotonic counter's new reading. Levels never go backwards
@@ -329,6 +338,9 @@ impl RateSynthesizer {
                 .or_insert_with(|| DownloadTracker::started(diag.received_bytes, now));
             let bps = tracker.received.observe(diag.received_bytes, now, tau);
             rates.download_bps.insert(*id, bps);
+            rates
+                .download_quiet
+                .insert(*id, tracker.received.quiet(now));
             if let Some(avg) = tracker.window.observe(diag.received_bytes, now, ETA_WINDOW) {
                 // A run that stopped estimates nothing: the window's bytes
                 // draining out over a minute would read as an ETA that grows.

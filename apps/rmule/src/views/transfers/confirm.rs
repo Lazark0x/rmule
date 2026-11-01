@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn cancel_flows_menu_to_confirm_to_command() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads();
         view.select_row(&state, 0);
         view.handle_key(press(KeyCode::Char('m')), &state);
@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn esc_aborts_the_cancel_confirm_without_emitting() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let state = three_downloads();
         view.select_row(&state, 0);
         view.overlay = Overlay::ConfirmCancel;
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn golden_confirm_cancel() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::ConfirmCancel;
         let state = three_downloads();
         assert_golden("transfers_confirm_cancel", GOLDEN_W, GOLDEN_H, |frame| {
@@ -145,7 +145,7 @@ mod tests {
     /// the bottom border says where the operator is.
     #[test]
     fn golden_confirm_cancel_scrolls_in_a_short_frame() {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.overlay = Overlay::ConfirmCancel;
         let state = three_downloads();
         let shown = |view: &mut TransfersView| {

@@ -29,7 +29,7 @@ fn done_cell(row: Option<&DownloadRow>, diag: Option<&DownloadDiagnostics>) -> S
 /// monotonic total, a source's from the level its slot carries. A worker
 /// that is not receiving has no meter, so its cell stays an honest dash.
 fn status_of(row: &DownloadRow, diag: Option<&DownloadDiagnostics>) -> String {
-    status_text(row.status, Some(row), diag, &UiState::default())
+    status_text(row.status, Some(row), diag, false, &UiState::default())
 }
 
 /// A full disk is not the operator's own pause: the row says so until it
@@ -78,7 +78,7 @@ fn a_run_reading_its_parts_back_is_not_waiting() {
 
 #[test]
 fn both_speed_columns_meter_what_is_moving_and_dash_what_is_not() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     let rendered = crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
@@ -116,7 +116,7 @@ fn both_speed_columns_meter_what_is_moving_and_dash_what_is_not() {
 /// real fact exists.
 #[test]
 fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     let rendered = crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
@@ -146,7 +146,7 @@ fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
     let stub = row("ABABABABAB…");
     assert!(stub.contains("≈ 27.8 MB"), "approx size fallback: {stub}");
     let state_of = |row: usize| {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         view.select_row(&state, row);
         crate::golden::render_to_lines(GOLDEN_W, GOLDEN_H, |frame| {
             view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
@@ -285,7 +285,7 @@ fn the_sources_cell_counts_what_the_run_knows_and_who_is_sending() {
 /// two shapes differ without colour.
 #[test]
 fn golden_a_paused_partial_bar_beside_a_completed_one() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     let paused = download_id(2);
     state
@@ -390,7 +390,7 @@ fn a_download_paused_this_tick_reads_no_speed_and_no_eta() {
 /// speed and no estimate, the same as a row paused for an hour.
 #[test]
 fn golden_transfers_just_paused_row() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     crate::state::fold(
         &mut state,
@@ -404,14 +404,64 @@ fn golden_transfers_just_paused_row() {
     });
 }
 
+/// Green says bytes are moving: a Downloading row whose bytes stood still
+/// long enough reads Stalled, plain, and ranks by that fact, not by its word.
+#[test]
+fn a_downloading_row_with_nothing_moving_says_stalled() {
+    use crate::state::STALL_AFTER;
+
+    let theme = Theme::default_dark();
+    let mut state = three_downloads();
+    let line = DownloadLine::new(download_id(1), &state);
+    assert_eq!(line.status_text, "Downloading");
+    assert_eq!(
+        status_style(line.status, line.stalled, &theme).fg,
+        Some(theme.good)
+    );
+
+    state.rates.download_quiet.insert(
+        download_id(1),
+        STALL_AFTER - std::time::Duration::from_secs(1),
+    );
+    assert_eq!(
+        DownloadLine::new(download_id(1), &state).status_text,
+        "Downloading"
+    );
+
+    state
+        .rates
+        .download_quiet
+        .insert(download_id(1), STALL_AFTER);
+    let line = DownloadLine::new(download_id(1), &state);
+    assert_eq!(line.status_text, "Stalled");
+    assert_eq!(
+        status_style(line.status, line.stalled, &theme).fg,
+        Some(theme.fg)
+    );
+
+    // A row with no run has no stall to say.
+    state
+        .rates
+        .download_quiet
+        .insert(download_id(2), STALL_AFTER);
+    assert_ne!(
+        DownloadLine::new(download_id(2), &state).status_text,
+        "Stalled"
+    );
+}
+
 /// The active download's sources went quiet: its minute-long average fell
 /// under the floor, so its ETA says so instead of a count of days.
 #[test]
 fn golden_transfers_stalled_row() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     state.rates.download_bps.insert(download_id(1), 0.0);
     state.rates.download_avg_bps.insert(download_id(1), 300.0);
+    state
+        .rates
+        .download_quiet
+        .insert(download_id(1), crate::state::STALL_AFTER);
     assert_golden("transfers_stalled_row", GOLDEN_W, GOLDEN_H, |frame| {
         let area = frame.area();
         view.draw(frame, area, &state, &Theme::default_dark(), now());
@@ -422,7 +472,7 @@ fn golden_transfers_stalled_row() {
 fn golden_wrap_narrow_frame_grows_rows_instead_of_cutting_cells() {
     // A pane too narrow for the name column and a rate too wide for the
     // Speed column: both wrap down rather than being clipped.
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let mut state = three_downloads();
     state
         .rates
@@ -438,7 +488,7 @@ fn golden_wrap_narrow_frame_grows_rows_instead_of_cutting_cells() {
 /// their stated orders and say which, rather than splitting a header.
 #[test]
 fn golden_transfers_narrow_headers_whole() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = three_downloads();
     assert_golden("transfers_narrow_headers", 30, 18, |frame| {
         let area = frame.area();
@@ -452,7 +502,7 @@ fn golden_transfers_narrow_headers_whole() {
 fn no_width_cuts_a_status_word_and_the_name_keeps_its_room() {
     let state = three_downloads();
     for width in 60..=140 {
-        let mut view = TransfersView::new();
+        let mut view = TransfersView::by_name();
         let rendered = crate::golden::render_to_lines(width, GOLDEN_H, |frame| {
             view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
         });
@@ -463,7 +513,7 @@ fn no_width_cuts_a_status_word_and_the_name_keeps_its_room() {
 
 #[test]
 fn golden_long_download_name() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = state_with_named_download(&long_name());
     assert_golden("transfers_cut_long_name", 80, 24, |frame| {
         let area = frame.area();
@@ -475,7 +525,7 @@ fn golden_long_download_name() {
 fn a_long_real_name_keeps_its_row_to_one_line_and_rides_the_off_screen_line() {
     let name = long_name();
     assert_eq!(name.chars().count(), 200);
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = state_with_named_download(&name);
     let rendered = crate::golden::render_to_lines(80, 40, |frame| {
         view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
@@ -498,7 +548,7 @@ fn a_long_real_name_keeps_its_row_to_one_line_and_rides_the_off_screen_line() {
 /// asking alone, reads "Asking Kad". Folded from the events core sends.
 #[test]
 fn golden_transfers_waiting_with_no_session() {
-    let mut view = TransfersView::new();
+    let mut view = TransfersView::by_name();
     let state = waiting_downloads();
     assert_golden(
         "transfers_waiting_no_session",

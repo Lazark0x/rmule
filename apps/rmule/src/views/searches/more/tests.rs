@@ -19,7 +19,7 @@ fn completed_linux() -> (SearchesView, UiState) {
         vec![search_result("linux-1.iso", 40)],
         SearchStatus::Completed { total: 1 },
     );
-    (SearchesView::new().having_sent("linux"), state)
+    (SearchesView::by_name().having_sent("linux"), state)
 }
 
 fn offer(state: &mut UiState, asks_left: u8) {

@@ -98,7 +98,7 @@ fn the_result_menu_dims_search_related_with_each_reason_and_sends_nothing() {
             "Search related (server does not offer it)",
         ),
     ] {
-        let mut view = SearchesView::new().having_sent("video");
+        let mut view = SearchesView::by_name().having_sent("video");
         view.handle_key(press(KeyCode::Char('m')), &state);
         assert!(render(&mut view, &state, 78).contains(reason), "{reason}");
         view.menu = None;
@@ -114,7 +114,7 @@ fn the_result_menu_dims_search_related_with_each_reason_and_sends_nothing() {
 #[test]
 fn the_result_menu_offers_search_related_for_the_row_when_the_server_grants_it() {
     let state = results_state(Some(true));
-    let mut view = SearchesView::new().having_sent("video");
+    let mut view = SearchesView::by_name().having_sent("video");
     match choose_related(&mut view, &state) {
         ViewOutcome::Emit(Action::SearchRelated(query)) => {
             assert_eq!(query.file_hash(), FileHash::from_bytes([0xAB; 16]));
@@ -128,7 +128,7 @@ fn the_result_menu_offers_search_related_for_the_row_when_the_server_grants_it()
 #[test]
 fn the_item_follows_a_server_switch_under_the_open_menu() {
     let granted = results_state(Some(true));
-    let mut view = SearchesView::new().having_sent("video");
+    let mut view = SearchesView::by_name().having_sent("video");
     view.handle_key(press(KeyCode::Char('g')), &granted);
     view.handle_key(press(KeyCode::Char('m')), &granted);
     view.handle_key(press(KeyCode::Char('j')), &granted);
@@ -148,7 +148,7 @@ fn the_item_follows_a_server_switch_under_the_open_menu() {
 #[test]
 fn starting_one_sends_the_related_query_and_focuses_the_results() {
     let state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.input_focused = true;
     match view.start_related(query(0x42, "debian.iso"), &state) {
         ViewOutcome::Emit(Action::Command(CoreCommand::Search(SearchCommand::StartSearch {
@@ -167,7 +167,7 @@ fn starting_one_sends_the_related_query_and_focuses_the_results() {
 #[test]
 fn a_dimmed_level_at_send_time_sends_nothing_and_opens_nothing() {
     let state = connected_granting(UiState::default(), false);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     match view.start_related(query(0x42, "debian.iso"), &state) {
         ViewOutcome::Emit(Action::Flash(text)) => {
             assert_eq!(text, "search related: server does not offer it");
@@ -180,7 +180,7 @@ fn a_dimmed_level_at_send_time_sends_nothing_and_opens_nothing() {
 #[test]
 fn a_file_whose_name_is_not_known_is_named_by_its_hash() {
     let state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.start_related(query(0x5C, ""), &state);
     let screen = render(&mut view, &state, 78);
     assert!(
@@ -193,7 +193,7 @@ fn a_file_whose_name_is_not_known_is_named_by_its_hash() {
 #[test]
 fn enter_in_the_input_while_a_related_entry_is_current_starts_a_keyword_search() {
     let state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     view.start_related(query(0x42, "debian.iso"), &state);
     view.handle_key(press(KeyCode::Char('/')), &state);
     // Nothing typed: nothing to send, and the related entry stays.
@@ -223,7 +223,7 @@ fn enter_in_the_input_while_a_related_entry_is_current_starts_a_keyword_search()
 #[test]
 fn an_empty_answer_says_what_rmule_knows() {
     let mut state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let id = sent(view.start_related(query(0x42, "debian.iso"), &state));
     started(&mut state, id);
     completed_empty(&mut state, id);
@@ -234,7 +234,7 @@ fn an_empty_answer_says_what_rmule_knows() {
 #[test]
 fn a_refusal_before_starting_reads_as_its_reason_and_closes_by_its_id() {
     let mut state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let id = sent(view.start_related(query(0x42, "debian.iso"), &state));
     refused(&mut state, id, RelatedSearchRefusal::NotConnected);
     assert_eq!(
@@ -262,7 +262,7 @@ fn a_refusal_before_starting_reads_as_its_reason_and_closes_by_its_id() {
 #[test]
 fn a_refusal_settles_the_entry_it_names_with_two_pending() {
     let mut state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let one = sent(view.start_related(query(0x01, "one.iso"), &state));
     let two = sent(view.start_related(query(0x02, "two.iso"), &state));
     refused(&mut state, two, RelatedSearchRefusal::NotOffered);
@@ -281,7 +281,7 @@ fn a_refusal_settles_the_entry_it_names_with_two_pending() {
 #[test]
 fn a_refusal_after_sending_reads_as_its_reason_in_the_entry_and_the_status_bar() {
     let mut state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new();
+    let mut view = SearchesView::by_name();
     let id = sent(view.start_related(query(0x42, "debian.iso"), &state));
     started(&mut state, id);
     fold(
@@ -306,7 +306,7 @@ fn a_refusal_after_sending_reads_as_its_reason_in_the_entry_and_the_status_bar()
 #[test]
 fn golden_searches_related_query_line() {
     let mut state = connected_granting(UiState::default(), true);
-    let mut view = SearchesView::new().having_sent("ubuntu");
+    let mut view = SearchesView::by_name().having_sent("ubuntu");
     let related = sent(view.start_related(query(0x42, "debian-12.5.0-amd64-netinst.iso"), &state));
     started(&mut state, search_id(1));
     started(&mut state, related);

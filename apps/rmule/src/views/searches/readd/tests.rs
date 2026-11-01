@@ -27,7 +27,7 @@ const CLIP_SIZE: u64 = 734_003_200;
 fn searching(dir: &Path) -> (SearchesView, UiState) {
     let mut state = session_state();
     state.session.download_dir = Some(dir.to_path_buf());
-    let mut view = SearchesView::new().having_sent("alpha");
+    let mut view = SearchesView::by_name().having_sent("alpha");
     fold(
         &mut state,
         search_event(SearchEvent::SearchResultsReceived {
@@ -426,7 +426,7 @@ fn a_cancelled_file_asks_esc_keeps_it_and_a_yes_starts_it_at_its_place() {
 
 #[test]
 fn golden_searches_readd_have() {
-    let mut view = SearchesView::new().having_sent("alpha");
+    let mut view = SearchesView::by_name().having_sent("alpha");
     let mut state = session_state();
     fold(
         &mut state,
@@ -449,7 +449,7 @@ fn golden_searches_readd_have() {
 
 #[test]
 fn golden_searches_readd_scrolls_in_a_short_frame() {
-    let mut view = SearchesView::new().having_sent("alpha");
+    let mut view = SearchesView::by_name().having_sent("alpha");
     let mut state = session_state();
     fold(
         &mut state,
