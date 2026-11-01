@@ -23,6 +23,10 @@ use tokio::task::JoinHandle;
 use crate::framing::next_packet;
 use crate::wire;
 
+/// The most one `OP_SENDINGPART` carries from a stock uploader
+/// (`UploadClient.cpp:290`).
+const STOCK_FRAME: usize = 10_240;
+
 /// How the peer answers `OP_STARTUPLOADREQ`.
 pub enum SlotPolicy {
     /// Grant the slot immediately.
@@ -446,13 +450,17 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
                                 "peer only serves <= EMBLOCKSIZE blocks, got {start}..{end}"
                             );
                             stats.max_block = stats.max_block.max(end - start);
-                            let _ = wtx
-                                .send(wire::sending_part_bytes(
-                                    script.file_hash,
-                                    start as u32,
-                                    &script.bytes[start as usize..end as usize],
-                                ))
-                                .await;
+                            let block = &script.bytes[start as usize..end as usize];
+                            for (index, frame) in block.chunks(STOCK_FRAME).enumerate() {
+                                let at = start as usize + index * STOCK_FRAME;
+                                let _ = wtx
+                                    .send(wire::sending_part_bytes(
+                                        script.file_hash,
+                                        at as u32,
+                                        frame,
+                                    ))
+                                    .await;
+                            }
                         }
                     }
                     ServePolicy::FirstBlockThenClose => {
