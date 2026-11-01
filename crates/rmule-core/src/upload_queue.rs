@@ -926,7 +926,7 @@ mod modifier_readings {
         }
         let readings = Counted::default();
 
-        queue.rerank(now, &readings);
+        let _ = queue.rerank(now, &readings);
 
         assert_eq!(readings.0.get(), queue.waiting_len());
     }
