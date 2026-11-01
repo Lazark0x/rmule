@@ -107,15 +107,12 @@ pub enum SeedReadFault {
 ///
 /// Never fails: every route's failure is reported in the returned
 /// [`KadSeedOutcome`] and the Kad join proceeds regardless.
-pub async fn acquire_kad_seeds<F>(
+pub async fn acquire_kad_seeds(
     kad_enable: &mut KadEnableConfig,
     own_id: rmule_kad::KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
-) -> KadSeedOutcome
-where
-    F: Fetcher + Sync,
-{
+    fetcher: &dyn Fetcher,
+) -> KadSeedOutcome {
     let mut read_error = None;
 
     // 1. The persisted routing table.

@@ -61,7 +61,7 @@ pub use upnp::UpnpMappingBackend;
 /// A boxed future, the shape every [`MappingBackend`] method returns so the
 /// trait stays object-safe — the racer holds `Arc<dyn MappingBackend>` values
 /// and drives them concurrently, which an `async fn` in a trait cannot do.
-/// Same pattern as core's `ServerListFetcher`.
+/// Same pattern as `rmule_bootstrap::FetchFuture`.
 pub type MappingFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Which port-mapping protocol a backend speaks.

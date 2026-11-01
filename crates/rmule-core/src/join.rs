@@ -193,9 +193,9 @@ impl JoinCommandSink for Core {
 /// The order is load-bearing (see the module docs); the two joins are
 /// independent (each gated only on its own switch). Returns the resolved
 /// [`JoinOutcome`].
-pub async fn run_join_sequence<S, F, K>(
+pub async fn run_join_sequence<S, K>(
     store: &S,
-    fetcher: &F,
+    fetcher: &dyn Fetcher,
     bootstrap: &BootstrapConfig,
     join: &JoinConfig,
     mut kad_enable: KadEnableConfig,
@@ -204,7 +204,6 @@ pub async fn run_join_sequence<S, F, K>(
 ) -> Result<JoinOutcome, CoreError>
 where
     S: ServerListStore + ?Sized,
-    F: Fetcher + Sync,
     K: JoinCommandSink,
 {
     // 1. Load persisted state.

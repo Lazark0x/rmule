@@ -88,19 +88,15 @@ impl FakeFetcher {
 }
 
 impl Fetcher for FakeFetcher {
-    fn get(
-        &self,
-        _url: &str,
-        _max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
+    fn get<'a>(&'a self, _url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
         let result = self.result.clone();
         let park = self.park.clone();
-        async move {
+        Box::pin(async move {
             if let Some(park) = park {
                 park.notified().await;
             }
             result
-        }
+        })
     }
 }
 

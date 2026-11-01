@@ -25,7 +25,7 @@ use crate::ban_store::SharedBanStore;
 use crate::buddy_link::SharedBuddySlot;
 use crate::credit::SharedCreditStore;
 use crate::ip_filter::{IpFilter, SharedIpFilter};
-use crate::server_list::{ServerListFetcher, SharedServerListStore};
+use crate::server_list::SharedServerListStore;
 use crate::server_session::SharedServerSession;
 use crate::store::DurableStore;
 use crate::store::app_config::DurableAppConfig;
@@ -121,7 +121,7 @@ struct NodeParts {
     server_list: SharedServerListStore,
     /// The one URL-acquisition capability core is given (ADR-0080), or `None`
     /// — the default, since core links no HTTP client.
-    server_list_fetcher: Option<Arc<dyn ServerListFetcher>>,
+    server_list_fetcher: Option<Arc<dyn rmule_bootstrap::Fetcher>>,
 }
 
 impl<S, P, L, K> CoreBuilder<S, P, L, K>
@@ -316,7 +316,7 @@ where
     /// [`CoreCommandRejectReason::ServerListFetchUnavailable`](crate::CoreCommandRejectReason::ServerListFetchUnavailable) rather than
     /// silently doing nothing.
     #[must_use]
-    pub fn server_list_fetcher(mut self, fetcher: impl ServerListFetcher + 'static) -> Self {
+    pub fn server_list_fetcher(mut self, fetcher: impl rmule_bootstrap::Fetcher + 'static) -> Self {
         self.node.server_list_fetcher = Some(Arc::new(fetcher));
         self
     }

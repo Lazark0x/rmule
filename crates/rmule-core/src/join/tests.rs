@@ -60,14 +60,10 @@ impl FakeFetcher {
 }
 
 impl Fetcher for FakeFetcher {
-    fn get(
-        &self,
-        _url: &str,
-        _max_bytes: usize,
-    ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
+    fn get<'a>(&'a self, _url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
         *self.calls.lock() += 1;
         let result = self.result.clone();
-        async move { result }
+        Box::pin(async move { result })
     }
 }
 

@@ -138,8 +138,7 @@ pipeline of ADR-0065 (bounded GET, parse before install, add-new/update-known, a
 without touching the store; `install_server_met_plan` folds the plan in. The actor never
 holds the store across the fetch, which runs on a spawned task behind a one-at-a-time
 guard, so a command landing in the gap is neither blocked nor lost. The fetch capability
-is injected as `ServerListFetcher`, the object-safe form of the `Fetcher` seam, with a
-blanket impl over every `Fetcher`; without one, `UpdateServerList` is refused with
+is injected as a `Fetcher`, held as a trait object; without one, `UpdateServerList` is refused with
 `ServerListFetchUnavailable`, as ADR-0047's Honest Capability Advertisement requires of
 our own machinery. DNS-named rows have no `(ip, port)` key, so the reconciliation neither
 projects nor touches them. The Join Sequence's first-run fetch (ADR-0067) uses the same

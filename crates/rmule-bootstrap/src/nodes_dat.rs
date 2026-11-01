@@ -110,16 +110,13 @@ pub fn decode_nodes_dat(
 /// [`should_auto_fetch_nodes_dat`](crate::should_auto_fetch_nodes_dat), whose
 /// switch is OFF by default (aMule's own asymmetry: `UpdateNotesDat` is
 /// user-/EC-triggered only).
-pub async fn fetch_nodes_dat<F>(
-    fetcher: &F,
+pub async fn fetch_nodes_dat(
+    fetcher: &dyn Fetcher,
     url: &str,
     max_bytes: usize,
     own_id: KadId,
     dial_list: &mut BootstrapDialList,
-) -> Result<NodesDatInstall, NodesDatPipelineError>
-where
-    F: Fetcher + Sync,
-{
+) -> Result<NodesDatInstall, NodesDatPipelineError> {
     let bytes = fetcher.get(url, max_bytes).await?;
     decode_nodes_dat(&bytes, own_id, dial_list)
 }

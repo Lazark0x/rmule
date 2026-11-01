@@ -20,7 +20,7 @@ use rmule_primitives::{
     Ed2kText, Ipv4Endpoint, ST_IPV6, Tag, TagName, TagValue, ipv6_address_tag_compact,
 };
 
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::{FetchError, FetchFuture, Fetcher};
 
 const HEADER_AMULE: u8 = 0xE0;
 const TAG_SERVERNAME: u8 = 0x01;
@@ -194,11 +194,7 @@ impl FakeFetcher {
 }
 
 impl Fetcher for FakeFetcher {
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
+    fn get<'a>(&'a self, url: &'a str, max_bytes: usize) -> FetchFuture<'a> {
         *self.call_counts.lock().entry(url.to_owned()).or_insert(0) += 1;
 
         let canned = self
@@ -223,6 +219,6 @@ impl Fetcher for FakeFetcher {
             other => other,
         };
 
-        async move { result }
+        Box::pin(async move { result })
     }
 }

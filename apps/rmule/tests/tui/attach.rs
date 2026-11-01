@@ -37,11 +37,7 @@ impl CannedFetch {
 }
 
 impl Fetcher for CannedFetch {
-    fn get(
-        &self,
-        url: &str,
-        _max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
+    fn get<'a>(&'a self, url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
         self.asked.lock().push(url.to_owned());
         let answer = match &self.body {
             Some(body) => Ok(body.to_vec()),
@@ -49,7 +45,7 @@ impl Fetcher for CannedFetch {
                 url: url.to_owned(),
             }),
         };
-        async move { answer }
+        Box::pin(async move { answer })
     }
 }
 

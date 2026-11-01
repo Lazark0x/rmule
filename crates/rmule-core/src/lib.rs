@@ -183,8 +183,8 @@ pub use reachability::KadReachLevel;
 pub use rmule_ed2k::SearchResultSkipReason;
 pub use server_list::{
     AutoUpdateFetch, DEFAULT_DEAD_AFTER, DeadSince, ManagedServer, ResolvedAddress, ServerFigures,
-    ServerGrantsReport, ServerHealth, ServerListFetcher, ServerListStore, ServerListUpdate,
-    ServerListUpdateError, ServerListUpdateFailure, ServerMerge, ServerPolicy,
+    ServerGrantsReport, ServerHealth, ServerListStore, ServerListUpdate, ServerListUpdateError,
+    ServerListUpdateFailure, ServerMerge, ServerPolicy,
 };
 pub use settings::{
     CoreSettings, CoreSettingsHandle, Setting, SettingError, SettingRefusal, TakesEffect,

@@ -48,7 +48,7 @@ use crate::kad_sources::KadSourceRegistry;
 use crate::own_identity::SharedOwnIdentity;
 use crate::search::LiveSearches;
 use crate::server_capabilities::SharedServerCapabilities;
-use crate::server_list::{ServerFacts, ServerListFetcher, SharedServerListStore};
+use crate::server_list::{ServerFacts, SharedServerListStore};
 use crate::server_session::SharedServerSession;
 use crate::server_udp::{ServerUdpEngine, ServerUdpSeal, StatusChallenges};
 use crate::source_discovery::SourceDiscovery;
@@ -247,7 +247,7 @@ pub(super) struct CoreWiring<S, P, L, K> {
     /// The store's **Kad UDP Key**, read at build.
     pub(super) kad_udp_key: u32,
     pub(super) server_list: SharedServerListStore,
-    pub(super) server_list_fetcher: Option<Arc<dyn ServerListFetcher>>,
+    pub(super) server_list_fetcher: Option<Arc<dyn rmule_bootstrap::Fetcher>>,
 }
 
 /// The actor's loop-carried state: every seam, shared handle and activity the

@@ -75,7 +75,7 @@ pub use config::{
     DEFAULT_MAX_SERVER_MET_BYTES, DEFAULT_NODES_DAT_URL, DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_SERVER_MET_URL,
 };
-pub use fetcher::{FetchError, Fetcher};
+pub use fetcher::{FetchError, FetchFuture, Fetcher};
 pub use first_run::{should_auto_fetch_nodes_dat, should_auto_fetch_server_met};
 pub use nodes_dat::{NodesDatInstall, NodesDatPipelineError, decode_nodes_dat, fetch_nodes_dat};
 pub use server_met::{ServerMetInstall, ServerMetPipelineError, fetch_server_met};

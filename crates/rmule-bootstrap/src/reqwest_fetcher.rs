@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use crate::config::BootstrapConfig;
-use crate::fetcher::{FetchError, Fetcher};
+use crate::fetcher::{FetchError, FetchFuture, Fetcher};
 
 /// A reqwest-backed [`Fetcher`] with redirect + timeout caps baked into the
 /// client and the body cap enforced per-request while streaming.
@@ -71,28 +71,21 @@ fn map_error(url: &str, error: &reqwest::Error) -> FetchError {
 }
 
 impl Fetcher for ReqwestFetcher {
-    fn get(
-        &self,
-        url: &str,
-        max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, FetchError>> + Send {
-        // Own the request inputs so the returned future does not borrow `self`
-        // or `url` — it can be awaited freely by an actor that moved on.
-        let client = self.client.clone();
-        let url = url.to_owned();
-        async move {
-            let mut response = client
-                .get(&url)
+    fn get<'a>(&'a self, url: &'a str, max_bytes: usize) -> FetchFuture<'a> {
+        Box::pin(async move {
+            let mut response = self
+                .client
+                .get(url)
                 .send()
                 .await
-                .map_err(|error| map_error(&url, &error))?;
+                .map_err(|error| map_error(url, &error))?;
 
             let status = response.status();
             if !status.is_success() {
                 // A mirror's 404/500 error page must reject, never parse as a
                 // server list.
                 return Err(FetchError::Status {
-                    url,
+                    url: url.to_owned(),
                     status: status.as_u16(),
                 });
             }
@@ -103,7 +96,7 @@ impl Fetcher for ReqwestFetcher {
             while let Some(chunk) = response
                 .chunk()
                 .await
-                .map_err(|error| map_error(&url, &error))?
+                .map_err(|error| map_error(url, &error))?
             {
                 if body.len() + chunk.len() > max_bytes {
                     return Err(FetchError::TooLarge { cap: max_bytes });
@@ -111,6 +104,6 @@ impl Fetcher for ReqwestFetcher {
                 body.extend_from_slice(&chunk);
             }
             Ok(body)
-        }
+        })
     }
 }

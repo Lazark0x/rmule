@@ -394,16 +394,7 @@ async fn the_options_row_constraints_arrive_as_a_decodable_expression_tree() {
 struct NeverFetches;
 
 impl rmule_bootstrap::Fetcher for NeverFetches {
-    fn get(
-        &self,
-        url: &str,
-        _max_bytes: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<u8>, rmule_bootstrap::FetchError>> + Send
-    {
+    fn get<'a>(&'a self, url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
         panic!("the default-OFF nodes.dat switch must not fetch: {url}");
-        #[expect(unreachable_code, reason = "the panic above is the assertion")]
-        async {
-            unreachable!()
-        }
     }
 }

@@ -47,15 +47,12 @@ pub struct AutoUpdateWalkResult {
 /// # Returns
 ///
 /// [`AutoUpdateWalkResult`] with per-URL outcomes and the final merged plan.
-pub async fn fetch_server_met_auto_update<F>(
-    fetcher: &F,
+pub async fn fetch_server_met_auto_update(
+    fetcher: &dyn Fetcher,
     urls: &[String],
     max_bytes: usize,
     installed: Vec<ServerMetEntry>,
-) -> AutoUpdateWalkResult
-where
-    F: Fetcher + Sync,
-{
+) -> AutoUpdateWalkResult {
     let mut per_url = Vec::new();
     let mut current = installed;
     let mut added = 0;

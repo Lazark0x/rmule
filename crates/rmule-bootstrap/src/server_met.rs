@@ -145,15 +145,12 @@ impl ServerMetInstall {
 /// The fresh rows are the word of `url`'s host, and a row whose address no
 /// server can be at as that host's word is dropped before the merge
 /// (ADR-0085).
-pub async fn fetch_server_met<F>(
-    fetcher: &F,
+pub async fn fetch_server_met(
+    fetcher: &dyn Fetcher,
     url: &str,
     max_bytes: usize,
     installed: Vec<ServerMetEntry>,
-) -> Result<ServerMetInstall, ServerMetPipelineError>
-where
-    F: Fetcher + Sync,
-{
+) -> Result<ServerMetInstall, ServerMetPipelineError> {
     let bytes = fetcher.get(url, max_bytes).await?;
     let fresh = ServerMet::decode(&bytes)?;
     let host = ListHost::of(url);

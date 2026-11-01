@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use rmule_bootstrap::Fetcher;
 use rmule_primitives::ServerEndpoint;
 
 use crate::CoreError;
@@ -12,8 +13,8 @@ use crate::adapters::{
     KadRuntimeFactory, PeerTransferService, ServeRuntimeService, SourceLookupService,
 };
 use crate::server_list::{
-    ErasedFetcher, ServerListFetcher, ServerListUpdateError, ServerMerge, SharedServerListStore,
-    acquire_server_met, acquire_server_met_walk, install_server_met_plan, mutate_and_publish,
+    ServerListUpdateError, ServerMerge, SharedServerListStore, acquire_server_met,
+    acquire_server_met_walk, install_server_met_plan, mutate_and_publish,
 };
 use crate::service::{
     CoreCommandRejectReason, CoreEvent, LoginStep, ServerListCommand, ServerListEvent,
@@ -213,7 +214,7 @@ where
 /// arm stays one call.
 struct ServerListContext<'a> {
     store: &'a SharedServerListStore,
-    fetcher: Option<&'a Arc<dyn ServerListFetcher>>,
+    fetcher: Option<&'a Arc<dyn Fetcher>>,
     in_flight: &'a Arc<std::sync::atomic::AtomicBool>,
     max_server_met_bytes: usize,
     diagnostics: &'a crate::diagnostics::DiagnosticsState,
@@ -449,14 +450,14 @@ async fn reject_server_list_store(evt_tx: &crate::service::Outbox, error: &CoreE
 /// release the one-at-a-time guard, report the outcome.
 async fn run_server_list_update(
     store: SharedServerListStore,
-    fetcher: Arc<dyn ServerListFetcher>,
+    fetcher: Arc<dyn Fetcher>,
     url: String,
     max_server_met_bytes: usize,
     diagnostics: crate::diagnostics::DiagnosticsState,
     evt_tx: crate::service::Outbox,
     in_flight: Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let outcome = acquire_and_install(&store, &fetcher, &url, max_server_met_bytes, &diagnostics)
+    let outcome = acquire_and_install(&store, &*fetcher, &url, max_server_met_bytes, &diagnostics)
         .await
         .map_or_else(
             |error| {
@@ -481,7 +482,7 @@ async fn run_server_list_update(
 /// takes, never one across a fetch.
 async fn run_server_list_walk(
     store: SharedServerListStore,
-    fetcher: Arc<dyn ServerListFetcher>,
+    fetcher: Arc<dyn Fetcher>,
     urls: Vec<String>,
     max_server_met_bytes: usize,
     diagnostics: crate::diagnostics::DiagnosticsState,
@@ -501,13 +502,7 @@ async fn run_server_list_walk(
             return;
         }
     };
-    let walk = acquire_server_met_walk(
-        &ErasedFetcher(Arc::clone(&fetcher)),
-        &urls,
-        max_server_met_bytes,
-        &installed,
-    )
-    .await;
+    let walk = acquire_server_met_walk(&*fetcher, &urls, max_server_met_bytes, &installed).await;
     for (url, outcome) in walk.fetched {
         send_event(
             &evt_tx,
@@ -543,19 +538,13 @@ async fn run_server_list_walk(
 /// one the download also carries simply folds.
 async fn acquire_and_install(
     store: &SharedServerListStore,
-    fetcher: &Arc<dyn ServerListFetcher>,
+    fetcher: &dyn Fetcher,
     url: &str,
     max_server_met_bytes: usize,
     diagnostics: &crate::diagnostics::DiagnosticsState,
 ) -> Result<crate::server_list::ServerListUpdate, ServerListUpdateError> {
     let installed = store.servers()?;
-    let plan = acquire_server_met(
-        &ErasedFetcher(Arc::clone(fetcher)),
-        url,
-        max_server_met_bytes,
-        &installed,
-    )
-    .await?;
+    let plan = acquire_server_met(fetcher, url, max_server_met_bytes, &installed).await?;
     let update = mutate_and_publish(store, diagnostics, |store| {
         install_server_met_plan(store, &plan)
     })?;

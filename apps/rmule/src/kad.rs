@@ -107,16 +107,15 @@ pub fn enable_config(data_dir: &std::path::Path) -> KadEnableConfig {
 /// # Errors
 /// [`CoreClientError::CoreStopped`] if the core is gone; the bus carries its
 /// own `CoreClosed` in that case, so a caller has nothing to add.
-pub async fn join<C, F>(
+pub async fn join<C>(
     client: &C,
     mut config: KadEnableConfig,
     own_id: KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
+    fetcher: &dyn Fetcher,
 ) -> Result<KadSeedOutcome, CoreClientError>
 where
     C: CoreClient,
-    F: Fetcher + Sync,
 {
     let outcome = acquire_kad_seeds(&mut config, own_id, bootstrap, fetcher).await;
     client.send(CoreCommand::EnableKad(config))?;
@@ -125,17 +124,16 @@ where
 
 /// Wait for the next start request, then [`join`] with a fresh copy of
 /// `config`. `None` once the app has dropped its [`KadStarter`].
-pub async fn join_on_next_start<C, F>(
+pub async fn join_on_next_start<C>(
     starts: &mut KadStarts,
     client: &C,
     config: &KadEnableConfig,
     own_id: KadId,
     bootstrap: &BootstrapConfig,
-    fetcher: &F,
+    fetcher: &dyn Fetcher,
 ) -> Option<Result<KadSeedOutcome, CoreClientError>>
 where
     C: CoreClient,
-    F: Fetcher + Sync,
 {
     starts.recv().await?;
     Some(join(client, config.clone(), own_id, bootstrap, fetcher).await)
@@ -144,7 +142,6 @@ where
 #[cfg(test)]
 mod tests {
     use parking_lot::Mutex;
-    use std::future::Future;
 
     use rmule_bootstrap::FetchError;
 
@@ -183,14 +180,10 @@ mod tests {
     }
 
     impl Fetcher for FakeFetcher {
-        fn get(
-            &self,
-            _url: &str,
-            _max_bytes: usize,
-        ) -> impl Future<Output = Result<Vec<u8>, FetchError>> + Send {
+        fn get<'a>(&'a self, _url: &'a str, _max_bytes: usize) -> rmule_bootstrap::FetchFuture<'a> {
             *self.calls.lock() += 1;
             let result = self.result.clone();
-            async move { result }
+            Box::pin(async move { result })
         }
     }
 
