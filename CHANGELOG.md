@@ -14,6 +14,7 @@ All notable changes to rmule are recorded here. The format follows
 - `Enter` on a search moves to its results, and `u` brings back the search
   closed last.
 - No field loses what was typed: a refusal stays under it, with the text.
+
 ### Status bar and start
 
 - The status bar always shows the rates, in fixed cells and a unit that adapts

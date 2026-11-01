@@ -338,39 +338,6 @@ pub fn too_small((width, height): (u16, u16), (need_w, need_h): (u16, u16)) -> S
     format!("Terminal {width}×{height} is too small. rmule needs {need_w}×{need_h}. q quits.")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The sentence the operator acts on: asking about a second process
-    /// after a downgrade sends them to delete the file instead.
-    #[test]
-    fn a_refused_store_is_told_by_its_cause() {
-        let words = |refusal| attach_failure_words(AttachFailure::OpenStore(refusal));
-        use rmule_core::OpenRefusal;
-        assert!(words(OpenRefusal::Busy).contains("another rmule"));
-        let newer = words(OpenRefusal::Newer {
-            found: 17,
-            current: 16,
-        });
-        assert!(newer.contains("17") && newer.contains("16"), "{newer}");
-        for refusal in [
-            OpenRefusal::Newer {
-                found: 17,
-                current: 16,
-            },
-            OpenRefusal::TooOld { found: 1 },
-            OpenRefusal::Damaged,
-            OpenRefusal::Disk { os_code: Some(28) },
-            OpenRefusal::NotCopied { os_code: None },
-        ] {
-            let sentence = words(refusal);
-            assert!(!sentence.contains("another rmule"), "{sentence}");
-        }
-        assert!(words(OpenRefusal::Damaged).contains("keep"));
-    }
-}
-
 /// The status bar's connection, each state a code.
 pub const ED2K_HIGH_ID: Sentence = Sentence::fixed("eD2k HighID");
 /// See [`ED2K_HIGH_ID`].
@@ -433,3 +400,36 @@ pub const TERMINAL_TITLE_NOTE: &str = "rates and counts in the window title";
 
 /// What the Settings row for the completion bell does.
 pub const COMPLETION_BELL_NOTE: &str = "rings the terminal when a download finishes";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sentence the operator acts on: asking about a second process
+    /// after a downgrade sends them to delete the file instead.
+    #[test]
+    fn a_refused_store_is_told_by_its_cause() {
+        let words = |refusal| attach_failure_words(AttachFailure::OpenStore(refusal));
+        use rmule_core::OpenRefusal;
+        assert!(words(OpenRefusal::Busy).contains("another rmule"));
+        let newer = words(OpenRefusal::Newer {
+            found: 17,
+            current: 16,
+        });
+        assert!(newer.contains("17") && newer.contains("16"), "{newer}");
+        for refusal in [
+            OpenRefusal::Newer {
+                found: 17,
+                current: 16,
+            },
+            OpenRefusal::TooOld { found: 1 },
+            OpenRefusal::Damaged,
+            OpenRefusal::Disk { os_code: Some(28) },
+            OpenRefusal::NotCopied { os_code: None },
+        ] {
+            let sentence = words(refusal);
+            assert!(!sentence.contains("another rmule"), "{sentence}");
+        }
+        assert!(words(OpenRefusal::Damaged).contains("keep"));
+    }
+}
