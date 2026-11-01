@@ -175,11 +175,7 @@ where
                 }
             }
             DownloadCommand::ClearDownloads { download_ids } => {
-                for download_id in download_ids {
-                    // One whose completion is still being shared, or that is
-                    // no longer completed, is skipped; the next clear takes it.
-                    let _ = self.clear(download_id).await;
-                }
+                self.clear_every(&download_ids);
             }
             DownloadCommand::ResumeDownload { download_id } => {
                 // One waiting its turn after attach starts now instead, with
@@ -434,6 +430,25 @@ where
         tracing::info!(download_id = download_id.as_u64(), "download cleared");
         send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id });
         Ok(())
+    }
+
+    /// Forget every completed download of `download_ids`, in one transaction.
+    /// One whose completion is still being shared, or that is no longer
+    /// completed, is passed over; the next clear takes it.
+    fn clear_every(&mut self, download_ids: &[DownloadId]) {
+        let cleared = match self.wiring.store.clear_every_completed(download_ids) {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                tracing::warn!(%error, "the completed downloads could not be cleared");
+                return;
+            }
+        };
+        for download_id in cleared {
+            self.retire_download(download_id);
+            self.diagnostics.remove_download(download_id);
+            tracing::info!(download_id = download_id.as_u64(), "download cleared");
+            send_download_event(&self.evt_tx, DownloadEvent::DownloadCleared { download_id });
+        }
     }
 
     /// Whether the store holds `download_id` as a row that still holds its

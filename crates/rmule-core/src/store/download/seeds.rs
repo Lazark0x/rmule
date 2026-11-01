@@ -95,6 +95,25 @@ pub struct LoadedSeeds {
     pub expired: usize,
 }
 
+/// Replace `id`'s seeds inside `txn`; `false` when its row no longer holds
+/// its place.
+fn write_set(
+    txn: &WriteTransaction,
+    id: DownloadId,
+    seeds: &[SourceSeed],
+    written_at: u64,
+) -> Result<bool, CoreError> {
+    if !read_row(txn, id)?.is_live() {
+        return Ok(false);
+    }
+    SOURCE_SEEDS.replace(
+        txn,
+        id.as_u64(),
+        seeds.iter().map(|seed| SourceSeedRow::of(seed, written_at)),
+    )?;
+    Ok(true)
+}
+
 impl DurableDownloadRepository {
     /// Replace the download's seeds with `seeds`, in the order given, as
     /// written at `written_at`. Writes nothing — and says so with `false` —
@@ -114,16 +133,36 @@ impl DurableDownloadRepository {
             return Ok(false);
         }
         let written_at = unix_seconds(written_at);
+        self.store
+            .write(|txn| write_set(txn, id, seeds, written_at))
+    }
+
+    /// [`write_source_seeds`](Self::write_source_seeds) for every download
+    /// of `sets`, in one transaction. A row gone or no longer holding its
+    /// place is passed over; one with no seeds writes nothing, as there.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`], and no set lands.
+    pub fn write_source_seed_sets(
+        &self,
+        sets: &[(DownloadId, Vec<SourceSeed>)],
+        written_at: SystemTime,
+    ) -> Result<(), CoreError> {
+        if sets.iter().all(|(_, seeds)| seeds.is_empty()) {
+            return Ok(());
+        }
+        let written_at = unix_seconds(written_at);
         self.store.write(|txn| {
-            if !read_row(txn, id)?.is_live() {
-                return Ok(false);
+            for (id, seeds) in sets {
+                if seeds.is_empty() {
+                    continue;
+                }
+                match write_set(txn, *id, seeds, written_at) {
+                    Ok(_) | Err(CoreError::UnknownDownload) => {}
+                    Err(error) => return Err(error),
+                }
             }
-            SOURCE_SEEDS.replace(
-                txn,
-                id.as_u64(),
-                seeds.iter().map(|seed| SourceSeedRow::of(seed, written_at)),
-            )?;
-            Ok(true)
+            Ok(())
         })
     }
 

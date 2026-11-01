@@ -251,11 +251,12 @@ where
     S: ServerListStore + ?Sized,
 {
     let now = std::time::SystemTime::now();
-    for entry in plan.servers() {
-        if let Some(server) = ManagedServer::from_met(entry, now) {
-            store.merge_server(server)?;
-        }
-    }
+    let servers = plan
+        .servers()
+        .iter()
+        .filter_map(|entry| ManagedServer::from_met(entry, now))
+        .collect();
+    store.merge_servers(servers)?;
     Ok(ServerListUpdate {
         added: plan.added(),
         updated: plan.updated(),

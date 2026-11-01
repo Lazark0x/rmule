@@ -17,25 +17,25 @@ where
     L: ServeRuntimeService,
     K: KadRuntimeFactory,
 {
-    /// Write each running download's seeds. A run with no ranking yet writes
-    /// nothing, so the set its last run left stands until it ages out.
+    /// Write each running download's seeds, in one transaction. A run with
+    /// no ranking yet writes nothing, so the set its last run left stands
+    /// until it ages out.
     pub(in crate::service::actor) fn write_source_seeds(&self) {
-        let now = SystemTime::now();
         let keep = usize::from(self.remember_peers.get().get());
-        for (download_id, active) in self.activities.downloads() {
-            let ranking = active.seeds.borrow();
-            let seeds = &ranking[..ranking.len().min(keep)];
-            if let Err(error) = self
-                .wiring
-                .store
-                .write_source_seeds(download_id, seeds, now)
-            {
-                tracing::warn!(
-                    download_id = download_id.as_u64(),
-                    %error,
-                    "a download's seeds could not be written"
-                );
-            }
+        let sets: Vec<_> = self
+            .activities
+            .downloads()
+            .map(|(download_id, active)| {
+                let ranking = active.seeds.borrow();
+                (download_id, ranking[..ranking.len().min(keep)].to_vec())
+            })
+            .collect();
+        let written = self
+            .wiring
+            .store
+            .write_source_seed_sets(&sets, SystemTime::now());
+        if let Err(error) = written {
+            tracing::warn!(%error, "the downloads' seeds could not be written");
         }
     }
 }

@@ -370,6 +370,14 @@ pub trait ServerListStore: Send + Sync {
     /// (see `ManagedServer::fold` for exactly what a fold keeps).
     fn merge_server(&self, server: ManagedServer) -> Result<ServerMerge, CoreError>;
 
+    /// [`merge_server`](Self::merge_server) for every row of a list, in one
+    /// transaction: one commit and one read of the table, whatever the list's
+    /// length.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`], and no row of the list lands.
+    fn merge_servers(&self, servers: Vec<ManagedServer>) -> Result<(), CoreError>;
+
     /// Drop the row for `endpoint`.
     fn remove_server(&self, endpoint: &ServerEndpoint) -> Result<bool, CoreError>;
 

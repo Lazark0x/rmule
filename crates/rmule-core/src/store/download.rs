@@ -29,7 +29,7 @@ use std::sync::atomic::AtomicBool;
 use rmule_primitives::{
     AichRootHash, ED2K_PART_SIZE, Ed2kFileLink, PartHash, ServerEndpoint, UserHash,
 };
-use rmule_store::{Readable, Store, StoreError};
+use rmule_store::{Readable, Store, StoreError, WriteTransaction};
 
 use super::{Schema, readable};
 use crate::content::{Revalidation, revalidate_verified_parts};
@@ -466,17 +466,26 @@ impl DurableDownloadRepository {
     /// [`CoreError::InvalidLifecycleTransition`] when the row is not
     /// `Completed`: any other still holds its file's place or its mark.
     pub fn clear_completed(&self, id: DownloadId) -> Result<(), CoreError> {
+        self.store.write(|txn| clear_row(txn, id))
+    }
+
+    /// [`clear_completed`](Self::clear_completed) for every download of
+    /// `ids`, in one transaction, and the ones it cleared: a row gone or no
+    /// longer completed is passed over, for the next clear to take.
+    ///
+    /// # Errors
+    /// [`CoreError::Repository`], and nothing is cleared.
+    pub fn clear_every_completed(&self, ids: &[DownloadId]) -> Result<Vec<DownloadId>, CoreError> {
         self.store.write(|txn| {
-            if read_row(txn, id)?.lifecycle != DownloadLifecycle::Completed {
-                return Err(CoreError::InvalidLifecycleTransition);
+            let mut cleared = Vec::with_capacity(ids.len());
+            for &id in ids {
+                match clear_row(txn, id) {
+                    Ok(()) => cleared.push(id),
+                    Err(CoreError::UnknownDownload | CoreError::InvalidLifecycleTransition) => {}
+                    Err(error) => return Err(error),
+                }
             }
-            let key = id.as_u64();
-            DOWNLOADS.remove(txn, &key)?;
-            VERIFIED_PARTS.clear(txn, key)?;
-            PROVISIONAL_HASHES.clear(txn, key)?;
-            DISTRUSTED_PEERS.clear(txn, key)?;
-            seeds::forget(txn, key)?;
-            Ok(())
+            Ok(cleared)
         })
     }
 
@@ -600,6 +609,21 @@ fn resumable_records(
         .filter(|(_, row)| row.is_resumable())
         .map(|(key, row)| row.to_record(DownloadId::from_u64(key), home))
         .collect())
+}
+
+/// Remove a completed download's row and everything keyed by it, inside
+/// `txn`.
+fn clear_row(txn: &WriteTransaction, id: DownloadId) -> Result<(), CoreError> {
+    if read_row(txn, id)?.lifecycle != DownloadLifecycle::Completed {
+        return Err(CoreError::InvalidLifecycleTransition);
+    }
+    let key = id.as_u64();
+    DOWNLOADS.remove(txn, &key)?;
+    VERIFIED_PARTS.clear(txn, key)?;
+    PROVISIONAL_HASHES.clear(txn, key)?;
+    DISTRUSTED_PEERS.clear(txn, key)?;
+    seeds::forget(txn, key)?;
+    Ok(())
 }
 
 impl DownloadRepository for DurableDownloadRepository {
