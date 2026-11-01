@@ -2,7 +2,7 @@
 │  File ▲    State        Size Uploading    Requests    Accepted    Transferred│
 │▸ film.mkv  shared      700.0         1      123456      111222       500.0 GB│
 │                           MB                                                 │
-│  020202020 shared          —         0       0 (0)       0 (0)         0.0 KB│
+│  020202020 shared          —         0       0 (0)       0 (0)      0 B (0 B)│
 │  2…                                                                          │
 │                                                                              │
 │                                                                              │

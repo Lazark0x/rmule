@@ -31,7 +31,7 @@ use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{rate_cell, software_label};
 use crate::words::Sentence;
 use crate::words::download::source_wait_words;
-use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
+use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
 
 mod row;
 pub(super) mod sort;
@@ -116,7 +116,7 @@ impl TransfersView {
         let widest = |text: &dyn Fn(&SourceRow<'_>) -> String| {
             workers
                 .iter()
-                .map(|worker| text(worker).chars().count())
+                .map(|worker| display_width(&text(worker)))
                 .max()
                 .unwrap_or(0)
         };

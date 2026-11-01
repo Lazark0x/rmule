@@ -18,6 +18,36 @@ fn overlong_words_hard_break_and_lose_nothing() {
 }
 
 #[test]
+fn wide_glyphs_measure_and_break_in_cells() {
+    assert_eq!(display_width("ペガサス"), 8);
+    assert_eq!(
+        display_width("e\u{301}"),
+        1,
+        "a combining mark takes no cell"
+    );
+    assert_eq!(wrap_text("ペガサス幻想", 8), vec!["ペガサス", "幻想"]);
+    assert_eq!(
+        wrap_text("ペガ", 1),
+        vec!["ペ", "ガ"],
+        "a glyph wider than the column"
+    );
+    assert_eq!(first_cells("ペガサス", 5), "ペガ");
+}
+
+#[test]
+fn a_wide_cell_pads_by_cells_so_the_next_column_stays_put() {
+    let columns = [
+        Column::left("ペガ", Style::new()),
+        Column::right("1", Style::new()),
+    ];
+    let marker = Span::raw(" ");
+    let lines = column_lines(&columns, &[6, 3], 1, &marker);
+    let drawn: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(display_width(&drawn), 11);
+    assert_eq!(drawn, " ペガ     1");
+}
+
+#[test]
 fn wrapping_prefers_a_space_and_consumes_it_as_the_break() {
     // "peer 10.0.0.1 queued rank 3" at 13 breaks after the endpoint, and
     // the break space is not re-emitted at the head of the next line.

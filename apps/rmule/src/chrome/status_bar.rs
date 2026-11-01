@@ -15,7 +15,7 @@ use super::{ChromeState, spans_width};
 use crate::rates::format_rate;
 use crate::state::{Ed2kConnection, UiState};
 use crate::theme::Theme;
-use crate::wrap::wrap_text;
+use crate::wrap::{display_width, wrap_text};
 
 /// The status bar laid out for one frame width: what the bottom border shows,
 /// plus any wrapped info rows that did not fit on it.
@@ -160,7 +160,7 @@ pub(super) fn render(
     // then rates, then the connection dots) as the line runs out.
     let tail = [users, rates, connection];
     let tail_w = tail.each_ref().map(|segment| spans_width(segment));
-    let info_w = info_text.chars().count() + 1; // the leading space
+    let info_w = display_width(&info_text) + 1; // the leading space
 
     for dropped in 0..=tail.len() {
         let kept = &tail[dropped..];

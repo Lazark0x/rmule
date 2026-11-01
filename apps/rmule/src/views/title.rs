@@ -5,6 +5,7 @@
 //! `Ser a add…`. A title's parts are its ` · `-separated clauses; a hint's are
 //! its keys, separated by two spaces or by ` · `.
 
+use crate::wrap::display_width;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
@@ -50,7 +51,7 @@ impl<'a> Parts<'a> {
     }
 
     fn width(&self) -> usize {
-        self.text().chars().count()
+        display_width(&self.text())
     }
 }
 

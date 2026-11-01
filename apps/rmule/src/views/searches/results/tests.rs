@@ -24,15 +24,6 @@ fn source_tint_matches_the_inventory_thresholds() {
 }
 
 #[test]
-fn file_size_renders_binary_units() {
-    assert_eq!(format_size(0), "0 B");
-    assert_eq!(format_size(1000), "1000 B");
-    assert_eq!(format_size(4_194_304), "4.0 MB");
-    assert_eq!(format_size(734_003_200), "700.0 MB");
-    assert_eq!(format_size(3_221_225_472), "3.0 GB");
-}
-
-#[test]
 fn sources_cell_shows_availability_and_the_complete_count_in_parentheses() {
     assert_eq!(
         result_sources_text(&server_result(0x11, "a.avi", 10, 42, 7)),

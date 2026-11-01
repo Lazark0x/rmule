@@ -19,8 +19,10 @@ use crate::row_selection::{MARKER, selection_style, viewport};
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
 use crate::table_sort::{SortedTable, header_label, header_widths};
 use crate::theme::Theme;
-use crate::views::say_gave_way;
-use crate::wrap::{TableColumns, clamp_u16, gave_way, greedy_widths, wrap_text, wrapped_cell};
+use crate::views::{human_size, say_gave_way};
+use crate::wrap::{
+    TableColumns, clamp_u16, display_width, gave_way, greedy_widths, wrap_text, wrapped_cell,
+};
 
 /// Results table columns: Name · Size · Sources · Type. `Name` is greedy
 /// Its declared width is ignored and it takes everything the others
@@ -114,22 +116,6 @@ pub(super) fn result_type(result: &SearchResult) -> Option<String> {
 /// The *Type* cell: [`result_type`], or `—` for an unclassifiable row.
 fn result_type_text(result: &SearchResult) -> String {
     result_type(result).unwrap_or_else(|| "—".to_string())
-}
-
-/// Human-readable file size (binary units, one decimal above bytes).
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
-    }
 }
 
 fn results_title(
@@ -360,9 +346,9 @@ impl SearchesView {
             let widest = results
                 .iter()
                 .map(|result| match index {
-                    1 => format_size(result.file_size()).chars().count(),
-                    2 => result_sources_text(result).chars().count(),
-                    _ => result_type_text(result).chars().count(),
+                    1 => display_width(&human_size(result.file_size())),
+                    2 => display_width(&result_sources_text(result)),
+                    _ => display_width(&result_type_text(result)),
                 })
                 .max()
                 .unwrap_or(0);
@@ -389,7 +375,7 @@ impl SearchesView {
                 .map_or_else(Vec::new, |result| {
                     let values = [
                         result.primary_name().to_display_string(),
-                        format_size(result.file_size()),
+                        human_size(result.file_size()),
                         result_sources_text(result),
                         result_type_text(result),
                     ];
@@ -429,8 +415,7 @@ impl SearchesView {
                 tint,
                 false,
             );
-            let (size, size_h) =
-                wrapped_cell(&format_size(result.file_size()), cols[1], tint, true);
+            let (size, size_h) = wrapped_cell(&human_size(result.file_size()), cols[1], tint, true);
             let (sources, sources_h) =
                 wrapped_cell(&result_sources_text(result), cols[2], tint, true);
             let (ftype, type_h) = wrapped_cell(&result_type_text(result), cols[3], tint, false);

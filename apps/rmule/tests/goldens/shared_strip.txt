@@ -6,9 +6,9 @@
 │  /srv/books (being added) · hashing 37/100, 36 % · no files shared yet     │
 │  [ ] filter by directory · add or remove in Settings                 3 / 4 │
 │  File ▲     State        Size Uploading   Requests   Accepted   Transferred│
-│▸ film.mkv   shared      700.0         0      0 (0)      0 (0)        0.0 KB│
+│▸ film.mkv   shared      700.0         0      0 (0)      0 (0)     0 B (0 B)│
 │                            MB                                              │
-│Off-screen: Transferred 0.0 KB (0.0 KB)                                     │
+│                                                                            │
 └───────────────────────────────────────────────────────────────────── 1 / 1 ┘
 ┌ Uploads · active only ────────────────────────────────── s sort  S reverse ┐
 │  Peer ▲                Software     State             Speed File           │

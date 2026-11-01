@@ -187,6 +187,8 @@ rand = "0.8"
 # Confined to rmule, the app (ADR-0069): umbrella crate only, crossterm reached via
 # the `ratatui::crossterm` re-export — never a direct crossterm dependency.
 ratatui = "0.30"
+# The cells a glyph takes, the same table ratatui draws by.
+unicode-width = "0.2"
 # Confined to rmule-bootstrap (ADR-0065): rustls only, no native-tls, minimal
 # features — the fetch impl behind the `Fetcher` seam.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

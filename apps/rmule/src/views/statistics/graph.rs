@@ -19,7 +19,7 @@ use crate::rates::format_rate;
 use crate::state::{RateSample, UiState};
 use crate::theme::Theme;
 use crate::views::relative_age;
-use crate::wrap::wrapped_lines;
+use crate::wrap::{display_width, wrapped_lines};
 
 /// The graph body before the first data tick. It names *why* the pane is
 /// empty, so a UI-only run does not read as a broken graph.
@@ -102,7 +102,7 @@ pub(super) fn draw_graph(
             (" stopped ".to_string(), Style::new().fg(theme.bad))
         };
         // Both labels whole or neither (never truncate: drop a segment, never clip one).
-        if left.chars().count() + right.chars().count() <= band {
+        if display_width(&left) + display_width(&right) <= band {
             block = block
                 .title_bottom(Line::from(Span::styled(left, theme.dim_text())))
                 .title_bottom(Line::from(Span::styled(right, right_style)).right_aligned());
@@ -179,11 +179,11 @@ fn graph_title(label: &str, now_bps: Option<f64>, peak_bps: f64, band: usize) ->
         format_rate(now_bps),
         format_rate(peak_bps)
     );
-    if full.chars().count() <= band {
+    if display_width(&full) <= band {
         return full;
     }
     let short = format!(" {label} · now {} ", format_rate(now_bps));
-    if short.chars().count() <= band {
+    if display_width(&short) <= band {
         return short;
     }
     format!(" {label} ")

@@ -25,7 +25,7 @@ use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::words::units::short_hash;
-use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
+use crate::wrap::{clamp_u16, display_width, labeled_lines, wrapped_lines};
 
 /// The files-table row menu: one real action (Unshare) plus two greyed
 /// placeholders that name their reason instead of vanishing (
@@ -98,9 +98,9 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
     let title = " Unshare? ";
     // Greedy width, wrapped prose.
     let natural = [
-        question.chars().count(),
-        consequence.chars().count(),
-        title.chars().count(),
+        display_width(&question),
+        display_width(&consequence),
+        display_width(&title),
     ]
     .into_iter()
     .max()
@@ -134,8 +134,8 @@ pub(super) fn draw_confirm(frame: &mut Frame, area: Rect, confirm: &Confirm, the
 /// Natural (unwrapped) width of a menu item, gutter included.
 fn menu_item_width(item: &MenuItem) -> usize {
     GUTTER_W
-        + item.label.chars().count()
-        + item.greyed.map_or(0, |reason| reason.chars().count() + 4)
+        + display_width(&item.label)
+        + item.greyed.map_or(0, |reason| display_width(&reason) + 4)
 }
 
 /// The menu cursor's gutter: an accent marker on the item the menu is on.
@@ -302,7 +302,7 @@ impl SharedView {
         let natural = items
             .iter()
             .map(menu_item_width)
-            .chain(std::iter::once(title.chars().count()))
+            .chain(std::iter::once(display_width(&title)))
             .max()
             .unwrap_or(0)
             + 4; // borders + 1-col pad each side

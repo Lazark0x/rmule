@@ -1,4 +1,4 @@
-┌ Shared Files · 0 files · 0.0 KB ───────────────────────────────────────────┐
+┌ Shared Files · 0 files · 0 B ──────────────────────────────────────────────┐
 │  /srv/media · not watched: the system's limit on watched files is reached ▲│
 │  (on Linux, raise fs.inotify.max_user_watches) · 1 file, 700.0 MB         █│
 │▸ /srv/books (being added) · hashing 37/100, 36 % · no files shared yet    ▼│

@@ -4,6 +4,7 @@
 //!
 //! Rendering is pure — `UiState` + `ChromeState` + injected `now` → widgets —
 //! so every chrome state goldens under `TestBackend`.
+use crate::wrap::display_width;
 use std::time::{Duration, Instant};
 
 use ratatui::Frame;
@@ -116,7 +117,7 @@ pub fn draw_overlays(frame: &mut Frame, state: &UiState, chrome: &ChromeState, t
 
 /// Char width of one status segment.
 fn spans_width(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|span| span.content.chars().count()).sum()
+    spans.iter().map(|span| display_width(&span.content)).sum()
 }
 
 impl ChromeState {

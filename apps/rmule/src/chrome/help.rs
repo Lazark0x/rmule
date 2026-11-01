@@ -20,7 +20,7 @@ use crate::row_selection::viewport::{self, Viewport};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::views::centered;
-use crate::wrap::{clamp_u16, labeled_lines};
+use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// Where the help overlay is scrolled to, as the last draw laid it out: its
 /// Viewport, in a `Cell` because drawing is a `&self` pass.
@@ -136,10 +136,10 @@ pub(super) fn draw_help(
     let key_w = KEY_COL_W;
     let natural = rows
         .iter()
-        .map(|(_, what)| key_w + 3 + what.chars().count())
+        .map(|(_, what)| key_w + 3 + display_width(&what))
         .max()
         .unwrap_or(0)
-        .max(version.0.chars().count() + 3);
+        .max(display_width(&version.0) + 3);
     let width = u16::try_from(natural)
         .unwrap_or(u16::MAX)
         .clamp(3, area.width.max(3));
@@ -199,7 +199,7 @@ pub(super) fn draw_help(
     // The border says which lines show while not all of them do, and the
     // keys that move them, which give way first.
     let rest = place.draw(frame, modal, bar, theme);
-    if place.overflows() && usize::from(rest.width) >= SCROLL_HINT.chars().count() {
+    if place.overflows() && usize::from(rest.width) >= display_width(&SCROLL_HINT) {
         frame.render_widget(
             Paragraph::new(Span::styled(SCROLL_HINT, theme.dim_text())).right_aligned(),
             rest,

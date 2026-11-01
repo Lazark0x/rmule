@@ -21,7 +21,7 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::modal::Modal;
-use crate::wrap::{clamp_u16, labeled_lines};
+use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// One row-menu action (spec §3.3): Download · Copy eD2k link · Search
 /// related.
@@ -97,10 +97,10 @@ pub(super) fn draw_menu(
     let natural = items
         .iter()
         .map(|item| {
-            2 + item.label().chars().count()
+            2 + display_width(&item.label())
                 + item
                     .reason(state)
-                    .map_or(0, |reason| reason.chars().count() + 3)
+                    .map_or(0, |reason| display_width(&reason) + 3)
         })
         .max()
         .unwrap_or(0)

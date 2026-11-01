@@ -83,16 +83,17 @@ pub fn count(n: u64, one: &str, many: &str) -> String {
 /// the same quantity must not disagree about unit or precision.
 #[must_use]
 pub fn human_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    let value = bytes as f64;
-    if value >= GB {
-        format!("{:.1} GB", value / GB)
-    } else if value >= MB {
-        format!("{:.1} MB", value / MB)
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
     } else {
-        format!("{:.1} KB", value / KB)
+        format!("{value:.1} {}", UNITS[unit])
     }
 }
 
@@ -102,9 +103,11 @@ mod tests {
 
     #[test]
     fn sizes_step_through_the_binary_units_at_one_decimal() {
-        assert_eq!(human_size(0), "0.0 KB");
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(512), "512 B");
         assert_eq!(human_size(1536), "1.5 KB");
         assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(human_size(3 * 1024 * 1024 * 1024), "3.0 GB");
+        assert_eq!(human_size(1 << 40), "1.0 TB");
     }
 }

@@ -23,7 +23,7 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::modal::Modal;
 use crate::words::units::short_hash_or_dash;
-use crate::wrap::{clamp_u16, labeled_lines};
+use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MenuAction {
@@ -313,9 +313,9 @@ impl TransfersView {
         let natural = items
             .iter()
             .map(|item| {
-                2 + item.label.chars().count() + item.reason.map_or(0, |r| r.chars().count() + 2)
+                2 + display_width(&item.label) + item.reason.map_or(0, |r| display_width(&r) + 2)
             })
-            .chain(std::iter::once(title.chars().count()))
+            .chain(std::iter::once(display_width(&title)))
             .max()
             .unwrap_or(0)
             + 2;

@@ -7,6 +7,7 @@
 //! the same spans the renderer drew, so a click cannot land on a tab the
 //! operator did not see.
 
+use crate::wrap::display_width;
 use ratatui::text::{Line, Span};
 
 use super::ChromeState;
@@ -67,7 +68,7 @@ fn tab_texts(active: ViewId, frame_width: u16) -> Vec<(String, ViewId)> {
 /// Rendered width of a tab set: the texts plus one separator per gap.
 fn bar_width(tabs: &[(String, ViewId)]) -> usize {
     tabs.iter()
-        .map(|(text, _)| text.chars().count())
+        .map(|(text, _)| display_width(&text))
         .sum::<usize>()
         + tabs.len().saturating_sub(1)
 }
@@ -93,7 +94,7 @@ pub(super) fn tabs_line(active: ViewId, frame_width: u16, theme: &Theme) -> Line
 /// furniture that carries meaning.
 pub(super) fn brand_fits(tabs_w: usize, frame_width: u16) -> bool {
     let inner = usize::from(frame_width.saturating_sub(2));
-    tabs_w + BRAND.chars().count() + BRAND_MIN_GAP <= inner
+    tabs_w + display_width(&BRAND) + BRAND_MIN_GAP <= inner
 }
 
 /// Which tab a click on the top border row hits, against the bar as it was
@@ -110,7 +111,7 @@ pub fn tab_at(chrome: &ChromeState, column: u16) -> Option<ViewId> {
         if index > 0 {
             x += 1; // the │ separator
         }
-        let width = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+        let width = u16::try_from(display_width(&text)).unwrap_or(u16::MAX);
         if (x..x + width).contains(&column) {
             return Some(view);
         }

@@ -14,38 +14,75 @@
 use ratatui::style::Style;
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Cell;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-/// Wrap `text` to at most `width` columns, breaking at a space when one falls
+/// The cells `text` takes on a terminal: a wide glyph takes two, a combining
+/// mark none. The one measure of text in this crate.
+pub(crate) fn display_width(text: &str) -> usize {
+    UnicodeWidthStr::width(text)
+}
+
+fn glyph_width(glyph: char) -> usize {
+    UnicodeWidthChar::width(glyph).unwrap_or(0)
+}
+
+/// The start of `text` that fits `width` cells.
+pub(crate) fn first_cells(text: &str, width: usize) -> String {
+    let mut cells = 0usize;
+    text.chars()
+        .take_while(|glyph| {
+            cells += glyph_width(*glyph);
+            cells <= width
+        })
+        .collect()
+}
+
+/// `text` padded with spaces to `width` cells, on the left when `right`.
+fn pad(text: &str, width: usize, right: bool) -> String {
+    let fill = " ".repeat(width.saturating_sub(display_width(text)));
+    if right {
+        format!("{fill}{text}")
+    } else {
+        format!("{text}{fill}")
+    }
+}
+
+/// Wrap `text` to at most `width` cells, breaking at a space when one falls
 /// inside the window and hard-breaking any word that is wider than the whole
 /// column. Always returns at least one line (empty input ⇒ one empty line).
-///
-/// Measured in `char`s, matching how the rest of the crate sizes cells.
+/// A glyph wider than the column takes a line of its own.
 pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
+    if display_width(text) <= width {
         return vec![text.to_string()];
     }
+    let chars: Vec<char> = text.chars().collect();
 
     let mut lines = Vec::new();
     let mut start = 0usize;
     while start < chars.len() {
-        if chars.len() - start <= width {
+        let mut end = start;
+        let mut cells = 0usize;
+        while end < chars.len() && cells + glyph_width(chars[end]) <= width {
+            cells += glyph_width(chars[end]);
+            end += 1;
+        }
+        if end == chars.len() {
             lines.push(chars[start..].iter().collect());
             break;
         }
-        // The window is one wider than the column: a space sitting exactly at
-        // the boundary is consumed by the break rather than pushed down.
-        let window = &chars[start..start + width + 1];
-        match window.iter().rposition(|c| *c == ' ') {
+        // The window takes one glyph past the column: a space sitting exactly
+        // at the boundary is consumed by the break rather than pushed down.
+        match chars[start..=end].iter().rposition(|c| *c == ' ') {
             Some(cut) if cut > 0 => {
                 lines.push(chars[start..start + cut].iter().collect());
                 start += cut + 1;
             }
             // No usable break point — the word is longer than the column.
             _ => {
-                lines.push(chars[start..start + width].iter().collect());
-                start += width;
+                let end = end.max(start + 1);
+                lines.push(chars[start..end].iter().collect());
+                start = end;
             }
         }
     }
@@ -239,7 +276,7 @@ pub(crate) fn gave_way_note(hidden: &[&str], room: usize) -> Option<String> {
         format!(" {count} hidden "),
     ]
     .into_iter()
-    .find(|note| note.chars().count() <= room)
+    .find(|note| display_width(note) <= room)
 }
 
 /// One laid-out column of a wrapped row.
@@ -290,7 +327,7 @@ pub(crate) fn column_lines(
         })
         .collect();
     let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
-    let blank = " ".repeat(marker.content.chars().count());
+    let blank = " ".repeat(display_width(&marker.content));
 
     (0..height)
         .map(|row| {
@@ -309,12 +346,7 @@ pub(crate) fn column_lines(
                     continue;
                 }
                 let text = wrapped[index].get(row).cloned().unwrap_or_default();
-                let padded = if column.right {
-                    format!("{text:>width$}")
-                } else {
-                    format!("{text:<width$}")
-                };
-                spans.push(Span::styled(padded, column.style));
+                spans.push(Span::styled(pad(&text, width, column.right), column.style));
             }
             Line::from(spans)
         })
@@ -338,7 +370,7 @@ pub(crate) fn labeled_lines(
     value_style: Style,
     value_width: usize,
 ) -> Vec<Line<'static>> {
-    let hang = " ".repeat(label.content.chars().count());
+    let hang = " ".repeat(display_width(&label.content));
     wrap_text(value, value_width)
         .into_iter()
         .enumerate()

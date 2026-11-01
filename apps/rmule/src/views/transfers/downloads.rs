@@ -34,7 +34,7 @@ use crate::views::{DrawnRows, say_gave_way};
 use crate::views::{human_size, rate_cell};
 use crate::words::download::{ETA_TOO_SLOW, NO_NEEDED_PARTS_STATUS, completing_status, eta_time};
 use crate::words::units::short_hash_or_dash;
-use crate::wrap::{TableColumns, clamp_u16, gave_way, wrapped_cell};
+use crate::wrap::{TableColumns, clamp_u16, display_width, gave_way, wrapped_cell};
 
 /// Width of the in-table chunk map. Fixed so the golden is deterministic
 /// regardless of the table's flex layout — and so the number of parts each
@@ -325,7 +325,7 @@ impl TransfersView {
             if let Some(cap) = cap {
                 let widest = values
                     .iter()
-                    .map(|row| row[index].chars().count())
+                    .map(|row| display_width(&row[index]))
                     .max()
                     .unwrap_or(0);
                 wants[index] = widest.min(cap);

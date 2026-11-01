@@ -35,7 +35,7 @@ use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, head
 use crate::theme::Theme;
 use crate::views::{DrawnRows, day, human_size, say_gave_way};
 use crate::words::serve::PARTIAL;
-use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way};
+use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, display_width, gave_way};
 
 /// Fixed widths of the files table's non-name columns: State · Size ·
 /// Uploading · Requests · Accepted · Transferred — State fits `folder
@@ -85,7 +85,7 @@ fn paired_text(run: u64, total: u64, text: fn(u64) -> String, width: usize) -> (
     // `wrap_text` cannot land inside one (`999.9 GB`, never `999.9` then `GB`).
     let glued = |n| text(n).replace(' ', "\u{a0}");
     let full = format!("{} ({})", glued(run), glued(total));
-    if full.chars().count() <= width {
+    if display_width(&full) <= width {
         (full, false)
     } else {
         (glued(run), true)

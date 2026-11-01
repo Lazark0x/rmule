@@ -25,7 +25,7 @@ use crate::state::{UiState, server_label};
 use crate::theme::Theme;
 use crate::views::modal::{Modal, confirm_key, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
-use crate::wrap::{clamp_u16, labeled_lines, wrap_text, wrapped_lines};
+use crate::wrap::{clamp_u16, display_width, labeled_lines, wrap_text, wrapped_lines};
 
 /// A row-menu entry. `disabled` carries the greyed reason tag (
 /// visible deferral, never silent absence); `None` means enabled.
@@ -116,11 +116,11 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
         .items
         .iter()
         .map(|item| {
-            1 + item.label.chars().count()
+            1 + display_width(&item.label)
                 + item
                     .disabled
                     .as_ref()
-                    .map_or(0, |reason| reason.chars().count() + 1)
+                    .map_or(0, |reason| display_width(&reason) + 1)
         })
         .max()
         .unwrap_or(0)
@@ -149,7 +149,7 @@ pub(super) fn draw_menu(frame: &mut Frame, area: Rect, menu: &Menu, theme: &Them
                     reason,
                     theme.dim_text(),
                     inner_w
-                        .saturating_sub(item.label.chars().count() + 2)
+                        .saturating_sub(display_width(&item.label) + 2)
                         .max(1),
                 ),
             })

@@ -12,6 +12,7 @@
 
 mod kind;
 
+use crate::wrap::display_width;
 use std::collections::BTreeSet;
 
 use ratatui::Frame;
@@ -453,16 +454,15 @@ fn entry_text(entry: &HeldSearch, state: &UiState, current: bool) -> String {
     format!("{open}{label} · {count}{running}{close}")
 }
 
-/// The query capped at [`LABEL_CHARS`] characters; `—` for a search the view
+/// The query capped at [`LABEL_CHARS`] cells; `—` for a search the view
 /// did not send.
 fn label(query: &str) -> String {
     let query = query.trim();
     if query.is_empty() {
         return "—".to_string();
     }
-    if query.chars().count() > LABEL_CHARS {
-        let kept: String = query.chars().take(LABEL_CHARS).collect();
-        format!("{kept}…")
+    if display_width(query) > LABEL_CHARS {
+        format!("{}…", crate::wrap::first_cells(query, LABEL_CHARS))
     } else {
         query.to_string()
     }

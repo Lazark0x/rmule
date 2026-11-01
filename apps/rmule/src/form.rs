@@ -34,7 +34,7 @@ use ratatui::text::{Line, Span};
 use crate::theme::Theme;
 use crate::words::Sentence;
 use crate::words::app as words;
-use crate::wrap::{labeled_lines, wrapped_lines};
+use crate::wrap::{display_width, labeled_lines, wrapped_lines};
 
 /// Label column every form's fields align on — the unification of the two
 /// widths the views had drifted to (Networks 10, Searches 11). Sized to the
@@ -307,7 +307,7 @@ impl Form {
         let widest = self
             .fields
             .iter()
-            .map(|field| field.value().0.chars().count())
+            .map(|field| display_width(&field.value().0))
             .max()
             .unwrap_or(0);
         LABEL_W + 2 + MARKER_W + widest
@@ -470,7 +470,7 @@ impl Form {
             if !field.note.is_empty() {
                 let note = format!("  {}", field.note);
                 let used = field_lines.last().map_or(0, Line::width);
-                if used + note.chars().count() <= width {
+                if used + display_width(&note) <= width {
                     if let Some(last) = field_lines.last_mut() {
                         last.spans.push(Span::styled(note, theme.dim_text()));
                     }

@@ -206,6 +206,27 @@ fn golden_searches_empty() {
     });
 }
 
+/// A name in wide glyphs keeps Size, Sources and Type on screen.
+#[test]
+fn golden_searches_wide_names() {
+    let results = vec![
+        server_result(
+            0x11,
+            "聖闘士星矢ペガサス幻想オープニング完全版テーマ曲集.mp3",
+            4_194_304,
+            42,
+            7,
+        ),
+        server_result(0x22, "plain_name.avi", 512, 5, 0),
+    ];
+    let state = state_with(results, SearchStatus::Running);
+    let theme = Theme::default_dark();
+    let mut view = SearchesView::new().having_sent("ペガサス");
+    assert_golden("searches_wide_names", 78, 21, |frame| {
+        view.draw(frame, frame.area(), &state, &theme, Instant::now());
+    });
+}
+
 #[test]
 fn clicks_focus_the_input_or_select_a_result_row() {
     let state = state_with(three_tier_results(), SearchStatus::Completed { total: 3 });

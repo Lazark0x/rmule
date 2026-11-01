@@ -29,7 +29,9 @@ use crate::table_sort::{SortedTable, TableSort, arrow_floors, header_label, head
 use crate::theme::Theme;
 use crate::views::{DrawnRows, say_gave_way, software_label};
 use crate::words::units::short_hash;
-use crate::wrap::{Column, TableColumns, clamp_u16, column_lines, gave_way, wrapped_lines};
+use crate::wrap::{
+    Column, TableColumns, clamp_u16, column_lines, display_width, gave_way, wrapped_lines,
+};
 
 pub(super) mod sort;
 
@@ -224,7 +226,7 @@ impl SharedView {
         for (index, cap) in PEER_CAPS.into_iter().enumerate() {
             let widest = cells
                 .iter()
-                .map(|row| row[index].text.chars().count())
+                .map(|row| display_width(&row[index].text))
                 .max()
                 .unwrap_or(0);
             wants[index] = widest.min(cap);
