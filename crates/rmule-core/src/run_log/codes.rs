@@ -821,7 +821,11 @@ pub(super) fn dial_end(record: Record, cause: DialEnd) -> Record {
         DialEnd::Os { kind } => return record.code("cause", "os").os_error(kind, None),
         DialEnd::ClosedBeforeHello => "closed_before_hello",
         DialEnd::NoHelloInTime => "no_hello_in_time",
-        DialEnd::ProtocolViolation => "protocol_violation",
+        DialEnd::ProtocolViolation(violation) => {
+            return record
+                .code("cause", "protocol_violation")
+                .code("violation", violation.code());
+        }
         DialEnd::ClosedLocally => "closed_locally",
     };
     record.code("cause", code)

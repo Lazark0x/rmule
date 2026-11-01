@@ -6,7 +6,7 @@ use rmule_peer::{
     PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent, SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{ED2K_PART_SIZE, Packet, PartHash};
+use rmule_primitives::{ED2K_PART_SIZE, Packet};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -23,7 +23,6 @@ fn slotless_standby_transition_on_cancel_transfer() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -73,7 +72,6 @@ fn standby_re_ask_skips_probe_and_hashset() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -118,7 +116,6 @@ fn cancel_latch_prevents_double_emit_in_same_cycle() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "file"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 

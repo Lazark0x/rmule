@@ -350,6 +350,7 @@ fn server_row(event: &ServerEvent) -> EventRow {
         ServerEvent::HashSetRequested { file_hash } => {
             EventRow::new("hash_set_requested", "HashSetRequested").file(*file_hash)
         }
+        ServerEvent::MalformedSlotAsk => EventRow::new("malformed_slot_ask", "MalformedSlotAsk"),
         ServerEvent::SlotRequested { file_hash } => {
             EventRow::new("slot_requested", "SlotRequested").file(*file_hash)
         }

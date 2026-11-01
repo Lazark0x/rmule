@@ -28,6 +28,7 @@ opcodes! {
         CancelTransfer = 0x56,
         OutOfPartReqs = 0x57,
         QueueRanking = 0x60,
+        QueueRank = 0x5C,
         RequestParts = 0x47,
         RequestPartsI64 = 0xA3,
         SendingPart = 0x46,

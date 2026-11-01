@@ -44,7 +44,7 @@ pub enum DialEnd {
     /// No hello arrived inside the startup deadline.
     NoHelloInTime,
     /// The peer sent what the session could not accept before its hello.
-    ProtocolViolation,
+    ProtocolViolation(rmule_peer::PeerViolation),
     /// rmule closed the connection before the hello (the run stopping).
     ClosedLocally,
 }

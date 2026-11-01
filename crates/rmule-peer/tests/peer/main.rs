@@ -33,6 +33,7 @@ mod truncation;
 // does with frames that arrive out of turn.
 mod emule_info_exchange;
 mod ext_protocol_gates;
+mod peer_frame_legs;
 mod peer_inbound_handshake;
 mod peer_secure_ident;
 mod peer_session;

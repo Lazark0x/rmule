@@ -210,7 +210,6 @@ fn queueranking_dedups_identical_ranks_and_emits_progress_on_improvement() {
     // active_slot is set.
     session.handle_bytes(&reqfilename_answer(h, "f.bin"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&queueranking(10));
@@ -256,7 +255,6 @@ fn queued_for(f: rmule_primitives::FileHash) -> rmule_peer::PeerSession {
     }));
     session.handle_bytes(&reqfilename_answer(f, "f"));
     session.handle_bytes(&file_status(f, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(f, &[PartHash::from_bytes([0; 16])]));
     let asked = drain(|| session.poll_output());
     assert!(
         events(&asked).iter().any(|e| matches!(
@@ -385,7 +383,6 @@ fn a_mid_slot_no_file_answer_ends_the_slot_as_file_not_found() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "x"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -423,7 +420,6 @@ fn slot_grant_then_part_download_completes() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "x"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
 
     session.handle_bytes(&acceptuploadreq());
@@ -521,7 +517,6 @@ fn cancel_transfer_writes_op_canceltransfer_and_releases_the_active_slot() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "c"));
     session.handle_bytes(&file_status(h, 2, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
     // Slot granted (active and holding): a worker torn down now for a local
     // reason (CancelDownload/PauseDownload/complete-overshoot, ADR-0056)
@@ -601,7 +596,6 @@ fn additional_request_parts_under_held_slot_sends_requestparts_without_startuplo
     }));
     session.handle_bytes(&reqfilename_answer(h, "x"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output()); // first STARTUPLOADREQ + REQUESTPARTS
 

@@ -89,14 +89,16 @@ impl HashSetAnswer {
                 .ok_or(WireFault::CountOverflow {
                     count: declared_count,
                 })?;
-        if body.len() != expected_body {
+        // aMule reads the counted hashes and looks no further
+        // (`KnownFile.cpp:505-512`): the count must fit, not fill.
+        if body.len() < expected_body {
             return Err(WireFault::LengthMismatch {
                 declared: declared_count,
                 actual: body.len(),
             });
         }
         let mut part_hashes = Vec::with_capacity(declared_count);
-        for chunk in body.chunks_exact(PartHash::BYTE_LEN) {
+        for chunk in body[..expected_body].chunks_exact(PartHash::BYTE_LEN) {
             let mut buf = [0u8; PartHash::BYTE_LEN];
             buf.copy_from_slice(chunk);
             part_hashes.push(PartHash::from_bytes(buf));

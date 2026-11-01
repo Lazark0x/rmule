@@ -12,14 +12,14 @@ use rmule_peer::{
 };
 use rmule_primitives::{ClientId, Ed2kText, Packet, PacketProtocol, WrongFrame};
 
-// --- Browse requests: 0x4A / 0x5D / 0x5E — payload never inspected ---------
+// --- Browse requests: 0x4A / 0x5D / 0x5E — their payload changes no answer --
 
 #[test]
 fn browse_requests_decode_and_ignore_any_payload() {
     for (opcode, junk) in [
         (0x4Au8, vec![]),
         (0x5D, vec![0xAA; 3]),
-        (0x5E, b"movies".to_vec()),
+        (0x5E, b"\x06\x00movies".to_vec()),
     ] {
         let packet = Packet::new(PacketProtocol::Edonkey, opcode, junk);
         let decoded = PeerPacket::decode(&packet).expect("browse request always decodes");
@@ -92,7 +92,11 @@ fn filedesc_encodes_under_emule_0x61_not_edonkey() {
 #[test]
 fn opcode_0x60_disambiguates_by_protocol_filesdirans_vs_queueranking() {
     // Edonkey: the new unsolicited-answer row (ADR-0068), payload ignored.
-    let filesdirans = Packet::new(PacketProtocol::Edonkey, 0x60, vec![0xEE; 6]);
+    let filesdirans = Packet::new(
+        PacketProtocol::Edonkey,
+        0x60,
+        vec![4, 0, 0xEE, 0xEE, 0xEE, 0xEE],
+    );
     assert_eq!(
         PeerPacket::decode(&filesdirans).expect("edonkey 0x60 decodes"),
         PeerPacket::AskSharedFilesDirAns

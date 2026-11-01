@@ -12,9 +12,9 @@ use std::net::Ipv4Addr;
 
 use rmule_peer::{
     AnswerSources, AnswerSources2, BundledAsk, HelloAnswer, MiscOptions1, MiscOptions2,
-    ModMiscOptions, MultiPacketRequest, NoticeEvent, PeerCommand, PeerEvent, PeerHelloBody,
-    PeerOutput, PeerSession, RequestItem, RequestSources2, RequestSourcesPacket,
-    ServedSourcesVersion, ServerCommand, ServerEvent, SourceExchangeVersion,
+    ModMiscOptions, MultiPacketRequest, PeerCommand, PeerEvent, PeerHelloBody, PeerOutput,
+    PeerSession, RequestItem, RequestSources2, RequestSourcesPacket, ServedSourcesVersion,
+    ServerCommand, ServerEvent, SourceExchangeVersion,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{
@@ -297,29 +297,6 @@ fn the_pack_threshold_gates_the_answersources_emit() {
         over_threshold.opcode(),
         0x82,
         "the answersources opcode rides through the 0xD4 pack",
-    );
-}
-
-#[test]
-fn a_serve_request_before_identify_is_preserved_as_unknown_not_answered() {
-    // The serve callback never fires on an out-of-order request: an inbound
-    // 0x81 before the hello exchange is preserved as Unknown, session open.
-    let mut session = PeerSession::new_inbound(peer_at(9), ctx());
-    session.handle_bytes(&plain_ask(file_hash(0x42)));
-    let out = drain(|| session.poll_output());
-    assert!(
-        sources_requested(&out).is_none(),
-        "no serve callback before the peer has identified",
-    );
-    assert!(
-        out.iter().any(|o| matches!(
-            o,
-            PeerOutput::Event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
-                opcode: 0x81,
-                ..
-            }))
-        )),
-        "the premature request is preserved as Unknown (ADR-0018)",
     );
 }
 

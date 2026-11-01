@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(
             worker.next_event().await,
             Some(PeerWorkerEvent::DialEnded {
-                cause: crate::service::DialEnd::ProtocolViolation
+                cause: crate::service::DialEnd::ProtocolViolation(crate::PeerViolation::BadHello)
             })
         );
         assert_eq!(

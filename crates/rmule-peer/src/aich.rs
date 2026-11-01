@@ -19,7 +19,7 @@ use crate::error::WireFault;
 use crate::opcode::PeerOpcode;
 
 /// Fixed header shared by both packets: file hash + part number + master hash.
-const HEADER_LEN: usize = FileHash::BYTE_LEN + 2 + AichRootHash::BYTE_LEN;
+pub(crate) const HEADER_LEN: usize = FileHash::BYTE_LEN + 2 + AichRootHash::BYTE_LEN;
 
 /// The fixed header both packets open with.
 fn read_header(reader: &mut WireReader<'_>) -> Result<(FileHash, u16, AichRootHash), WireFault> {
@@ -182,7 +182,9 @@ impl AichFileHashReq {
     /// Read the request.
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
-        if payload.len() != FileHash::BYTE_LEN {
+        // aMule reads the hash and looks no further
+        // (`ClientTCPSocket.cpp:1672-1686`).
+        if payload.len() < FileHash::BYTE_LEN {
             return Err(WireFault::WrongSize {
                 expected: FileHash::BYTE_LEN,
                 actual: payload.len(),
@@ -224,10 +226,11 @@ pub struct AichFileHashAns {
 impl AichFileHashAns {
     const PAYLOAD_LEN: usize = FileHash::BYTE_LEN + AichRootHash::BYTE_LEN;
 
-    /// Read the standalone answer, which must carry both hashes.
+    /// Read the standalone answer's two hashes; aMule reads no more
+    /// (`DownloadClient.cpp:1698-1706`).
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
-        if payload.len() != Self::PAYLOAD_LEN {
+        if payload.len() < Self::PAYLOAD_LEN {
             return Err(WireFault::WrongSize {
                 expected: Self::PAYLOAD_LEN,
                 actual: payload.len(),

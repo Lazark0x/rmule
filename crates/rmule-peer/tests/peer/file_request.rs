@@ -138,15 +138,6 @@ fn op_filestatus_complete_file_signal_is_zero_part_count_no_bitmap() {
 }
 
 #[test]
-fn op_filestatus_rejects_bitmap_length_mismatch() {
-    let mut payload = hash().as_bytes().to_vec();
-    payload.extend_from_slice(&10u16.to_le_bytes());
-    payload.push(0xFF); // declared 10 parts → expects 2 bytes, given 1
-    let packet = Packet::new(PacketProtocol::Edonkey, 0x50, payload);
-    assert!(PeerPacket::decode(&packet).is_err());
-}
-
-#[test]
 fn unknown_opcode_in_family_preserves_bytes_with_protocol_attribution() {
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     // 0x53 is unused in the file-request family at the pin.

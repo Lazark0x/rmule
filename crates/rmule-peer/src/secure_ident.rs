@@ -151,6 +151,7 @@ pub struct SignaturePacket {
 impl SignaturePacket {
     /// Read a signature, taking a trailing byte as the V2 `byIPUsed` kind.
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        over_sui_ceiling(packet.payload())?;
         let mut reader = WireReader::new(packet.payload());
         let len = usize::from(reader.read_u8("signature length")?);
         let body_len = reader.remaining();
@@ -187,7 +188,22 @@ impl SignaturePacket {
     }
 }
 
+/// `nSize > 250`, the bound both of aMule's readers log and return on
+/// (`BaseClient.cpp:2128-2150`, `:2164-2180`).
+const SUI_BODY_CEILING: usize = 250;
+
+fn over_sui_ceiling(payload: &[u8]) -> Result<(), WireFault> {
+    if payload.len() > SUI_BODY_CEILING {
+        return Err(WireFault::WrongSize {
+            expected: SUI_BODY_CEILING,
+            actual: payload.len(),
+        });
+    }
+    Ok(())
+}
+
 fn decode_length_prefixed(payload: &[u8]) -> Result<Vec<u8>, WireFault> {
+    over_sui_ceiling(payload)?;
     let mut reader = WireReader::new(payload);
     let len = usize::from(reader.read_u8("length prefix")?);
     let actual = reader.remaining();

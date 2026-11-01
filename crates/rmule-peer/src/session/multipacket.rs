@@ -3,7 +3,9 @@
 //! fanned back out as one composed answer.
 //!
 //! A bundle answers only once every sub-item it actually asked for has an
-//! answer; sub-items the bundle omitted never appear in the composition.
+//! answer; sub-items the bundle omitted never appear in the composition, and
+//! their standalone asks are answered standalone, open bundle or not. Core
+//! answers a link's asks in order, so a bundle's own answers reach it first.
 
 use rmule_primitives::{AichRootHash, Ed2kText, FileHash};
 
@@ -52,23 +54,55 @@ impl FlushGate {
 /// `OP_MULTIPACKET`/`OP_MULTIPACKET_EXT` request is owed, so they can compose
 /// into one `OP_MULTIPACKETANSWER` instead of separate packets (ADR-0054). The
 /// `Option` fields fill in as core's existing `Answer*` commands arrive, in
-/// whatever order.
+/// whatever order; each holds at most the one answer its bundle asked for.
 #[derive(Debug)]
 pub(super) struct PendingMultipacketAnswer {
     gate: FlushGate,
-    pub(super) name: Option<Ed2kText>,
-    pub(super) status: Option<WireStatus>,
-    pub(super) aich: Option<AichRootHash>,
+    asks_aich: bool,
+    name: Option<Ed2kText>,
+    status: Option<WireStatus>,
+    aich: Option<AichRootHash>,
 }
 
 impl PendingMultipacketAnswer {
-    const fn opened(gate: FlushGate) -> Self {
+    fn opened(gate: FlushGate, items: &[RequestItem]) -> Self {
         Self {
             gate,
+            asks_aich: items.iter().any(|i| matches!(i, RequestItem::AichRoot)),
             name: None,
             status: None,
             aich: None,
         }
+    }
+
+    /// Take `name` when the bundle still owes one, else hand it back to go
+    /// out standalone.
+    pub(super) fn take_name(&mut self, name: Ed2kText) -> Option<Ed2kText> {
+        let owed = matches!(self.gate, FlushGate::Name | FlushGate::NameAndStatus);
+        if owed && self.name.is_none() {
+            self.name = Some(name);
+            return None;
+        }
+        Some(name)
+    }
+
+    /// As [`Self::take_name`], for a part status.
+    pub(super) fn take_status(&mut self, status: WireStatus) -> Option<WireStatus> {
+        let owed = matches!(self.gate, FlushGate::Status | FlushGate::NameAndStatus);
+        if owed && self.status.is_none() {
+            self.status = Some(status);
+            return None;
+        }
+        Some(status)
+    }
+
+    /// As [`Self::take_name`], for an AICH root.
+    pub(super) fn take_aich(&mut self, root: AichRootHash) -> Option<AichRootHash> {
+        if self.asks_aich && self.aich.is_none() {
+            self.aich = Some(root);
+            return None;
+        }
+        Some(root)
     }
 
     /// Whether every answer the gate names has arrived.
@@ -94,8 +128,10 @@ impl PeerSession {
     /// source subs out-of-band as well, ADR-0055).
     pub(super) fn on_multipacket_request(&mut self, req: MultiPacketRequest) {
         if let Some(gate) = FlushGate::for_items(&req.items) {
-            self.served_multipacket
-                .insert(req.file_hash, PendingMultipacketAnswer::opened(gate));
+            self.served_multipacket.insert(
+                req.file_hash,
+                PendingMultipacketAnswer::opened(gate, &req.items),
+            );
         }
         let mut asks = Vec::with_capacity(req.items.len());
         for item in &req.items {

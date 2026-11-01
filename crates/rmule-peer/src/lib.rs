@@ -89,10 +89,12 @@ pub use secure_ident::{
 pub use session::{
     AskedRanges, ConnectionCommand, ConnectionEvent, EventRow, FileProbeStatus, IdentityChange,
     NoticeEvent, PeerCloseReason, PeerCommand, PeerError, PeerEvent, PeerOutput, PeerSession,
-    RequesterCommand, RequesterEvent, RowValue, SecureIdentFailure, ServerCommand, ServerEvent,
-    SideCommand, SideEvent, SlotReleaseReason, SourceExchangeSupport,
+    PeerViolation, RequesterCommand, RequesterEvent, RowValue, SecureIdentFailure, ServerCommand,
+    ServerEvent, SideCommand, SideEvent, SlotReleaseReason, SourceExchangeSupport,
 };
-pub use slot::{AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRanking, StartUploadReq};
+pub use slot::{
+    AcceptUploadReq, CancelTransfer, OutOfPartReqs, QueueRank, QueueRanking, StartUploadReq,
+};
 pub use software::{ClientFamily, ClientMod, ClientSoftware, ClientVersion, SoftwareEvidence};
 pub use source_exchange::{
     AnswerSources, AnswerSources2, AnswerSources2DecodeError, AnswerSourcesDecodeError,

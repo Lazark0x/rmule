@@ -146,20 +146,22 @@ fn a_tcp_packet_cut_anywhere_inside_its_shape_is_an_error() {
             SetReqFileId { file_hash: hash() }.encode_packet(),
         ),
         (
-            "file status",
-            FileStatus {
-                file_hash: hash(),
-                bitmap: bitmap(),
-            }
-            .encode_packet(),
-        ),
-        (
             "file-name ask, bare hash",
             RequestFileName::new(hash(), None).encode_packet(),
         ),
     ];
     for (name, packet) in &cases {
         assert_cuts_fail(name, packet);
+    }
+
+    // A status's bitmap is sized by the file, which only the session knows.
+    let status = FileStatus {
+        file_hash: hash(),
+        bitmap: bitmap(),
+    }
+    .encode_packet();
+    for cut in 0..18 {
+        assert!(PeerPacket::decode(&cut_payload(&status, cut)).is_err());
     }
 
     // The answer cut to its file hash reads as aMule's 16-byte refusal.

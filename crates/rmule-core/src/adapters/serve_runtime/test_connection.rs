@@ -74,6 +74,7 @@ const fn asks_to_be_served(request: &ServerEvent) -> bool {
         | ServerEvent::FileIdSet { .. }
         | ServerEvent::HashSetRequested { .. }
         | ServerEvent::SlotRequested { .. }
+        | ServerEvent::MalformedSlotAsk
         | ServerEvent::PartsRequested { .. }
         | ServerEvent::SourcesRequested { .. }
         | ServerEvent::AichRequested { .. }

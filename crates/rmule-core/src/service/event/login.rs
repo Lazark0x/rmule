@@ -195,7 +195,7 @@ impl From<&rmule_peer::PeerCloseReason> for PortTestClosedBy {
         match reason {
             R::Local => Self::Us,
             R::PeerClosed => Self::Peer,
-            R::ProtocolViolation => Self::ProtocolViolation,
+            R::ProtocolViolation(_) => Self::ProtocolViolation,
             R::Io(kind) => Self::Io { kind: *kind },
             R::ConnectTimeout | R::HelloTimeout => Self::Timeout,
             // `PeerCloseReason` is non-exhaustive: a variant it gains keeps

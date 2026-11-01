@@ -126,6 +126,7 @@ async fn a_dialed_connection_serves_the_peer_it_dialed_on_the_same_socket() {
                     }))
                     .await
                     .unwrap(),
+                ServeInput::Server(ServerEvent::MalformedSlotAsk) => {}
                 ServeInput::Server(ServerEvent::FileBundleRequested {
                     file_hash, asks, ..
                 }) => {

@@ -22,7 +22,8 @@
 //! and receiver requires exactly 12 bytes via `PeekUInt16` on the head
 //! (`ClientTCPSocket.cpp:1331-1349`). Legacy `OP_QUEUERANK = 0x5C` (u32,
 //! standard protocol) has never been sent by any aMule version (git
-//! search returns zero hits) and falls through to `PeerPacket::Unknown`.
+//! search returns zero hits), yet aMule still reads it and throws on a short
+//! one (`ClientTCPSocket.cpp:649-652`), so it decodes all the same.
 
 use rmule_primitives::{FileHash, Packet, WireReader, empty_body_codec};
 
@@ -46,6 +47,32 @@ pub struct StartUploadReq {
 pub struct QueueRanking {
     /// Places ahead of the peer.
     pub rank: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `OP_QUEUERANK` (`0x5C`) — the rank as an older client states it.
+pub struct QueueRank {
+    /// Places ahead of the peer, as much of the four wire bytes as aMule's
+    /// sixteen-bit rank keeps.
+    pub rank: u16,
+}
+
+impl QueueRank {
+    /// Read the rank's four bytes; anything after them is unread.
+    pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
+        let rank = WireReader::new(packet.payload()).read_u32_le("queue rank")?;
+        Ok(Self { rank: rank as u16 })
+    }
+
+    #[must_use]
+    /// Frame the rank.
+    pub fn encode_packet(&self) -> Packet {
+        Packet::new(
+            PeerOpcode::QueueRank.protocol(),
+            PeerOpcode::QueueRank.as_u8(),
+            u32::from(self.rank).to_le_bytes().to_vec(),
+        )
+    }
 }
 
 impl StartUploadReq {

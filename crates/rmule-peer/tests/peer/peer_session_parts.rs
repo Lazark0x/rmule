@@ -7,8 +7,8 @@ use rmule_peer::{
     FileProbeStatus, HelloAnswer, InflateFailed, PartRanges, PeerCommand, PeerEvent, PeerOutput,
     PeerSession, RequesterCommand, RequesterEvent,
 };
+use rmule_primitives::UserHash;
 use rmule_primitives::session::drain;
-use rmule_primitives::{PartHash, UserHash};
 use rmule_testkit::peer_session::*;
 
 /// A session whose peer's hello carries no `MiscOptions2` at all, as a
@@ -38,7 +38,6 @@ fn sendingpart_i64_decodes_offset_above_4gb() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "big"));
     session.handle_bytes(&file_status(h, 1028, &[0xFF; 129]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -70,7 +69,6 @@ fn a_request_is_as_wide_as_its_highest_offset_not_as_its_file() {
     request(&mut session, [(0, block), (0, 0), (0, 0)]);
     session.handle_bytes(&reqfilename_answer(h, "big"));
     session.handle_bytes(&file_status(h, 823, &[0xFF; 103]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     let _ = drain(|| session.poll_output());
     session.handle_bytes(&acceptuploadreq());
     let opcodes =
@@ -139,7 +137,6 @@ fn compressed_part_inflates_to_part_received() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -168,7 +165,6 @@ fn corrupt_compressed_part_is_skipped_and_keeps_session_open() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -204,7 +200,6 @@ fn oversized_declared_compressed_len_is_refused_before_buffering() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -237,7 +232,6 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -255,17 +249,8 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
         "8 in-flight blocks are within budget"
     );
 
-    // The 9th never-completing start is refused. A second file we probed (so
-    // its flow exists) holds no granted slot, so its chunk opens nothing.
-    let h2 = file_hash(0x90);
-    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
-        file_hash: h2,
-        file_size: 20_000_000,
-        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
-    }));
-    let _ = drain(|| session.poll_output());
+    // The 9th never-completing start is refused.
     session.handle_bytes(&compressedpart_chunk(h, 900_000, 1_000, &[0x11; 10]));
-    session.handle_bytes(&compressedpart_chunk(h2, 0, 1_000, &[0x11; 10]));
     let out = drain(|| session.poll_output());
     let refused = events(&out)
         .iter()
@@ -280,11 +265,6 @@ fn inflight_compressed_blocks_are_capped_session_wide() {
         })
         .count();
     assert_eq!(refused, 1, "the 9th start is refused");
-    assert_eq!(
-        events(&out).len(),
-        1,
-        "the other file's chunk is dropped unread"
-    );
 
     // Completing an in-flight block frees its slot: junk bytes reaching the
     // declared length inflate-fail, the entry is dropped, and the same start
@@ -332,7 +312,6 @@ fn a_compressed_block_cut_by_the_slot_end_leaves_nothing_for_the_next_slot() {
     session.handle_command(request());
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 

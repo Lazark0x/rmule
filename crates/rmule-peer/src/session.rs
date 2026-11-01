@@ -32,6 +32,7 @@ mod command;
 mod download;
 mod error;
 mod event;
+mod frame_gate;
 mod human_layer;
 mod identity;
 mod large_file;
@@ -46,7 +47,7 @@ pub use self::asked_ranges::AskedRanges;
 pub use self::command::{
     ConnectionCommand, PeerCommand, PeerOutput, RequesterCommand, ServerCommand, SideCommand,
 };
-pub use self::error::{PeerCloseReason, PeerError, SecureIdentFailure};
+pub use self::error::{PeerCloseReason, PeerError, PeerViolation, SecureIdentFailure};
 pub use self::event::{
     ConnectionEvent, EventRow, FileProbeStatus, IdentityChange, NoticeEvent, PeerEvent,
     RequesterEvent, RowValue, ServerEvent, SideEvent, SlotReleaseReason,
@@ -117,6 +118,11 @@ pub struct PeerSession {
     /// Every block range this link asked since the uploader last cleared its
     /// list: handed to the requester at each grant (ADR-0107).
     asked_ranges: AskedRanges,
+    /// The `OP_AICHREQUEST`s out on this link, by file and part, each settled
+    /// by one answer: aMule's `m_fAICHRequested`, which a second answer finds
+    /// down and throws on (`DownloadClient.cpp:1606-1608`). Grows only by our
+    /// own asks.
+    asked_aich: Vec<(FileHash, u16)>,
     /// `Some` once the Server Capability has granted this connection an
     /// upload slot for a file (set by `GrantSlot`, cleared when the peer
     /// cancels it). The serve-side mirror of `active_slot`; the
@@ -220,6 +226,7 @@ impl PeerSession {
             active_slot: None,
             slot_offered: false,
             asked_ranges: AskedRanges::default(),
+            asked_aich: Vec::new(),
             served_slot: None,
             block_on_its_way: None,
             served_multipacket: HashMap::new(),
@@ -483,8 +490,8 @@ impl PeerSession {
             .push_event(PeerEvent::Notice(NoticeEvent::CommandRejected { reason }));
     }
 
-    fn close_protocol_violation(&mut self) {
-        self.close(PeerCloseReason::ProtocolViolation);
+    fn close_protocol_violation(&mut self, violation: PeerViolation) {
+        self.close(PeerCloseReason::ProtocolViolation(violation));
     }
 
     /// Close with `reason`: [`SessionCore::close`] owns the paired

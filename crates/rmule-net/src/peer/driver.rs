@@ -89,8 +89,11 @@ impl DrivenSession for PeerDriven {
         tracing::debug!(event = ?event, "peer driver event");
     }
     fn trace_close(reason: &PeerCloseReason) {
-        if matches!(reason, PeerCloseReason::ProtocolViolation) {
-            tracing::warn!(reason = ?reason, "peer connection closed on protocol violation");
+        if let PeerCloseReason::ProtocolViolation(violation) = reason {
+            tracing::warn!(
+                violation = violation.code(),
+                "peer connection closed on protocol violation"
+            );
         } else {
             tracing::info!(reason = ?reason, "peer connection closed");
         }

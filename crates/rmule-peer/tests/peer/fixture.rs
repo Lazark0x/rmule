@@ -108,3 +108,16 @@ pub fn identified_session() -> PeerSession {
     let _ = drain(|| session.poll_output());
     session
 }
+
+/// [`identified_session`] with a peer that claims source exchange 1.
+pub fn identified_session_claiming_sx1() -> PeerSession {
+    let mut session = PeerSession::new_outbound(peer_at(55), ctx());
+    session.start();
+    let _ = drain(|| session.poll_output());
+    let mut body = plain_hello_body(UserHash::from_bytes([0x99; 16]));
+    body.tags
+        .push(rmule_peer::MiscOptions1::from_bits(1 << 12).to_tag());
+    session.handle_bytes(&HelloAnswer::new(body).encode_packet().encode());
+    let _ = drain(|| session.poll_output());
+    session
+}

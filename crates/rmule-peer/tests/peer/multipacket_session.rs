@@ -485,6 +485,12 @@ fn unknown_sub_in_a_bundled_answer_keeps_the_valid_prefix_and_stays_open() {
     .encode();
 
     let mut session = identified_outbound_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
+        file_hash: fh,
+        file_size: 20_000_000,
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
+    }));
+    let _ = drain(|| session.poll_output());
     session.handle_bytes(&bytes);
     let out = drain(|| session.poll_output());
 
@@ -497,7 +503,7 @@ fn unknown_sub_in_a_bundled_answer_keeps_the_valid_prefix_and_stays_open() {
 }
 
 #[test]
-fn bundled_request_before_hello_is_unknown_preserved_and_stays_open() {
+fn bundled_request_before_hello_costs_the_link() {
     let fh = FileHash::from_bytes([0xB9; FileHash::BYTE_LEN]);
     let mut session = PeerSession::new_inbound(peer_at(40), serverless_ctx());
     let request = MultiPacketRequest {
@@ -509,18 +515,13 @@ fn bundled_request_before_hello_is_unknown_preserved_and_stays_open() {
     };
     session.handle_bytes(&request.encode_packet().encode());
     let out = drain(|| session.poll_output());
-
-    assert!(
-        events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::Notice(NoticeEvent::UnknownPacket { .. })))
-    );
+    assert!(out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
     assert!(
         !events(&out)
             .iter()
-            .any(|e| matches!(e, PeerEvent::Server(ServerEvent::FileRequested { .. })))
+            .any(|e| matches!(e, PeerEvent::Server(_))),
+        "nothing reaches core: {out:?}"
     );
-    assert!(!out.iter().any(|o| matches!(o, PeerOutput::Close(_))));
 }
 
 #[test]

@@ -110,13 +110,16 @@ fn op_hashsetanswer_accepts_zero_part_count_for_single_chunk_file() {
 }
 
 #[test]
-fn op_hashsetanswer_rejects_trailing_bytes() {
+fn op_hashsetanswer_reads_past_nothing_after_its_counted_hashes() {
     let mut payload = hash().as_bytes().to_vec();
     payload.extend_from_slice(&1u16.to_le_bytes());
     payload.extend_from_slice(part_hash(0).as_bytes());
-    payload.push(0xFF); // trailing byte not covered by declared hash count
+    payload.push(0xFF); // aMule stops at the count and never sees this byte
     let packet = Packet::new(PacketProtocol::Edonkey, 0x52, payload);
-    assert!(PeerPacket::decode(&packet).is_err());
+    let PeerPacket::HashSetAnswer(answer) = PeerPacket::decode(&packet).expect("reads") else {
+        panic!("not a hash set");
+    };
+    assert_eq!(answer.part_hashes.hashes(), &[part_hash(0)]);
 }
 
 /// The largest set eD2k has, for a file of exactly 256 GiB, frames and reads

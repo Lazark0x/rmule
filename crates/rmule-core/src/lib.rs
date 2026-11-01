@@ -224,7 +224,7 @@ pub use rmule_net::portmap::live_backends as live_mapping_backends;
 /// configures [`NattConfig`] without depending on `rmule-peer` (ADR-0091's
 /// port-prediction amendment).
 pub use rmule_peer::natt::{OwnMapping, PortPrediction};
-pub use rmule_peer::{HelloRefusal, HelloRefusalCode};
+pub use rmule_peer::{HelloRefusal, HelloRefusalCode, PeerViolation};
 pub use search::{KadKeywordSink, MORE_RESULTS_ASKS, RelatedSearchRefusal, ServerMoreResults};
 pub use served_downloads::PartialEnd;
 pub use server_session::build_peer_handshake_context;

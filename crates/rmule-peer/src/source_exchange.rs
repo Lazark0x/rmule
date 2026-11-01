@@ -667,6 +667,16 @@ impl RequestSources2 {
         )
     }
 
+    /// The `<ver 1>` of a peer's ask, read after confirming the three-byte
+    /// trailer aMule reads before anything decides
+    /// (`ClientTCPSocket.cpp:1447-1450`) is there.
+    pub(crate) fn requested_version(packet: &Packet) -> Result<u8, WireFault> {
+        let mut reader = WireReader::new(packet.payload());
+        let version = reader.read_u8("version")?;
+        reader.read_u16_le("options")?;
+        Ok(version)
+    }
+
     /// Read a peer's standalone ask, requiring the full 19 bytes rather
     /// than aMule's `size != 16` check (see the type docs).
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {

@@ -75,13 +75,6 @@ pub enum WireFault {
         end: u64,
     },
 
-    /// A bundle claimed a file size above eD2k's 256 GiB ceiling.
-    #[error("file size {size} exceeds the eD2k maximum")]
-    FileSizeOutOfRange {
-        /// The size the bundle claimed.
-        size: u64,
-    },
-
     /// `OP_SECIDENTSTATE`'s state byte names no state this crate knows.
     #[error("unknown secure-identification state byte 0x{value:02X}")]
     UnknownState {

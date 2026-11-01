@@ -61,6 +61,11 @@ pub enum ServerEvent {
         /// The file the peer wants to download.
         file_hash: FileHash,
     },
+    /// `OP_STARTUPLOADREQ` of the wrong size: it asks for nothing, and aMule
+    /// lets it pass, but scores it as an ask first (stock 2.3.3
+    /// `ClientTCPSocket.cpp:601-618`), so a peer that keeps sending it reaches
+    /// the same ban a fast asker does.
+    MalformedSlotAsk,
     /// The remote peer requested part ranges on its
     /// granted slot (`OP_REQUESTPARTS`). Core reads the bytes
     /// (`read_range`) and pushes them with `SendBlock`.

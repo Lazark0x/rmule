@@ -283,10 +283,9 @@ impl ReqFileNameAnswer {
         }
         let mut reader = WireReader::new(payload);
         let file_hash = reader.read_file_hash("file hash")?;
+        // aMule reads the string and looks no further
+        // (`DownloadClient.cpp:350`).
         let file_name = Ed2kText::from_bytes(reader.read_len16_bytes("file name")?.to_vec());
-        if !reader.is_exhausted() {
-            return Err(WireFault::TrailingBytes);
-        }
         Ok(Self {
             file_hash,
             file_name,
@@ -309,7 +308,10 @@ impl ReqFileNameAnswer {
 }
 
 impl FileStatus {
-    /// Read the status answer, bitmap included.
+    /// Read the status answer. How much bitmap aMule reads depends on the file
+    /// (`DownloadClient.cpp:430-449`), which this frame does not name a size
+    /// for: bytes past the count's own bitmap are unread, missing ones read as
+    /// not held, and the session, which knows the file, calls a cut one.
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN + 2 {
@@ -321,7 +323,7 @@ impl FileStatus {
         let mut reader = WireReader::new(payload);
         let file_hash = reader.read_file_hash("file hash")?;
         let part_count = reader.read_u16_le("part count")?;
-        let bitmap = WireStatus::decode(part_count, reader.remaining_bytes())?;
+        let bitmap = WireStatus::padded(part_count, reader.remaining_bytes());
         Ok(Self { file_hash, bitmap })
     }
 

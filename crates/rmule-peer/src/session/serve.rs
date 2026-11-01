@@ -62,21 +62,22 @@ impl PeerSession {
     }
 
     /// Server Capability — answer an inbound `RequestFileName` with the file's
-    /// name, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054) instead
-    /// of framing `OP_REQFILENAMEANSWER` standalone when this file's request
-    /// arrived bundled.
+    /// name, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054) that
+    /// still owes one instead of framing `OP_REQFILENAMEANSWER` standalone.
     pub(super) fn answer_file_name(&mut self, file_hash: FileHash, file_name: Ed2kText) {
-        if let Some(pending) = self.served_multipacket.get_mut(&file_hash) {
-            pending.name = Some(file_name);
-            self.try_flush_multipacket_answer(file_hash);
-        } else {
-            self.write_packet(
+        let file_name = match self.served_multipacket.get_mut(&file_hash) {
+            Some(pending) => pending.take_name(file_name),
+            None => Some(file_name),
+        };
+        match file_name {
+            Some(file_name) => self.write_packet(
                 ReqFileNameAnswer {
                     file_hash,
                     file_name,
                 }
                 .encode_packet(),
-            );
+            ),
+            None => self.try_flush_multipacket_answer(file_hash),
         }
     }
 
@@ -92,7 +93,7 @@ impl PeerSession {
 
     /// Server Capability — answer an inbound `SetReqFileId` with the file's
     /// part bitmap, composing into a pending `OP_MULTIPACKETANSWER` (ADR-0054)
-    /// instead of framing `OP_FILESTATUS` standalone when bundled. A bitmap
+    /// that still owes one instead of framing `OP_FILESTATUS` standalone. A bitmap
     /// holding every part collapses to aMule's own writer shape first
     /// (`ClientTCPSocket.cpp` `OP_SETREQFILEID`, kno `ab483654`:
     /// `IsPartFile() ? WritePartStatus() : data.WriteUInt16(0)` — a
@@ -106,11 +107,13 @@ impl PeerSession {
         } else {
             bitmap
         };
-        if let Some(pending) = self.served_multipacket.get_mut(&file_hash) {
-            pending.status = Some(bitmap);
-            self.try_flush_multipacket_answer(file_hash);
-        } else {
-            self.write_packet(FileStatus { file_hash, bitmap }.encode_packet());
+        let bitmap = match self.served_multipacket.get_mut(&file_hash) {
+            Some(pending) => pending.take_status(bitmap),
+            None => Some(bitmap),
+        };
+        match bitmap {
+            Some(bitmap) => self.write_packet(FileStatus { file_hash, bitmap }.encode_packet()),
+            None => self.try_flush_multipacket_answer(file_hash),
         }
     }
 

@@ -12,9 +12,7 @@ use rmule_peer::{
     SlotReleaseReason,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{
-    ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol, PartHash,
-};
+use rmule_primitives::{ClientId, Ed2kText, FileHash, Ipv4Endpoint, Packet, PacketProtocol};
 use rmule_testkit::peer_session::{ctx, events, file_hash, peer_at, writes};
 
 // --- Wire helpers -----------------------------------------------
@@ -28,7 +26,7 @@ fn ask_shared_dirs() -> Vec<u8> {
 }
 
 fn ask_shared_files_dir() -> Vec<u8> {
-    Packet::new(PacketProtocol::Edonkey, 0x5E, b"incoming".to_vec()).encode()
+    Packet::new(PacketProtocol::Edonkey, 0x5E, b"\x08\x00incoming".to_vec()).encode()
 }
 
 fn ask_shared_files_answer() -> Vec<u8> {
@@ -97,15 +95,6 @@ fn file_status(hash: FileHash, part_count: u16, bitmap: &[u8]) -> Vec<u8> {
     payload.extend_from_slice(&part_count.to_le_bytes());
     payload.extend_from_slice(bitmap);
     Packet::new(PacketProtocol::Edonkey, 0x50, payload).encode()
-}
-
-fn hashset_answer(hash: FileHash, part_hashes: &[PartHash]) -> Vec<u8> {
-    let mut payload = hash.as_bytes().to_vec();
-    payload.extend_from_slice(&(part_hashes.len() as u16).to_le_bytes());
-    for h in part_hashes {
-        payload.extend_from_slice(h.as_bytes());
-    }
-    Packet::new(PacketProtocol::Edonkey, 0x52, payload).encode()
 }
 
 fn acceptuploadreq() -> Vec<u8> {
@@ -266,6 +255,12 @@ fn oversize_chat_message_is_surfaced_capped_at_450_not_dropped() {
 #[test]
 fn file_comment_is_surfaced_with_no_reply() {
     let mut session = identified_session();
+    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
+        file_hash: file_hash(0x71),
+        file_size: 20_000_000,
+        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
+    }));
+    let _ = drain(|| session.poll_output());
     session.handle_bytes(&filedesc(4, "nice rip"));
     let out = drain(|| session.poll_output());
 
@@ -478,8 +473,10 @@ fn an_ipv6_move_during_the_handshake_follows_the_answer() {
 // --- Pre-Identified guard ------------------------------------------
 
 #[test]
-fn human_layer_packets_before_identified_are_unknown_not_acted_on() {
-    let mut session = PeerSession::new_inbound(peer_at(55), ctx());
+fn human_layer_packets_before_our_hello_is_answered_are_unknown_not_acted_on() {
+    let mut session = PeerSession::new_outbound(peer_at(55), ctx());
+    session.start();
+    let _ = drain(|| session.poll_output());
     for wire in [ask_shared_files(), public_ip_req(), message("too soon")] {
         session.handle_bytes(&wire);
         let out = drain(|| session.poll_output());
@@ -522,7 +519,6 @@ fn the_full_human_layer_volley_mid_transfer_leaves_the_active_slot_unbroken() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "volley.bin"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let setup = drain(|| session.poll_output());
     assert!(

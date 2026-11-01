@@ -56,7 +56,7 @@ use crate::opcode::PeerOpcode;
 /// `PeerOpcode` variant (see the module doc). `packet.rs` special-cases the
 /// raw `(protocol, opcode)` pair ahead of the shared registry. Payload-less
 /// on rmule's side: it is never emitted (rmule never browses) and, received,
-/// is an unsolicited answer to parse-count-drop, never inspected.
+/// is an unsolicited answer to parse-count-drop.
 pub(crate) const OP_ASKSHAREDFILESDIRANS: u8 = 0x60;
 
 /// `OP_ASKSHAREDDENIEDANS` under Edonkey — collides with `OP_FILEDESC` under
@@ -64,6 +64,14 @@ pub(crate) const OP_ASKSHAREDFILESDIRANS: u8 = 0x60;
 /// [`OP_ASKSHAREDFILESDIRANS`]). rmule both emits this (the browse-denied
 /// reply) and may receive an unsolicited copy (dropped).
 pub(crate) const OP_ASKSHAREDDENIEDANS: u8 = 0x61;
+
+/// The name at the head of `OP_ASKSHAREDFILESDIR` and
+/// `OP_ASKSHAREDFILESDIRANS`, read for whether it fits: aMule reads it before
+/// anything decides (`ClientTCPSocket.cpp:923`, `:963`) and rmule never uses it.
+pub(crate) fn read_directory_name(packet: &Packet) -> Result<(), WireFault> {
+    WireReader::new(packet.payload()).read_len16_bytes("directory name")?;
+    Ok(())
+}
 
 /// `OP_FILEDESC` under Emule — the other side of [`OP_ASKSHAREDDENIEDANS`]'s
 /// collision.
@@ -183,10 +191,11 @@ pub struct ChangeClientId {
 impl ChangeClientId {
     const PAYLOAD_LEN: usize = 8;
 
-    /// Read the change, which is a fixed eight bytes.
+    /// Read the change's eight bytes; aMule reads no more
+    /// (`ClientTCPSocket.cpp:774-775`).
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
-        if payload.len() != Self::PAYLOAD_LEN {
+        if payload.len() < Self::PAYLOAD_LEN {
             return Err(WireFault::WrongSize {
                 expected: Self::PAYLOAD_LEN,
                 actual: payload.len(),

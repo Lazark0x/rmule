@@ -3,10 +3,10 @@
 //! deadline — and the frames that must not end it: an unknown opcode, a second
 //! `start`, a frame split across two reads, a peer's own late `OP_HELLO`.
 
-use crate::fixture::{identified_session, plain_hello_body};
+use crate::fixture::plain_hello_body;
 use rmule_peer::{
     ConnectionCommand, ConnectionEvent, Hello, HelloAnswer, NoticeEvent, PeerCloseReason,
-    PeerCommand, PeerEvent, PeerOpcode, PeerOutput, PeerSession,
+    PeerCommand, PeerEvent, PeerOutput, PeerSession, PeerViolation,
 };
 use rmule_primitives::session::drain;
 use rmule_primitives::{Ed2kText, Packet, PacketProtocol, UserHash};
@@ -109,97 +109,15 @@ fn malformed_hello_answer_closes_with_protocol_violation() {
         outputs.iter().rev().nth(1),
         Some(PeerOutput::Event(PeerEvent::Connection(
             ConnectionEvent::Disconnected {
-                reason: PeerCloseReason::ProtocolViolation,
+                reason: PeerCloseReason::ProtocolViolation(PeerViolation::BadHello),
             }
         )))
     ));
     assert!(matches!(
         outputs.last(),
-        Some(PeerOutput::Close(PeerCloseReason::ProtocolViolation))
-    ));
-}
-
-/// A malformed frame ends the link on every leg with no rule of its own, on an
-/// identified link where the frame could otherwise have been acted on.
-#[test]
-fn a_malformed_frame_on_a_plain_leg_closes_the_link() {
-    use PeerOpcode as Op;
-    let short = [0u8; 3];
-    let frames = [
-        (PacketProtocol::Emule, 0x01, &[][..]),
-        (PacketProtocol::Emule, 0x02, &[][..]),
-        (PacketProtocol::Emule, 0x61, &[][..]),
-        // Sixteen bytes or fewer would be an `OP_AICHANSWER`'s refusal form.
-        (PacketProtocol::Emule, 0x9C, &[0u8; 20][..]),
-    ]
-    .into_iter()
-    .map(|(protocol, opcode, body)| Packet::new(protocol, opcode, body.to_vec()))
-    .chain(
-        [
-            Op::RequestFileName,
-            Op::ReqFileNameAnswer,
-            Op::FileReqAnsNoFil,
-            Op::SetReqFileId,
-            Op::FileStatus,
-            Op::HashSetRequest,
-            Op::HashSetAnswer,
-            Op::AcceptUploadReq,
-            Op::OutOfPartReqs,
-            Op::QueueRanking,
-            Op::RequestParts,
-            Op::RequestPartsI64,
-            Op::SendingPart,
-            Op::SendingPartI64,
-            Op::CompressedPart,
-            Op::CompressedPartI64,
-            Op::RequestSources,
-            Op::RequestSources2,
-            Op::AichRequest,
-            Op::AichFileHashReq,
-            Op::AichFileHashAns,
-            Op::SecIdentState,
-            Op::PublicKey,
-            Op::Signature,
-            Op::MultiPacket,
-            Op::MultiPacketExt,
-            Op::MultiPacketAnswer,
-            Op::PublicIpAnswer,
-            Op::Message,
-            Op::ChangeClientId,
-            Op::ChangeClientIpV6,
-        ]
-        .into_iter()
-        .map(|op| Packet::new(op.protocol(), op.as_u8(), short.to_vec())),
-    );
-    for frame in frames {
-        let mut session = identified_session();
-        session.handle_bytes(&frame.encode());
-        let outputs = drain(|| session.poll_output());
-        assert!(
-            matches!(
-                outputs.last(),
-                Some(PeerOutput::Close(PeerCloseReason::ProtocolViolation))
-            ),
-            "{:?} 0x{:02X}: {outputs:?}",
-            frame.protocol(),
-            frame.opcode(),
-        );
-    }
-}
-
-/// aMule lets a slot ask of the wrong size pass, connection kept, so this one
-/// plain frame is preserved rather than closed on.
-#[test]
-fn a_malformed_slot_ask_stays_open_as_unknown() {
-    let op = PeerOpcode::StartUploadReq;
-    let mut session = identified_session();
-    session.handle_bytes(&Packet::new(op.protocol(), op.as_u8(), vec![0u8; 3]).encode());
-    let outputs = drain(|| session.poll_output());
-    assert!(matches!(
-        outputs.as_slice(),
-        [PeerOutput::Event(PeerEvent::Notice(
-            NoticeEvent::UnknownPacket { .. }
-        ))]
+        Some(PeerOutput::Close(PeerCloseReason::ProtocolViolation(
+            PeerViolation::BadHello
+        )))
     ));
 }
 

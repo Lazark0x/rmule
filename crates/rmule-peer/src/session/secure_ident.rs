@@ -108,6 +108,14 @@ impl PeerSession {
 
     /// Inbound `OP_SIGNATURE`: the peer's proof over the challenge we sent.
     pub(super) fn on_signature(&mut self, packet: SignaturePacket) {
+        // The V2 form reads only from a peer that claims V2; aMule logs any
+        // other and returns (`BaseClient.cpp:2182-2189`).
+        let claims_v2 = self
+            .peer_misc_options
+            .is_some_and(|opts| opts.secure_identification_version() & 0b10 != 0);
+        if packet.ip_kind.is_some() && !claims_v2 {
+            return;
+        }
         self.sui.peer_signature = Some(packet.signature);
         self.sui.peer_signature_ip_kind = packet.ip_kind;
         self.try_verify_peer();

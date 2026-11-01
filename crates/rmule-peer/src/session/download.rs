@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use rmule_primitives::{Ed2kText, FileHash, part_count};
 
-use super::{FileProbeStatus, PeerError, PeerEvent, PeerSession, SlotReleaseReason, State};
+use super::{
+    FileProbeStatus, PeerError, PeerEvent, PeerSession, PeerViolation, SlotReleaseReason, State,
+};
 use crate::RequesterEvent;
 use crate::capability::{MiscOptions1, MiscOptions2};
 use crate::compress::InflateFailed;
@@ -665,9 +667,8 @@ impl PeerSession {
 
     pub(super) fn on_req_filename_answer(&mut self, answer: ReqFileNameAnswer) {
         let file_hash = answer.file_hash;
-        // Answers are only ever solicited — the flow exists from our own
-        // probe or request. An unsolicited hash must not create per-file
-        // state.
+        // Answers are only ever solicited, and `frame_gate` closes on any
+        // other standalone; a bundle's name reaches here past the same gate.
         let Some(flow) = self.per_file.get_mut(&file_hash) else {
             return;
         };
@@ -711,7 +712,7 @@ impl PeerSession {
             self.reject(PeerError::PeerProtocolViolation {
                 reason: "file status counts other parts than the file has",
             });
-            self.close_protocol_violation();
+            self.close_protocol_violation(PeerViolation::PartCountMismatch);
             return;
         };
         match &mut flow.probe {

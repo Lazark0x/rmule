@@ -295,6 +295,13 @@ impl ServeState {
                 };
                 vec![ServeDecision::Send { peer, command }]
             }
+            // Scored like any ask, and nothing else comes of it.
+            ServerEvent::MalformedSlotAsk => {
+                if self.ask_bans(now, peer) {
+                    return self.ban_asker(now, peer, modifiers);
+                }
+                Vec::new()
+            }
             ServerEvent::SlotRequested { file_hash } => {
                 if self.ask_bans(now, peer) {
                     return self.ban_asker(now, peer, modifiers);

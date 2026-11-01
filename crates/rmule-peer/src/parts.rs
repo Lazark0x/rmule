@@ -158,7 +158,9 @@ impl RequestParts {
         )?;
         let offset_size = width.offset_len();
         let expected = FileHash::BYTE_LEN + RANGE_COUNT * 2 * offset_size;
-        if payload.len() != expected {
+        // aMule reads the hash and six offsets and looks no further
+        // (`UploadClient.cpp:839-861`).
+        if payload.len() < expected {
             return Err(WireFault::WrongSize {
                 expected,
                 actual: payload.len(),

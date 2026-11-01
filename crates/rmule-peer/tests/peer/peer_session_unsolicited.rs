@@ -1,50 +1,13 @@
-//! Answers nobody asked for. An unsolicited probe answer, no-file, hash
-//! set, source list or compressed block is diagnosed and discarded: hearsay
-//! never seeds state, never poisons a later request, and never holds
-//! in-flight budget.
+//! Answers nobody asked for that stock lets pass. A no-file, a source list or
+//! a compressed block outside a slot is diagnosed and discarded: hearsay never
+//! seeds state, never poisons a later request, and never holds in-flight
+//! budget. The ones stock's readers throw on are `peer_frame_legs`' rows.
 
 use rmule_peer::{
-    FileProbeStatus, NoticeEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand,
-    RequesterEvent,
+    NoticeEvent, PartRanges, PeerCommand, PeerEvent, RequesterCommand, RequesterEvent,
 };
-use rmule_primitives::PartHash;
 use rmule_primitives::session::drain;
 use rmule_testkit::peer_session::*;
-
-#[test]
-fn unsolicited_probe_answers_do_not_seed_state_or_emit_probed() {
-    let h = file_hash(0x91);
-    let mut session = identified_session();
-    // Answers for a hash rmule never probed or requested must be dropped,
-    // not assembled into a FileProbed event.
-    session.handle_bytes(&reqfilename_answer(h, "planted"));
-    session.handle_bytes(&file_status(h, 1, &[0x01]));
-    let out = drain(|| session.poll_output());
-    assert!(
-        !events(&out)
-            .iter()
-            .any(|e| matches!(e, PeerEvent::Requester(RequesterEvent::FileProbed { .. }))),
-        "unsolicited answers must not probe: {out:?}"
-    );
-    // A real probe afterwards starts from scratch and completes.
-    session.handle_command(PeerCommand::Requester(RequesterCommand::ProbeFile {
-        file_hash: h,
-        file_size: 20_000_000,
-        own_status: rmule_peer::WireStatus::downloader_empty(20_000_000),
-    }));
-    let out = drain(|| session.poll_output());
-    assert!(writes(&out).iter().any(|p| p.opcode() == 0x58));
-    session.handle_bytes(&reqfilename_answer(h, "real"));
-    session.handle_bytes(&file_status(h, 3, &[0x01]));
-    let out = drain(|| session.poll_output());
-    assert!(events(&out).iter().any(|e| matches!(
-        e,
-        PeerEvent::Requester(RequesterEvent::FileProbed {
-            file_hash,
-            status: FileProbeStatus::Available { .. },
-        }) if *file_hash == h
-    )));
-}
 
 #[test]
 fn unsolicited_nofil_does_not_poison_a_later_request() {
@@ -99,7 +62,6 @@ fn unsolicited_compressed_parts_hold_no_inflight_budget() {
     }));
     session.handle_bytes(&reqfilename_answer(h, "z"));
     session.handle_bytes(&file_status(h, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     let _ = drain(|| session.poll_output());
 
@@ -154,29 +116,6 @@ fn unsolicited_answer_sources_is_dropped() {
     )));
 }
 
-#[test]
-fn unsolicited_hashset_answer_does_not_precache() {
-    let h = file_hash(0x95);
-    let mut session = identified_session();
-    // A planted hash-set answer for a file rmule never requested.
-    session.handle_bytes(&hashset_answer(h, &[PartHash::from_bytes([0; 16])]));
-    let _ = drain(|| session.poll_output());
-
-    // Asked for afterwards, the hash set is still fetched instead of the
-    // planted "cache" being trusted.
-    session.handle_command(PeerCommand::Requester(RequesterCommand::RequestHashSet {
-        file_hash: h,
-    }));
-    let out = drain(|| session.poll_output());
-    assert!(
-        writes(&out).iter().any(|p| p.opcode() == 0x51),
-        "hash set requested despite the planted answer: {out:?}"
-    );
-}
-
-/// A frame declared past what any peer honestly sends: a hash set of the
-/// largest file a peer can offer is under 460 KiB. The header alone closes
-/// the link, so nothing of the body is ever held.
 #[test]
 fn a_frame_declared_past_the_peer_ceiling_closes_at_its_header() {
     let mut session = identified_session();

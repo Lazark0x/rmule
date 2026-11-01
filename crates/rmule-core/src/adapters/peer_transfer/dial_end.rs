@@ -43,7 +43,7 @@ pub(in crate::adapters) fn connect_failure(error: &PeerNetError) -> DialEnd {
 pub(in crate::adapters) fn closed_before_hello(reason: PeerCloseReason) -> DialEnd {
     match reason {
         PeerCloseReason::Local => DialEnd::ClosedLocally,
-        PeerCloseReason::ProtocolViolation => DialEnd::ProtocolViolation,
+        PeerCloseReason::ProtocolViolation(violation) => DialEnd::ProtocolViolation(violation),
         PeerCloseReason::Io(kind) => io_kind(kind),
         PeerCloseReason::ConnectTimeout => DialEnd::TimedOut,
         PeerCloseReason::HelloTimeout => DialEnd::NoHelloInTime,

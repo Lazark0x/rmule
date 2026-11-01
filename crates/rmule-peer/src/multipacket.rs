@@ -31,15 +31,10 @@
 //! truncated answer item. A request item cut short is reported as a
 //! [`BundleCut`] instead, because aMule gates the bundle on its file before it
 //! walks a single sub (`ClientTCPSocket.cpp:1061-1085`) — a cut bundle for a
-//! file it does not share is answered not-found, not disconnected. An
-//! unrecognized sub-opcode stops the walk, keeps the
-//! already-decoded prefix, and reports [`UnknownSub`] so the caller can
-//! surface one non-terminal diagnostic and stay connected — the remainder is
-//! unparseable by construction (no length framing), so this is a
-//! deliberate, capture-invisible divergence from aMule's own behaviour
-//! (`ClientTCPSocket.cpp`'s `switch (opcode_in)` has no `default:` case, so
-//! an unmatched sub-opcode's payload bytes silently get reinterpreted as
-//! further opcodes on the next iteration).
+//! file it does not share is answered not-found, not disconnected. A byte no
+//! sub claims is passed over and the next read as a sub-opcode, as aMule's
+//! `switch (opcode_in)`, which has no `default:` case, does; the first such
+//! byte is reported as [`UnknownSub`], one non-terminal diagnostic per frame.
 
 use rmule_primitives::{
     AichRootHash, Ed2kText, FileHash, MAX_ED2K_FILE_SIZE, Packet, WireReader, write_wire_string,
@@ -127,16 +122,15 @@ pub enum AnswerItem {
     AichRoot(AichRootHash),
 }
 
-/// One non-terminal diagnostic: the walker met a sub-opcode it does not
-/// model and stopped. `items` on the enclosing value still holds the fully
-/// valid, already-decoded prefix (ADR-0054's walker error policy: stop, keep
-/// prefix, stay open).
+/// One non-terminal diagnostic: the walker met a byte no sub claims and passed
+/// over it (ADR-0054's walker error policy). Only the first is kept, so a frame
+/// of unknown bytes costs one report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UnknownSub {
     /// The sub-opcode byte the walker did not recognize.
     pub opcode: u8,
-    /// How many bytes remain in the payload after that sub-opcode byte —
-    /// unparseable by construction, since sub-items carry no length prefix.
+    /// How many bytes remained in the payload after that byte, each read as
+    /// a sub-opcode in turn since sub-items carry no length prefix.
     pub remaining: usize,
 }
 
@@ -150,7 +144,7 @@ pub struct MultiPacketRequest {
     pub file_size: Option<u64>,
     /// The asks, in the order they were framed.
     pub items: Vec<RequestItem>,
-    /// The first sub-opcode the walk did not model, when one stopped it early.
+    /// The first byte the walk passed over, when it met one.
     pub unknown_sub: Option<UnknownSub>,
     /// Where the walk ran out of bytes inside a sub, when it did.
     pub cut: Option<BundleCut>,
@@ -180,15 +174,14 @@ pub struct MultiPacketAnswer {
     pub file_hash: FileHash,
     /// The answers, in the order they were framed.
     pub items: Vec<AnswerItem>,
-    /// The first sub-opcode the walk did not model, when one stopped it early.
+    /// The first byte the walk passed over, when it met one.
     pub unknown_sub: Option<UnknownSub>,
 }
 
 impl MultiPacketRequest {
-    /// Read a bundle, stopping at the first sub-opcode this crate does not
-    /// model and keeping the prefix already walked. `level` is the session's
-    /// negotiated extended-requests level: it alone says whether a part status
-    /// follows a `0x58` sub, since the stream frames nothing.
+    /// Read a bundle, passing over any byte no sub claims. `level` is the
+    /// session's negotiated extended-requests level: it alone says whether a
+    /// part status follows a `0x58` sub, since the stream frames nothing.
     pub fn decode_packet(packet: &Packet, level: ExtendedRequests) -> Result<Self, WireFault> {
         let plain = PeerOpcode::MultiPacket;
         let ext = PeerOpcode::MultiPacketExt;
@@ -211,10 +204,18 @@ impl MultiPacketRequest {
         let file_hash = reader.read_file_hash("file hash")?;
         let file_size = if has_size {
             let size = reader.read_u64_le("file size")?;
-            // The size is the peer's claim and sizes every status read below,
-            // so a claim no eD2k file can have ends the bundle here.
+            // The size is the peer's claim and sizes every status read below.
+            // A claim no eD2k file can have matches no shared file, so aMule
+            // answers not-found without walking a sub (`:1072-1085`), and
+            // neither does this.
             if size > MAX_ED2K_FILE_SIZE {
-                return Err(WireFault::FileSizeOutOfRange { size });
+                return Ok(Self {
+                    file_hash,
+                    file_size: Some(size),
+                    items: Vec::new(),
+                    unknown_sub: None,
+                    cut: None,
+                });
             }
             Some(size)
         } else {
@@ -257,14 +258,12 @@ impl MultiPacketRequest {
                     };
                     items.push(RequestItem::Sources2 { version, options });
                 }
-                // Unknown sub-opcode: stop, keep the prefix, report it — the
-                // remainder has no length framing to skip past (ADR-0054).
+                // No sub claims it: on to the next byte (ADR-0054).
                 _ => {
-                    unknown_sub = Some(UnknownSub {
+                    unknown_sub.get_or_insert(UnknownSub {
                         opcode: sub_opcode,
                         remaining: reader.remaining(),
                     });
-                    break;
                 }
             }
         }
@@ -314,7 +313,7 @@ impl MultiPacketRequest {
 }
 
 impl MultiPacketAnswer {
-    /// Read an answer bundle, with the same stop-and-keep rule as the request.
+    /// Read an answer bundle, passing over unknown bytes as the request does.
     pub fn decode_packet(packet: &Packet) -> Result<Self, WireFault> {
         let payload = packet.payload();
         if payload.len() < FileHash::BYTE_LEN {
@@ -342,14 +341,12 @@ impl MultiPacketAnswer {
                     let root = reader.read_array("aich master hash")?;
                     items.push(AnswerItem::AichRoot(AichRootHash::from_bytes(root)));
                 }
-                // Unknown sub-opcode: stop, keep the prefix, report it — the
-                // remainder has no length framing to skip past (ADR-0054).
+                // No sub claims it: on to the next byte (ADR-0054).
                 _ => {
-                    unknown_sub = Some(UnknownSub {
+                    unknown_sub.get_or_insert(UnknownSub {
                         opcode: sub_opcode,
                         remaining: reader.remaining(),
                     });
-                    break;
                 }
             }
         }

@@ -1,9 +1,9 @@
 //! The datagram boundary: bytes in from the transport, decoded frames routed
 //! to the leg that owns each opcode.
 //!
-//! Decode failures never panic and never touch state — they close the
-//! connection with a typed [`super::PeerCloseReason`] or skip the frame, so a
-//! hostile peer cannot drive the session off its state machine.
+//! A frame never panics and never touches state on its way in: `frame_gate`
+//! rules what it costs the link before any leg acts on it, so a hostile peer
+//! cannot drive the session off its state machine.
 //!
 //! Every stateful opcode dispatches to a leg method, even where that method
 //! only pushes one event: the legs' `on_*` handlers are the single surface a
@@ -13,28 +13,26 @@
 
 use rmule_primitives::{Packet, SessionCore};
 
-use super::{PeerEvent, PeerSession, State};
+use super::{PeerEvent, PeerSession, PeerViolation, State};
+use crate::NoticeEvent;
 use crate::capability::MiscOptions1;
-use crate::error::PeerPacketDecodeError;
 use crate::file_request::ExtendedRequests;
-use crate::hello::HelloRefusal;
 use crate::opcode::PeerOpcode;
-use crate::packet::{DecodedPeerFrame, PeerPacket};
+use crate::packet::PeerPacket;
 use crate::software::SoftwareEvidence;
-use crate::{ConnectionEvent, NoticeEvent, RequesterEvent};
 
 impl PeerSession {
     /// Append bytes from the socket, extract complete frames, and dispatch
     /// them. Silently no-ops after the session has closed. The buffer loop
-    /// lives in [`SessionCore::feed`]; a frame that fails to decode closes
-    /// with the unit `ProtocolViolation` reason.
+    /// lives in [`SessionCore::feed`]; a frame header no peer link carries
+    /// closes with [`PeerViolation::BadFrame`].
     pub fn handle_bytes(&mut self, bytes: &[u8]) {
         SessionCore::feed(
             self,
             |session| &mut session.core,
             bytes,
             Self::dispatch,
-            |session, _error| session.close_protocol_violation(),
+            |session, _error| session.close_protocol_violation(PeerViolation::BadFrame),
         );
     }
 
@@ -66,79 +64,37 @@ impl PeerSession {
                 .peer_mod_misc()
                 .is_some_and(crate::capability::ModMiscOptions::supports_ext_sx),
         };
-        let peer_packet = match PeerPacket::decode_frame(&packet, claim, self.extended_requests()) {
-            Ok(DecodedPeerFrame::Packet(p)) => p,
-            Ok(DecodedPeerFrame::CompressedFrameSkipped {
-                opcode,
-                compressed_len,
-                reason,
-            }) => {
+        // A packed frame that does not inflate is skipped ahead of every other
+        // rule (stock 2.3.3 `ClientTCPSocket.cpp:1985-1988`); one that does is
+        // read as the eMule frame it holds.
+        let frame = match PeerPacket::inflated(&packet) {
+            Ok(frame) => frame,
+            Err(reason) => {
                 self.core
                     .push_event(PeerEvent::Notice(NoticeEvent::CompressedFrameSkipped {
-                        opcode,
-                        compressed_len,
+                        opcode: packet.opcode(),
+                        compressed_len: packet.payload().len(),
                         reason,
                     }));
                 return;
             }
-            Err(PeerPacketDecodeError::SourceExchange { source }) => {
-                // aMule's `AddClientSources` silently ignores a malformed source
-                // answer (`PartFile.cpp` @4e8f2b3c) — a non-terminal drop, not a
-                // protocol violation. Closing here would tear down an
-                // otherwise-healthy (possibly actively downloading) peer over a
-                // bad source list, so emit a diagnostic and drop only the answer.
-                self.core.push_event(PeerEvent::Requester(
-                    RequesterEvent::SourceExchangeAnswerSkipped {
-                        reason: source.into(),
-                    },
-                ));
-                return;
-            }
-            Err(PeerPacketDecodeError::SourceExchange2 { source }) => {
-                // A malformed `0x84` gets the same non-terminal treatment as
-                // `0x82` above — aMule's `AddClientSources` returns silently for
-                // the SX2 branch too (`PartFile.cpp` @4e8f2b3c).
-                self.core.push_event(PeerEvent::Requester(
-                    RequesterEvent::SourceExchangeAnswerSkipped {
-                        reason: source.into(),
-                    },
-                ));
-                return;
-            }
-            Err(PeerPacketDecodeError::Frame { .. })
-                if packet.protocol() == PeerOpcode::StartUploadReq.protocol()
-                    && packet.opcode() == PeerOpcode::StartUploadReq.as_u8() =>
-            {
-                // aMule acts on a slot ask only at the hash's exact length and
-                // otherwise lets it pass, connection kept (stock 2.3.3
-                // `4e8f2b3c` `ClientTCPSocket.cpp:606-618`, no `throw`):
-                // preserved as unknown, stay open (ADR-0018).
-                self.core
-                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
-                        protocol: packet.protocol(),
-                        opcode: packet.opcode(),
-                        payload_len: packet.payload().len(),
-                    }));
-                return;
-            }
-            Err(
-                PeerPacketDecodeError::Hello { source }
-                | PeerPacketDecodeError::HelloAnswer { source },
-            ) => {
-                if let Some(refusal) = HelloRefusal::from_decode_error(&source) {
-                    self.core
-                        .push_event(PeerEvent::Connection(ConnectionEvent::HelloRefused {
-                            refusal,
-                        }));
-                }
-                self.close_protocol_violation();
-                return;
-            }
-            Err(_) => {
-                self.close_protocol_violation();
+        };
+        if let Some(violation) = self.refused_by_phase(&frame) {
+            self.close_protocol_violation(violation);
+            return;
+        }
+        let peer_packet = match PeerPacket::decode_for_peer(&frame, claim, self.extended_requests())
+        {
+            Ok(peer_packet) => peer_packet,
+            Err(error) => {
+                self.on_malformed_frame(&frame, error);
                 return;
             }
         };
+        if let Some(violation) = self.refused_as_unsolicited(&frame, &peer_packet) {
+            self.close_protocol_violation(violation);
+            return;
+        }
         // State-independent events come from one tested source
         // (`tests/peer/peer_event_projection.rs`); state-dependent packets
         // (including `AnswerSources`, whose consume path needs session
@@ -207,11 +163,12 @@ impl PeerSession {
             PeerPacket::AcceptUploadReq(_) => self.on_accept_upload(),
             PeerPacket::OutOfPartReqs(_) => self.on_out_of_part_reqs(),
             PeerPacket::QueueRanking(r) => self.on_queue_ranking(r.rank),
+            PeerPacket::QueueRank(r) => self.on_queue_ranking(r.rank),
             // Server Capability — serve requests dispatch on every session
-            // (ADR-0031: one bidirectional session). A serve request before
-            // the hello exchange is out of order: preserve as Unknown, stay
-            // open (ADR-0018). A bundled request (ADR-0054) gets the same
-            // treatment as a whole frame — it never partially fans in.
+            // (ADR-0031: one bidirectional session). One that reaches a dial
+            // whose hello is unanswered is out of order: preserve as Unknown,
+            // stay open (ADR-0018). The bundle never gets here: `frame_gate`
+            // closes on it.
             PeerPacket::RequestFileName(_)
             | PeerPacket::SetReqFileId(_)
             | PeerPacket::HashSetRequest(_)
@@ -222,7 +179,6 @@ impl PeerSession {
             | PeerPacket::RequestSources2(_)
             | PeerPacket::AichRequest(_)
             | PeerPacket::AichFileHashReq(_)
-            | PeerPacket::MultiPacketRequest(_)
                 if !matches!(self.state, State::Identified(_)) =>
             {
                 self.core
@@ -258,19 +214,8 @@ impl PeerSession {
             // `0x83` ask routes through the same sanity/provenance/cap core as
             // `0x82` (its entries already carry the declaring server).
             PeerPacket::AnswerSources2(a) => self.on_answer_sources2(a),
-            // Secure User Identification (ADR-0041). An SUI packet before the
-            // hello exchange is out of order: preserve as Unknown, stay open
-            // (ADR-0018).
-            PeerPacket::SecIdentState(_) | PeerPacket::PublicKey(_) | PeerPacket::Signature(_)
-                if !matches!(self.state, State::Identified(_)) =>
-            {
-                self.core
-                    .push_event(PeerEvent::Notice(NoticeEvent::UnknownPacket {
-                        protocol: packet.protocol(),
-                        opcode: packet.opcode(),
-                        payload_len: packet.payload().len(),
-                    }));
-            }
+            // Secure User Identification (ADR-0041). `frame_gate` closes on
+            // these before the hello exchange ended.
             PeerPacket::SecIdentState(p) => self.on_secident_state(p),
             PeerPacket::PublicKey(p) => self.on_public_key(p),
             PeerPacket::Signature(p) => self.on_signature(p),
@@ -288,7 +233,6 @@ impl PeerSession {
             | PeerPacket::PublicIpReq
             | PeerPacket::PublicIpAnswer(_)
             | PeerPacket::Message(_)
-            | PeerPacket::FileDesc(_)
             | PeerPacket::ChangeClientId(_)
             | PeerPacket::ChatCaptchaReq
             | PeerPacket::ChatCaptchaRes
@@ -345,9 +289,11 @@ impl PeerSession {
             // Fully covered by the projection above. The firewall ack is a
             // state-independent signal — the projection emits the event; core's
             // session owner bridges it to the Kad window guard.
+            PeerPacket::AichAnswer(a) => {
+                self.settle_aich_ask(a.file_hash, a.part);
+            }
+            PeerPacket::AichRefused(a) => self.settle_any_aich_ask(a.file_hash),
             PeerPacket::SendingPart(_)
-            | PeerPacket::AichAnswer(_)
-            | PeerPacket::AichRefused(_)
             | PeerPacket::AichFileHashAns(_)
             | PeerPacket::KadFirewallAck
             | PeerPacket::KadUdpFirewallRequest(_)

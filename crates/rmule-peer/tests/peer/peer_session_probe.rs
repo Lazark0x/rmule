@@ -6,10 +6,10 @@
 use rmule_peer::WireStatus;
 use rmule_peer::{
     ConnectionEvent, FileProbeStatus, PartBitmap, PartRanges, PeerCloseReason, PeerCommand,
-    PeerEvent, PeerOutput, RequesterCommand, RequesterEvent,
+    PeerEvent, PeerOutput, PeerViolation, RequesterCommand, RequesterEvent,
 };
 use rmule_primitives::session::drain;
-use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet, PartHash};
+use rmule_primitives::{ED2K_PART_SIZE, FileHash, Packet};
 use rmule_testkit::peer_session::*;
 
 #[test]
@@ -156,7 +156,6 @@ fn hashset_caching_skips_rerequest_on_second_download() {
     // than reopen the probe and stall the slot.
     session.handle_bytes(&reqfilename_answer(d, "d"));
     session.handle_bytes(&file_status(d, 1, &[0x01]));
-    session.handle_bytes(&hashset_answer(d, &[PartHash::from_bytes([0; 16])]));
     session.handle_bytes(&acceptuploadreq());
     session.handle_bytes(&sendingpart(d, 0, &[1, 2, 3, 4]));
     let _ = drain(|| session.poll_output());
@@ -319,9 +318,13 @@ fn a_status_counting_other_parts_than_the_file_has_closes_the_session() {
                 closed.as_slice(),
                 [
                     PeerOutput::Event(PeerEvent::Connection(ConnectionEvent::Disconnected {
-                        reason: PeerCloseReason::ProtocolViolation,
+                        reason: PeerCloseReason::ProtocolViolation(
+                            PeerViolation::PartCountMismatch
+                        ),
                     })),
-                    PeerOutput::Close(PeerCloseReason::ProtocolViolation),
+                    PeerOutput::Close(PeerCloseReason::ProtocolViolation(
+                        PeerViolation::PartCountMismatch
+                    )),
                 ]
             ),
             "count {count}: {closed:?}"

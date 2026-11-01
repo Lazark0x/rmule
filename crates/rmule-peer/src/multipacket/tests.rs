@@ -348,10 +348,11 @@ fn a_hostile_ext_size_is_refused_before_any_status_read() {
             ExtendedRequests::negotiated(1, 2),
         ));
     });
-    assert_eq!(
-        result.expect("ran"),
-        Err(WireFault::FileSizeOutOfRange { size: hostile })
-    );
+    let bundle = result
+        .expect("ran")
+        .expect("a size past the ceiling keeps the link");
+    assert_eq!(bundle.file_size, Some(hostile));
+    assert!(bundle.items.is_empty());
     assert!(took < std::time::Duration::from_millis(1), "took {took:?}");
 
     // The ceiling itself names a file and is walked.

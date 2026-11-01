@@ -6,8 +6,8 @@
 use rmule_core::LinkTurn;
 use rmule_core::diagnostics::{SourceActivity, WorkerPhase};
 use rmule_core::{
-    DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PurgedSource,
-    SourcePurgeReason, SourceWait,
+    DialEnd, IgnoredReaskReply, PartReleaseReason, PeerRetirementReason, PeerViolation,
+    PurgedSource, SourcePurgeReason, SourceWait,
 };
 use rmule_primitives::{ClientId, Ipv4Endpoint, PeerEndpoint};
 
@@ -113,8 +113,22 @@ pub const fn dial_end_words(cause: DialEnd) -> &'static str {
         DialEnd::Os { kind } => super::super::os::kind_words(kind),
         DialEnd::ClosedBeforeHello => "it hung up before its hello",
         DialEnd::NoHelloInTime => "no hello in time",
-        DialEnd::ProtocolViolation => "it broke the protocol before its hello",
+        DialEnd::ProtocolViolation(violation) => violation_words(violation),
         DialEnd::ClosedLocally => "closed here before its hello",
+    }
+}
+
+/// What a peer did to lose the link before its hello, as the operator reads it.
+const fn violation_words(violation: PeerViolation) -> &'static str {
+    match violation {
+        PeerViolation::BadFrame => "it sent a frame no peer link carries",
+        PeerViolation::BeforeHello => "it spoke before its hello",
+        PeerViolation::HandshakeUnfinished => "it spoke out of turn before answering our hello",
+        PeerViolation::BadHello => "its hello could not be read",
+        PeerViolation::MalformedFrame => "it sent a frame that could not be read",
+        PeerViolation::WrongFile => "it answered about a file nobody asked it about",
+        PeerViolation::Unsolicited => "it answered something nobody asked",
+        PeerViolation::PartCountMismatch => "it counted the wrong parts for the file",
     }
 }
 

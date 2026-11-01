@@ -132,8 +132,10 @@ fn serve_dispatch_is_symmetric_on_dialed_sessions() {
 }
 
 #[test]
-fn serve_request_before_hello_stays_unknown() {
-    let mut s = PeerSession::new_inbound(peer_at(9), serverless_ctx());
+fn serve_request_before_our_hello_is_answered_stays_unknown() {
+    let mut s = PeerSession::new_outbound(peer_at(9), serverless_ctx());
+    s.start();
+    let _ = drain(|| s.poll_output());
     let fh = FileHash::from_bytes([0xC3; FileHash::BYTE_LEN]);
     s.handle_bytes(&RequestFileName::new(fh, None).encode_packet().encode());
     let outputs = drain(|| s.poll_output());
