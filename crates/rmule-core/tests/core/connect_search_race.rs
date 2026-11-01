@@ -327,3 +327,22 @@ async fn a_search_behind_a_failing_connect_waits_and_dials_nothing_of_its_own() 
     assert!(saw_waiting, "the search says it waits for a connection");
     assert_eq!(connectings, 1, "the operator's dial is the only one");
 }
+
+/// A dial in flight holds the session slot's lock until its login ends; Quit
+/// must not wait that out behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn quit_calls_off_the_server_dial_in_flight() {
+    let server = FakeEd2kServer::start_scripted().await;
+    server.set_login_delay(Duration::from_secs(30)).await;
+    let endpoint = server.endpoint();
+    let mut core = Core::builder(search_config(), rmule_testkit::memory_store())
+        .settings(rmule_core::CoreSettings::default())
+        .build();
+    add_server(&mut core, &endpoint).await;
+    core.send(connect_cmd(&endpoint).await).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    timeout(Duration::from_secs(5), core.shutdown())
+        .await
+        .expect("Quit does not wait out a dial's login");
+}

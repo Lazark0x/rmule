@@ -89,7 +89,10 @@ where
         }
         // Its readers are gone, and the server hears the end before the ports
         // go, as aMule disconnects in `ShutDown` before `DeletePortMappings`
-        // (`amule.cpp:1412-1423`). Bounded: a quit outlasts no stalled link.
+        // (`amule.cpp:1412-1423`). A dial in flight holds the slot's lock for
+        // up to its 70 s, so it is called off first. Bounded: a quit outlasts
+        // no stalled link.
+        self.wiring.shared_server_session.cancel_dial();
         let live = self.wiring.shared_server_session.slot().lock().await.take();
         if let Some(live) = live {
             announce(&self.evt_tx, QuitStep::ServerSession).await;
