@@ -113,7 +113,7 @@ mod tests {
     use crate::directory_scan::{FileIdentity, FileStamp, SpareCopy};
     use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
     use crate::store::open_durable_store;
-    use crate::store::registry::DurableSharedFileRegistry;
+    use crate::store::registry::{DurableSharedFileRegistry, ScanWrite};
 
     const CONTENT: FileHash = FileHash::from_bytes([7; FileHash::BYTE_LEN]);
 
@@ -153,21 +153,41 @@ mod tests {
         DurableSharedFileRegistry::new(open_durable_store(dir).unwrap())
     }
 
+    fn record(registry: &DurableSharedFileRegistry, path: &str) {
+        registry
+            .write_scanned(&[ScanWrite::Spare(spare(path))])
+            .unwrap();
+    }
+
+    /// The rows a commit moving the row of [`CONTENT`] says it moved.
+    fn relocate(
+        registry: &DurableSharedFileRegistry,
+        from: &str,
+        to: &str,
+    ) -> Vec<rmule_primitives::FileHash> {
+        registry
+            .write_scanned(&[ScanWrite::Moved {
+                file_hash: CONTENT,
+                from: from.into(),
+                to: spare(to),
+            }])
+            .unwrap()
+    }
+
     #[test]
     fn a_spare_is_durable_only_beside_its_contents_row() {
         let dir = tempfile::tempdir().unwrap();
         {
             let registry = open(dir.path());
-            assert!(
-                !registry.record_spare(&spare("/dl/copy.bin")).unwrap(),
-                "no row yet"
-            );
+            record(&registry, "/dl/copy.bin");
+            assert!(registry.spares().unwrap().is_empty(), "no row yet");
             registry.share(row("/dl/film.bin")).unwrap();
+            record(&registry, "/dl/film.bin");
             assert!(
-                !registry.record_spare(&spare("/dl/film.bin")).unwrap(),
+                registry.spares().unwrap().is_empty(),
                 "the row's own path is no spare"
             );
-            assert!(registry.record_spare(&spare("/dl/copy.bin")).unwrap());
+            record(&registry, "/dl/copy.bin");
         }
         let registry = open(dir.path());
         assert_eq!(registry.spares().unwrap(), [spare("/dl/copy.bin")]);
@@ -178,15 +198,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = open(dir.path());
         registry.share(row("/dl/film.bin")).unwrap();
-        registry.record_spare(&spare("/dl/a.bin")).unwrap();
-        registry.record_spare(&spare("/dl/b.bin")).unwrap();
+        record(&registry, "/dl/a.bin");
+        record(&registry, "/dl/b.bin");
         registry.share(row("/dl/a.bin")).unwrap();
         assert_eq!(registry.spares().unwrap(), [spare("/dl/b.bin")]);
         registry.unshare(CONTENT).unwrap();
         assert!(registry.spares().unwrap().is_empty());
 
         registry.share(row("/dl/film.bin")).unwrap();
-        registry.record_spare(&spare("/dl/b.bin")).unwrap();
+        record(&registry, "/dl/b.bin");
         assert!(registry.gone(CONTENT, Path::new("/dl/film.bin")).unwrap());
         assert!(registry.spares().unwrap().is_empty());
     }
@@ -198,21 +218,14 @@ mod tests {
         let mut shared = row("/dl/film.bin");
         shared.part_hashes = vec![rmule_primitives::PartHash::from_bytes([3; 16])];
         registry.share(shared.clone()).unwrap();
-        registry.record_spare(&spare("/dl/copy.bin")).unwrap();
+        record(&registry, "/dl/copy.bin");
         assert!(
-            !registry
-                .relocate(
-                    CONTENT,
-                    Path::new("/dl/elsewhere.bin"),
-                    &spare("/dl/copy.bin")
-                )
-                .unwrap(),
+            relocate(&registry, "/dl/elsewhere.bin", "/dl/copy.bin").is_empty(),
             "only from the path the row names"
         );
-        assert!(
-            registry
-                .relocate(CONTENT, Path::new("/dl/film.bin"), &spare("/dl/copy.bin"))
-                .unwrap()
+        assert_eq!(
+            relocate(&registry, "/dl/film.bin", "/dl/copy.bin"),
+            [CONTENT]
         );
         let moved = registry.get(CONTENT).unwrap().unwrap();
         assert_eq!(moved.path, Path::new("/dl/copy.bin"));

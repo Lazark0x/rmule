@@ -10,7 +10,7 @@ use super::SetAsideRuling;
 use crate::directory_scan::{FileIdentity, FileStamp, SpareCopy};
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
 use crate::store::open_durable_store;
-use crate::store::registry::DurableSharedFileRegistry;
+use crate::store::registry::{DurableSharedFileRegistry, ScanWrite};
 
 const FILM: FileHash = FileHash::from_bytes([
     0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE, 0x0F,
@@ -132,16 +132,12 @@ fn a_row_with_a_spare_elsewhere_moves_there_and_the_spare_under_the_directory_is
             born: at(1_600_000_007),
         }),
     };
-    assert!(
-        registry
-            .record_spare(&copy("/dl/film copy.mkv", FILM))
-            .unwrap()
-    );
-    assert!(
-        registry
-            .record_spare(&copy("/media/song copy.ogg", SONG))
-            .unwrap()
-    );
+    registry
+        .write_scanned(&[
+            ScanWrite::Spare(copy("/dl/film copy.mkv", FILM)),
+            ScanWrite::Spare(copy("/media/song copy.ogg", SONG)),
+        ])
+        .unwrap();
 
     let rulings = registry
         .remove_shared_directory(Path::new("/media"), &[PathBuf::from("/dl")])

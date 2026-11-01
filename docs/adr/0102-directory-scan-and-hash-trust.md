@@ -37,7 +37,8 @@ aMule citations are to 2.3.3 unless they say kno's fork; read, never ported (ADR
   (ADR-0106). A `PartHashSet` exists only up to the limit, so an answer's `u16` count cannot
   overflow whatever a store holds.
 - **A scan's writes land in commits of many.** A hashed file is two registry writes, its row and
-  its identity, and a commit is an fsync, so the actor gathers them and commits up to 256 at once,
+  its identity, a carried file is one, its moved row or its Spare Copy, and a commit is an fsync,
+  so the actor gathers them and commits up to 256 at once,
   a quarter second after the first at most, on the blocking pool. Any other message from a worker
   lands the batch first, so the Known view still answers in channel order, and a stop lands it too.
   Every commit stays durable, and a file is offered and told of only behind its commit, so a kill

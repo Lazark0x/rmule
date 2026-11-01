@@ -132,6 +132,21 @@ pub(crate) enum ScanWrite {
         /// What was read there.
         identity: FileIdentity,
     },
+    /// The row of `file_hash` moves from `from` to the file `to` names,
+    /// unread: its path, name, time and identity change, its part hash set
+    /// and source stay, and a spare recorded at `to` is gone (ADR-0100). Only
+    /// if the row still names `from`.
+    Moved {
+        /// The row's key.
+        file_hash: FileHash,
+        /// The path the row is expected to name.
+        from: PathBuf,
+        /// The file it moves to.
+        to: SpareCopy,
+    },
+    /// A **Spare Copy**, if its content still has a row at another path: a
+    /// spare never outlives its content's row.
+    Spare(SpareCopy),
 }
 
 impl DurableSharedFileRegistry {
@@ -193,23 +208,6 @@ impl DurableSharedFileRegistry {
         })
     }
 
-    /// Record `spare`, if its content still has a row at another path; a spare
-    /// never outlives its content's row. True when recorded.
-    ///
-    /// # Errors
-    /// [`CoreError::Repository`] when the store write fails.
-    pub(crate) fn record_spare(&self, spare: &SpareCopy) -> Result<bool, CoreError> {
-        self.store.write(
-            |txn| match SHARED_FILES.get(txn, spare.file_hash.as_bytes())? {
-                Some(row) if row.path != spare.path => {
-                    spare_copy::record(txn, spare)?;
-                    Ok(true)
-                }
-                _ => Ok(false),
-            },
-        )
-    }
-
     /// Nothing is a spare at `path` any more: it vanished or changed.
     ///
     /// # Errors
@@ -219,54 +217,39 @@ impl DurableSharedFileRegistry {
             .write(|txn| Ok(spare_copy::forget_at(txn, path)?))
     }
 
-    /// Move the row of `file_hash` from `from` to the file `to` names, unread:
-    /// its path, name, time and identity change, its part hash set and source
-    /// stay, and a spare recorded at `to` is gone (ADR-0100). Only if the row still names `from`;
-    /// true when it moved.
+    /// Land `writes` in order in one durable commit, all of them or, on an
+    /// error, none. The rows it shared or moved, in order: what an offer now
+    /// reads differently.
     ///
     /// # Errors
     /// [`CoreError::Repository`] when the store write fails.
-    pub(crate) fn relocate(
-        &self,
-        file_hash: FileHash,
-        from: &Path,
-        to: &SpareCopy,
-    ) -> Result<bool, CoreError> {
+    pub(crate) fn write_scanned(&self, writes: &[ScanWrite]) -> Result<Vec<FileHash>, CoreError> {
         self.store.write(|txn| {
-            let key = *file_hash.as_bytes();
-            match SHARED_FILES.get(txn, &key)? {
-                Some(mut row) if row.path == from => {
-                    row.path.clone_from(&to.path);
-                    row.name = SharedFileEntry::name_of(&to.path);
-                    row.modified = Some(to.stamp.modified);
-                    row.identity = to.identity;
-                    SHARED_FILES.set(txn, &key, &row)?;
-                    spare_copy::forget_at(txn, &to.path)?;
-                    Ok(true)
-                }
-                _ => Ok(false),
-            }
-        })
-    }
-
-    /// Land `writes` in order in one durable commit: all of them or, on an
-    /// error, none.
-    ///
-    /// # Errors
-    /// [`CoreError::Repository`] when the store write fails.
-    pub(crate) fn write_scanned(&self, writes: &[ScanWrite]) -> Result<(), CoreError> {
-        self.store.write(|txn| {
+            let mut written = Vec::new();
             for write in writes {
                 match write {
-                    ScanWrite::Share(entry) => share_on(txn, entry)?,
+                    ScanWrite::Share(entry) => {
+                        share_on(txn, entry)?;
+                        written.push(entry.file_hash);
+                    }
                     ScanWrite::Identified {
                         file_hash,
                         path,
                         identity,
                     } => identify_on(txn, *file_hash, path, *identity)?,
+                    ScanWrite::Moved {
+                        file_hash,
+                        from,
+                        to,
+                    } => {
+                        if relocate_on(txn, *file_hash, from, to)? {
+                            written.push(*file_hash);
+                        }
+                    }
+                    ScanWrite::Spare(spare) => spare_on(txn, spare)?,
                 }
             }
-            Ok(())
+            Ok(written)
         })
     }
 
@@ -392,6 +375,35 @@ fn identify_on(
     {
         row.identity = Some(identity);
         SHARED_FILES.set(txn, &key, &row)?;
+    }
+    Ok(())
+}
+
+/// [`ScanWrite::Moved`] on `txn`; whether the row moved.
+fn relocate_on(
+    txn: &WriteTransaction,
+    file_hash: FileHash,
+    from: &Path,
+    to: &SpareCopy,
+) -> Result<bool, CoreError> {
+    let key = *file_hash.as_bytes();
+    let Some(mut row) = SHARED_FILES.get(txn, &key)?.filter(|row| row.path == from) else {
+        return Ok(false);
+    };
+    row.path.clone_from(&to.path);
+    row.name = SharedFileEntry::name_of(&to.path);
+    row.modified = Some(to.stamp.modified);
+    row.identity = to.identity;
+    SHARED_FILES.set(txn, &key, &row)?;
+    spare_copy::forget_at(txn, &to.path)?;
+    Ok(true)
+}
+
+/// [`ScanWrite::Spare`] on `txn`.
+fn spare_on(txn: &WriteTransaction, spare: &SpareCopy) -> Result<(), CoreError> {
+    let row = SHARED_FILES.get(txn, spare.file_hash.as_bytes())?;
+    if row.is_some_and(|row| row.path != spare.path) {
+        spare_copy::record(txn, spare)?;
     }
     Ok(())
 }

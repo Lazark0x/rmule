@@ -1,6 +1,6 @@
 //! The scan's registry writes on their way to one commit (ADR-0102). A pass
-//! reports two writes per file it hashes, and each commit is an fsync, so the
-//! actor gathers them and commits many at once: every commit stays durable,
+//! reports two writes per file it hashes and one per file it carries, and
+//! each commit is an fsync, so the actor gathers them and commits many at once: every commit stays durable,
 //! and nothing is offered or told before its commit returned, so a crash
 //! costs the files of the open batch a second hash and claims nothing that is
 //! not on the disk.

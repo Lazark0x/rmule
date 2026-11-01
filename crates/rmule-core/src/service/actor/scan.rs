@@ -62,7 +62,12 @@ impl ScanMessageKind {
     const fn joins_the_batch(&self) -> bool {
         matches!(
             self,
-            Self::Report(ScanReport::Share(_) | ScanReport::Identified { .. })
+            Self::Report(
+                ScanReport::Share(_)
+                    | ScanReport::Identified { .. }
+                    | ScanReport::Moved { .. }
+                    | ScanReport::Spare(_)
+            )
         )
     }
 }
@@ -296,19 +301,15 @@ where
                 file_hash,
                 from,
                 to,
-            } => match self.wiring.registry.relocate(file_hash, &from, &to) {
-                Ok(true) => {
-                    send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
-                    self.row_shared(file_hash);
-                }
-                Ok(false) => {}
-                Err(error) => tracing::warn!(%error, "shared file not moved to its new path"),
-            },
-            ScanReport::Spare(spare) => {
-                if let Err(error) = self.wiring.registry.record_spare(&spare) {
-                    tracing::warn!(%error, "spare copy not recorded; it is read again at the next start");
-                }
+            } => {
+                let write = ScanWrite::Moved {
+                    file_hash,
+                    from,
+                    to,
+                };
+                self.gather_scan_write(write).await;
             }
+            ScanReport::Spare(spare) => self.gather_scan_write(ScanWrite::Spare(spare)).await,
             ScanReport::SpareLeft(path) => {
                 if let Err(error) = self.wiring.registry.forget_spare(&path) {
                     tracing::warn!(%error, "spare copy record not dropped");
@@ -444,21 +445,13 @@ where
             return;
         }
         let registry = Arc::clone(&self.wiring.registry);
-        let landed = on_pool(move || registry.write_scanned(&writes).map(|()| writes)).await;
-        let writes = match landed {
-            Ok(writes) => writes,
+        let shared = match on_pool(move || registry.write_scanned(&writes)).await {
+            Ok(shared) => shared,
             Err(error) => {
-                tracing::warn!(%error, "scanned files not shared; the next pass reads them again");
+                tracing::warn!(%error, "scan writes not committed; the next pass reads them again");
                 return;
             }
         };
-        let shared: Vec<_> = writes
-            .iter()
-            .filter_map(|write| match write {
-                ScanWrite::Share(entry) => Some(entry.file_hash),
-                ScanWrite::Identified { .. } => None,
-            })
-            .collect();
         for file_hash in &shared {
             let file_hash = *file_hash;
             send_event(&self.evt_tx, ServeEvent::FileShared { file_hash }.into());
