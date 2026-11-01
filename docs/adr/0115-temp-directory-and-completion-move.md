@@ -65,7 +65,11 @@ different volumes. The part file is deleted only after the finished file is in p
   the download directory itself; a directory inside any shared directory, the download directory
   included, or holding one; the home directory itself; a filesystem root or mount point; a path not
   valid UTF-8 or not absolute; a path that is not a directory or cannot be made. Inside the data
-  directory is allowed; the default lies there.
+  directory is allowed; the default lies there. Such a setting is stored relative to it by the
+  download row's rule (ADR-0083), so moving the directory carries it: part files are taken back
+  from the new place and the next download fills there. A path outside stays absolute. Store
+  version 18 rewrites a stored setting so; one set inside a directory that was moved before the
+  climb lies outside the new one and stays where it was stored until the operator sets it again.
 - **Symmetric.** A shared-directory add, and a download directory set, that is the Temp Directory
   or holds it is refused (`DirectoryRefusal::HoldsTempDirectory`), and so is one inside it
   (`DirectoryRefusal::InsideTempDirectory`): the Temp Directory and the Shared Directory List

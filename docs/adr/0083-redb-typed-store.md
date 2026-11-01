@@ -95,7 +95,11 @@ in filesystem files, not in the store.
 - **A part or final path inside the Data Directory is stored relative to it** (store version
   17), so moving the directory carries every download, to the very place it finishes; a path
   outside it stays absolute, because a directory the operator set keeps the downloads placed
-  in it (ADR-0115). The Download Directory setting is never inside it (ADR-0101).
+  in it (ADR-0115). The Temp Directory setting takes the same rule (store version 18); the
+  Download Directory setting is never inside it (ADR-0101). A shared file row keeps its absolute
+  path: no shared directory lies inside the Data Directory, and a finished file reaches it only
+  through a tool's `--out`. A `Completing` row rewrites a stale one, and a finished one is found
+  gone by the Registry Check.
 - **Every live record's bytes are pinned by a test.** postcard is positional and the engine
   compares only the tag, so a shape edit with no bump passes everything but a byte pin. This
   is a file format.

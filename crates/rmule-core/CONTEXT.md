@@ -810,7 +810,7 @@ Where the **Durable Store** and the data files beside it live, resolved by the o
 _Avoid_: profile dir, workspace, config dir
 
 **Temp Directory**:
-The Core Setting naming where new downloads keep their part files (ADR-0115). Defaults to `Temp` in the **Data Directory**; never the download directory, a shared directory, inside one, or holding one. A download keeps the part path placed at its start when the setting changes.
+The Core Setting naming where new downloads keep their part files (ADR-0115). Defaults to `Temp` in the **Data Directory**; never the download directory, a shared directory, inside one, or holding one. A download keeps the part path placed at its start when the setting changes. Inside the **Data Directory** it is stored relative to it, so it follows a move of that directory; outside, absolute.
 _Avoid_: incoming, cache dir
 
 **Part Link Line**:
