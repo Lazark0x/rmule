@@ -121,7 +121,7 @@ impl SearchesView {
     /// What the current search's order stands on.
     pub(super) fn order_key(&self, state: &UiState) -> OrderKey {
         (
-            state.revision,
+            state.searches.revision(),
             self.held.current().map(|entry| entry.id),
             self.sort,
             self.held
@@ -357,8 +357,7 @@ mod tests {
         let mut batch = three_tier_results();
         batch.push(server_result(0x44, "alpha.mkv", 10, 2, 0));
         batch.push(server_result(0x55, "beta.mkv", 10, 2, 0));
-        state.searches.get_mut(&search_id).expect("pane").results = batch;
-        state.revision += 1;
+        state.searches.get_mut(&search_id).expect("pane").results = batch.into();
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         assert_eq!(view.selected, Some(3));
         assert_eq!(
@@ -379,8 +378,7 @@ mod tests {
             .get_mut(&search_id)
             .expect("pane")
             .results
-            .push(server_result(0x44, "alpha.mkv", 10, 2, 0));
-        state.revision += 1;
+            .absorb([server_result(0x44, "alpha.mkv", 10, 2, 0)]);
         screen_lines(&draw_searches(&mut view, &state, 78, GOLDEN_H));
         assert_eq!(view.selected, Some(0));
         assert_eq!(

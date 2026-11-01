@@ -116,7 +116,7 @@ impl KnownFileMarks {
                 marks.offer(file.identity, mark);
             }
         }
-        for (id, row) in &state.downloads {
+        for (id, row) in state.downloads.iter() {
             let (Some(hash), Some(metadata)) = (row.file_hash, &row.metadata) else {
                 continue;
             };

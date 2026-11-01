@@ -21,7 +21,7 @@ pub(crate) fn served_files() -> UiState {
         last_snapshot_at: Some(now()),
         ..UiState::default()
     };
-    state.diagnostics.shared_files.insert(
+    state.shared_counters.insert(
         file_hash(1),
         rmule_core::diagnostics::SharedFileCounters {
             requests: 3,

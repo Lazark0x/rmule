@@ -141,7 +141,7 @@ pub struct TransfersView {
     /// The rows `Space` tagged.
     tags: Tags<DownloadId>,
     /// The table's lines under that sort and filter.
-    lines_memo: Memo<(u64, TableSort<DownloadsTable>, u64), sort::DownloadLine>,
+    lines_memo: Memo<sort::LinesKey, sort::DownloadLine>,
     /// The selected download, by id.
     cursor: RowCursor<DownloadId>,
     /// That download's position in the current order, re-placed before every

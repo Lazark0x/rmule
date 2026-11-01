@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
-use rmule_core::diagnostics::DiagnosticsSnapshot;
+use rmule_core::diagnostics::{DiagnosticsSnapshot, SharedFileCounters};
 use rmule_core::{CoreEvent, DownloadId, RelatedSearchRefusal, SearchId};
 use rmule_primitives::{FileHash, PeerEndpoint, ServerEndpoint};
 
@@ -27,6 +27,7 @@ mod known_file;
 mod log;
 mod note;
 mod rate_history;
+mod revised;
 mod search;
 mod serve;
 mod server;
@@ -48,7 +49,8 @@ pub use known_file::{KnownFileMark, KnownFileMarks};
 pub use log::{Log, LogLine};
 pub use note::{NOTE_AGE_SHOWN, NOTE_STANDS, Note};
 pub use rate_history::{RateColumn, RateHistory, RateWindow, Rates};
-pub use search::{MoreEnded, SearchPane, SearchStatus};
+pub use revised::Revised;
+pub use search::{MoreEnded, SearchPane, SearchRows, SearchStatus};
 pub use serve::{
     PARTIAL_RANK, ScanConsent, SharedRow, SharedUnder, UploadPeer, UploadState, withheld_rank,
 };
@@ -92,16 +94,16 @@ pub struct UiState {
     pub reconnect: Option<Reconnect>,
     /// Every download core has told us about, in id order — the Transfers
     /// table's rows.
-    pub downloads: BTreeMap<DownloadId, DownloadRow>,
+    pub downloads: Revised<BTreeMap<DownloadId, DownloadRow>>,
     /// Shared-file registry as the UI knows it (spec §3.5), folded from the
     /// serve share-set and upload events.
-    pub shared: BTreeMap<FileHash, SharedRow>,
-    /// Moves whenever a fold changed anything, so what a table derived from
-    /// these rows can stand until it does.
-    pub revision: u64,
+    pub shared: Revised<BTreeMap<FileHash, SharedRow>>,
+    /// What each shared file served: this run's and every run's figures,
+    /// taken off the data tick's levels, moved only when a figure did.
+    pub shared_counters: Revised<BTreeMap<FileHash, SharedFileCounters>>,
     /// The **Partial Shares** core says are offered now (ADR-0113): a
     /// download's own offer, never a registry row, named by its download.
-    pub partial_shares: BTreeSet<FileHash>,
+    pub partial_shares: Revised<BTreeSet<FileHash>>,
     /// Upload-side peers (slot holders + queue waiters), keyed by endpoint.
     pub upload_peers: BTreeMap<PeerEndpoint, UploadPeer>,
     /// The **File History** as core last answered it — the registry's entries
@@ -111,7 +113,7 @@ pub struct UiState {
     pub file_history: Option<rmule_core::file_history::FileHistory>,
     /// Every search of the run keyed by [`SearchId`] — the results and status
     /// of each **Held Search**; the Searches view keeps the rest.
-    pub searches: BTreeMap<SearchId, SearchPane>,
+    pub searches: Revised<BTreeMap<SearchId, SearchPane>>,
     /// Every **Related-Files Search** core refused before it started, by the
     /// id the Search tab gave it: a refused search has no pane.
     pub refused_searches: BTreeMap<SearchId, RelatedSearchRefusal>,
@@ -123,7 +125,8 @@ pub struct UiState {
     ),
     /// The results of the search closed last, for its one undo.
     pub closed_search: Option<(SearchId, SearchPane)>,
-    /// Latest levels wholesale; superseded, never merged.
+    /// Latest levels wholesale; superseded, never merged. The tick's
+    /// `shared_files` is held in [`Self::shared_counters`], and is empty here.
     pub diagnostics: DiagnosticsSnapshot,
     /// Bridge-synthesized rates from the same tick as `diagnostics`.
     pub rates: TransferRates,
@@ -184,12 +187,12 @@ impl Default for UiState {
             ed2k: Ed2kConnection::Disconnected,
             connected_server: None,
             reconnect: None,
-            downloads: BTreeMap::new(),
-            shared: BTreeMap::new(),
-            revision: 0,
-            partial_shares: BTreeSet::new(),
+            downloads: Revised::default(),
+            shared: Revised::default(),
+            shared_counters: Revised::default(),
+            partial_shares: Revised::default(),
             upload_peers: BTreeMap::new(),
-            searches: BTreeMap::new(),
+            searches: Revised::default(),
             refused_searches: BTreeMap::new(),
             directory_refusal: (0, None),
             closed_search: None,
@@ -218,9 +221,6 @@ impl UiState {
     pub fn apply(&mut self, action: Action, now: Instant) -> bool {
         let changed = self.fold_action(action, now);
         self.stamp_note(now);
-        if changed {
-            self.revision = self.revision.wrapping_add(1);
-        }
         changed
     }
 
@@ -315,11 +315,13 @@ impl UiState {
     /// Replace the level set (latest-state-wins) and stamp the injected
     /// observation time. `diagnostics.kad` arrives here too: the sync
     /// accessor reports it in full (ADR-0028).
-    pub fn apply_snapshot(&mut self, frame: BridgeSnapshot, now: Instant) -> bool {
+    pub fn apply_snapshot(&mut self, mut frame: BridgeSnapshot, now: Instant) -> bool {
         self.push_rate_sample(&frame.rates, now);
         server_health::log_edges(self, &frame.diagnostics, now);
         let more_before = self.diagnostics.search_more_results;
         let more_after = frame.diagnostics.search_more_results;
+        self.shared_counters
+            .settle(std::mem::take(&mut frame.diagnostics.shared_files));
         self.diagnostics = frame.diagnostics;
         search::fold_more(self, more_before, more_after);
         self.rates = frame.rates;
@@ -335,7 +337,6 @@ impl UiState {
     /// is gone in seconds.
     pub fn log_flash(&mut self, text: Sentence, now: Instant) {
         self.push_log(Severity::Info, text, now);
-        self.revision = self.revision.wrapping_add(1);
     }
 
     /// The server an activity command should name: the live connection's

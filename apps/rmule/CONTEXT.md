@@ -131,7 +131,7 @@ The one confirm before an action that takes something back (`views::modal::draw_
 _Avoid_: dialog, alert, prompt
 
 **Revision**:
-A number on the UI state that moves whenever a fold changed something. A table's order stands on it, with the table's own sort and filter, so a wheel notch over ten thousand rows rebuilds nothing.
+A number on a part of the UI state (`Revised`) that moves whenever that part is written, which no fold can skip. A table's lines stand on the revisions of the parts they read, with the table's own sort and filter, so neither a wheel notch nor the traffic around it rebuilds ten thousand rows; a level a tick republishes whole moves its revision only when a figure did.
 _Avoid_: generation, dirty flag
 
 **Flash**:

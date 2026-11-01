@@ -11,6 +11,7 @@ use crate::stored_keys as column_keys;
 use crate::words::columns;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rmule_core::DownloadId;
 use rmule_primitives::ED2K_PART_SIZE;
@@ -21,7 +22,7 @@ use super::downloads::{
 };
 use crate::row_filter::keeps_row;
 use crate::state::{DownloadStatus, UiState};
-use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable};
+use crate::table_sort::{ColumnKind, ColumnSpec, SortValue, SortedTable, TableSort};
 use crate::views::ViewOutcome;
 
 /// The downloads table, as the sort sees it.
@@ -242,10 +243,29 @@ impl SortedTable for DownloadsTable {
     }
 }
 
+/// What the table's lines stand on: the parts of the state a line reads, the
+/// sort and the filter. A line reads the tick's levels, so each tick moves it.
+#[derive(PartialEq)]
+pub(super) struct LinesKey {
+    rows: u64,
+    tick: Option<Instant>,
+    core_alive: bool,
+    reconnecting: bool,
+    sort: TableSort<DownloadsTable>,
+    typed: u64,
+}
+
 impl TransfersView {
     /// Every download's line, in display order.
     pub(super) fn sorted_lines(&self, state: &UiState) -> Arc<[DownloadLine]> {
-        let key = (state.revision, self.sort, self.filter.generation());
+        let key = LinesKey {
+            rows: state.downloads.revision(),
+            tick: state.last_snapshot_at,
+            core_alive: state.core_alive,
+            reconnecting: state.reconnect.is_some(),
+            sort: self.sort,
+            typed: self.filter.generation(),
+        };
         self.lines_memo.get(key, || {
             let lines: Vec<DownloadLine> = state
                 .downloads
@@ -272,7 +292,7 @@ impl TransfersView {
 
     /// Take up the downloads' sort as the durable preferences kept it.
     pub fn restore_sort(&mut self, sorts: &crate::table_sort::TableSorts) {
-        self.sort = crate::table_sort::TableSort::restore(sorts);
+        self.sort = TableSort::restore(sorts);
         self.restore_source_sort(sorts);
     }
 

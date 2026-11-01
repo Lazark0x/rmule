@@ -31,6 +31,14 @@ use super::*;
 use crate::fixture::{file_hash, peer_endpoint, serve_event};
 use crate::state::fold;
 
+fn uploading_now(state: &UiState, file: rmule_primitives::FileHash) -> usize {
+    state
+        .upload_slots()
+        .into_iter()
+        .filter(|held| *held == file)
+        .count()
+}
+
 fn only_shared(state: &UiState) -> &SharedRow {
     state.shared.values().next().expect("one shared row")
 }
@@ -138,7 +146,7 @@ fn uploading_counts_the_files_slot_holders_now() {
     assert!(fold(&mut state, grant(2)));
     history(&[(1, "/dl/film.mkv", 1)]).fold_into(&mut state);
     assert_eq!(
-        state.uploading_now(file_hash(1)),
+        uploading_now(&state, file_hash(1)),
         2,
         "grants before the row"
     );
@@ -152,14 +160,14 @@ fn uploading_counts_the_files_slot_holders_now() {
             software: None,
         }),
     );
-    assert_eq!(state.uploading_now(file_hash(1)), 1, "re-queued");
+    assert_eq!(uploading_now(&state, file_hash(1)), 1, "re-queued");
     assert!(fold(
         &mut state,
         serve_event(ServeEvent::UploadSlotReleased {
             peer: peer_endpoint(2)
         }),
     ));
-    assert_eq!(state.uploading_now(file_hash(1)), 0, "released");
+    assert_eq!(uploading_now(&state, file_hash(1)), 0, "released");
     // Releasing a peer we never had changes nothing.
     assert!(!fold(
         &mut state,
@@ -235,7 +243,7 @@ fn a_dialled_back_waiter_reads_dialling_back_until_its_grant_or_its_failure() {
         state.upload_peers[&peer_endpoint(2)].state,
         UploadState::DialingBack { file } if file == file_hash(4),
     ));
-    assert_eq!(state.uploading_now(file_hash(4)), 0);
+    assert_eq!(uploading_now(&state, file_hash(4)), 0);
 
     fold(
         &mut state,
@@ -254,7 +262,7 @@ fn a_dialled_back_waiter_reads_dialling_back_until_its_grant_or_its_failure() {
         }),
     );
     assert_eq!(state.upload_peers.len(), 1, "one row, at the dialed link");
-    assert_eq!(state.uploading_now(file_hash(4)), 1);
+    assert_eq!(uploading_now(&state, file_hash(4)), 1);
 
     let mut state = UiState::default();
     fold(&mut state, dialing());

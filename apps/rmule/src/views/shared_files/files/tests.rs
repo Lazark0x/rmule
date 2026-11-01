@@ -161,7 +161,7 @@ fn wide_figures_state() -> UiState {
     let row = state.shared.get_mut(&file_hash(1)).expect("shared");
     row.path = Some("/dl/film.mkv".into());
     row.file_size = Some(734_003_200);
-    state.diagnostics.shared_files.insert(
+    state.shared_counters.insert(
         file_hash(1),
         rmule_core::diagnostics::SharedFileCounters {
             requests: 123_456,

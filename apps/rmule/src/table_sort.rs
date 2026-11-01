@@ -305,13 +305,19 @@ impl<T: SortedTable> TableSort<T> {
     #[must_use]
     pub fn order(&self, rows: &[T::Row]) -> Vec<usize> {
         // Decorate once: folding a name allocates, and a comparator would
-        // otherwise fold each row O(log n) times.
+        // otherwise fold each row O(log n) times. Sorted by the name, its
+        // link of the Tie Chain has nothing to add.
+        let by_name = self.column == T::NAME;
         let keyed: Vec<Keyed<T::Identity>> = rows
             .iter()
             .map(|row| Keyed {
                 rank: T::rank(self.column, row),
                 sort: T::value(self.column, row).map(Key::from),
-                name: T::value(T::NAME, row).map(Key::from),
+                name: if by_name {
+                    None
+                } else {
+                    T::value(T::NAME, row).map(Key::from)
+                },
                 identity: T::identity(row),
             })
             .collect();

@@ -52,7 +52,7 @@ impl SearchesView {
         let results = self
             .held
             .current_pane(state)
-            .map_or(&[][..], |pane| pane.results.as_slice());
+            .map_or(&[][..], |pane| &*pane.results);
         let (fresh, marked): (Vec<&SearchResult>, Vec<&SearchResult>) = results
             .iter()
             .filter(|result| tagged.contains(&ResultsTable::identity(result)))

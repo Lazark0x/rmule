@@ -258,14 +258,12 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
         rmule_core::DownloadMetadataOrigin::Link,
     ));
     state.downloads.insert(download_id(4), early);
-    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(view.selected, Some(2));
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
     // The row above it leaves.
     state.downloads.remove(&download_id(1));
-    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(selected(&mut view, &state), Some(download_id(2)));
 
@@ -278,7 +276,6 @@ fn the_cursor_follows_its_download_as_rows_arrive_leave_and_reorder() {
 
     // Its own departure leaves the cursor as low as the table now goes.
     state.downloads.remove(&download_id(2));
-    state.revision += 1;
     draw(&mut view, &state, GOLDEN_W, GOLDEN_H);
     assert_eq!(selected(&mut view, &state), Some(download_id(4)));
 }
@@ -348,4 +345,26 @@ fn a_completing_download_ranks_between_downloading_and_completed() {
     assert!(activity_rank(S::Downloading, false) < activity_rank(S::Completing, false));
     assert!(activity_rank(S::Completing, false) < activity_rank(S::Completed, false));
     assert!(activity_rank(S::Completed, false) < activity_rank(S::Downloading, true));
+}
+
+#[test]
+fn a_tick_moves_a_rows_speed_at_once() {
+    let mut state = three_downloads();
+    let view = TransfersView::default();
+    let id = view.download_ids(&state)[0];
+
+    let mut rates = state.rates.clone();
+    rates.download_bps.insert(id, 4_242.0);
+    state.apply_snapshot(
+        crate::bridge::BridgeSnapshot {
+            diagnostics: state.diagnostics.clone(),
+            rates,
+            taken_at: now(),
+        },
+        now(),
+    );
+
+    let lines = view.sorted_lines(&state);
+    let line = lines.iter().find(|line| line.id == id).expect("listed");
+    assert_eq!(line.speed(), Some(4_242));
 }

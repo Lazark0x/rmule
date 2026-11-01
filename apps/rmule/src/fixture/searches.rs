@@ -39,7 +39,7 @@ pub(crate) fn state_with(results: Vec<SearchResult>, status: SearchStatus) -> Ui
         search_id(1),
         SearchPane {
             status,
-            results,
+            results: results.into(),
             skipped: 0,
             waiting_for_turn: None,
             more_ended: None,
@@ -47,7 +47,7 @@ pub(crate) fn state_with(results: Vec<SearchResult>, status: SearchStatus) -> Ui
         },
     );
     UiState {
-        searches,
+        searches: searches.into(),
         session: session_state().session,
         ..UiState::default()
     }

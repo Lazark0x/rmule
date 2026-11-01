@@ -194,7 +194,7 @@ pub(crate) fn three_downloads() -> UiState {
     source_bps.insert((download_id(1), WorkerSlot::from_usize(0)), 98.7 * 1024.0);
 
     UiState {
-        downloads,
+        downloads: downloads.into(),
         diagnostics: DiagnosticsSnapshot {
             kad_state: rmule_core::diagnostics::KadState::Off,
             downloads: diags,
@@ -253,7 +253,7 @@ pub(crate) fn state_with_named_download(name: &str) -> UiState {
     );
 
     UiState {
-        downloads,
+        downloads: downloads.into(),
         diagnostics: DiagnosticsSnapshot {
             kad_state: rmule_core::diagnostics::KadState::Off,
             downloads: diags,

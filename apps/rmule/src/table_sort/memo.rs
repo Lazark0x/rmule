@@ -2,9 +2,10 @@
 //!
 //! Every key and every wheel notch asks a table for its order, and a frame
 //! asks again, so with ten thousand shared files a table rebuilt on each ask
-//! spends its whole frame there. A table's lines are a function of the state's
-//! revision and its own sort and filter, so one build serves them all until
-//! either moves.
+//! spends its whole frame there. A table's lines are a function of the parts
+//! of the state they read and its own sort and filter, so one build serves
+//! them all until one of those moves. The key names exactly those: a part it
+//! leaves out shows stale, and one it adds for nothing rebuilds under traffic.
 
 use std::cell::RefCell;
 use std::sync::Arc;

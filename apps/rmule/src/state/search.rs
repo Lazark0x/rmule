@@ -5,8 +5,12 @@
 //! search of the run keeps its pane, receiving results whether or not it is
 //! in view, until the operator closes its **Held Search**.
 
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
+use std::ops::Deref;
+
 use rmule_core::{RelatedSearchRefusal, SearchEvent, SearchFailure, SearchId, SearchLegs};
-use rmule_primitives::SearchResult;
+use rmule_primitives::{SearchResult, SearchResultKey};
 
 use super::{UiState, note};
 use crate::words::search as words;
@@ -38,6 +42,45 @@ pub enum SearchStatus {
     },
 }
 
+/// A search's rows in the order they first arrived, one per key. A batch
+/// carries each row whole, and a row the set holds is replaced where it stands.
+#[derive(Clone, Debug, Default)]
+pub struct SearchRows {
+    rows: Vec<SearchResult>,
+    at: HashMap<SearchResultKey, usize>,
+}
+
+impl SearchRows {
+    /// Fold one batch in.
+    pub fn absorb(&mut self, batch: impl IntoIterator<Item = SearchResult>) {
+        for row in batch {
+            match self.at.entry(row.key()) {
+                Entry::Occupied(held) => self.rows[*held.get()] = row,
+                Entry::Vacant(open) => {
+                    open.insert(self.rows.len());
+                    self.rows.push(row);
+                }
+            }
+        }
+    }
+}
+
+impl From<Vec<SearchResult>> for SearchRows {
+    fn from(batch: Vec<SearchResult>) -> Self {
+        let mut rows = Self::default();
+        rows.absorb(batch);
+        rows
+    }
+}
+
+impl Deref for SearchRows {
+    type Target = [SearchResult];
+
+    fn deref(&self) -> &[SearchResult] {
+        &self.rows
+    }
+}
+
 /// One search's event-folded results + status (spec §3.3), keyed by its
 /// [`SearchId`] in [`UiState::searches`].
 #[derive(Clone, Debug)]
@@ -46,7 +89,7 @@ pub struct SearchPane {
     pub status: SearchStatus,
     /// The merged set, folded from what core publishes per batch: at most the
     /// row cap core holds a search to.
-    pub results: Vec<SearchResult>,
+    pub results: SearchRows,
     /// Server-skipped results (malformed/filtered). Surfaced in the status line
     /// only when non-zero, so the tally stays honest without noise.
     pub skipped: usize,
@@ -131,7 +174,7 @@ impl SearchPane {
     fn running() -> Self {
         Self {
             status: SearchStatus::Running,
-            results: Vec::new(),
+            results: SearchRows::default(),
             skipped: 0,
             waiting_for_turn: None,
             more_ended: None,
@@ -151,13 +194,7 @@ pub(super) fn fold(state: &mut UiState, event: SearchEvent) -> bool {
         // The rows a batch added or changed, each whole: a row the pane
         // holds is replaced where it stands, a new one appended.
         E::SearchResultsReceived { search_id, results } => {
-            let rows = &mut search_pane(state, search_id).results;
-            for row in results {
-                match rows.iter().position(|held| held.key() == row.key()) {
-                    Some(at) => rows[at] = row,
-                    None => rows.push(row),
-                }
-            }
+            search_pane(state, search_id).results.absorb(results);
             true
         }
         E::SearchResultSkipped { search_id, .. } => {

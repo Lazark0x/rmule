@@ -92,19 +92,21 @@ pub(super) fn fold_history(state: &mut UiState, mut history: FileHistory) -> boo
 }
 
 fn seed_shared(state: &mut UiState, history: &FileHistory) {
-    state.shared = history
-        .shared
-        .iter()
-        .map(|fact| {
-            let row = SharedRow {
-                file_hash: fact.identity.file_hash,
-                path: Some(fact.path.clone()),
-                file_size: Some(fact.identity.file_size),
-                withheld: fact.withheld,
-            };
-            (fact.identity.file_hash, row)
-        })
-        .collect();
+    state.shared.settle(
+        history
+            .shared
+            .iter()
+            .map(|fact| {
+                let row = SharedRow {
+                    file_hash: fact.identity.file_hash,
+                    path: Some(fact.path.clone()),
+                    file_size: Some(fact.identity.file_size),
+                    withheld: fact.withheld,
+                };
+                (fact.identity.file_hash, row)
+            })
+            .collect(),
+    );
 }
 
 /// A row's place in the State column's order: offered first, then a
@@ -466,15 +468,19 @@ impl UiState {
             .find(|row| row.file_hash == Some(file_hash))
     }
 
-    /// Peers holding an upload slot for `file_hash` right now — the Shared
-    /// Files table's Uploading column, read off the upload peers so a grant
-    /// that lands before the file's row does is still counted.
+    /// The file each upload slot serves right now, one entry per slot — what
+    /// the Shared Files table's Uploading column counts, read off the upload
+    /// peers so a grant that lands before the file's row does is still
+    /// counted. A waiter holds no slot, so the queue's churn leaves it alone.
     #[must_use]
-    pub fn uploading_now(&self, file_hash: FileHash) -> usize {
+    pub fn upload_slots(&self) -> Vec<FileHash> {
         self.upload_peers
             .values()
-            .filter(|peer| peer.state == UploadState::Uploading { file: file_hash })
-            .count()
+            .filter_map(|peer| match peer.state {
+                UploadState::Uploading { file } => Some(file),
+                _ => None,
+            })
+            .collect()
     }
 }
 
