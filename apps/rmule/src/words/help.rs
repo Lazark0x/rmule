@@ -18,7 +18,10 @@ pub const EVERYWHERE: &[Binding] = &[
     ("q", "quit; asks first while a download runs"),
     ("Ctrl-C", "quit, from anywhere"),
     ("Esc", "close a menu, a form or a question; leave the query"),
-    ("Ctrl-A / E", "in a text field: to the start / end; Alt-←/→ by word"),
+    (
+        "Ctrl-A / E",
+        "in a text field: to the start / end; Alt-←/→ by word",
+    ),
     (
         "Ctrl-U/K/W/Y",
         "in a text field: cut to start / to end / a word; put it back",
