@@ -42,6 +42,14 @@ pub(crate) struct DownloadResumeArgs {
     /// (`CoreConfig::streaming_window_parts`, ADR-0112); `0` for none.
     #[arg(long)]
     streaming_window: Option<u32>,
+    /// Attach as the TUI's restart does, taking back the part files in this
+    /// **Temp Directory** that the store has no row for (ADR-0083). `--download-id`
+    /// then names what that adoption wrote.
+    #[arg(long, requires = "download_dir")]
+    temp_dir: Option<PathBuf>,
+    /// The download directory an adopted part file finishes in.
+    #[arg(long, requires = "temp_dir")]
+    download_dir: Option<PathBuf>,
     #[command(flatten)]
     identity: DownloadIdentityArgs,
 }
@@ -96,14 +104,20 @@ pub(crate) async fn resume(args: DownloadResumeArgs) -> Result<()> {
     if let Some(parts) = args.streaming_window {
         config.streaming_window_parts = parts;
     }
-    let mut core = args
+    let adopts = args.temp_dir.is_some();
+    let settings = rmule_core::CoreSettings {
+        temp_dir: args.temp_dir.clone(),
+        download_dir: args.download_dir.clone(),
+        ..rmule_core::CoreSettings::default()
+    };
+    let builder = args
         .identity
-        .core_builder(
-            config,
-            args.identity.settings(rmule_core::CoreSettings::default()),
-            store,
-        )?
-        .build();
+        .core_builder(config, args.identity.settings(settings), store)?;
+    let mut core = if adopts {
+        builder.restore_at_attach().build()
+    } else {
+        builder.build()
+    };
     // The operator's word, given on the command line (ADR-0095).
     crate::node::connect(&core, &server).await?;
     core.send(CoreCommand::Download(CoreDownloadCommand::ResumeDownload {
