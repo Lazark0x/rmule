@@ -23,11 +23,10 @@ impl SearchesView {
     pub(super) fn not_sent_message(&self) -> Option<String> {
         let entry = self.held.current()?;
         let why = entry.kind.not_sent()?;
-        Some(if entry.kind.related_file().is_some() {
-            format!("not sent — {why}")
-        } else {
-            format!("not sent — {why}. The query is still in the input.")
-        })
+        Some(crate::words::search::not_sent(
+            why,
+            entry.kind.related_file().is_some(),
+        ))
     }
 }
 

@@ -7,6 +7,8 @@
 //! Software sorts by the client's family rank, then its version, and Phase by
 //! how far the source has got — neither by its words.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_core::DownloadId;
@@ -51,7 +53,7 @@ impl SourceLine {
             endpoint: row.peer().map(|peer| peer.to_string()),
             software: ranks.rank(row.software()),
             phase: row.phase_rank(),
-            speed: (bps > 0.0).then_some(bps as u64),
+            speed: bps.filter(|bps| *bps > 0.0).map(|bps| bps as u64),
         }
     }
 }
@@ -60,17 +62,32 @@ impl SortedTable for SourcesTable {
     type Row = SourceLine;
     type Column = SourceColumn;
     type Identity = SourceKey;
-    const TABLE: &'static str = "sources";
+    const TABLE: &'static str = column_keys::TABLE_SOURCES;
     const COLUMNS: &'static [ColumnSpec<SourceColumn>] = &[
-        ColumnSpec::new(SourceColumn::Source, "source", "Source", ColumnKind::Text),
+        ColumnSpec::new(
+            SourceColumn::Source,
+            column_keys::SOURCE,
+            columns::SOURCE,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             SourceColumn::Software,
-            "software",
-            "Software",
+            column_keys::SOFTWARE,
+            columns::SOFTWARE,
             ColumnKind::Rank,
         ),
-        ColumnSpec::new(SourceColumn::Phase, "phase", "Phase", ColumnKind::Rank),
-        ColumnSpec::new(SourceColumn::Speed, "speed", "Speed", ColumnKind::Quantity),
+        ColumnSpec::new(
+            SourceColumn::Phase,
+            column_keys::PHASE,
+            columns::PHASE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            SourceColumn::Speed,
+            column_keys::SPEED,
+            columns::SPEED,
+            ColumnKind::Quantity,
+        ),
     ];
     const NAME: SourceColumn = SourceColumn::Source;
 

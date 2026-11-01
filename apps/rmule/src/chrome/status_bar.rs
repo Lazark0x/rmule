@@ -18,11 +18,13 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use super::{ChromeState, spans_width};
-use crate::rates::{RATE_CELLS, SHORT_RATE_CELLS, format_rate, format_rate_short};
 use crate::state::{Ed2kConnection, NOTE_AGE_SHOWN, Tally, TallyPart, UiState};
 use crate::table::cut_middle;
 use crate::theme::Theme;
+use crate::words::absent;
 use crate::words::app as words;
+use crate::words::networks::users_and_files;
+use crate::words::units::{rate, rate_cells, rate_short, rate_short_cells, short_count};
 use crate::wrap::display_width;
 
 /// The status bar laid out for one frame width: the two ends of the bottom
@@ -107,15 +109,17 @@ fn rates(state: &UiState, theme: &Theme, budget: usize) -> Vec<Span<'static>> {
         }
     };
     let (down, up) = (state.rates.down_total_bps, state.rates.up_total_bps);
-    let full = 2 * (RATE_CELLS + 2) + 1;
+    let cells = rate_cells();
+    let full = 2 * (cells + 2) + 1;
     if budget >= full + 2 {
         return vec![
-            Span::styled(format!("▼ {:>RATE_CELLS$}", format_rate(down)), style(down)),
+            Span::styled(format!("▼ {:>cells$}", rate(down)), style(down)),
             Span::raw(" "),
-            Span::styled(format!("▲ {:>RATE_CELLS$}", format_rate(up)), style(up)),
+            Span::styled(format!("▲ {:>cells$}", rate(up)), style(up)),
         ];
     }
-    let short = |bps: f64| format!("{:>SHORT_RATE_CELLS$}", format_rate_short(bps));
+    let short_cells = rate_short_cells();
+    let short = |bps: f64| format!("{:>short_cells$}", rate_short(bps));
     vec![
         Span::styled(format!("▼{}", short(down)), style(down)),
         Span::raw(" "),
@@ -124,7 +128,7 @@ fn rates(state: &UiState, theme: &Theme, budget: usize) -> Vec<Span<'static>> {
 }
 
 /// The connected server's users and files, as it last reported them (aMule's
-/// status bar): the connected endpoint's row of the server list level. Dashes
+/// status bar): the connected endpoint's row of the server list level. Nothing
 /// while no server is connected or it has said nothing.
 fn users(state: &UiState, theme: &Theme) -> Vec<Span<'static>> {
     let reported = state
@@ -139,19 +143,26 @@ fn users(state: &UiState, theme: &Theme) -> Vec<Span<'static>> {
                 .find(|row| &row.server.endpoint == endpoint)
         });
     let (users_n, files_n) = reported.map_or((None, None), |row| (row.users, row.files));
+    if users_n.is_none() && files_n.is_none() {
+        return Vec::new();
+    }
     let style = if users_n.is_some() {
         Style::new().fg(theme.fg)
     } else {
         theme.dim_text()
     };
     vec![Span::styled(
-        format!(
-            "Users: {} · Files: {}",
-            crate::views::short_count(users_n),
-            crate::views::short_count(files_n)
-        ),
+        users_and_files(&reading(users_n), &reading(files_n)),
         style,
     )]
+}
+
+/// A reported count, or the word for none.
+fn reading(count: Option<u32>) -> String {
+    count.map_or_else(
+        || absent::UNKNOWN.to_string(),
+        |count| short_count(u64::from(count)),
+    )
 }
 
 /// The connection dots, aMule's arrow colours: green, yellow, and for no
@@ -279,7 +290,9 @@ pub(super) fn render(
     // Never in the connection's place: it says which server it is reading.
     let users = connection
         .as_ref()
-        .and_then(|_| row.whole(users(state, theme)));
+        .map(|_| users(state, theme))
+        .filter(|users| !users.is_empty())
+        .and_then(|users| row.whole(users));
 
     let mut left = vec![Span::raw(" ")];
     left.extend(joined(

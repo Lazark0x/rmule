@@ -73,7 +73,7 @@ fn type_cell_classifies_by_name_then_tag_then_falls_back_to_an_em_dash() {
     );
     assert_eq!(
         result_type_text(&server_result(0x11, "payload", 10, 1, 0)),
-        "—"
+        "unknown"
     );
 }
 

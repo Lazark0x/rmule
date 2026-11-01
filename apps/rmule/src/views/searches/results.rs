@@ -11,22 +11,30 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 
-use rmule_primitives::{Ed2kText, SearchResult};
+use rmule_primitives::{Ed2kFileClass, Ed2kText, SearchResult};
 
 use super::SearchesView;
 use super::sort::ResultsTable;
 use crate::state::{KnownFileMark, KnownFileMarks, SearchPane, SearchStatus, UiState};
+use crate::table::widest;
 use crate::table::{self, Cell, Rows, Table};
 use crate::table_sort::SortedTable;
 use crate::theme::Theme;
 use crate::views::human_size;
-use crate::words::labels;
+use crate::words::search;
+use crate::words::{absent, hints, labels};
 use crate::wrap::{clamp_u16, display_width, wrap_text};
 
 /// Results table columns: Name · Size · Sources · Type. `Name` is greedy: its
 /// entry is the room it keeps before other columns give way to it, and it
 /// takes everything the others leave over.
-const RESULT_COLS: [usize; 4] = [30, 9, 7, 8];
+fn result_floors() -> [usize; 4] {
+    let classes: Vec<&str> = Ed2kFileClass::ALL
+        .iter()
+        .map(|class| search::file_class_words(*class))
+        .collect();
+    [30, crate::views::size_floor(), 7, widest(&classes)]
+}
 const RESULT_FLEX: usize = 0;
 /// The bounded columns and the most each asks for beyond its floor when a value
 /// drawn is wider: Size, Sources, Type.
@@ -112,9 +120,19 @@ pub(super) fn result_type(result: &SearchResult) -> Option<String> {
     )
 }
 
-/// The *Type* cell: [`result_type`], or `—` for an unclassifiable row.
+/// The *Type* cell: [`result_type`], or the word for an unclassifiable row.
 fn result_type_text(result: &SearchResult) -> String {
-    result_type(result).unwrap_or_else(|| "—".to_string())
+    result_type(result).unwrap_or_else(|| absent::UNKNOWN.to_string())
+}
+
+/// The *Type* cell, its word for an unclassifiable row giving way to the mark.
+fn type_cell(result: &SearchResult, tint: Style) -> Cell {
+    let cell = Cell::new(result_type_text(result), tint);
+    if result_type(result).is_some() {
+        cell
+    } else {
+        cell.or_short(absent::SHORT)
+    }
 }
 
 fn results_title(
@@ -125,26 +143,19 @@ fn results_title(
     reconnecting: bool,
 ) -> String {
     let Some(pane) = pane else {
-        return " Results ".to_string();
+        return search::RESULTS.to_string();
     };
     let status = match &pane.status {
         // Nothing will answer it: the core that ran it is gone.
         SearchStatus::Running | SearchStatus::WaitingForConnection if !core_alive => {
             crate::words::search::STOPPED_WITH_THE_ENGINE_TITLE.to_string()
         }
-        SearchStatus::WaitingForConnection if reconnecting => {
-            "Waiting for the reconnect · sent when it lands".to_string()
-        }
-        SearchStatus::WaitingForConnection => {
-            "Waiting for a connection · sent when you connect".to_string()
-        }
+        SearchStatus::WaitingForConnection if reconnecting => search::WAITING_RECONNECT.to_string(),
+        SearchStatus::WaitingForConnection => search::WAITING_CONNECTION.to_string(),
         SearchStatus::Running => {
             let running = match pane.waiting_for_turn {
-                Some(send_in) => format!(
-                    "Waiting its turn on this server · sent in {} s",
-                    crate::state::seconds(send_in)
-                ),
-                None => "Running…".to_string(),
+                Some(send_in) => search::waiting_turn(crate::state::seconds(send_in)),
+                None => search::STATUS_RUNNING.to_string(),
             };
             // Each leg by name: one may wait while the others run.
             match pane.legs {
@@ -164,29 +175,26 @@ fn results_title(
                     || (!related && (short_of_full(legs.sweep) || short_of_full(legs.kad))) =>
             {
                 format!(
-                    "Completed · {total} · {}",
+                    "{} · {}",
+                    search::status_completed(*total),
                     crate::state::legs_line(legs, related, reconnecting)
                 )
             }
-            _ => format!("Completed · {total}"),
+            _ => search::status_completed(*total),
         },
-        SearchStatus::Cancelled => "Cancelled".to_string(),
+        SearchStatus::Cancelled => search::STATUS_CANCELLED.to_string(),
         SearchStatus::Failed {
             reason: rmule_core::SearchFailure::RelatedSearchNotOffered,
-        } => "Refused".to_string(),
+        } => search::STATUS_REFUSED.to_string(),
         SearchStatus::Failed { reason } => {
-            format!("Failed · {}", crate::state::search_failure_words(*reason))
+            search::status_failed(crate::state::search_failure_words(*reason))
         }
     };
     let status = match super::more::status_clause(more, pane.more_ended) {
         Some(clause) => format!("{status} · {clause}"),
         None => status,
     };
-    if pane.skipped > 0 {
-        format!(" Results · {status} · {} skipped ", pane.skipped)
-    } else {
-        format!(" Results · {status} ")
-    }
+    search::results_title(&status, pane.skipped)
 }
 
 /// Whether a settled leg ended without saying what it would have.
@@ -227,40 +235,33 @@ impl SearchesView {
                     state.reconnect.is_some(),
                 )
             },
-            |_| " Results · Not sent ".to_string(),
+            |_| search::RESULTS_NOT_SENT.to_string(),
         );
-        let reopen = if self.held.can_reopen() {
-            "  u reopen"
-        } else {
-            ""
-        };
-        let hint = if let Some(pane) = pane {
-            let x = if pane.status.is_live() && state.core_alive {
-                "x stop"
+        let reopen = self.held.can_reopen().then_some(hints::REOPEN);
+        let mut keys = Vec::new();
+        if let Some(pane) = pane {
+            let rows = !pane.results.is_empty();
+            if rows {
+                keys.extend([hints::ENTER_MENU, hints::FILTER]);
+            }
+            keys.push(hints::WALK_SEARCHES);
+            keys.push(if pane.status.is_live() && state.core_alive {
+                hints::STOP_SEARCH
             } else {
-                "x close"
-            };
-            let sort = if pane.results.is_empty() {
-                ""
-            } else {
-                "  Space tag  s sort  S reverse  z zoom"
-            };
-            let next = if more.is_some_and(|more| more.asks_left > 0) {
-                "  n more"
-            } else {
-                ""
-            };
-            let menu = if pane.results.is_empty() {
-                ""
-            } else {
-                "Enter menu  / filter  "
-            };
-            format!(" {menu}[ ] search  {x}{next}{sort}{reopen} ")
+                hints::CLOSE_SEARCH
+            });
+            keys.extend(
+                more.is_some_and(|more| more.asks_left > 0)
+                    .then_some(hints::MORE),
+            );
+            if rows {
+                keys.extend([hints::TAG, hints::SORT, hints::REVERSE, hints::ZOOM]);
+            }
         } else if self.current_refused() || self.current_not_sent().is_some() {
-            format!(" [ ] search  x close{reopen} ")
-        } else {
-            reopen.to_string()
-        };
+            keys.extend([hints::WALK_SEARCHES, hints::CLOSE_SEARCH]);
+        }
+        keys.extend(reopen);
+        let hint = hints::line(&keys);
         let block = crate::views::title::titled_first_key(
             theme.pane(active),
             area.width,
@@ -285,6 +286,7 @@ impl SearchesView {
                     .or_else(|| self.related_message(pane))
                     .unwrap_or_else(|| {
                         match pane {
+                            None if self.held.current().is_some() => search::SEARCHING,
                             None if self.input_focused => crate::words::search::TYPE_A_QUERY,
                             None => crate::words::search::PRESS_SLASH,
                             Some(pane) => match pane.status {
@@ -294,12 +296,12 @@ impl SearchesView {
                                     crate::words::search::STOPPED_WITH_THE_ENGINE
                                 }
                                 SearchStatus::WaitingForConnection => {
-                                    "waiting for a connection — press c on a server in Networks (1) to connect"
+                                    search::WAITING_FOR_A_CONNECTION
                                 }
-                                SearchStatus::Running => "searching…",
-                                SearchStatus::Completed { .. } => "no results",
-                                SearchStatus::Cancelled => "search cancelled",
-                                SearchStatus::Failed { .. } => "search failed",
+                                SearchStatus::Running => search::SEARCHING,
+                                SearchStatus::Completed { .. } => search::NO_RESULTS,
+                                SearchStatus::Cancelled => search::SEARCH_CANCELLED,
+                                SearchStatus::Failed { .. } => search::SEARCH_FAILED,
                             },
                         }
                         .to_string()
@@ -376,12 +378,12 @@ impl SearchesView {
                 Cell::new(name, tint),
                 Cell::new(human_size(result.file_size()), tint),
                 Cell::new(result_sources_text(result), tint),
-                Cell::new(result_type_text(result), tint),
+                type_cell(result, tint),
             ]
         };
         let table = Table::of(
             &self.sort,
-            &RESULT_COLS,
+            &result_floors(),
             RESULT_FLEX,
             &RESULT_GIVE_WAY,
             theme.header(),

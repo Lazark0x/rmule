@@ -22,18 +22,32 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use super::sort::SharedLine;
+use rmule_core::WithheldReason;
+
 use super::{Pane, SharedView, num_style, render_empty};
 use crate::state::{UiState, withheld_words};
-use crate::table::{self, Cell, Rows, Table};
+use crate::table::{self, Cell, Rows, Table, widest};
 use crate::theme::Theme;
 use crate::views::{day, human_size};
 use crate::words::serve::PARTIAL;
+use crate::words::{absent, hints, shared as words};
 
 /// Floors of the files table's columns: File · State · Size · Uploading ·
-/// Requests · Accepted · Transferred. State fits `folder missing`, Size fits
-/// `1023.9 MB`, a counter its run figure. `File` is greedy: its entry is the
+/// Requests · Accepted · Transferred. State fits its widest word, Size a size,
+/// a counter its run figure and its header. `File` is greedy: its entry is the
 /// room it keeps before other columns give way to it.
-const FILE_COLS: [usize; 7] = [30, 14, 9, 9, 8, 8, 11];
+fn file_floors() -> [usize; 7] {
+    let state = widest(&[
+        words::SHARED,
+        PARTIAL,
+        withheld_words(WithheldReason::Missing),
+        withheld_words(WithheldReason::Changed),
+        withheld_words(WithheldReason::FolderMissing),
+        withheld_words(WithheldReason::Refused),
+    ]);
+    let size = crate::views::size_floor();
+    [30, state, size, 0, 0, 0, size]
+}
 
 /// What the counters ask for: the run-and-all-time pair at its realistic
 /// widest, `999999 (999999)` and `999.9 GB (999.9 GB)`.
@@ -62,24 +76,24 @@ fn file_cells(line: &SharedLine, theme: &Theme) -> Vec<Cell> {
         None => (crate::words::units::short_hash(line.file_hash), dim),
     };
     let state = line.withheld.map_or_else(
-        || Cell::new(if line.partial { PARTIAL } else { "shared" }, dim),
+        || Cell::new(if line.partial { PARTIAL } else { words::SHARED }, dim),
         |held| {
             let why = withheld_words(held.reason);
             Cell::new(
-                format!("{why} since {}", day(held.since)),
+                words::withheld_since(why, &day(held.since)),
                 Style::new().fg(theme.warn),
             )
             .or_short(why)
         },
     );
     let size = line.size.map_or_else(
-        || Cell::new("—", dim),
+        || Cell::absent(absent::UNKNOWN, dim),
         |size| Cell::new(human_size(size), plain),
     );
     let all_time = line.all_time.unwrap_or_default();
     let with_all_time = |run: Option<u64>, total: u64, text: fn(u64) -> String| {
         run.map_or_else(
-            || Cell::new("—", dim),
+            || Cell::absent(absent::UNKNOWN, dim),
             |run| paired(run, total, text, num_style(total, theme)),
         )
     };
@@ -111,26 +125,32 @@ impl SharedView {
         let lines_in_order = self.sorted_lines(state);
 
         // Header line (spec §3.5): file count + total size.
-        let total = total_size(&lines_in_order).map_or_else(|| "—".to_string(), human_size);
-        let tagged = if self.tags.is_empty() {
-            String::new()
-        } else {
-            format!("· {} ", crate::words::rows::tagged(self.tags.len()))
-        };
-        let title = format!(
-            " Shared Files · {} · {total} {tagged}",
-            crate::words::scan::files(lines_in_order.len())
+        let total = total_size(&lines_in_order)
+            .map_or_else(|| words::SIZE_BEING_READ.to_string(), human_size);
+        let tagged = (!self.tags.is_empty()).then(|| crate::words::rows::tagged(self.tags.len()));
+        let title = words::files_title(
+            &crate::words::scan::files(lines_in_order.len()),
+            &total,
+            tagged.as_deref(),
         );
         let hint = if lines_in_order.is_empty() {
-            ""
+            String::new()
         } else {
-            " m menu  / filter  Tab uploads  Space tag  s sort  S reverse  z zoom "
+            hints::line(&[
+                hints::MENU,
+                hints::FILTER,
+                hints::TO_UPLOADS,
+                hints::TAG,
+                hints::SORT,
+                hints::REVERSE,
+                hints::ZOOM,
+            ])
         };
         let block = crate::views::title::titled(
             theme.pane(focused),
             area.width,
             (&title, theme.dim_text()),
-            (hint, theme.dim_text()),
+            (&hint, theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -148,9 +168,15 @@ impl SharedView {
             return;
         }
         let cells = |index: usize, _: &[usize]| file_cells(&lines_in_order[index], theme);
-        let table = Table::of(&self.sort, &FILE_COLS, 0, &FILE_GIVE_WAY, theme.header())
-            .wants(&FILE_WANTS)
-            .empty(crate::words::rows::NO_MATCH);
+        let table = Table::of(
+            &self.sort,
+            &file_floors(),
+            0,
+            &FILE_GIVE_WAY,
+            theme.header(),
+        )
+        .wants(&FILE_WANTS)
+        .empty(crate::words::rows::NO_MATCH);
         let tagged = |index: usize| self.tags.contains(&lines_in_order[index].file_hash);
         let rows = Rows {
             count: lines_in_order.len(),

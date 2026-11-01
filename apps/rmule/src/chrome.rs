@@ -13,10 +13,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
 use crate::action::Action;
-use crate::rates::format_rate;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::view::ViewId;
+use crate::words::units::rate;
 use help::draw_help;
 use status_bar::render as status_bar;
 use tabs::{BRAND, brand_fits, tabs_line};
@@ -127,8 +127,8 @@ pub fn draw_overlays(
 pub fn terminal_title(state: &UiState) -> Option<String> {
     state.preferences.terminal_title.then(|| {
         crate::words::app::terminal_title(
-            &format_rate(state.rates.down_total_bps),
-            &format_rate(state.rates.up_total_bps),
+            &rate(state.rates.down_total_bps),
+            &rate(state.rates.up_total_bps),
             state.tally(),
         )
     })

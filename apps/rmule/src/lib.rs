@@ -84,6 +84,7 @@ pub mod row_selection;
 pub mod start_notes;
 pub mod state;
 pub mod stop;
+mod stored_keys;
 pub(crate) mod table;
 pub mod table_sort;
 pub mod theme;

@@ -12,7 +12,7 @@
 ┌ Sources · bunny.mp4 ───────┐
 │  Software                  │
 │▸ aMule v2.3.3              │
-│  —                         │
+│  unknown                   │
 │Off-screen: Source          │
 │10.0.0.1:4662 · Phase recv  │
 └ 3 hidden ─────────── 1 / 2 ┘

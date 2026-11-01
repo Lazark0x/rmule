@@ -11,8 +11,8 @@
 │Off-screen: Requests 0 (0) · Accepted 0 (0) · Transferred 0 B (0 B)         │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 1 ┘
 ┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
-│  Peer ▲                State             Speed File                        │
-│▸ 10.0.0.1:4662         Uploading             — album.flac                  │
+│  Peer ▲                State                Speed File                     │
+│▸ 10.0.0.1:4662         Uploading     not measured album.flac               │
 │                                                                            │
 │                                                                            │
 │                                                                            │

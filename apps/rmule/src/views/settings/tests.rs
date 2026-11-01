@@ -289,7 +289,7 @@ fn the_caret_of_an_open_field_is_where_the_cursor_goes() {
     assert_eq!(
         line.find(crate::golden::CARET)
             .map(|at| line[..at].chars().count()),
-        Some(1 + 14),
+        Some(1 + 16),
         "{line}"
     );
 }

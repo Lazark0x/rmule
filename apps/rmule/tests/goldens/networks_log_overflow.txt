@@ -1,4 +1,4 @@
-┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
+┌ Servers (0) · not connected ────────────────────── a add  U update  m menu ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │   no servers — press a to add one, or U to update the list from a URL      │
 │                                                                            │
@@ -8,14 +8,14 @@
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-┌ Log (30) ─── / filter · f severity ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (30) ──────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │12:00:13 · part 13 verified        ▲││● Kad: off                            │
-│12:00:14 · part 14 verified         ││Joined    — (node not started)        │
-│12:00:15 · part 15 verified         ││Contacts  —                           │
-│12:00:16 · part 16 verified         ││Firewall  — (never run)               │
-│12:00:17 · part 17 verified        ▇││UDP       — (never run)               │
-│12:00:18 · part 18 verified        █││Keywords  —                           │
-│12:00:19 · part 19 verified        ▇││Node id   —                           │
-│12:00:20 · part 20 verified         ││Received  —                           │
-│12:00:21 · part 21 verified        ▼││Sent      —                           │
+│12:00:14 · part 14 verified         ││Joined   not running                  │
+│12:00:15 · part 15 verified         ││Contacts not running                  │
+│12:00:16 · part 16 verified         ││Firewall not running                  │
+│12:00:17 · part 17 verified        ▇││UDP      not running                  │
+│12:00:18 · part 18 verified        █││Keywords not running                  │
+│12:00:19 · part 19 verified        ▇││Node id  not running                  │
+│12:00:20 · part 20 verified         ││Received not running                  │
+│12:00:21 · part 21 verified        ▼││Sent     not running                  │
 └ 2026-01-01 ─────────────── 23 / 31 ┘└──────────────────────────────────────┘

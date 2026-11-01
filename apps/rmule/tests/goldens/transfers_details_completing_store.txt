@@ -1,6 +1,6 @@
 ┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
-│▸ bunny.mp4                        87.7 MB ██████████          — Completing │
+│▸ bunny.mp4                        87.7 MB ██████████   0.0 KB/s Completing │
 │  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
 │  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
 │            │ hash    07070707070707070707070707070707         │            │

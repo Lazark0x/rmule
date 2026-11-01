@@ -1,9 +1,9 @@
-┌ Shared Files · 4 files · — ────── m menu  / filter  Tab uploads  Space tag ┐
+┌ Shared Files · 4 files · size still being read ────────── m menu  / filter ┐
 │  File                                    State               Size Uploading│
 │▸ alpha.film.name.mkv                     shared             100 B         0│
 │  charlie.image.name.iso                  shared             300 B         2│
 │  bravo.song.name.mp3                     shared             200 B         2│
-│  0404040404…                             shared                 —         0│
+│  0404040404…                             shared           unknown         0│
 │                                                                            │
 │                                                                            │
 │                                                                            │
@@ -11,11 +11,11 @@
 │Off-screen: Requests 9 (0) · Accepted 6 (0) · Transferred 0 B (0 B)         │
 └ too narrow to show: Requests, Accepted, Transferred ──────────────── 1 / 4 ┘
 ┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
-│  Peer ▲                State             Speed File                        │
-│▸ 10.0.0.20:4662        Uploading             — bravo.song.name.mp3         │
-│  10.0.0.21:4662        Uploading             — bravo.song.name.mp3         │
-│  10.0.0.30:4662        Uploading             — charlie.image.name.iso      │
-│  10.0.0.31:4662        Uploading             — charlie.image.name.iso      │
+│  Peer ▲                State                Speed File                     │
+│▸ 10.0.0.20:4662        Uploading     not measured bravo.song.name.mp3      │
+│  10.0.0.21:4662        Uploading     not measured bravo.song.name.mp3      │
+│  10.0.0.30:4662        Uploading     not measured charlie.image.name.iso   │
+│  10.0.0.31:4662        Uploading     not measured charlie.image.name.iso   │
 │                                                                            │
-│Off-screen: Software —                                                      │
+│Off-screen: Software unknown                                                │
 └ too narrow to show: Software ─────────────────────────────────────── 1 / 4 ┘

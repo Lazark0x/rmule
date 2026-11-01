@@ -1,9 +1,9 @@
 ┌ Downloads (4) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
 │  bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
-│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
-│  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
-│▸ 3C3C3C3C3C…                    ≈ 37.1 MB ░░░░░░░░░░          — Failed     │
+│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░   0.0 KB/s Paused     │
+│  5C5C5C5C5C…                      42.9 MB ██████████   0.0 KB/s Completed  │
+│▸ 3C3C3C3C3C…                    ≈ 37.1 MB ░░░░░░░░░░   0.0 KB/s Failed     │
 │              ┌ a file whose name is not known yet ──────────┐              │
 │              │▸ Restart (p)                                 │              │
 │              │  Cancel… (x)                                 │              │
@@ -14,7 +14,7 @@
 │              │  Pause or resume all (P)                     │              │
 │              └─────────────────────────────────────── 1 / 7 ┘              │
 │                                                                            │
-│Off-screen: Done — · ETA — · Src —                                          │
+│Off-screen: Done unknown · ETA unknown · Src not running                    │
 └ too narrow to show: Done, ETA, Src ───────────────────────────────── 4 / 4 ┘
 ┌ Sources · 3C3C3C3C3C… ─────────────────────────────────────────────────────┐
 │                              no active sources                             │

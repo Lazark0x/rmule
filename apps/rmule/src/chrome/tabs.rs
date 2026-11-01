@@ -13,9 +13,10 @@ use ratatui::text::{Line, Span};
 use super::ChromeState;
 use crate::theme::Theme;
 use crate::view::ViewId;
+use crate::words::labels;
 
 /// The brand tag on the top border — decoration, not information.
-pub(super) const BRAND: &str = " rmule ";
+pub(super) const BRAND: &str = labels::BRAND;
 
 /// Dashes the brand insists on keeping between itself and the last tab. The
 /// tab bar is the load-bearing furniture, so the brand is priority-dropped

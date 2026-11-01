@@ -46,7 +46,7 @@ fn tone(severity: Severity, theme: &Theme) -> Style {
 /// the severity's word, the two in its colour, then the text, wrapping under
 /// the gutter.
 fn entry(line: &LogLine, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let time = format!("{:<TIME_W$}", line.wall.format("%H:%M:%S"));
+    let time = format!("{:<TIME_W$}", line.wall.format(words::TIME_FORMAT));
     let toned = tone(line.severity, theme);
     let glyph = format!("{:<GLYPH_W$}", line.severity.glyph());
     let word = line.severity.word();
@@ -147,7 +147,7 @@ impl NetworksView {
             let mut lines = Vec::with_capacity(kept.len() + 1);
             let mut days: Vec<(usize, String)> = Vec::new();
             for line in &kept {
-                let date = line.wall.format("%Y-%m-%d").to_string();
+                let date = line.wall.format(words::DAY_FORMAT).to_string();
                 if days.last().is_none_or(|(_, day)| *day != date) {
                     days.push((lines.len(), date.clone()));
                     lines.push(Line::styled(date, day_style));

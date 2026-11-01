@@ -12,8 +12,6 @@ use std::net::Ipv4Addr;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 
 use rmule_core::{CoreCommand, ManagedServer, ServerListCommand};
 use rmule_primitives::{Ed2kText, ServerEndpoint};
@@ -25,9 +23,11 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, release_form, scroll_form};
+use crate::views::modal::{Modal, legend, release_form, scroll_form};
 use crate::words::Sentence;
 use crate::words::app as words;
+use crate::words::forms;
+use crate::words::hints::{self, Hint};
 use crate::wrap::clamp_u16;
 
 /// Floor width of a modal form; a longer entry grows it (see [`draw_form`]).
@@ -45,16 +45,16 @@ enum FormKind {
 impl FormKind {
     fn title(self) -> &'static str {
         match self {
-            FormKind::AddServer => " Add server ",
-            FormKind::UpdateFromUrl => " Update server list from URL ",
+            FormKind::AddServer => forms::ADD_SERVER_TITLE,
+            FormKind::UpdateFromUrl => forms::UPDATE_LIST_TITLE,
         }
     }
 
     /// What `Enter` does here, for the modal's key legend.
-    fn commit_verb(self) -> &'static str {
+    fn commit(self) -> Hint {
         match self {
-            FormKind::AddServer => "add",
-            FormKind::UpdateFromUrl => "fetch",
+            FormKind::AddServer => hints::COMMIT,
+            FormKind::UpdateFromUrl => hints::COMMIT.doing(forms::FETCH),
         }
     }
 }
@@ -73,9 +73,9 @@ impl ServerForm {
         Self {
             kind: FormKind::AddServer,
             form: Form::new(vec![
-                Field::text("Name", ""),
-                Field::text("Address", "").with_placeholder("IPv4 or hostname"),
-                Field::text("Port", "").with_placeholder("1–65535"),
+                Field::text(forms::SERVER_NAME, ""),
+                Field::text(forms::SERVER_ADDRESS, "").with_placeholder(forms::SERVER_ADDRESS_HINT),
+                Field::text(forms::SERVER_PORT, "").with_placeholder("1–65535"),
             ])
             // Address: the only field with no sane default.
             .focused_on(1),
@@ -89,7 +89,7 @@ impl ServerForm {
     fn update_url(url: &str) -> Self {
         Self {
             kind: FormKind::UpdateFromUrl,
-            form: Form::new(vec![Field::text("URL", url)]),
+            form: Form::new(vec![Field::text(forms::LIST_URL, url)]),
             viewport: Cell::default(),
         }
     }
@@ -173,17 +173,10 @@ pub(super) fn draw_form(
         &entry.viewport,
         |width| {
             let inner_w = usize::from(width).saturating_sub(2).max(1);
-            let legend = Line::from(vec![
-                Span::styled(" Tab", Style::new().fg(theme.accent)),
-                Span::styled(" field    ", Style::new().fg(theme.fg)),
-                Span::styled("Enter", Style::new().fg(theme.accent)),
-                Span::styled(
-                    format!(" {}    ", entry.kind.commit_verb()),
-                    Style::new().fg(theme.fg),
-                ),
-                Span::styled("Esc", Style::new().fg(theme.accent)),
-                Span::styled(" cancel", Style::new().fg(theme.fg)),
-            ]);
+            let legend = legend(
+                &[hints::NEXT_FIELD, entry.kind.commit(), hints::ESC_CANCEL],
+                theme,
+            );
             entry.form.render_modal(inner_w, theme, vec![legend])
         },
     )

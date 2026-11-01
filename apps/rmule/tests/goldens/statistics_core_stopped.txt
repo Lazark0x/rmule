@@ -12,10 +12,10 @@
 │▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇█████████▁▄▇███│
 └ 1m ago ─────────────────────────────────────────────────────────── stopped ┘
 ┌ Session · engine stopped ───────────┐┌ Activity ───────────────────────────┐
-│Downloaded   19.7 MB                 ││Downloads    2 (1 active)            │
-│Uploaded     3.7 MB                  ││Uploads      1 active · 1 queued     │
-│Down now     0.0 KB/s                ││Peer hellos  3 refused               │
-│Up now       0.0 KB/s                ││Shared files 2                       │
-│Kad in       —                       ││eD2k         not connected           │
-│Kad out      —                       ││Kad          off                     │
+│Downloaded 19.7 MB                   ││Downloads    2 (1 active)            │
+│Uploaded   3.7 MB                    ││Uploads      1 active · 1 queued     │
+│Down now   0.0 KB/s                  ││Peer hellos  3 refused               │
+│Up now     0.0 KB/s                  ││Shared files 2                       │
+│Kad in     not running               ││eD2k         not connected           │
+│Kad out    not running               ││Kad          off                     │
 └─────────────────────────────────────┘└─────────────────────────────────────┘

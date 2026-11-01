@@ -12,7 +12,6 @@ use super::super::Sentence;
 use super::super::units::human_size;
 
 /// A figure not known.
-const DASH: &str = "—";
 
 /// What a completing download is doing, as a clause.
 #[must_use]
@@ -37,7 +36,7 @@ pub fn completion_progress(step: CompletionStep, copied: u64, size: Option<u64>)
             "{}: {} of {}",
             completion_step_words(step),
             human_size(copied),
-            size.map_or_else(|| DASH.to_string(), human_size)
+            size.map_or_else(|| crate::absent::UNKNOWN.to_string(), human_size)
         ),
         step => completion_step_words(step).to_string(),
     }

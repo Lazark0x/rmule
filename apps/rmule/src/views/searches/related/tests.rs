@@ -161,7 +161,7 @@ fn starting_one_sends_the_related_query_and_focuses_the_results() {
     assert_eq!(view.query.text(), "", "the file is no keywords to edit");
     let screen = render(&mut view, &state, 78);
     assert!(screen.contains("❯ related to: debian.iso"), "{screen}");
-    assert!(screen.contains("[~debian.iso · —…]"), "{screen}");
+    assert!(screen.contains("[~debian.iso · 0…]"), "{screen}");
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn a_file_whose_name_is_not_known_is_named_by_its_hash() {
         screen.contains("related to: the file with hash 5C5C5C5C5C… — its name"),
         "{screen}"
     );
-    assert!(screen.contains("[~5C5C5C5C5C… · —…]"), "{screen}");
+    assert!(screen.contains("[~5C5C5C5C5C… · 0…]"), "{screen}");
 }
 
 #[test]
@@ -228,7 +228,10 @@ fn an_empty_answer_says_what_rmule_knows() {
     started(&mut state, id);
     completed_empty(&mut state, id);
     let screen = render(&mut view, &state, 110);
-    assert!(screen.contains(NO_RELATED_FILES), "{screen}");
+    assert!(
+        screen.contains(crate::words::search::NO_RELATED_FILES),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -244,7 +247,7 @@ fn a_refusal_before_starting_reads_as_its_reason_and_closes_by_its_id() {
     let screen = render(&mut view, &state, 78);
     assert!(screen.contains("refused: not connected"), "{screen}");
     assert!(
-        screen.contains("[~debian.iso · —]"),
+        screen.contains("[~debian.iso · 0]"),
         "not running: {screen}"
     );
 

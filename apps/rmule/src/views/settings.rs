@@ -55,7 +55,7 @@ use crate::config::{
     ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
     validate_nickname, validate_temp_dir,
 };
-use crate::form::{self, Field, Form, FormKey, validate_port, validate_url};
+use crate::form::{Field, Form, FormKey, validate_port, validate_url};
 use crate::row_filter::RowFilter;
 use crate::row_selection::viewport::{self, Viewport};
 use crate::state::UiState;
@@ -66,6 +66,8 @@ use crate::words::Sentence;
 use crate::words::app as words;
 use crate::words::front_door;
 use crate::words::server as server_words;
+use crate::words::settings as words_s;
+use crate::words::{absent, hints};
 use crate::wrap::clamp_u16;
 use shared_dirs::Slot;
 
@@ -139,16 +141,16 @@ impl Row {
     /// The heading this row opens, if it is the first of a group.
     const fn section(self) -> Option<&'static str> {
         match self {
-            Row::DownloadDir => Some("Paths"),
-            Row::Nickname => Some("Network"),
-            Row::DeadServerRetries => Some("Servers"),
-            Row::RememberPeers => Some("Downloads"),
+            Row::DownloadDir => Some(words_s::PATHS),
+            Row::Nickname => Some(words_s::NETWORK),
+            Row::DeadServerRetries => Some(words_s::SERVERS),
+            Row::RememberPeers => Some(words_s::DOWNLOADS),
             // Not a Kad row any more: reask, NAT-T and Kad share this one
             // socket (ADR-0057), so it belongs beside the eD2k listen port.
-            Row::NodesDatUrl => Some("Kad"),
-            Row::Theme => Some("Appearance"),
-            Row::RunLogFull => Some("Diagnostics"),
-            Row::UserHash => Some("Identity — minted once, never edited"),
+            Row::NodesDatUrl => Some(words_s::KAD),
+            Row::Theme => Some(words_s::APPEARANCE),
+            Row::RunLogFull => Some(words_s::DIAGNOSTICS),
+            Row::UserHash => Some(words_s::IDENTITY),
             _ => None,
         }
     }
@@ -184,28 +186,6 @@ fn player_command(text: &str) -> Result<Option<String>, Sentence> {
         .map(|_| Some(text.to_string()))
         .map_err(crate::words::player::field_refusal)
 }
-
-/// Where a restart-shaped row says so.
-const ON_RESTART: &str = "(on restart)";
-
-/// The on/off selector's two options, in index order.
-const ON_OFF: [&str; 2] = ["off", "on"];
-
-/// The connect-at-start row's note: which server a start would dial, or that
-/// none has been connected to yet.
-fn connect_at_start_note(last: Option<&rmule_primitives::ServerEndpoint>) -> String {
-    match last {
-        Some(server) => format!(
-            "at start, to {}:{}  (on restart)",
-            server.host(),
-            server.port()
-        ),
-        None => "at start, to the last server — none yet  (on restart)".to_string(),
-    }
-}
-
-/// What an unknown display-only fact reads.
-const DASH: &str = "—";
 
 /// The Settings view. Holds view state only (ADR-0069): the form's cursor and
 /// typing, whether a text field is open for editing, and its Viewport.
@@ -279,40 +259,38 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
 
     let fields = Row::ALL.map(|row| {
         let field = match row {
-            Row::DownloadDir => Field::directory("Download dir", path(&prefs.download_dir))
-                .with_placeholder("unset — downloads have nowhere to land"),
+            Row::DownloadDir => Field::directory(words_s::DOWNLOAD_DIR, path(&prefs.download_dir))
+                .with_placeholder(words_s::DOWNLOAD_DIR_UNSET),
             // Unset, the row names the directory core reads by default.
-            Row::TempDir => Field::directory("Temp dir", path(&prefs.temp_dir)).with_placeholder(
-                crate::words::app::temp_dir_default(
+            Row::TempDir => Field::directory(words_s::TEMP_DIR, path(&prefs.temp_dir))
+                .with_placeholder(crate::words::app::temp_dir_default(
                     prefs
                         .data_dir
                         .as_ref()
                         .map(|dir| rmule_core::CoreSettings::default_temp_dir(&dir.path))
                         .as_deref(),
-                ),
-            ),
+                )),
             Row::DataDir => match &prefs.data_dir {
-                Some(dir) => Field::display("Data dir", dir.path.display().to_string())
-                    .with_note(format!("({})", front_door::source_words(dir.source))),
-                None => Field::display("Data dir", DASH.to_string())
-                    .with_note(format!("({})", front_door::NO_DATA_DIR)),
+                Some(dir) => Field::display(words_s::DATA_DIR, dir.path.display().to_string())
+                    .with_note(words_s::bracketed(front_door::source_words(dir.source))),
+                None => Field::display(words_s::DATA_DIR, absent::NONE.to_string())
+                    .with_note(words_s::bracketed(front_door::NO_DATA_DIR)),
             },
-            Row::Nickname => Field::text("Nickname", prefs.nickname.clone()).with_note(ON_RESTART),
-            Row::TcpPort => {
-                Field::text("eD2k port", prefs.tcp_port.to_string()).with_note(ON_RESTART)
-            }
-            Row::ServerMetUrl => {
-                Field::text("server.met", prefs.server_met_url.clone()).with_note("(Networks: U)")
-            }
+            Row::Nickname => Field::text(words_s::NICKNAME, prefs.nickname.clone())
+                .with_note(words_s::ON_RESTART),
+            Row::TcpPort => Field::text(words_s::ED2K_PORT, prefs.tcp_port.to_string())
+                .with_note(words_s::ON_RESTART),
+            Row::ServerMetUrl => Field::text(words_s::SERVER_MET, prefs.server_met_url.clone())
+                .with_note(words_s::SERVER_MET_NOTE),
             Row::AutoFetchServerMet => Field::choice(
-                "Fetch list",
-                ON_OFF.to_vec(),
+                words_s::FETCH_LIST,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.auto_fetch_server_met),
             )
-            .with_note("server.met at start when the list is empty  (on restart)"),
+            .with_note(words_s::FETCH_LIST_NOTE),
             Row::AutoUpdateServerMet => Field::choice(
                 server_words::AUTO_UPDATE_LABEL,
-                ON_OFF.to_vec(),
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.auto_update_server_met),
             )
             .with_note(server_words::AUTO_UPDATE_NOTE),
@@ -322,98 +300,107 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
             )
             .with_placeholder(server_words::AUTO_UPDATE_URLS_NONE)
             .with_note(server_words::AUTO_UPDATE_URLS_NOTE),
-            Row::UdpPort => {
-                Field::text("UDP port", prefs.udp_port.to_string()).with_note(ON_RESTART)
-            }
+            Row::UdpPort => Field::text(words_s::UDP_PORT, prefs.udp_port.to_string())
+                .with_note(words_s::ON_RESTART),
             Row::Obfuscation => Field::choice(
-                "Obfuscation",
-                ObfuscationChoice::ALL.map(ObfuscationChoice::name).to_vec(),
+                words_s::OBFUSCATION,
+                ObfuscationChoice::ALL
+                    .map(words_s::obfuscation_word)
+                    .to_vec(),
                 ObfuscationChoice::ALL
                     .iter()
                     .position(|choice| *choice == prefs.obfuscation)
                     .unwrap_or(0),
             )
-            .with_note("peer TCP/UDP + Kad + server UDP"),
+            .with_note(words_s::OBFUSCATION_NOTE),
             Row::PortMapping => Field::choice(
-                "Port mapping",
-                ON_OFF.to_vec(),
+                words_s::PORT_MAPPING,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.port_mapping),
             )
-            .with_note("opens router ports: UPnP, PCP, NAT-PMP  (on restart)"),
+            .with_note(words_s::PORT_MAPPING_NOTE),
             Row::ConnectAtStart => Field::choice(
-                "Autoconnect",
-                ON_OFF.to_vec(),
+                words_s::AUTOCONNECT,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.connect_at_start),
             )
-            .with_note(connect_at_start_note(prefs.last_server.as_ref())),
+            .with_note(words_s::connect_at_start_note(prefs.last_server.as_ref())),
             Row::DeadServerRetries => {
-                Field::text("Dead after", prefs.dead_server_retries.to_string())
-                    .with_note("failed tries in a row; a dead server stays listed")
+                Field::text(words_s::DEAD_AFTER, prefs.dead_server_retries.to_string())
+                    .with_note(words_s::DEAD_AFTER_NOTE)
             }
             Row::WithholdShares => Field::choice(
-                "Hide shares",
-                ON_OFF.to_vec(),
+                words_s::HIDE_SHARES,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.withhold_shares),
             )
-            .with_note("from servers that answer related searches"),
-            Row::RememberPeers => {
-                Field::text("Remember peers", prefs.remember_peers.get().to_string())
-                    .with_note(crate::words::download::REMEMBER_PEERS_NOTE)
-            }
-            Row::PlayerCommand => {
-                Field::text("Player", prefs.player_command.clone().unwrap_or_default())
-                    .with_placeholder(crate::words::player::UNSET)
-            }
-            Row::NodesDatUrl => {
-                Field::text("nodes.dat", prefs.nodes_dat_url.clone()).with_note(ON_RESTART)
-            }
+            .with_note(words_s::HIDE_SHARES_NOTE),
+            Row::RememberPeers => Field::text(
+                words_s::REMEMBER_PEERS,
+                prefs.remember_peers.get().to_string(),
+            )
+            .with_note(crate::words::download::REMEMBER_PEERS_NOTE),
+            Row::PlayerCommand => Field::text(
+                words_s::PLAYER,
+                prefs.player_command.clone().unwrap_or_default(),
+            )
+            .with_placeholder(crate::words::player::UNSET),
+            Row::NodesDatUrl => Field::text(words_s::NODES_DAT, prefs.nodes_dat_url.clone())
+                .with_note(words_s::ON_RESTART),
             Row::AutoFetchNodesDat => Field::choice(
-                "Fetch seeds",
-                ON_OFF.to_vec(),
+                words_s::FETCH_SEEDS,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.auto_fetch_nodes_dat),
             )
-            .with_note("nodes.dat on first Kad start  (on restart)"),
+            .with_note(words_s::FETCH_SEEDS_NOTE),
             Row::Theme => Field::choice(
-                "Theme",
-                ThemeChoice::ALL.map(ThemeChoice::name).to_vec(),
+                words_s::THEME,
+                ThemeChoice::ALL.map(words_s::theme_word).to_vec(),
                 theme_index,
             )
-            .with_note("auto = RMULE_THEME, then the terminal"),
+            .with_note(words_s::THEME_NOTE),
             Row::TerminalTitle => Field::choice(
-                "Terminal title",
-                ON_OFF.to_vec(),
+                words_s::TERMINAL_TITLE,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.terminal_title),
             )
             .with_note(words::TERMINAL_TITLE_NOTE),
             Row::ReaderMode => Field::choice(
-                "Reader mode",
-                ON_OFF.to_vec(),
+                words_s::READER_MODE,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.reader_mode),
             )
             .with_note(words::READER_MODE_NOTE),
-            Row::CompletionBell => {
-                Field::choice("Bell", ON_OFF.to_vec(), usize::from(prefs.completion_bell))
-                    .with_note(words::COMPLETION_BELL_NOTE)
-            }
-            Row::Mouse => Field::choice("Mouse", ON_OFF.to_vec(), usize::from(prefs.mouse))
-                .with_note(words::MOUSE_NOTE),
+            Row::CompletionBell => Field::choice(
+                words_s::BELL,
+                words_s::ON_OFF.to_vec(),
+                usize::from(prefs.completion_bell),
+            )
+            .with_note(words::COMPLETION_BELL_NOTE),
+            Row::Mouse => Field::choice(
+                words_s::MOUSE,
+                words_s::ON_OFF.to_vec(),
+                usize::from(prefs.mouse),
+            )
+            .with_note(words::MOUSE_NOTE),
             Row::RunLogFull => Field::choice(
-                "Full run log",
-                ON_OFF.to_vec(),
+                words_s::FULL_RUN_LOG,
+                words_s::ON_OFF.to_vec(),
                 usize::from(prefs.run_log_full),
             )
-            .with_note("adds peers, files and paths to rmule.log"),
+            .with_note(words_s::FULL_RUN_LOG_NOTE),
             Row::UserHash => Field::display(
-                "User hash",
+                words_s::USER_HASH,
                 prefs
                     .user_hash
-                    .map_or_else(|| DASH.to_string(), |hash| hex(hash.as_bytes())),
+                    .map_or_else(|| absent::UNKNOWN.to_string(), |hash| hex(hash.as_bytes())),
             ),
             Row::KadNodeId => Field::display(
-                "Kad node ID",
-                prefs
-                    .kad_node_id
-                    .map_or_else(|| DASH.to_string(), |id| hex(id.as_bytes().as_slice())),
+                words_s::KAD_NODE_ID,
+                prefs.kad_node_id.map_or_else(
+                    || absent::UNKNOWN.to_string(),
+                    |id| hex(id.as_bytes().as_slice()),
+                ),
             ),
         };
         match row.section() {
@@ -752,20 +739,20 @@ impl SettingsView {
     ) -> Option<Position> {
         self.form.asking = self.warned_dir.is_some();
         self.sync(state);
-        let hint = if self.editing && self.form.focus_is_directory() {
-            " Tab complete  Enter save  Esc cancel "
+        let hint = hints::line(if self.editing && self.form.focus_is_directory() {
+            &[hints::COMPLETE, hints::SAVE, hints::ESC_CANCEL]
         } else if self.editing {
-            " Enter save  Esc cancel "
+            &[hints::SAVE, hints::ESC_CANCEL]
         } else if self.form.focus_is_item() {
-            " x stop sharing  / filter  j/k row "
+            &[hints::STOP_SHARING, hints::FILTER, hints::ROWS]
         } else {
-            " Enter edit  ←→ step  / filter  j/k row "
-        };
+            &[hints::EDIT, hints::STEP, hints::FILTER, hints::ROWS]
+        });
         let block = crate::views::title::titled(
             theme.pane(self.editing),
             area.width,
-            (" Settings ", Style::new().fg(theme.fg)),
-            (hint, theme.dim_text()),
+            (words_s::TITLE, Style::new().fg(theme.fg)),
+            (&hint, theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -778,9 +765,9 @@ impl SettingsView {
         self.body = inner;
         // Below the form's own floor the *labels* are what would have to be
         // cut, so the pane shows its frame and nothing else rather than a
-        // garbled column (`form::MIN_WIDTH`; far under the 80 columns this UI
+        // garbled column (`Form::min_width`; far under the 80 columns this UI
         // supports).
-        if inner.height == 0 || usize::from(inner.width) < form::MIN_WIDTH {
+        if inner.height == 0 || usize::from(inner.width) < self.form.min_width() {
             return None;
         }
 
@@ -806,7 +793,7 @@ impl SettingsView {
         };
         let (mut rendered, mut error) = render(inner.width);
         let bar = rendered.lines.len() > usize::from(room(&error))
-            && usize::from(inner.width - viewport::BAR_W) >= form::MIN_WIDTH;
+            && usize::from(inner.width - viewport::BAR_W) >= self.form.min_width();
         if bar {
             (rendered, error) = render(inner.width - viewport::BAR_W);
         }

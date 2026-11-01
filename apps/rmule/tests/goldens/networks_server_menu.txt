@@ -1,21 +1,21 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─ c connect · m menu · / filter · a add ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ──── c connect  m menu  / filter  a add ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
-│ ● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
+│ ● eDonkey Prime           10.0.0.1         4661  42ms  1.2M 24.5M  12s Norm│
 │▸  Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
 │   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
-│   —          ┌ Flaky Mirror ────────────────────────────────┐soon soon Norm│
+│   no name    ┌ Flaky Mirror ────────────────────────────────┐soon soon Norm│
 │              │▸ Connect (c)                                 │              │
 │Off-screen: De│  Copy server link                            │              │
 │Health: dead s│  Remove… (x)                                 │(limit 3)     │
 └ too narrow to│  Pin as static                               │─────── 2 / 4 ┘
 ┌ Log (0) ─────│  Priority: Low → Norm                        │───── K start ┐
 │nothing has ha│  Details (d)                                 │              │
-│              │  Add server… (a)                             │arted)        │
+│              │  Add server… (a)                             │              │
 │              │  Update list from URL… (U)                   │              │
 │              └─────────────────────────────────────── 1 / 8 ┘              │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

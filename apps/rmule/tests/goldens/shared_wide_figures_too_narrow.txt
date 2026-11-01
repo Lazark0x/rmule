@@ -1,7 +1,7 @@
-┌ Shared Files · 2 files · — ──────── m menu  / filter  Tab uploads  Space tag ┐
+┌ Shared Files · 2 files · size still being read ──────────── m menu  / filter ┐
 │  File ▲                                    State               Size Uploading│
 │▸ film.mkv                                  shared          700.0 MB         1│
-│  0202020202…                               shared                 —         0│
+│  0202020202…                               shared           unknown         0│
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -11,8 +11,8 @@
 │500.0 GB (999.0 GB)                                                           │
 └ too narrow to show: Requests, Accepted, Transferred ────────────────── 1 / 2 ┘
 ┌ Uploads · active only ──────── f all  / filter  Tab files  s sort  S reverse ┐
-│  Peer ▲                State             Speed File                          │
-│▸ 10.0.0.1:4662         Uploading             — film.mkv                      │
+│  Peer ▲                State                Speed File                       │
+│▸ 10.0.0.1:4662         Uploading     not measured film.mkv                   │
 │                                                                              │
 │                                                                              │
 │                                                                              │

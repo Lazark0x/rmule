@@ -14,7 +14,7 @@ use ratatui::style::Style;
 
 use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_core::{CoreCommand, ServerListCommand};
-use rmule_primitives::ServerEndpoint;
+use rmule_primitives::{Ed2kLink, Ed2kServerLink, ServerEndpoint};
 
 use super::form::ServerForm;
 use super::servers::{next_priority, priority_word, row_name};
@@ -26,7 +26,7 @@ use crate::theme::Theme;
 use crate::views::menu::{self, Asked, Item, Place};
 use crate::views::modal::{Modal, Question, confirm_key, draw_question, scroll_key};
 use crate::views::{ViewOutcome, connect_action};
-use crate::words::{labels, rows};
+use crate::words::{labels, networks, rows};
 use crate::wrap::wrapped_lines;
 
 /// The details modal's width, room for a sentence on a line or two.
@@ -152,7 +152,11 @@ impl NetworksView {
     pub(super) fn open_menu(&mut self, state: &UiState) -> ViewOutcome {
         let update = Item::new(labels::UPDATE_LIST, MenuAction::UpdateFromUrl)
             .keyed('U')
-            .greyed(state.server_list_updating.then_some("update in flight"));
+            .greyed(
+                state
+                    .server_list_updating
+                    .then_some(networks::UPDATE_IN_FLIGHT),
+            );
         let list_items = [
             Item::new(labels::ADD_SERVER, MenuAction::AddServer).keyed('a'),
             update,
@@ -161,7 +165,7 @@ impl NetworksView {
         let Some(row) = self.selected(state) else {
             // No row: only the list-level actions are meaningful, and the row
             // actions say so instead of vanishing.
-            let none = Some("no server selected");
+            let none = Some(networks::NO_SERVER_SELECTED);
             let mut items = vec![
                 Item::new(labels::CONNECT, MenuAction::Connect)
                     .keyed('c')
@@ -190,11 +194,8 @@ impl NetworksView {
             labels::PIN
         };
         let next = next_priority(row.server.priority);
-        let priority_label = format!(
-            "Priority: {} → {}",
-            priority_word(row.server.priority),
-            priority_word(next)
-        );
+        let priority_label =
+            networks::priority_step(priority_word(row.server.priority), priority_word(next));
 
         // Tagged rows take the one action that acts on all of them.
         let one = (!self.tags.is_empty()).then_some(rows::ONE_ROW_ONLY);
@@ -286,11 +287,12 @@ impl NetworksView {
             MenuAction::Disconnect => {
                 ViewOutcome::Emit(Action::Command(CoreCommand::DisconnectFromServer))
             }
-            MenuAction::CopyLink => ViewOutcome::Emit(Action::CopyLink(format!(
-                "ed2k://|server|{}|{}|/",
-                server.host(),
-                server.port()
-            ))),
+            MenuAction::CopyLink => ViewOutcome::Emit(Action::CopyLink(
+                Ed2kLink::Server(Ed2kServerLink {
+                    endpoint: server.clone(),
+                })
+                .to_string(),
+            )),
             MenuAction::Remove => self.ask_remove(state),
             MenuAction::ToggleStatic => ViewOutcome::Emit(Action::Command(
                 CoreCommand::ServerList(ServerListCommand::SetServerStatic {

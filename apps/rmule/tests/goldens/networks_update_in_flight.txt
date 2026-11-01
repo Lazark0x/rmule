@@ -1,21 +1,21 @@
 ┌ Servers (4) · 10.0.0.1:4661 HighID ───────────────────────────── updating… ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
-│▸● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
+│▸● eDonkey Prime           10.0.0.1         4661  42ms  1.2M 24.5M  12s Norm│
 │   Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
 │   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
-│   —                       192.168.4.4      4661  soon  soon  soon soon Norm│
+│   no name                 192.168.4.4      4661  soon  soon  soon soon Norm│
 │                                                                            │
 │Off-screen: Desc Main hub, no fakes · Fail 0 · Static no                    │
 │Health: answering — its last answer came 12s ago                            │
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 4 ┘
 ┌ Log (1) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │2026-01-01                          ││● Kad: off                            │
-│12:00:00 · updating server list from││Joined    — (node not started)        │
-│           http://upd.emule-security││Contacts  —                           │
-│           .org/server.met          ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│12:00:00 · updating server list from││Joined   not running                  │
+│           http://upd.emule-security││Contacts not running                  │
+│           .org/server.met          ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

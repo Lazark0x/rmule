@@ -9,7 +9,7 @@ A line an operator reads, written in a **Words module** from a code and the data
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
 **Words module**:
-One per domain — app, download, event, kad, login, os, peer, port mapping, reach, scan, search, serve, server, software, store, units — each wording its vocabulary with an exhaustive `match`, so a code core adds cannot reach an operator without its words. A front end's own words module of the same name re-exports the shared one and adds what words that front end's own types. `scripts/guards.sh` refuses a Debug format in this crate's source as in the front ends'.
+One per domain — absent, app, download, event, kad, login, os, peer, plural, port mapping, reach, scan, search, serve, server, software, store, units — each wording its vocabulary with an exhaustive `match`, so a code core adds cannot reach an operator without its words. A front end's own words module of the same name re-exports the shared one and adds what words that front end's own types. `scripts/guards.sh` refuses a Debug format in this crate's source as in the front ends'.
 _Avoid_: messages, strings, i18n table, formatter
 
 **Severity**:

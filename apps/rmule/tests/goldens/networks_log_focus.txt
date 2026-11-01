@@ -1,4 +1,4 @@
-┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
+┌ Servers (0) · not connected ────────────────────── a add  U update  m menu ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │   no servers — press a to add one, or U to update the list from a URL      │
 │                                                                            │
@@ -8,14 +8,14 @@
 │                                                                            │
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
-┌ Log (3) ──── / filter · f severity ┐┌ Kad ──────────────────────── K start ┐
+┌ Log (3) ───────────────────────────┐┌ Kad ──────────────────────── K start ┐
 │2026-01-01                          ││● Kad: off                            │
-│12:00:00 · part 5 verified          ││Joined    — (node not started)        │
-│12:00:25 · part 12 verified         ││Contacts  —                           │
-│12:00:38 · part 17 verified         ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│12:00:00 · part 5 verified          ││Joined   not running                  │
+│12:00:25 · part 12 verified         ││Contacts not running                  │
+│12:00:38 · part 17 verified         ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

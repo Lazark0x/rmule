@@ -7,8 +7,8 @@
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Uploads · active only ────── f all  / filter  Tab files  s sort  S reverse ┐
-│  Peer ▲                State             Speed File                        │
-│▸ 10.0.0.1:4662         Uploading             — album.flac                  │
+│  Peer ▲                State                Speed File                     │
+│▸ 10.0.0.1:4662         Uploading     not measured album.flac               │
 │Off-screen: Software aMule v2.3.3                                           │
 │  2 hidden queued                                                           │
 └ too narrow to show: Software ─────────────────────────────────────── 1 / 1 ┘

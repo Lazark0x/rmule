@@ -1,6 +1,6 @@
 ┌ Downloads (1) ───── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                                Size Progress        Speed Status     │
-│▸ long-long-long-long-l…F-NAME.iso   87.7 MB ██░█▓░█▓░░          — Downloading│
+│▸ long-long-long-long-l…F-NAME.iso   87.7 MB ██░█▓░█▓░░   0.0 KB/s Downloading│
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -17,7 +17,7 @@
 │Off-screen: File                                                              │
 │long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-lon│
 │g-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-l│
-│ong-long-long-long-long-long-END-OF-NAME.iso · Done 42% · ETA — · Src 0       │
+│ong-long-long-long-long-long-END-OF-NAME.iso · Done 42% · ETA unknown · Src 0 │
 └ too narrow to show: Done, ETA, Src ─────────────────────────────────── 1 / 1 ┘
 ┌ Sources ─────────────────────────────────────────────────────────────────────┐
 │                               no active sources                              │

@@ -1,4 +1,4 @@
-┌ Servers (40) · not connected ─────── c connect · m menu · / filter · a add ┐
+┌ Servers (40) · not connected ─ c connect  m menu  / filter  a add  Tab log ┐
 │   Name ▲                 Address          Port  Ping Users Files  Age Prio▲│
 │   Server 18              10.0.0.18        4661  soon  soon  soon soon Norm │
 │   Server 19              10.0.0.19        4661  soon  soon  soon soon Norm │
@@ -8,17 +8,17 @@
 │   Server 23              10.0.0.23        4661  soon  soon  soon soon Norm │
 │   Server 24              10.0.0.24        4661  soon  soon  soon soon Norm │
 │▸  Server 25              10.0.0.25        4661  soon  soon  soon soon Norm▼│
-│Off-screen: Desc — · Fail 0 · Static no                                     │
+│Off-screen: Desc none · Fail 0 · Static no                                  │
 │Health: not reached yet — no answer and no failed try so far                │
 └ too narrow to show: Desc, Fail, Static ─────────────────────────── 26 / 40 ┘
 ┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
-│                                    ││Joined    — (node not started)        │
-│                                    ││Contacts  —                           │
-│                                    ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│                                    ││Joined   not running                  │
+│                                    ││Contacts not running                  │
+│                                    ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

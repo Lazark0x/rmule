@@ -9,6 +9,8 @@
 //! figure a Requests or Transferred cell shows first. A cell that renders a
 //! dash has no value and sorts last either way.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -126,33 +128,48 @@ impl SortedTable for SharedTable {
     type Row = SharedLine;
     type Column = SharedColumn;
     type Identity = FileHash;
-    const TABLE: &'static str = "shared";
+    const TABLE: &'static str = column_keys::TABLE_SHARED;
     const COLUMNS: &'static [ColumnSpec<SharedColumn>] = &[
-        ColumnSpec::new(SharedColumn::File, "name", "File", ColumnKind::Text),
-        ColumnSpec::new(SharedColumn::State, "state", "State", ColumnKind::Rank),
-        ColumnSpec::new(SharedColumn::Size, "size", "Size", ColumnKind::Quantity),
+        ColumnSpec::new(
+            SharedColumn::File,
+            column_keys::NAME,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            SharedColumn::State,
+            column_keys::STATE,
+            columns::STATE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            SharedColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             SharedColumn::Uploading,
-            "uploading",
-            "Uploading",
+            column_keys::UPLOADING,
+            columns::UPLOADING,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Requests,
-            "requests",
-            "Requests",
+            column_keys::REQUESTS,
+            columns::REQUESTS,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Accepted,
-            "accepted",
-            "Accepted",
+            column_keys::ACCEPTED,
+            columns::ACCEPTED,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             SharedColumn::Transferred,
-            "transferred",
-            "Transferred",
+            column_keys::TRANSFERRED,
+            columns::TRANSFERRED,
             ColumnKind::Quantity,
         ),
     ];

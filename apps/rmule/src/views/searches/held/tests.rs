@@ -303,7 +303,7 @@ fn a_click_on_an_entry_selects_it() {
 fn a_label_is_capped_at_twenty_characters() {
     assert_eq!(label("a query of exactly 20"), "a query of exactly 2…");
     assert_eq!(label("twenty characters ok"), "twenty characters ok");
-    assert_eq!(label(""), "—");
+    assert_eq!(label(""), "no query");
 }
 
 #[test]

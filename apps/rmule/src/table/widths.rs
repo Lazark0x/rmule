@@ -2,6 +2,7 @@
 //! a pane that cannot hold every column takes columns away, in the table's
 //! stated order, rather than squeezing a value.
 
+use crate::words::labels as words;
 use crate::wrap::display_width;
 
 /// What a table declares about its columns for [`greedy_widths`].
@@ -112,15 +113,9 @@ pub(crate) fn gave_way_note(hidden: &[&str], room: usize) -> Option<String> {
     if hidden.is_empty() {
         return None;
     }
-    let count = hidden.len();
-    let columns = if count == 1 { "column" } else { "columns" };
-    [
-        format!(" too narrow to show: {} ", hidden.join(", ")),
-        format!(" {count} {columns} not shown "),
-        format!(" {count} hidden "),
-    ]
-    .into_iter()
-    .find(|note| display_width(note) <= room)
+    words::gave_way_notes(hidden)
+        .into_iter()
+        .find(|note| display_width(note) <= room)
 }
 
 #[cfg(test)]

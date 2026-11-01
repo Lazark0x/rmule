@@ -275,9 +275,7 @@ pub const REMEMBER_PEERS_NOTE: &str = "per download, dialled first after a resta
 /// too old to dial.
 #[must_use]
 pub fn seeds_loaded(downloads: usize, seeds: usize, expired: usize) -> String {
-    let peers = |n: usize| {
-        Plural::new("{n} remembered peer", "{n} remembered peers").of(n)
-    };
+    let peers = |n: usize| Plural::new("{n} remembered peer", "{n} remembered peers").of(n);
     let dropped = format!("{} older than a day dropped", peers(expired));
     match (downloads, expired) {
         (0, _) => format!("{dropped}; none to dial"),

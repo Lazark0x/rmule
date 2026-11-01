@@ -43,9 +43,11 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use crate::action::Action;
-use crate::rates::format_rate;
 use crate::state::{Ed2kConnection, UiState};
+use crate::table::Cell;
 use crate::theme::Theme;
+use crate::words::absent;
+use crate::words::units::{self, rate};
 
 /// The canonical eD2k link for a file, through [`rmule_primitives::Ed2kLink`]'s
 /// `Display`, so names with spaces or `|` come out escaped.
@@ -147,16 +149,20 @@ pub(crate) fn connect_toggle(state: &UiState, server: rmule_primitives::ServerEn
 /// Text + style of a **Speed** cell, shared by every table that renders one
 /// (downloads, sources, upload peers) so the meters read alike.
 ///
-/// A measured rate reads normal; anything the bridge has not metered yet — a
-/// row on its first tick, a queued peer with no upload slot — is an honest
-/// dash rather than a zero nobody observed (spec §1's "no dead UI"). A meter
-/// that has decayed still reports its number: a rate that stopped is a falling
-/// rate, not a missing one.
-pub(crate) fn rate_cell(bps: f64, theme: &Theme) -> (String, Style) {
-    if bps > 0.0 {
-        (format_rate(bps), Style::new().fg(theme.fg))
-    } else {
-        ("—".to_string(), theme.dim_text())
+/// The floor of a column of sizes: the widest it draws, in this language's
+/// units.
+pub(crate) fn size_floor() -> usize {
+    crate::wrap::display_width(&human_size(units::WIDEST_SIZE))
+}
+
+/// A rate cell. A meter reads what it measured, a zero as a zero, dim; a row
+/// no meter stands behind — a queued peer with no upload slot, a source no
+/// slot holds — has none, and says so rather than a zero nobody observed.
+pub(crate) fn rate_cell(bps: Option<f64>, theme: &Theme) -> Cell {
+    match bps {
+        Some(bps) if bps > 0.0 => Cell::new(rate(bps), Style::new().fg(theme.fg)),
+        Some(bps) => Cell::new(rate(bps), theme.dim_text()),
+        None => Cell::absent(absent::NOT_MEASURED, theme.dim_text()),
     }
 }
 
@@ -164,7 +170,7 @@ pub(crate) fn rate_cell(bps: f64, theme: &Theme) -> (String, Style) {
 /// rmule noticed something.
 pub(crate) fn day(at: std::time::SystemTime) -> String {
     chrono::DateTime::<chrono::Local>::from(at)
-        .format("%Y-%m-%d")
+        .format(crate::words::log::DAY_FORMAT)
         .to_string()
 }
 
@@ -177,18 +183,6 @@ pub(crate) fn table_rows(area: Rect) -> Rect {
         y: area.y.saturating_add(2),
         width: area.width.saturating_sub(2),
         height: area.height.saturating_sub(3),
-    }
-}
-
-/// A server-reported population, five columns wide at most: exact under ten
-/// thousand, then whole thousands, then whole millions — `—` when nothing
-/// was reported. A rounded population is still the server's claim.
-pub(crate) fn short_count(count: Option<u32>) -> String {
-    match count {
-        None => "—".to_string(),
-        Some(n) if n < 10_000 => n.to_string(),
-        Some(n) if n < 1_000_000 => format!("{}k", n / 1_000),
-        Some(n) => format!("{}M", n / 1_000_000),
     }
 }
 

@@ -2,6 +2,9 @@
 //! is its own component; Statistics returns from the §6 deferral registry
 //! and Settings with it (the prefs-editing deferral, pulled in).
 
+use crate::stored_keys;
+use crate::words::labels;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 /// Which tab is up. The declaration order *is* the tab order — aMule's:
 /// Networks, Searches, Transfers, Shared Files, Statistics, then Settings —
@@ -55,12 +58,12 @@ impl ViewId {
     #[must_use]
     pub const fn title(self) -> &'static str {
         match self {
-            Self::Transfers => "Transfers",
-            Self::Searches => "Searches",
-            Self::Networks => "Networks",
-            Self::SharedFiles => "Shared Files",
-            Self::Statistics => "Statistics",
-            Self::Settings => "Settings",
+            Self::Transfers => labels::TAB_TRANSFERS,
+            Self::Searches => labels::TAB_SEARCHES,
+            Self::Networks => labels::TAB_NETWORKS,
+            Self::SharedFiles => labels::TAB_SHARED_FILES,
+            Self::Statistics => labels::TAB_STATISTICS,
+            Self::Settings => labels::TAB_SETTINGS,
         }
     }
 
@@ -69,8 +72,8 @@ impl ViewId {
     #[must_use]
     pub const fn short_title(self) -> &'static str {
         match self {
-            Self::SharedFiles => "Shared",
-            Self::Statistics => "Stats",
+            Self::SharedFiles => labels::TAB_SHARED_SHORT,
+            Self::Statistics => labels::TAB_STATISTICS_SHORT,
             other => other.title(),
         }
     }
@@ -80,12 +83,12 @@ impl ViewId {
     #[must_use]
     pub const fn key(self) -> &'static str {
         match self {
-            Self::Networks => "networks",
-            Self::Searches => "searches",
-            Self::Transfers => "transfers",
-            Self::SharedFiles => "shared",
-            Self::Statistics => "statistics",
-            Self::Settings => "settings",
+            Self::Networks => stored_keys::TAB_NETWORKS,
+            Self::Searches => stored_keys::TAB_SEARCHES,
+            Self::Transfers => stored_keys::TAB_TRANSFERS,
+            Self::SharedFiles => stored_keys::TAB_SHARED,
+            Self::Statistics => stored_keys::TAB_STATISTICS,
+            Self::Settings => stored_keys::TAB_SETTINGS,
         }
     }
 
@@ -108,14 +111,13 @@ impl ViewId {
     /// Tab-cycle neighbor (`l`), wrapping.
     #[must_use]
     pub fn next(self) -> Self {
-        Self::from_number(self.number() % Self::COUNT + 1).expect("cycle stays in range")
+        Self::from_number(self.number() % Self::COUNT + 1).unwrap_or(self)
     }
 
     /// Tab-cycle neighbor (`h`), wrapping.
     #[must_use]
     pub fn prev(self) -> Self {
-        Self::from_number((self.number() + Self::COUNT - 2) % Self::COUNT + 1)
-            .expect("cycle stays in range")
+        Self::from_number((self.number() + Self::COUNT - 2) % Self::COUNT + 1).unwrap_or(self)
     }
 }
 

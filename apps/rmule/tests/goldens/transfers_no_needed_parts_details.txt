@@ -14,7 +14,7 @@
 ┌ Sources · b│ waiting no known source holds a part this file   │rse  z zoom ┐
 │  Source ▲  │         lacks; 4 of 10 parts held                │       Speed│
 │▸ 10.0.0.1:4│                                                  │   98.7 KB/s│
-│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│           —│
+│  10.0.0.2:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│not measured│
 │            └─────────────────────────────────────── Esc close ┘            │
 │                                                                            │
 │                                                                            │

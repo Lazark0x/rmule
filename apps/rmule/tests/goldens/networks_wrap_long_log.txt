@@ -1,4 +1,4 @@
-┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐
+┌ Servers (0) · not connected ────────────────────── a add  U update  m menu ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │   no servers — press a to add one, or U to update the list from a URL      │
 │                                                                            │
@@ -10,12 +10,12 @@
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Log (2) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │2026-01-01                          ││● Kad: off                            │
-│12:00:00 · part 3 verified          ││Joined    — (node not started)        │
-│12:00:00 ✗ failure: download failed:││Contacts  —                           │
-│           the file on disk no      ││Firewall  — (never run)               │
-│           longer backs the parts   ││UDP       — (never run)               │
-│           already checked: its part││Keywords  —                           │
-│           file is missing          ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│12:00:00 · part 3 verified          ││Joined   not running                  │
+│12:00:00 ✗ failure: download failed:││Contacts not running                  │
+│           the file on disk no      ││Firewall not running                  │
+│           longer backs the parts   ││UDP      not running                  │
+│           already checked: its part││Keywords not running                  │
+│           file is missing          ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

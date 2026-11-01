@@ -4,6 +4,8 @@
 //! a data tick re-orders — a ping landing, a user count moving — keeps the
 //! selection.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_core::ServerPriority;
@@ -46,32 +48,77 @@ impl SortedTable for ServersTable {
     type Row = ServerDiagnostics;
     type Column = ServerColumn;
     type Identity = ServerEndpoint;
-    const TABLE: &'static str = "servers";
+    const TABLE: &'static str = column_keys::TABLE_SERVERS;
     // Priority and Static render as words but are a rank and a flag: they
     // order by that, where their spelling would put `High` before `Low`
     // before `Norm`.
     const COLUMNS: &'static [ColumnSpec<ServerColumn>] = &[
-        ColumnSpec::new(ServerColumn::Name, "name", "Name", ColumnKind::Text),
+        ColumnSpec::new(
+            ServerColumn::Name,
+            column_keys::NAME,
+            columns::NAME,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             ServerColumn::Address,
-            "address",
-            "Address",
+            column_keys::ADDRESS,
+            columns::ADDRESS,
             ColumnKind::Text,
         ),
-        ColumnSpec::new(ServerColumn::Port, "port", "Port", ColumnKind::Quantity),
+        ColumnSpec::new(
+            ServerColumn::Port,
+            column_keys::PORT,
+            columns::PORT,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             ServerColumn::Description,
-            "description",
-            "Desc",
+            column_keys::DESCRIPTION,
+            columns::DESC,
             ColumnKind::Text,
         ),
-        ColumnSpec::new(ServerColumn::Ping, "ping", "Ping", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Users, "users", "Users", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Files, "files", "Files", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Age, "age", "Age", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Priority, "priority", "Prio", ColumnKind::Rank),
-        ColumnSpec::new(ServerColumn::Fails, "fails", "Fail", ColumnKind::Quantity),
-        ColumnSpec::new(ServerColumn::Static, "static", "Static", ColumnKind::Rank),
+        ColumnSpec::new(
+            ServerColumn::Ping,
+            column_keys::PING,
+            columns::PING,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Users,
+            column_keys::USERS,
+            columns::USERS,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Files,
+            column_keys::FILES,
+            columns::FILES,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Age,
+            column_keys::AGE,
+            columns::AGE,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Priority,
+            column_keys::PRIORITY,
+            columns::PRIO,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Fails,
+            column_keys::FAILS,
+            columns::FAIL,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ServerColumn::Static,
+            column_keys::STATIC,
+            columns::STATIC,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: ServerColumn = ServerColumn::Name;
 

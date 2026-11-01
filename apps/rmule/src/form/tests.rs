@@ -93,7 +93,7 @@ fn a_directory_field_completes_on_tab_and_says_what_is_left() {
 fn a_placeholder_is_not_typed_text_and_the_caret_stands_before_it() {
     let form = Form::new(vec![Field::text("Size", "").with_placeholder("any")]);
     let rendered = form.render(40, &Theme::default_dark(), true);
-    assert_eq!(rendered.caret, Some((0, 14)), "at the start of the value");
+    assert_eq!(rendered.caret, Some((0, 6)), "at the start of the value");
     assert!(rendered.lines[0].to_string().contains("any"));
 }
 
@@ -125,7 +125,7 @@ fn no_rendered_line_ever_exceeds_the_width_it_was_given() {
     form.error = Some(crate::words::Sentence::for_test(
         "a rejection long enough to need wrapping of its own",
     ));
-    for width in MIN_WIDTH..=120 {
+    for width in form.min_width()..=120 {
         for caret in [false, true] {
             for line in form.render(width, &theme, caret).lines {
                 assert!(
@@ -148,6 +148,6 @@ fn the_render_reports_where_the_focused_field_landed() {
     let focused = &text[rendered.focus.clone()];
     assert_eq!(focused.len(), 1);
     assert!(focused[0].starts_with(" Name "), "{focused:?}");
-    assert_eq!(rendered.caret, Some((rendered.focus.start, 14 + 5)));
+    assert_eq!(rendered.caret, Some((rendered.focus.start, 8 + 5)));
     assert!(text.last().unwrap().contains("nope"), "{text:?}");
 }

@@ -1,9 +1,9 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ─── c connect · m menu · / filter · a add ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ────── c connect  m menu  / filter  a add ┐
 │   Name ▲               Address          Port  Ping Users Files  Age Prio Fail│
-│ ● eDonkey Prime        10.0.0.1         4661  42ms    1M   24M  12s Norm    0│
+│ ● eDonkey Prime        10.0.0.1         4661  42ms  1.2M 24.5M  12s Norm    0│
 │   Flaky Mirror         172.16.9.9       5000  lost  lost  lost lost Low  dead│
 │   Static Pin           10.0.0.2         4242  1.2s  9812  431k   2h High    0│
-│▸  —                    192.168.4.4      4661  soon  soon  soon soon Norm    0│
+│▸  no name              192.168.4.4      4661  soon  soon  soon soon Norm    0│
 │                                                                              │
 │                                                                              │
 │                                                                              │
@@ -11,24 +11,24 @@
 │                                                                              │
 │                                                                              │
 │                                                                              │
-│       ┌ — ───────────────────────────────────────────────────────────┐       │
+│       ┌ no name ─────────────────────────────────────────────────────┐       │
 │       │Grants: never logged in, so it has not said what it grants    │       │
 │       │UDP: no status answer yet — the status ping has not asked it  │       │
 │       │this run                                                      │       │
 │       │Health: not reached yet — no answer and no failed try so far  │       │
 │       │Shares: announced at its next login, as to every server       │       │
 │       └─────────────────────────────────────────────────── Esc close ┘       │
-│Off-screen: Desc — · Static no                                                │
+│Off-screen: Desc none · Static no                                             │
 │Health: not reached yet — no answer and no failed try so far                  │
 └ too narrow to show: Desc, Static ───────────────────────────────────── 4 / 4 ┘
 ┌ Log (0) ───────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet              ││● Kad: off                            │
-│                                      ││Joined    — (node not started)        │
-│                                      ││Contacts  —                           │
-│                                      ││Firewall  — (never run)               │
-│                                      ││UDP       — (never run)               │
-│                                      ││Keywords  —                           │
-│                                      ││Node id   —                           │
-│                                      ││Received  —                           │
-│                                      ││Sent      —                           │
+│                                      ││Joined   not running                  │
+│                                      ││Contacts not running                  │
+│                                      ││Firewall not running                  │
+│                                      ││UDP      not running                  │
+│                                      ││Keywords not running                  │
+│                                      ││Node id  not running                  │
+│                                      ││Received not running                  │
+│                                      ││Sent     not running                  │
 └──────────────────────────────────────┘└──────────────────────────────────────┘

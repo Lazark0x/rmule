@@ -227,7 +227,7 @@ fn size_bounds_parse_on_amules_binary_multipliers() {
 #[test]
 fn the_summary_row_names_only_the_constraints_that_are_set() {
     let mut filters = Filters::default();
-    assert_eq!(filters.summary(), "none");
+    assert_eq!(filters.summary(), None);
     // Driven the way an operator does, through the same key routing the
     // editor uses: two steps of the type ring, then two typed fields.
     let press_into = |filters: &mut Filters, code| {
@@ -243,7 +243,10 @@ fn the_summary_row_names_only_the_constraints_that_are_set() {
     for code in ".avi".chars().map(KeyCode::Char) {
         press_into(&mut filters, code);
     }
-    assert_eq!(filters.summary(), "Videos · ≥700 MB · .avi");
+    assert_eq!(
+        filters.summary().as_deref(),
+        Some("Videos · ≥700 MB · .avi")
+    );
 }
 
 #[test]
@@ -303,5 +306,5 @@ fn the_summary_gives_a_bare_size_its_unit() {
     filters.form.set_focused_text("3");
     filters.form.focus = Filters::MAX_SIZE;
     filters.form.set_focused_text("700 MB");
-    assert_eq!(filters.summary(), "≥3 B · ≤700 MB");
+    assert_eq!(filters.summary().as_deref(), Some("≥3 B · ≤700 MB"));
 }

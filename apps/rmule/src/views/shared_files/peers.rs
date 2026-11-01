@@ -23,10 +23,11 @@ use rmule_primitives::FileHash;
 use super::rate_cell;
 use super::{Pane, SharedView, render_empty};
 use crate::state::{UiState, UploadPeer, UploadState};
-use crate::table::{self, Cell, Rows, Table};
+use crate::table::{self, Cell, Rows, Table, widest};
 use crate::theme::Theme;
 use crate::views::software_label;
-use crate::words::units::short_hash;
+use crate::words::units::{self, short_hash};
+use crate::words::{absent, hints, serve, shared as words};
 use crate::wrap::{display_width, wrapped_lines};
 
 pub(super) mod sort;
@@ -35,9 +36,16 @@ pub(super) mod sort;
 /// File. `File` holds the free text and is greedy: its entry is the room it
 /// keeps before other columns give way to it, and it takes the slack left
 /// after the others. They are bounded and floored at their usual widest value
-/// — an IPv4 endpoint, `aMule v2.3.3`, `Queued #99`, a rate to `999.9 KB/s` —
-/// and asked for the widest drawn, up to [`PEER_CAPS`].
-const PEER_COLS: [usize; 5] = [21, 12, 12, 10, 24];
+/// — an IPv4 endpoint, `aMule v2.3.3`, a queue rank of two digits, a rate — and
+/// asked for the widest drawn, up to [`PEER_CAPS`].
+fn peer_floors() -> [usize; 5] {
+    let state = widest(&[
+        serve::UPLOADING.to_string(),
+        serve::DIALING_BACK.to_string(),
+        serve::queued_words(99),
+    ]);
+    [21, 12, state, units::rate_cells(), 24]
+}
 
 /// The most each bounded column asks for: an IPv6 endpoint with its port,
 /// a client name with a short mod, a queue rank of five digits, a rate of
@@ -68,7 +76,7 @@ fn file_label(state: &UiState, file: FileHash) -> (String, bool) {
 }
 
 /// One upload peer's cells, in `PeersTable::COLUMNS`' order.
-fn peer_cells(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Vec<Cell> {
+fn peer_cells(peer: &UploadPeer, state: &UiState, bps: Option<f64>, theme: &Theme) -> Vec<Cell> {
     let addr = crate::words::units::address(peer.peer);
     let (state_text, file) = match peer.state {
         UploadState::Uploading { file } => (crate::words::serve::UPLOADING.to_string(), file),
@@ -78,18 +86,17 @@ fn peer_cells(peer: &UploadPeer, state: &UiState, bps: f64, theme: &Theme) -> Ve
     let (file_text, named) = file_label(state, file);
     let dim = theme.dim_text();
     let plain = Style::new().fg(theme.fg);
-    // A queued peer holds no slot, so core keeps no counter for it and the
-    // meter is an honest dash.
-    let (speed_text, speed_style) = rate_cell(bps, theme);
-    let (software, software_style) = peer
-        .software
-        .as_ref()
-        .map_or_else(|| ("—".to_string(), dim), |s| (software_label(s), plain));
+    // A queued peer holds no slot, so core keeps no counter for it: no meter
+    // stands behind the cell.
+    let software = peer.software.as_ref().map_or_else(
+        || Cell::absent(absent::UNKNOWN, dim),
+        |software| Cell::new(software_label(software), plain),
+    );
     vec![
         Cell::new(addr, plain),
-        Cell::new(software, software_style),
+        software,
         Cell::new(state_text, plain),
-        Cell::new(speed_text, speed_style),
+        rate_cell(bps, theme),
         Cell::new(file_text, if named { plain } else { dim }),
     ]
 }
@@ -118,22 +125,31 @@ impl SharedView {
     ) {
         let focused = self.focus == Pane::Peers;
         let mode = if self.active_only {
-            "active only"
+            words::ACTIVE_ONLY
         } else {
-            "all"
+            words::ALL_PEERS
         };
         let hint = if state.upload_peers.is_empty() {
-            ""
-        } else if self.active_only {
-            " f all  / filter  Tab files  s sort  S reverse  z zoom "
+            String::new()
         } else {
-            " f active  / filter  Tab files  s sort  S reverse  z zoom "
+            hints::line(&[
+                if self.active_only {
+                    hints::ALL_PEERS
+                } else {
+                    hints::ACTIVE_PEERS
+                },
+                hints::FILTER,
+                hints::TO_FILES,
+                hints::SORT,
+                hints::REVERSE,
+                hints::ZOOM,
+            ])
         };
         let block = crate::views::title::titled(
             theme.pane(focused),
             area.width,
-            (&format!(" Uploads · {mode} "), theme.dim_text()),
-            (hint, theme.dim_text()),
+            (&words::uploads_title(mode), theme.dim_text()),
+            (&hint, theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -142,7 +158,7 @@ impl SharedView {
         }
 
         if state.upload_peers.is_empty() {
-            render_empty(frame, inner, "no upload activity", theme);
+            render_empty(frame, inner, words::NO_UPLOAD_ACTIVITY, theme);
             return;
         }
 
@@ -164,14 +180,7 @@ impl SharedView {
             _ => (inner, None),
         };
 
-        let bps_of = |peer: &UploadPeer| {
-            state
-                .rates
-                .upload_bps
-                .get(&peer.peer)
-                .copied()
-                .unwrap_or(0.0)
-        };
+        let bps_of = |peer: &UploadPeer| state.rates.upload_bps.get(&peer.peer).copied();
         // Join the folded peer row with the tick's synthesized rate by
         // endpoint — the same key core's upload counters use.
         let cells = |index: usize, _: &[usize]| {
@@ -188,7 +197,7 @@ impl SharedView {
         }
         let table = Table::of(
             &self.peer_sort,
-            &PEER_COLS,
+            &peer_floors(),
             PEER_FLEX,
             &PEER_GIVE_WAY,
             theme.header(),
@@ -197,7 +206,7 @@ impl SharedView {
         .empty(if self.peer_filter.shown() {
             crate::words::rows::NO_MATCH
         } else {
-            "no active uploads"
+            words::NO_ACTIVE_UPLOADS
         });
         let rows = Rows {
             count: visible.len(),

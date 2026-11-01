@@ -163,7 +163,10 @@ pub const WORDS: Section = Section {
             "Grants",
             "what a server lets a client do: its limits and flags",
         ),
-        ("carried", "a file a scan kept its hash for, unread"),
+        (
+            "—",
+            "a value a narrow cell has no room to name; see Off-screen",
+        ),
         (
             "Stalled",
             "holds a slot and has moved no bytes for 30 seconds",

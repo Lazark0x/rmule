@@ -6,8 +6,8 @@
 │ │  Show file details (d)                       │ │
 │ │  Preview (v)  first part not verified yet    │ │
 │ │  Copy eD2k link                              │ │
-│O│  Search related  not connected               │ │
-│—│  Pause or resume all (P)                     │ │
+│O│  Search related  not connected               │s│
+│·│  Pause or resume all (P)                     │ │
 └ └─────────────────────────────────────── 1 / 7 ┘ ┘
 ┌ Sources · film.mkv ──────────────────────────────┐
 │                 no active sources                │

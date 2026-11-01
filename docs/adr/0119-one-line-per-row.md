@@ -27,7 +27,8 @@ middle, keeping its file extension. The selected row's full value rides the Off-
 - **The Off-screen line** says, for the selected row, the value of every column that gave way
   and the whole of every value a cell shortened. A value is never lost, only one key move away.
 - **Columns give way before the name goes small.** Each column has a floor it is shown at or not
-  at all. The greedy column's floor is the room it keeps: 30 cells for a file name, 20 for a
+  at all, measured from its header and the words and units it draws, so a floor holds in any
+  language. The greedy column's floor is the room it keeps: 30 cells for a file name, 20 for a
   server's. A pane that cannot hold every floor takes columns away in the table's stated order
   and says on its bottom border which. A column that gave way costs no gap.
 - **One table.** Every table draws through `crate::table`, which owns the widths, the fitting, the

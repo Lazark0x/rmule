@@ -76,7 +76,7 @@ fn file_menu(state: &UiState, file_hash: FileHash, tagged: bool) -> [Item<MenuAc
             state, file_hash,
         )
         .is_none()
-        .then_some("its name and size are not read yet"))),
+        .then_some(crate::words::shared::NOT_READ_YET))),
         Item::new(labels::SEARCH_RELATED, MenuAction::SearchRelated)
             .greyed(one(crate::views::related::unavailable(state))),
         Item::new(labels::UNSHARE, MenuAction::Unshare).keyed('x'),

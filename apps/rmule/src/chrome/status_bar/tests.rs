@@ -59,22 +59,16 @@ fn users_and_files_are_the_connected_servers_report() {
             .spans
             .into_iter()
             .find(|span| span.content.starts_with("Users"))
-            .expect("a users segment")
-            .content
-            .into_owned()
+            .map(|span| span.content.into_owned())
     };
     let mut state = listed_servers();
-    assert_eq!(users(&state), "Users: 1M · Files: 24M");
+    assert_eq!(users(&state).unwrap(), "Users: 1.2M · Files: 24.5M");
     state.diagnostics.connected_server = None;
-    assert_eq!(users(&state), "Users: — · Files: —", "not connected");
+    assert_eq!(users(&state), None, "not connected");
     state.diagnostics.connected_server = Some(state.diagnostics.servers[1].server.endpoint.clone());
-    assert_eq!(users(&state), "Users: 9812 · Files: 431k");
+    assert_eq!(users(&state).unwrap(), "Users: 9812 · Files: 431k");
     state.diagnostics.connected_server = Some(state.diagnostics.servers[2].server.endpoint.clone());
-    assert_eq!(
-        users(&state),
-        "Users: — · Files: —",
-        "a server that said nothing"
-    );
+    assert_eq!(users(&state), None, "a server that said nothing");
 }
 
 /// ▲ is a real meter (the session up-total, differenced by the bridge),
@@ -209,6 +203,13 @@ fn a_note_past_a_minute_says_its_age_until_it_leaves() {
     assert!(!at(NOTE_STANDS).contains("search completed"));
 }
 
+/// A connected run whose server has reported its counts.
+fn reporting_state() -> UiState {
+    let mut state = connected_state();
+    state.diagnostics = listed_servers().diagnostics;
+    state
+}
+
 /// Nothing right of the rates shifts when a rate gains a digit, and the
 /// tally changing a digit moves only itself.
 #[test]
@@ -222,9 +223,9 @@ fn a_digit_changing_moves_no_other_value() {
             .map(|at| crate::wrap::display_width(&text[..at]))
             .expect("on the bar")
     };
-    let mut before = connected_state();
+    let mut before = reporting_state();
     before.rates.down_total_bps = 9.9 * 1024.0;
-    let mut after = connected_state();
+    let mut after = reporting_state();
     after.rates.down_total_bps = 10.0 * 1024.0;
     for needle in ["▲", "●eD2k", "Users"] {
         assert_eq!(column(&before, needle), column(&after, needle), "{needle}");
@@ -316,7 +317,7 @@ fn the_tally_counts_active_failed_and_done() {
 fn the_segments_give_way_in_their_order() {
     let theme = Theme::default_dark();
     let t0 = now();
-    let state = connected_state();
+    let state = reporting_state();
     let chrome = ChromeState::default();
     // Roomy: every segment.
     let wide = read(&status_bar(&state, &chrome, &theme, t0, 120));

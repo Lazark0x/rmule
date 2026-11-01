@@ -70,7 +70,7 @@ const KAD_PANE_MIN_TAB_W: u16 = 78;
 const KAD_PANE_W: u16 = 40;
 
 /// How the bottom border names the panel when it gave way.
-const KAD: &str = "Kad";
+const KAD: &str = crate::words::networks::KAD;
 
 /// The two focusable panes (spec §3.4: the Kad panel is display-only).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

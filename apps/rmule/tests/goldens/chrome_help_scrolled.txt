@@ -1,7 +1,7 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
 ┌ Help ────────────────────────────────────────────────────────────────────────┐
 │ Grants          what a server lets a client do: its limits and flags        ▲│
-│ carried         a file a scan kept its hash for, unread                      │
+│ —               a value a narrow cell has no room to name; see Off-screen    │
 │ Stalled         holds a slot and has moved no bytes for 30 seconds           │
 │ Sources 42 (7)  peers that have the file (of them, with all of it)           │
 │ Requests 3 (12) this run (all time); Accepted, Transferred too               │

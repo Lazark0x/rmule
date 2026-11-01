@@ -1,5 +1,5 @@
 ┌ 1 Networks │ 2 Searches │ 3 Transfers │ 4 Shared │ 5 Stats │ 6 Settings ─────┐
-│┌ Servers (0) · not connected ──────────────────── a add · U update · m menu ┐│
+│┌ Servers (0) · not connected ────────────────────── a add  U update  m menu ┐│
 ││   Name ▲                  Address          Port  Ping Users Files  Age Prio││
 ││   no servers — press a to add one, or U to update the list from a URL      ││
 ││                                                                            ││
@@ -12,13 +12,13 @@
 │└────────────────────────────────────────────────────────────────────────────┘│
 │┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐│
 ││nothing has happened yet            ││● Kad: off                            ││
-││                                    ││Joined    — (node not started)        ││
-││                                    ││Contacts  —                           ││
-││                                    ││Firewall  — (never run)               ││
-││                                    ││UDP       — (never run)               ││
-││                                    ││Keywords  —                           ││
-││                                    ││Node id   —                           ││
-││                                    ││Received  —                           ││
-││                                    ││Sent      —                           ││
+││                                    ││Joined   not running                  ││
+││                                    ││Contacts not running                  ││
+││                                    ││Firewall not running                  ││
+││                                    ││UDP      not running                  ││
+││                                    ││Keywords not running                  ││
+││                                    ││Node id  not running                  ││
+││                                    ││Received not running                  ││
+││                                    ││Sent     not running                  ││
 │└────────────────────────────────────┘└──────────────────────────────────────┘│
 └ ▼   0.0 KB/s ▲   0.0 KB/s │ ✱ Shutting down… Kad──────────────────────? help ┘

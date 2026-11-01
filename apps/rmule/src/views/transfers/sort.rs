@@ -7,6 +7,8 @@
 //! size in bytes, a share as an exact ratio, a rate in bytes per second. A
 //! cell that renders a dash has no value and sorts last either way.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 use std::sync::Arc;
 
@@ -150,31 +152,56 @@ impl SortedTable for DownloadsTable {
     type Row = DownloadLine;
     type Column = DownloadColumn;
     type Identity = DownloadId;
-    const TABLE: &'static str = "transfers";
+    const TABLE: &'static str = column_keys::TABLE_TRANSFERS;
     const COLUMNS: &'static [ColumnSpec<DownloadColumn>] = &[
-        ColumnSpec::new(DownloadColumn::File, "name", "File", ColumnKind::Text),
-        ColumnSpec::new(DownloadColumn::Size, "size", "Size", ColumnKind::Quantity),
-        ColumnSpec::new(DownloadColumn::Done, "done", "Done", ColumnKind::Quantity),
+        ColumnSpec::new(
+            DownloadColumn::File,
+            column_keys::NAME,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            DownloadColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            DownloadColumn::Done,
+            column_keys::DONE,
+            columns::DONE,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             DownloadColumn::Progress,
-            "progress",
-            "Progress",
+            column_keys::PROGRESS,
+            columns::PROGRESS,
             ColumnKind::Quantity,
         ),
         ColumnSpec::new(
             DownloadColumn::Speed,
-            "speed",
-            "Speed",
+            column_keys::SPEED,
+            columns::SPEED,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(DownloadColumn::Eta, "eta", "ETA", ColumnKind::Quantity),
+        ColumnSpec::new(
+            DownloadColumn::Eta,
+            column_keys::ETA,
+            columns::ETA,
+            ColumnKind::Quantity,
+        ),
         ColumnSpec::new(
             DownloadColumn::Sources,
-            "sources",
-            "Src",
+            column_keys::SOURCES,
+            columns::SRC,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(DownloadColumn::Status, "status", "Status", ColumnKind::Rank),
+        ColumnSpec::new(
+            DownloadColumn::Status,
+            column_keys::STATUS,
+            columns::STATUS,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: DownloadColumn = DownloadColumn::File;
     /// Transfers is watched: what is moving first, by share within its group.

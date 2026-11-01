@@ -25,6 +25,7 @@ use super::chunks::chunk_bar;
 use super::sort::DownloadLine;
 use super::{Pane, TransfersView, draw_centered, pane_block};
 use crate::state::{DownloadRow, DownloadStatus, UiState};
+use crate::table::widest;
 use crate::table::{self, Cell, Rows, Table};
 use crate::theme::Theme;
 use crate::views::{human_size, rate_cell};
@@ -33,16 +34,30 @@ use crate::words::download::{
     volume_stop_status,
 };
 use crate::words::labels;
-use crate::words::units::short_hash_or_dash;
+use crate::words::units::{self, short_hash_or_unknown};
+use crate::words::{absent, hints, transfers as words};
 use crate::wrap::display_width;
 
 /// Downloads table columns: File · Size · Done · Progress · Speed · ETA · Src
 /// · Status. `File` is greedy: its entry is the room it keeps before other
-/// columns give way to it. Status is floored at `Downloading`, so no status
-/// word is ever cut at the widths a row can be read at.
-const DOWNLOAD_COLS: [usize; 8] = [30, 9, 4, CHUNK_CELL_W, 10, 6, 5, 11];
+/// columns give way to it. The rest are measured from what they draw, so no
+/// status word is ever cut at the widths a row can be read at, in any language.
+fn download_floors() -> [usize; 8] {
+    [
+        30,
+        crate::views::size_floor(),
+        display_width(&words::widest_percent()),
+        CHUNK_CELL_W,
+        units::rate_cells(),
+        widest(&[ETA_TOO_SLOW.to_string(), eta_time(LAST_ETA_IN_HOURS)]),
+        5,
+        widest(&labels::STATUS_WORDS),
+    ]
+}
 const DOWNLOAD_FLEX: usize = 0;
 
+/// The widest time left: a day's last minute, before it reads in days.
+const LAST_ETA_IN_HOURS: u64 = 86_399;
 /// The chunk map's floor, and the most it grows to: the details modal's width.
 const CHUNK_CELL_W: usize = 10;
 const CHUNK_CELL_MAX: usize = 50;
@@ -179,7 +194,7 @@ pub(super) fn display_name(
         .filter(|name| !name.trim().is_empty());
     match real {
         Some(name) => (name, true),
-        None => (short_hash_or_dash(hash), false),
+        None => (short_hash_or_unknown(hash), false),
     }
 }
 
@@ -188,9 +203,9 @@ pub(super) fn display_name(
 /// so the view spells its own words for the three variants.
 pub(super) fn origin_label(origin: DownloadMetadataOrigin) -> &'static str {
     match origin {
-        DownloadMetadataOrigin::Link => "link",
-        DownloadMetadataOrigin::RecoveredLink => "recovered link",
-        DownloadMetadataOrigin::Unknown => "unknown",
+        DownloadMetadataOrigin::Link => words::ORIGIN_LINK,
+        DownloadMetadataOrigin::RecoveredLink => words::ORIGIN_RECOVERED,
+        DownloadMetadataOrigin::Unknown => absent::UNKNOWN,
     }
 }
 
@@ -249,9 +264,18 @@ pub(super) fn row_eta(
     eta(remaining_bytes(row, diag), avg_bps)
 }
 
+/// A cell whose word stands for no value, which gives way to the mark.
+fn or_mark(cell: Cell, none: bool) -> Cell {
+    if none {
+        cell.or_short(absent::SHORT)
+    } else {
+        cell
+    }
+}
+
 fn eta_cell(eta: Eta) -> String {
     match eta {
-        Eta::Unknown => "—".to_string(),
+        Eta::Unknown => absent::UNKNOWN.to_string(),
         Eta::TooSlow => ETA_TOO_SLOW.to_string(),
         Eta::Left(secs) => eta_time(secs),
     }
@@ -283,32 +307,35 @@ impl TransfersView {
         lines: &[DownloadLine],
     ) {
         let focused = self.focus == Pane::Table;
-        let title = if self.tags.is_empty() {
-            format!(" Downloads ({}) ", lines.len())
-        } else {
-            let tagged = crate::words::rows::tagged(self.tags.len());
-            format!(" Downloads ({}) · {tagged} ", lines.len())
-        };
+        let tagged = (!self.tags.is_empty()).then(|| crate::words::rows::tagged(self.tags.len()));
+        let title = words::downloads_title(lines.len(), tagged.as_deref());
         if lines.is_empty() && !self.filter.shown() {
-            let block = pane_block(area.width, (&title, " L add link "), focused, theme);
+            let block = pane_block(
+                area.width,
+                (&title, &hints::line(&[hints::ADD_LINK])),
+                focused,
+                theme,
+            );
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            draw_centered(
-                frame,
-                inner,
-                "no downloads — start one from Searches, or paste an eD2k link with L",
-                theme.dim_text(),
-            );
+            draw_centered(frame, inner, words::NO_DOWNLOADS, theme.dim_text());
             return;
         }
         // The keys a person needs first; they give way from the end. `C` is
         // offered while it has something to clear.
-        let hint = if !super::clear::completed_ids(state).is_empty() {
-            " p pause  m menu  / filter  L add  Tab sources  Space tag  C clear  s sort  z zoom "
-        } else {
-            " p pause  m menu  / filter  L add  Tab sources  Space tag  s sort  z zoom "
-        };
-        let block = pane_block(area.width, (&title, hint), focused, theme);
+        let mut keys = vec![
+            hints::PAUSE,
+            hints::MENU,
+            hints::FILTER,
+            hints::ADD_LINK,
+            hints::TO_SOURCES,
+            hints::TAG,
+        ];
+        if !super::clear::completed_ids(state).is_empty() {
+            keys.push(hints::CLEAR);
+        }
+        keys.extend([hints::SORT, hints::ZOOM]);
+        let block = pane_block(area.width, (&title, &hints::line(&keys)), focused, theme);
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -329,7 +356,7 @@ impl TransfersView {
         wants[PROGRESS_COL] = chunk_width(area.width);
         let table = Table::of(
             &self.sort,
-            &DOWNLOAD_COLS,
+            &download_floors(),
             DOWNLOAD_FLEX,
             &DOWNLOAD_GIVE_WAY,
             theme.header(),
@@ -373,16 +400,22 @@ fn download_cells(
     } else {
         theme.dim_text()
     };
-    let (speed_text, speed_style) = rate_cell(line.bps, theme);
+    let speed = rate_cell(Some(line.bps), theme);
     let done = line.done_cell();
     vec![
         Cell::new(line.name.clone(), name_style),
-        Cell::new(line.size_cell(), plain),
-        Cell::new(done.clone(), plain),
+        or_mark(Cell::new(line.size_cell(), plain), line.size.is_none()),
+        or_mark(Cell::new(done.clone(), plain), line.done.is_none()),
         Cell::new(done, plain).drawn(chunk_bar(diag_parts(diag), cols[PROGRESS_COL], theme)),
-        Cell::new(speed_text, speed_style),
-        Cell::new(eta_cell(line.eta), plain),
-        Cell::new(line.sources_cell(), plain),
+        speed,
+        or_mark(
+            Cell::new(eta_cell(line.eta), plain),
+            matches!(line.eta, Eta::Unknown),
+        ),
+        or_mark(
+            Cell::new(line.sources_cell(), plain),
+            line.sources.is_none(),
+        ),
         Cell::new(
             line.status_text.clone(),
             status_style(line.status, line.stalled, theme),
@@ -454,25 +487,26 @@ impl DownloadLine {
     pub(super) fn size_cell(&self) -> String {
         match (self.size, self.size_exact) {
             (Some(bytes), true) => human_size(bytes),
-            (Some(bytes), false) => format!("≈ {}", human_size(bytes)),
-            (None, _) => "—".to_string(),
+            (Some(bytes), false) => words::estimated(&human_size(bytes)),
+            (None, _) => absent::UNKNOWN.to_string(),
         }
     }
 
-    /// The Done cell: [`done_fraction`] as a whole percent, `—` without one.
+    /// The Done cell: [`done_fraction`] as a whole percent, or the word for
+    /// none.
     pub(super) fn done_cell(&self) -> String {
         self.done.map_or_else(
-            || "—".to_string(),
-            |(part, whole)| format!("{}%", part * 100 / whole.max(1)),
+            || absent::UNKNOWN.to_string(),
+            |(part, whole)| units::percent(part * 100 / whole.max(1)),
         )
     }
 
     /// The Src cell: the known sources, then the sending ones in parentheses
-    /// when any are (aMule's `12 (3)`); `—` for a download that is not
-    /// running.
+    /// when any are (aMule's `12 (3)`), or the word for a download that is
+    /// not running.
     pub(super) fn sources_cell(&self) -> String {
         match self.sources {
-            None => "—".to_string(),
+            None => absent::NOT_RUNNING.to_string(),
             Some((known, 0)) => known.to_string(),
             Some((known, sending)) => format!("{known} ({sending})"),
         }
@@ -488,7 +522,7 @@ impl DownloadLine {
             self.size_cell(),
             done.clone(),
             done,
-            rate_cell(self.bps, theme).0,
+            rate_cell(Some(self.bps), theme).text,
             eta_cell(self.eta),
             self.sources_cell(),
             self.status_text.clone(),

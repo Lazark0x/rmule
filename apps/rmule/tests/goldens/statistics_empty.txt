@@ -12,10 +12,10 @@
 │                                                                            │
 └────────────────────────────────────────────────────────────────────────────┘
 ┌ Session ────────────────────────────┐┌ Activity ───────────────────────────┐
-│Downloaded   —                       ││Downloads    0 (0 active)            │
-│Uploaded     —                       ││Uploads      0 active · 0 queued     │
-│Down now     —                       ││Peer hellos  —                       │
-│Up now       —                       ││Shared files 0                       │
-│Kad in       —                       ││eD2k         not connected           │
-│Kad out      —                       ││Kad          off                     │
+│Downloaded not measured              ││Downloads    0 (0 active)            │
+│Uploaded   not measured              ││Uploads      0 active · 0 queued     │
+│Down now   not measured              ││Peer hellos  not measured            │
+│Up now     not measured              ││Shared files 0                       │
+│Kad in     not running               ││eD2k         not connected           │
+│Kad out    not running               ││Kad          off                     │
 └─────────────────────────────────────┘└─────────────────────────────────────┘

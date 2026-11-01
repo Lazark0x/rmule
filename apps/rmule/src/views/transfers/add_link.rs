@@ -16,8 +16,6 @@ use std::collections::VecDeque;
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
 use rmule_primitives::{Ed2kFileLink, Ed2kLink, SafeFileName};
 
@@ -28,9 +26,10 @@ use crate::row_selection::viewport::Viewport;
 use crate::state::{KnownFileMark, KnownFileMarks, UiState};
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
-use crate::views::modal::{Modal, release_form, scroll_form};
+use crate::views::modal::{Modal, legend, release_form, scroll_form};
 use crate::words::download::{self as words, LinkRefusal};
 use crate::words::severity::Severity;
+use crate::words::{forms, hints};
 use crate::wrap::clamp_u16;
 
 /// Floor width of the form; a long pasted link wraps inside it.
@@ -52,7 +51,7 @@ impl AddLink {
     fn new() -> Self {
         Self {
             form: Form::new(vec![
-                Field::text("Link", "").with_placeholder("ed2k://|file|name|size|hash|/"),
+                Field::text(forms::LINK, "").with_placeholder(forms::LINK_HINT),
             ]),
             viewport: Cell::default(),
             refused: VecDeque::new(),
@@ -231,7 +230,7 @@ impl TransfersView {
         let width = clamp_u16(entry.form.natural_width() + 2)
             .max(FORM_W)
             .min(area.width);
-        Modal::new(" Add eD2k link ", theme).draw_form(
+        Modal::new(forms::ADD_LINK_TITLE, theme).draw_form(
             frame,
             area,
             width,
@@ -239,12 +238,7 @@ impl TransfersView {
             &entry.viewport,
             |width| {
                 let inner_w = usize::from(width).saturating_sub(2).max(1);
-                let legend = Line::from(vec![
-                    Span::styled(" Enter", Style::new().fg(theme.accent)),
-                    Span::styled(" add    ", Style::new().fg(theme.fg)),
-                    Span::styled("Esc", Style::new().fg(theme.accent)),
-                    Span::styled(" cancel", Style::new().fg(theme.fg)),
-                ]);
+                let legend = legend(&[hints::COMMIT, hints::ESC_CANCEL], theme);
                 entry.form.render_modal(inner_w, theme, vec![legend])
             },
         )

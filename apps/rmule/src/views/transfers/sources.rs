@@ -15,15 +15,17 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use rmule_core::DownloadId;
+use rmule_core::diagnostics::WorkerPhase;
 
 use super::downloads::display_name;
 use super::{Pane, TransfersView, draw_centered, pane_block, selected_id};
 use crate::state::{DownloadRow, DownloadStatus, NO_NETWORK_WAIT, UiState};
-use crate::table::{self, Cell, Rows, Table};
+use crate::table::{self, Cell, Rows, Table, widest};
 use crate::theme::Theme;
 use crate::views::{rate_cell, software_label};
 use crate::words::Sentence;
-use crate::words::download::source_wait_words;
+use crate::words::download::{phase_words, source_wait_words};
+use crate::words::{absent, hints, transfers};
 use crate::wrap::display_width;
 
 mod row;
@@ -35,8 +37,16 @@ use row::{SourceRow, source_rows};
 /// the text a peer chose to call itself, so it is greedy and takes the slack
 /// left after the others; they are bounded — an endpoint, a phase, a rate —
 /// and ask for the widest drawn, up to [`SOURCE_CAPS`]. Source's floor holds an
-/// IPv4 endpoint with its port.
-const SOURCE_COLS: [usize; 4] = [22, 12, 16, 10];
+/// IPv4 endpoint with its port, Phase's its widest usual words.
+fn source_floors() -> [usize; 4] {
+    let phase = widest(&[
+        phase_words(&WorkerPhase::Connecting),
+        phase_words(&WorkerPhase::AskingFile),
+        phase_words(&WorkerPhase::WaitingForSlot { rank: Some(9_999) }),
+        phase_words(&WorkerPhase::VerifyingPart { part_index: 999 }),
+    ]);
+    [22, 12, phase, crate::words::units::rate_cells()]
+}
 const SOURCE_FLEX: usize = 1;
 
 /// The most each bounded column asks for: an IPv6 endpoint with its port, a
@@ -67,9 +77,9 @@ impl TransfersView {
                     row.and_then(|r| r.metadata.as_ref()),
                     row.and_then(|r| r.file_hash),
                 );
-                format!(" Sources · {name} ")
+                transfers::sources_title(Some(&name))
             }
-            None => " Sources ".to_string(),
+            None => transfers::sources_title(None),
         };
         if let Some(text) = self.idle_sources_text(state, ids, now) {
             let block = pane_block(area.width, (&title, ""), focused, theme);
@@ -87,7 +97,13 @@ impl TransfersView {
             area.width,
             (
                 &title,
-                " Tab downloads  / filter  s sort  S reverse  z zoom ",
+                &hints::line(&[
+                    hints::TO_DOWNLOADS,
+                    hints::FILTER,
+                    hints::SORT,
+                    hints::REVERSE,
+                    hints::ZOOM,
+                ]),
             ),
             focused,
             theme,
@@ -104,15 +120,14 @@ impl TransfersView {
         // ended before it.
         let cells = |index: usize, _: &[usize]| {
             let worker = &workers[index];
-            let (speed, speed_style) = rate_cell(worker.bps(id, state), theme);
             vec![
                 Cell::new(worker.source_label(), plain),
                 worker.software().map_or_else(
-                    || Cell::new("—", theme.dim_text()),
+                    || Cell::absent(absent::UNKNOWN, theme.dim_text()),
                     |software| Cell::new(software_label(software), plain),
                 ),
                 Cell::new(worker.phase_cell(), plain),
-                Cell::new(speed, speed_style),
+                rate_cell(worker.bps(id, state), theme),
             ]
         };
         let mut wants = [0; 4];
@@ -127,7 +142,7 @@ impl TransfersView {
         }
         let table = Table::of(
             &self.source_sort,
-            &SOURCE_COLS,
+            &source_floors(),
             SOURCE_FLEX,
             &SOURCE_GIVE_WAY,
             theme.header(),
@@ -177,7 +192,7 @@ impl TransfersView {
         Some(
             match selected {
                 Some(_) => idle_text(selected_row, reconnect_wait.as_ref()),
-                None => "no download selected",
+                None => transfers::NO_DOWNLOAD_SELECTED,
             }
             .to_string(),
         )
@@ -194,7 +209,7 @@ fn idle_text<'a>(row: Option<&DownloadRow>, reconnect: Option<&'a Sentence>) -> 
             .map(Sentence::as_str)
             .or(wait)
             .unwrap_or(NO_NETWORK_WAIT),
-        _ => wait.unwrap_or("no active sources"),
+        _ => wait.unwrap_or(transfers::NO_ACTIVE_SOURCES),
     }
 }
 

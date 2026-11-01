@@ -1,7 +1,7 @@
 ┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
 │▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
-│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
+│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░   0.0 KB/s Paused     │
 │  5C5C5C5C5C┌ File details ────────────────────────────────────┐ Completed  │
 │            │ name    bunny.mp4                                │            │
 │            │ hash    07070707070707070707070707070707         │            │
@@ -14,7 +14,7 @@
 ┌ Sources · b│ on disk —                                        │rse  z zoom ┐
 │  Source ▲  │                                                  │       Speed│
 │▸ 10.0.0.1:4│██████████░░░░░█████▓▓▓▓▓░░░░░█████▓▓▓▓▓░░░░░░░░░░│   98.7 KB/s│
-│  10.0.0.2:4└─────────────────────────────────────── Esc close ┘           —│
+│  10.0.0.2:4└─────────────────────────────────────── Esc close ┘not measured│
 │                                                                            │
 │                                                                            │
 │                                                                            │

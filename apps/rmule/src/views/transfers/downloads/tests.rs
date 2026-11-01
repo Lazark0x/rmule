@@ -97,8 +97,8 @@ fn both_speed_columns_meter_what_is_moving_and_dash_what_is_not() {
     assert!(active.contains("123.4 KB/s"), "download meter: {active}");
     let paused = row("ABABABABAB…");
     assert!(
-        !paused.contains("KB/s"),
-        "no rate ⇒ no invented one: {paused}"
+        paused.contains("0.0 KB/s"),
+        "a stopped meter reads its zero: {paused}"
     );
     // Sources pane: the receiving worker is metered, the queued one is not.
     let receiving = row("10.0.0.1:4662");
@@ -142,7 +142,7 @@ fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
     );
     // download_id(2): no metadata edge landed — honest fallbacks survive unchanged.
     // Its part map has not landed either, so Done has nothing to divide:
-    // `—`, not a 0% that would read as "started and getting nowhere".
+    // the word, not a 0% that would read as "started and getting nowhere".
     let stub = row("ABABABABAB…");
     assert!(stub.contains("≈ 27.8 MB"), "approx size fallback: {stub}");
     let state_of = |row: usize| {
@@ -154,7 +154,7 @@ fn download_rows_show_real_names_exact_sizes_and_byte_based_done_percent() {
     };
     let stub_said = state_of(1);
     assert!(
-        stub_said.contains("Off-screen: Done —"),
+        stub_said.contains("Off-screen: Done unknown"),
         "no part map, so no done reading:\n{stub_said}"
     );
     // download_id(3): metadata known but nameless (Unknown origin) — the name
@@ -238,7 +238,7 @@ fn done_and_eta_read_exact_bytes_with_or_without_a_live_part_map() {
         metadata: None,
         ..download_row(DownloadStatus::Waiting, 0x0A, 3)
     };
-    assert_eq!(done_cell(Some(&bare), None), "—");
+    assert_eq!(done_cell(Some(&bare), None), "unknown");
     let ratio = diag(download_id(3), 0x0A, "VMM", 0, vec![]);
     assert_eq!(
         done_cell(Some(&bare), Some(&ratio)),
@@ -275,7 +275,7 @@ fn the_sources_cell_counts_what_the_run_knows_and_who_is_sending() {
     assert_eq!(line_of(None, Some(&running)).sources_cell(), "12 (1)");
     running.workers.clear();
     assert_eq!(line_of(None, Some(&running)).sources_cell(), "12");
-    assert_eq!(line_of(None, None).sources_cell(), "—");
+    assert_eq!(line_of(None, None).sources_cell(), "not running");
 }
 
 /// A paused download draws the parts it holds and the ones it
@@ -348,7 +348,7 @@ fn an_eta_too_slow_to_mean_anything_says_so() {
     assert_eq!(eta(Some(0), Some(kib)), Eta::Unknown, "nothing left");
     assert_eq!(eta(Some(1024), None), Eta::Unknown, "no measured run");
     assert_eq!(eta_cell(Eta::TooSlow), ETA_TOO_SLOW);
-    assert_eq!(eta_cell(Eta::Unknown), "—");
+    assert_eq!(eta_cell(Eta::Unknown), "unknown");
     assert_eq!(Eta::TooSlow.seconds(), None, "sorts as a missing value");
 }
 
@@ -375,8 +375,8 @@ fn a_download_paused_this_tick_reads_no_speed_and_no_eta() {
     assert_eq!(state.download_speed(active), 0.0);
     assert_eq!(state.download_eta_speed(active), None);
     let values = DownloadLine::new(active, &state).values(&Theme::default_dark());
-    assert_eq!(values[5], "—", "ETA: {values:?}");
-    assert!(!values[4].contains("KB/s"), "Speed: {values:?}");
+    assert_eq!(values[5], "unknown", "ETA: {values:?}");
+    assert_eq!(values[4], "0.0 KB/s", "Speed: {values:?}");
 
     for stopped in [download_id(2), download_id(3)] {
         state.rates.download_bps.insert(stopped, 50.0 * 1024.0);
@@ -695,7 +695,7 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
                     assert!(part <= whole, "row {n}: a share past the whole");
                     assert_eq!(cells[2], format!("{}%", part * 100 / whole), "row {n} Done");
                 }
-                None => assert_eq!(cells[2], "—", "row {n} Done"),
+                None => assert_eq!(cells[2], "unknown", "row {n} Done"),
                 other => panic!("row {n}: Done sorts as {other:?}"),
             }
             match value(DownloadColumn::Size) {
@@ -704,7 +704,7 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
                     "row {n} Size {} vs {bytes}",
                     cells[1]
                 ),
-                None => assert_eq!(cells[1], "—", "row {n} Size"),
+                None => assert_eq!(cells[1], "unknown", "row {n} Size"),
                 other => panic!("row {n}: Size sorts as {other:?}"),
             }
             if let Some(&(_, text, rank)) = want.iter().find(|(at, ..)| *at == n) {
@@ -741,5 +741,5 @@ fn sort_values_and_cell_text_agree_for_every_edge_case() {
         at: std::time::Instant::now(),
         said: crate::words::server::NO_SERVER_LISTED,
     });
-    check(&state, &[(7, "Reconnecting", 1)]);
+    check(&state, &[(7, "Redialling", 1)]);
 }

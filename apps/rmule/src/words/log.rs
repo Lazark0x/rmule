@@ -3,6 +3,12 @@
 
 use crate::words::severity::Severity;
 
+/// How a line's time reads.
+pub const TIME_FORMAT: &str = "%H:%M:%S";
+
+/// How a day reads, on the log's date line and wherever a moment is named.
+pub const DAY_FORMAT: &str = "%Y-%m-%d";
+
 /// A warning's or a failure's line: the severity's word, then what it says.
 #[must_use]
 pub fn worded(word: &str, text: &str) -> String {

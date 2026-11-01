@@ -21,7 +21,7 @@ What a view owns: selection, scroll offset, focus, which modal is up, what has b
 _Avoid_: model, local state, component state
 
 **Honest degrade**:
-Rendering a fact core does not surface as a visible absence — a dash, or a control greyed *with its reason* — rather than a zero, an invented name, or a hidden control. A ping nobody measured reads `—`; an action that would be rejected says why it is unavailable. The columns and controls stay because the spec pins the set; the dash is the honest state until core carries the fact.
+Rendering a fact core does not surface as a visible absence — the word for its state, or a control greyed *with its reason* — rather than a zero, an invented name, or a hidden control. Each state has its word (`words::absent`): unknown, not running, not measured, no name, none. A measured zero is no absence and reads as a zero. An action that would be rejected says why it is unavailable. A cell too narrow for its word draws `—`, the one thing that mark means, and the word rides the **Off-screen line**. The columns and controls stay because the spec pins the set; the word is the honest state until core carries the fact.
 _Avoid_: placeholder, empty state, fallback value (a fallback invents; a degrade admits)
 
 **No dead UI**:
@@ -146,12 +146,28 @@ _Avoid_: event result, handled flag
 What the Networks log, the **Note** and a flash hold: a line written from a code in a words module — `rmule-words`, whose glossary owns the term, or the TUI's own (`crate::words`, which re-exports the shared modules under the same names and adds the sentences that word the TUI's own types: its command line, a run with no core, a Settings edit, a server-health edge, a search entry's paging, the share set's tally, a preview's reasons and notes). `scripts/guards.sh` refuses a sentence made, or a Debug format, anywhere else in the TUI's source outside tests and `tracing` calls, and a glyph golden refuses to render `Some(`, `None`, a struct's braces, a Rust path or a byte array.
 _Avoid_: message, string, label (a label is a word in a cell; a sentence is a line said)
 
+**Drawn word**:
+Any text a module that draws puts on screen: a label, a title, a hint, an empty state, a unit. Every one comes from a words module, so a language can replace it, and none is decided on or sorted by. `scripts/drawn-words.py` refuses a string literal holding a letter in `views`, `chrome`, `form`, `table`, `row_selection`, `row_filter` and `view.rs`, with no allowance; what is stored, never drawn, is a **Stored key**.
+_Avoid_: hard-coded string, literal
+
+**Stored key**:
+What a kept tab and a kept **Table Sort** are written under (`stored_keys`). Stable, never drawn and never translated: renaming one forgets an installed value.
+_Avoid_: label, column name
+
+**Hint**:
+A key and what it does (`words::hints`), on a pane's border and under a form. Every pane's hint is a list of them two spaces apart, in the order they give way, so a key is never part of a word.
+_Avoid_: legend, shortcut
+
+**Plural**:
+A phrase in every form a language gives it, `{n}` where the count goes (`rmule_words::plural`): the only way a word is chosen by a number. A count names its form by the language's CLDR category, never by `n == 1`.
+_Avoid_: noun pair, singular
+
 **Off-screen line**:
 The one line at the bottom of a table that says what the selected row does not show: the value of every column that gave way and the whole of every value a cell cut or shortened, as `Label value`, above the border's note naming the hidden columns — every table the same way (`views::off_screen`), so a row on one line never loses a value (ADR-0119). It wraps, up to half the table, and holds as many lines as any row on screen would ask for, so the frame stands still as the cursor walks them.
 _Avoid_: detail row, tooltip, footer
 
 **Greedy width**:
-A table's column budget (`table::greedy_widths`), one line per row. Each column declares a floor it is shown at or not at all, and the greedy column — the one holding free text; Servers has two — takes the slack left after the bounded columns (an endpoint, a phase, a rate) have asked for the widest value they show, up to a cap. Its floor is the room it keeps: a pane that cannot hold every floor takes columns away in the table's stated give-way order, the greedy column never, and says on its bottom border which, or how many, are not shown. A header is never split: no column is narrower than its header and the sort arrow. Numbers and rates sit right, words left, by the column's kind.
+A table's column budget (`table::greedy_widths`), one line per row. Each column has a floor it is shown at or not at all, measured from its header and the words and units it draws, so a language whose words run longer widens the column rather than cutting them; only digits and free text keep a floor in cells. The greedy column — the one holding free text; Servers has two — takes the slack left after the bounded columns (an endpoint, a phase, a rate) have asked for the widest value they show, up to a cap. Its floor is the room it keeps: a pane that cannot hold every floor takes columns away in the table's stated give-way order, the greedy column never, and says on its bottom border which, or how many, are not shown. A header is never split: no column is narrower than its header and the sort arrow. Numbers and rates sit right, words left, by the column's kind.
 _Avoid_: fixed layout, shrink, wrap (a row does not)
 
 **Middle cut**:

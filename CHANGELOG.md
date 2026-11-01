@@ -15,6 +15,20 @@ All notable changes to rmule are recorded here. The format follows
   closed last.
 - No field loses what was typed: a refusal stays under it, with the text.
 
+### Words and numbers
+
+- Every label, title, hint and empty state comes from a words module, so the
+  app can be translated; a guard holds it. A count picks its form through one
+  plural seam, and a column's floor is measured from the words it draws.
+- A value with none says which: unknown, not running, not measured, no name or
+  none. A measured zero reads as a zero, and `—` is only what a cell too narrow
+  for its word draws.
+- Counts round to the nearest: 1,999,999 reads `2.0M`, not `1M`.
+- A first run no longer says the last run failed, and a bad data directory
+  names its path and the real cause.
+- A scan's receipt says what it added and only the exceptions.
+- Key hints read one way on every pane.
+
 ### Log and Statistics
 
 - The log dates itself, marks each line with a glyph and a word for warnings and

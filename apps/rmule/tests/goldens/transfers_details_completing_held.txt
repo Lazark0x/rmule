@@ -1,6 +1,6 @@
 ┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
-│▸ bunny.mp4                        87.7 MB ██████████          — Complet…sed│
+│▸ bunny.mp4                        87.7 MB ██████████   0.0 KB/s Complet…sed│
 │  ABABABABAB┌ File details ────────────────────────────────────┐ Paused     │
 │  5C5C5C5C5C│ name    bunny.mp4                                │ Completed  │
 │            │ hash    07070707070707070707070707070707         │            │
@@ -13,8 +13,8 @@
 │            │ on disk —                                        │            │
 │            │ move    waiting for the file to be released      │            │
 │            │                                                  │            │
-│Off-screen: │██████████████████████████████████████████████████│ng for the  │
-│file to be r└─────────────────────────────────────── Esc close ┘            │
+│Off-screen: │██████████████████████████████████████████████████│ waiting for│
+│the file to └─────────────────────────────────────── Esc close ┘            │
 └ too narrow to show: Done, ETA, Src ───────────────────────────────── 1 / 3 ┘
 ┌ Sources · bunny.mp4 ───────────────────────────────────────────────────────┐
 │                              no active sources                             │

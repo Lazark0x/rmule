@@ -6,6 +6,8 @@
 //! order the operator sees is decided here, and the cursor survives a batch
 //! because it names a file, not a position.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_primitives::{Ed2kFileClass, FileHash, SearchResult};
@@ -59,17 +61,32 @@ impl SortedTable for ResultsTable {
     type Row = SearchResult;
     type Column = ResultColumn;
     type Identity = ResultId;
-    const TABLE: &'static str = "search";
+    const TABLE: &'static str = column_keys::TABLE_SEARCH;
     const COLUMNS: &'static [ColumnSpec<ResultColumn>] = &[
-        ColumnSpec::new(ResultColumn::Name, "name", "Name", ColumnKind::Text),
-        ColumnSpec::new(ResultColumn::Size, "size", "Size", ColumnKind::Quantity),
         ColumnSpec::new(
-            ResultColumn::Sources,
-            "sources",
-            "Sources",
+            ResultColumn::Name,
+            column_keys::NAME,
+            columns::NAME,
+            ColumnKind::Text,
+        ),
+        ColumnSpec::new(
+            ResultColumn::Size,
+            column_keys::SIZE,
+            columns::SIZE,
             ColumnKind::Quantity,
         ),
-        ColumnSpec::new(ResultColumn::Type, "type", "Type", ColumnKind::Rank),
+        ColumnSpec::new(
+            ResultColumn::Sources,
+            column_keys::SOURCES,
+            columns::SOURCES,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            ResultColumn::Type,
+            column_keys::TYPE,
+            columns::TYPE,
+            ColumnKind::Rank,
+        ),
     ];
     const NAME: ResultColumn = ResultColumn::Name;
     /// A result is picked by its availability: most sources first.

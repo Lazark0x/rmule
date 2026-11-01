@@ -24,9 +24,7 @@ use crate::views::modal::{Question, confirm_key, draw_question, scroll_key};
 use crate::words::Sentence;
 use crate::words::app::{self as words, AddDirectoryRefusal};
 use crate::words::scan::{remove_confirm, role_words, state_words, under_words};
-
-/// The section's heading.
-const SECTION: &str = "Shared directories";
+use crate::words::settings;
 
 /// What a form row stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,7 +58,7 @@ pub(super) fn fields(state: &UiState) -> Vec<(Field, Slot)> {
             note.push_str(" · ");
             note.push_str(&under_words(state.shared_under(&entry.dir)));
             (
-                Field::item("Shared", entry.dir.display().to_string()).with_note(note),
+                Field::item(settings::SHARED, entry.dir.display().to_string()).with_note(note),
                 Slot::Dir {
                     dir: entry.dir.clone(),
                     role: entry.role,
@@ -69,12 +67,12 @@ pub(super) fn fields(state: &UiState) -> Vec<(Field, Slot)> {
         })
         .collect();
     rows.push((
-        Field::directory("Share a dir", String::new())
-            .with_placeholder("Enter, type a path, Enter"),
+        Field::directory(settings::SHARE_A_DIR, String::new())
+            .with_placeholder(settings::SHARE_A_DIR_HINT),
         Slot::AddDir,
     ));
     if let Some((field, _)) = rows.first_mut() {
-        field.section = Some(SECTION);
+        field.section = Some(settings::SHARED_DIRECTORIES);
     }
     rows
 }

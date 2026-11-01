@@ -20,6 +20,7 @@ use crate::theme::Theme;
 use crate::views::ViewOutcome;
 use crate::views::menu::{self, Asked, Item};
 use crate::words::labels;
+use crate::words::transfers::{COMPLETED_IS_KEPT, HASH_NOT_KNOWN};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MenuAction {
@@ -59,8 +60,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
         DownloadStatus::Completed => Item::new(labels::CLEAR_FROM_LIST, MenuAction::Clear),
         _ => Item::new(labels::PAUSE, MenuAction::Pause).keyed('p'),
     };
-    let cancel_reason =
-        (status == DownloadStatus::Completed).then_some("completed: the file is kept and shared");
+    let cancel_reason = (status == DownloadStatus::Completed).then_some(COMPLETED_IS_KEPT);
     let copy_reason = copy_link_reason(row);
     let preview_reason = crate::player::preview_target(state, id)
         .err()
@@ -69,7 +69,7 @@ pub(super) fn menu_items(status: DownloadStatus, id: DownloadId, state: &UiState
     // nothing to ask about.
     let related_reason = match row.and_then(|row| row.file_hash) {
         Some(_) => crate::views::related::unavailable(state),
-        None => Some("file hash not known yet"),
+        None => Some(HASH_NOT_KNOWN),
     };
     let or_inert = |action, reason: Option<&'static str>| {
         if reason.is_none() {
@@ -125,7 +125,7 @@ pub(super) fn tagged_items(targets: &[DownloadId], state: &UiState) -> Vec<MenuI
             .greyed(
                 cancellable(targets.to_vec(), state)
                     .is_empty()
-                    .then_some("completed: the file is kept and shared"),
+                    .then_some(COMPLETED_IS_KEPT),
             ),
     ]
 }

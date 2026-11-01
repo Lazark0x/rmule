@@ -24,6 +24,7 @@ use crate::theme::Theme;
 use crate::view::ViewId;
 use crate::views::centered;
 use crate::words::help::{Binding, Section, sections};
+use crate::words::labels;
 use crate::wrap::{clamp_u16, display_width, labeled_lines};
 
 /// Where the help overlay is scrolled to, as the last draw laid it out: its
@@ -175,7 +176,10 @@ pub(super) fn draw_help(
     let block = Block::bordered()
         .border_style(theme.chrome())
         .style(Style::new().fg(theme.fg).bg(theme.panel))
-        .title_top(Line::from(Span::styled(" Help ", theme.tab_active())));
+        .title_top(Line::from(Span::styled(
+            labels::HELP_TITLE,
+            theme.tab_active(),
+        )));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     let (inner, filter_line) = filter.carve(inner);

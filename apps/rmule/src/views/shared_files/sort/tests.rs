@@ -193,9 +193,9 @@ fn a_row_shows_the_registrys_name_and_size_and_the_runs_counters() {
         assert!(charlie.contains(&cell), "{cell} in {charlie}");
     }
     let unknown = row("0404");
-    assert!(unknown.contains(&"—".to_string()), "{unknown:?}");
+    assert!(unknown.contains(&"unknown".to_string()), "{unknown:?}");
     assert!(
-        lines[0].contains("4 files · —"),
+        lines[0].contains("4 files · size still being read"),
         "a total needs every size: {}",
         lines[0]
     );

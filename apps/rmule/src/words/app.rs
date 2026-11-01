@@ -42,8 +42,11 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         },
         PrefEdit::NodesDatUrl(url) => format!("nodes.dat URL → {url}"),
         PrefEdit::AutoFetchNodesDat(on) => format!("nodes.dat auto-fetch → {}", on_off(*on)),
-        PrefEdit::Theme(choice) => format!("theme → {}", choice.name()),
-        PrefEdit::Obfuscation(choice) => format!("obfuscation → {}", choice.name()),
+        PrefEdit::Theme(choice) => format!("theme → {}", super::settings::theme_word(*choice)),
+        PrefEdit::Obfuscation(choice) => format!(
+            "obfuscation → {}",
+            super::settings::obfuscation_word(*choice)
+        ),
         PrefEdit::PortMapping(on) => format!("port mapping → {}", on_off(*on)),
         PrefEdit::ConnectAtStart(on) => format!("connect at start → {}", on_off(*on)),
         PrefEdit::RunLogFull(on) => format!("full run log → {}", on_off(*on)),
@@ -423,7 +426,7 @@ pub const fn no_suspend(why: NoStop) -> Sentence {
 }
 
 /// Beside the Settings row that takes the mouse from the terminal, or leaves it.
-pub const MOUSE_NOTE: &str = "off: a drag selects text; clicks and the wheel do nothing";
+pub const MOUSE_NOTE: &str = "off: a drag selects text; no clicks or wheel";
 
 #[cfg(test)]
 mod tests {
@@ -433,9 +436,8 @@ mod tests {
     /// after a downgrade sends them to delete the file instead.
     #[test]
     fn a_refused_store_is_told_by_its_cause() {
-        let words = |refusal| {
-            attach_failure_words(&AttachFailure::OpenStore(refusal, "/srv/rmule".into()))
-        };
+        let words =
+            |refusal| attach_failure_words(&AttachFailure::OpenStore(refusal, "/srv/rmule".into()));
         use rmule_core::OpenRefusal;
         use std::io::ErrorKind;
         assert!(words(OpenRefusal::Busy).contains("another rmule"));

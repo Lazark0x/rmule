@@ -1,9 +1,9 @@
-┌ Servers (4) · 10.0.0.1:4661 HighID ────── c disconnect · m menu · / filter ┐
+┌ Servers (4) · 10.0.0.1:4661 HighID ─ c disconnect  m menu  / filter  a add ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
-│▸● eDonkey Prime           10.0.0.1         4661  42ms    1M   24M  12s Norm│
+│▸● eDonkey Prime           10.0.0.1         4661  42ms  1.2M 24.5M  12s Norm│
 │   Flaky Mirror            172.16.9.9       5000  lost  lost  lost lost Low │
 │   Static Pin              10.0.0.2         4242  1.2s  9812  431k   2h High│
-│   —                       192.168.4.4      4661  soon  soon  soon soon Norm│
+│   no name                 192.168.4.4      4661  soon  soon  soon soon Norm│
 │                                                                            │
 │Off-sc┌ Remove server ───────────────────────────────────────────────┐      │
 │Health│ Remove eDonkey Prime (10.0.0.1:4661)?                        │      │
@@ -12,10 +12,10 @@
 │nothin│                                                              │      │
 │      │ y yes    n no                                                │      │
 │      └──────────────────────────────────────────────────────────────┘      │
-│                                    ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│                                    ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

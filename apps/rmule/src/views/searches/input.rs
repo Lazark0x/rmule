@@ -14,6 +14,8 @@ use ratatui::widgets::Paragraph;
 use super::SearchesView;
 use crate::state::UiState;
 use crate::theme::Theme;
+use crate::words::hints;
+use crate::words::search::SEARCH_TITLE;
 use crate::wrap::{clamp_u16, labeled_lines, wrapped_lines};
 
 /// The query-input block is three inner lines (query + who it asks + filters) inside
@@ -47,18 +49,23 @@ impl SearchesView {
     ) -> Option<Position> {
         let focused = self.input_focused;
         let editing = self.filters_open;
-        let hint = if editing {
-            " Tab field  ←→ type  Enter search  Esc close "
+        let hint = hints::line(if editing {
+            &[
+                hints::NEXT_FIELD,
+                hints::STEP_TYPE,
+                hints::SEARCH,
+                hints::ESC_CLOSE,
+            ]
         } else if focused {
-            " Enter search  Esc leave "
+            &[hints::SEARCH, hints::ESC_LEAVE]
         } else {
-            " i focus  o options "
-        };
+            &[hints::FOCUS_QUERY, hints::OPTIONS]
+        });
         let block = crate::views::title::titled(
             theme.pane(focused || editing),
             area.width,
-            (" Search ", Style::new().fg(theme.fg)),
-            (hint, theme.dim_text()),
+            (SEARCH_TITLE, Style::new().fg(theme.fg)),
+            (&hint, theme.dim_text()),
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);

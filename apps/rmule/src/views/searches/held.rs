@@ -471,10 +471,7 @@ pub(super) fn strip_shown(held: &HeldSearches, state: &UiState) -> bool {
 fn unattributed_note(state: &UiState) -> Option<String> {
     match state.diagnostics.session.search_rows_unattributed_total {
         0 => None,
-        1 => Some(" 1 row answered no running search and was dropped ".to_string()),
-        n => Some(format!(
-            " {n} rows answered no running search and were dropped "
-        )),
+        rows => Some(crate::words::search::unattributed(rows)),
     }
 }
 
@@ -494,7 +491,7 @@ fn entry_text(entry: &HeldSearch, state: &UiState, current: bool) -> String {
         None => label(&entry.query),
     };
     let pane = state.searches.get(&entry.id);
-    let count = pane.map_or_else(|| "—".to_string(), |pane| pane.results.len().to_string());
+    let count = pane.map_or(0, |pane| pane.results.len());
     let running = !entry.kind.never_started()
         && state.core_alive
         && pane.is_none_or(|pane| pane.status == SearchStatus::Running);
@@ -503,12 +500,12 @@ fn entry_text(entry: &HeldSearch, state: &UiState, current: bool) -> String {
     format!("{open}{label} · {count}{running}{close}")
 }
 
-/// The query capped at [`LABEL_CHARS`] cells; `—` for a search the view
-/// did not send.
+/// The query capped at [`LABEL_CHARS`] cells, or the word for a search that
+/// holds none.
 fn label(query: &str) -> String {
     let query = query.trim();
     if query.is_empty() {
-        return "—".to_string();
+        return crate::words::absent::NO_QUERY.to_string();
     }
     if display_width(query) > LABEL_CHARS {
         format!("{}…", crate::wrap::first_cells(query, LABEL_CHARS))

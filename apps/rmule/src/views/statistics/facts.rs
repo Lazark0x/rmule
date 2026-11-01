@@ -21,18 +21,22 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use crate::rates::format_rate;
 use crate::state::{DownloadStatus, Ed2kConnection, UiState, UploadState};
 use crate::theme::Theme;
 use crate::views::human_size;
 use crate::words::statistics as words;
+use crate::words::units::rate as format_rate;
+use crate::words::{absent, networks};
 use crate::wrap::{display_width, labeled_lines};
 
-/// Label column of a fact row; values wrap under it.
-const LABEL_W: usize = 13;
-
-/// What every unobserved figure reads.
-const DASH: &str = "—";
+/// The label column two panes of facts share; values wrap under it.
+fn label_w(rows: &[Fact]) -> usize {
+    rows.iter()
+        .map(|fact| display_width(fact.label))
+        .max()
+        .unwrap_or(0)
+        + 1
+}
 
 /// One row of a facts pane: what it says, plus whether it is a *reading* or an
 /// *absence* — which is the whole of the row's styling decision.
@@ -81,14 +85,14 @@ pub(super) fn draw_facts(
         if metered {
             Fact::read(label, human_size(total))
         } else {
-            Fact::absent(label, DASH)
+            Fact::absent(label, absent::NOT_MEASURED)
         }
     };
     let rate = |label, bps: f64| {
         if metered {
             Fact::read(label, format_rate(bps))
         } else {
-            Fact::absent(label, DASH)
+            Fact::absent(label, absent::NOT_MEASURED)
         }
     };
     // Kad datagrams in and out: core counts them
@@ -100,25 +104,28 @@ pub(super) fn draw_facts(
     // Kad panel's Received/Sent rows show.
     let dgrams = |label: &'static str, total: Option<u64>, bps: Option<f64>| match total {
         Some(total) => {
-            let rate = bps.map_or_else(|| DASH.to_owned(), |bps| format!("{bps:.1}/s"));
-            Fact::read(label, format!("{rate} · {total}"))
+            let rate = bps.map_or_else(
+                || absent::NOT_MEASURED.to_owned(),
+                words::datagrams_per_second,
+            );
+            Fact::read(label, networks::traffic(&rate, &total.to_string()))
         }
-        None => Fact::absent(label, DASH),
+        None => Fact::absent(label, absent::NOT_RUNNING),
     };
     let kad = state.diagnostics.kad;
     let kad_rates = state.rates.kad;
     let session_rows = [
-        bytes("Downloaded", session.down_bytes_total),
-        bytes("Uploaded", session.up_bytes_total),
-        rate("Down now", state.rates.down_total_bps),
-        rate("Up now", state.rates.up_total_bps),
+        bytes(words::DOWNLOADED, session.down_bytes_total),
+        bytes(words::UPLOADED, session.up_bytes_total),
+        rate(words::DOWN_NOW, state.rates.down_total_bps),
+        rate(words::UP_NOW, state.rates.up_total_bps),
         dgrams(
-            "Kad in",
+            words::KAD_IN,
             kad.map(|k| k.traffic.datagrams_in),
             kad_rates.map(|r| r.dgrams_in_bps),
         ),
         dgrams(
-            "Kad out",
+            words::KAD_OUT,
             kad.map(|k| k.traffic.datagrams_out),
             kad_rates.map(|r| r.dgrams_out_bps),
         ),
@@ -140,36 +147,28 @@ pub(super) fn draw_facts(
         .count();
     let ed2k = match &state.ed2k {
         Ed2kConnection::Connected { client_id } => {
-            let class = if client_id.is_high_id() {
-                "HighID"
-            } else {
-                "LowID"
-            };
-            Fact::read("eD2k", format!("connected ({class})"))
+            Fact::read(words::ED2K, words::connected(client_id.is_high_id()))
         }
-        Ed2kConnection::Connecting { .. } => Fact::absent("eD2k", "connecting…"),
+        Ed2kConnection::Connecting { .. } => Fact::absent(words::ED2K, words::CONNECTING),
         Ed2kConnection::Disconnected | Ed2kConnection::Lost => {
-            Fact::absent("eD2k", "not connected")
+            Fact::absent(words::ED2K, words::NOT_CONNECTED)
         }
     };
     // The same three grades the Networks panel and the status dot report, off
     // the same one runtime fact — three renderings, one source.
     let kad = match state.diagnostics.kad {
-        None => Fact::absent("Kad", "off"),
-        Some(kad) if kad.contact_responded => Fact::read("Kad", "on · joined"),
-        Some(_) => Fact::read("Kad", "on · no contact"),
+        None => Fact::absent(words::KAD, words::KAD_OFF),
+        Some(kad) if kad.contact_responded => Fact::read(words::KAD, words::KAD_JOINED),
+        Some(_) => Fact::read(words::KAD, words::KAD_NO_CONTACT),
     };
     let activity_rows = [
         Fact::read(
-            "Downloads",
-            format!("{} ({active} active)", state.downloads.len()),
+            words::DOWNLOADS,
+            words::downloads_row(state.downloads.len(), active),
         ),
         Fact::read(
-            "Uploads",
-            format!(
-                "{} active · {queued} queued",
-                state.diagnostics.uploads.len()
-            ),
+            words::UPLOADS,
+            words::uploads_row(state.diagnostics.uploads.len(), queued),
         ),
         // Each refusal is a Networks log line; this is their tally, from the
         // same session counters as the byte totals.
@@ -179,9 +178,9 @@ pub(super) fn draw_facts(
                 crate::words::peer::hellos_refused(session.peer_hellos_refused_total),
             )
         } else {
-            Fact::absent(crate::words::peer::HELLOS_LABEL, DASH)
+            Fact::absent(crate::words::peer::HELLOS_LABEL, absent::NOT_MEASURED)
         },
-        Fact::read("Shared files", state.shared.len().to_string()),
+        Fact::read(words::SHARED_FILES, state.shared.len().to_string()),
         ed2k,
         kad,
     ];
@@ -202,7 +201,10 @@ pub(super) fn draw_facts(
         frame,
         activity_area,
         theme,
-        Line::from(Span::styled(" Activity ", Style::new().fg(theme.fg))),
+        Line::from(Span::styled(
+            words::ACTIVITY_TITLE,
+            Style::new().fg(theme.fg),
+        )),
         &activity_rows,
     );
 }
@@ -211,10 +213,13 @@ pub(super) fn draw_facts(
 /// inside the view (the status bar says it too — this is the in-view echo, so
 /// a reader looking at the frozen graphs is told why).
 fn session_title(theme: &Theme, state: &UiState, now: Instant, room: usize) -> Line<'static> {
-    let mut spans = vec![Span::styled(" Session ", Style::new().fg(theme.fg))];
+    let mut spans = vec![Span::styled(
+        words::SESSION_TITLE,
+        Style::new().fg(theme.fg),
+    )];
     if !state.core_alive {
         spans.push(Span::styled(
-            "· engine stopped ",
+            words::ENGINE_STOPPED,
             Style::new().fg(theme.bad),
         ));
     }
@@ -252,7 +257,8 @@ fn draw_facts_pane(
     if inner.width == 0 || inner.height == 0 {
         return;
     }
-    let value_w = usize::from(inner.width).saturating_sub(LABEL_W).max(1);
+    let label_w = label_w(rows);
+    let value_w = usize::from(inner.width).saturating_sub(label_w).max(1);
     let lines: Vec<Line<'static>> = rows
         .iter()
         .flat_map(|fact| {
@@ -262,7 +268,7 @@ fn draw_facts_pane(
                 theme.dim_text()
             };
             labeled_lines(
-                Span::styled(format!("{:<w$}", fact.label, w = LABEL_W), theme.dim_text()),
+                Span::styled(format!("{:<label_w$}", fact.label), theme.dim_text()),
                 &fact.value,
                 style,
                 value_w,
@@ -307,7 +313,10 @@ mod tests {
                 .lines()
                 .find(|line| line.contains(label))
                 .unwrap_or_else(|| panic!("no {label} row in\n{rendered}"));
-            assert!(row.contains(DASH), "{label} claimed a figure: {row:?}");
+            assert!(
+                row.contains(absent::NOT_MEASURED),
+                "{label} claimed a figure: {row:?}"
+            );
         }
         assert!(
             rendered.contains(NO_SAMPLES),
@@ -391,7 +400,11 @@ mod tests {
         };
         let dark = glyphs(&Theme::default_dark());
         for theme in [Theme::light(), Theme::fallback_256()] {
-            assert_eq!(glyphs(&theme), dark, "theme changed glyphs, not just styles");
+            assert_eq!(
+                glyphs(&theme),
+                dark,
+                "theme changed glyphs, not just styles"
+            );
         }
     }
 }

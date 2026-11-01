@@ -132,8 +132,8 @@ impl SearchesView {
         };
         let width = 56u16.min(area.width);
         let title = match readd.mark {
-            KnownFileMark::Failed { .. } => " Restart download? ",
-            _ => " Download again? ",
+            KnownFileMark::Failed { .. } => crate::words::search::RESTART_TITLE,
+            _ => crate::words::search::AGAIN_TITLE,
         };
         let lines = |width: u16| {
             let text_w = usize::from(width).saturating_sub(2).max(1);

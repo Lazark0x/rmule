@@ -1,8 +1,8 @@
 ┌ Downloads (3) ─── p pause  m menu  / filter  L add  Tab sources  Space tag ┐
 │  File ▲                              Size Progress        Speed Status     │
 │▸ bunny.mp4                        87.7 MB ██░█▓░█▓░░ 123.4 KB/s Downloading│
-│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░          — Paused     │
-│  5C5C5C5C5C…                      42.9 MB ██████████          — Completed  │
+│  ABABABABAB…                    ≈ 27.8 MB ░░░░░░░░░░   0.0 KB/s Paused     │
+│  5C5C5C5C5C…                      42.9 MB ██████████   0.0 KB/s Completed  │
 │                                                                            │
 │              ┌ bunny.mp4 ───────────────────────────────────┐              │
 │              │▸ Pause (p)                                   │              │
@@ -13,8 +13,8 @@
 └ too narrow to│  Search related  not connected               │─────── 1 / 3 ┘
 ┌ Sources · bun│  Pause or resume all (P)                     │verse  z zoom ┐
 │  Source ▲    └─────────────────────────────────────── 1 / 7 ┘         Speed│
-│▸ 10.0.0.1:4662              aMule v2.3.3        recv p4           98.7 KB/s│
-│  10.0.0.2:4662 · remembered —                   queued #3                 —│
+│▸ 10.0.0.1:4662              aMule v2.3.3          recv p4         98.7 KB/s│
+│  10.0.0.2:4662 · remembered unknown               queued #3    not measured│
 │                                                                            │
 │                                                                            │
 │                                                                            │

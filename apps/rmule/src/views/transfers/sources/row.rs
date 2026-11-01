@@ -89,9 +89,10 @@ impl SourceRow<'_> {
     /// for a peer reached over its link rather than a dial of its own
     /// (ADR-0107) — where the download stands on that link.
     pub(in crate::views::transfers) fn source_label(&self) -> String {
-        let address = self
-            .peer()
-            .map_or_else(|| "—".to_string(), crate::words::units::address);
+        let address = self.peer().map_or_else(
+            || crate::words::absent::UNKNOWN.to_string(),
+            crate::words::units::address,
+        );
         let remembered = match self {
             Self::Slot(worker, _) => worker.remembered(),
             Self::HandedOver(_) => false,
@@ -152,15 +153,10 @@ impl SourceRow<'_> {
 
     /// The row's receive rate in bytes per second: the slot's, differenced
     /// from its `bytes_received`; nothing for a source no slot holds.
-    pub(in crate::views::transfers) fn bps(&self, id: DownloadId, state: &UiState) -> f64 {
+    pub(in crate::views::transfers) fn bps(&self, id: DownloadId, state: &UiState) -> Option<f64> {
         match self {
-            Self::Slot(worker, _) => state
-                .rates
-                .source_bps
-                .get(&(id, worker.slot()))
-                .copied()
-                .unwrap_or(0.0),
-            Self::HandedOver(_) | Self::Ended(..) => 0.0,
+            Self::Slot(worker, _) => state.rates.source_bps.get(&(id, worker.slot())).copied(),
+            Self::HandedOver(_) | Self::Ended(..) => None,
         }
     }
 }

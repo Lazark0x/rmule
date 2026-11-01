@@ -29,8 +29,8 @@ pub(super) fn copy_link_reason(row: Option<&DownloadRow>) -> Option<&'static str
         return None;
     }
     match row.and_then(|r| r.metadata.as_ref()) {
-        Some(_) => Some("file name unknown"),
-        None => Some("no metadata yet"),
+        Some(_) => Some(crate::words::transfers::FILE_NAME_UNKNOWN),
+        None => Some(crate::words::transfers::NO_METADATA),
     }
 }
 

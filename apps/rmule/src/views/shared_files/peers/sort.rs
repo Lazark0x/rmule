@@ -7,6 +7,8 @@
 //! rank — a slot-holder first, then the queue in its own order — never by the
 //! words either renders.
 
+use crate::stored_keys as column_keys;
+use crate::words::columns;
 use std::borrow::Cow;
 
 use rmule_primitives::PeerEndpoint;
@@ -85,18 +87,38 @@ impl SortedTable for PeersTable {
     type Row = PeerLine;
     type Column = PeerColumn;
     type Identity = PeerEndpoint;
-    const TABLE: &'static str = "upload_peers";
+    const TABLE: &'static str = column_keys::TABLE_UPLOAD_PEERS;
     const COLUMNS: &'static [ColumnSpec<PeerColumn>] = &[
-        ColumnSpec::new(PeerColumn::Peer, "peer", "Peer", ColumnKind::Text),
+        ColumnSpec::new(
+            PeerColumn::Peer,
+            column_keys::PEER,
+            columns::PEER,
+            ColumnKind::Text,
+        ),
         ColumnSpec::new(
             PeerColumn::Software,
-            "software",
-            "Software",
+            column_keys::SOFTWARE,
+            columns::SOFTWARE,
             ColumnKind::Rank,
         ),
-        ColumnSpec::new(PeerColumn::State, "state", "State", ColumnKind::Rank),
-        ColumnSpec::new(PeerColumn::Speed, "speed", "Speed", ColumnKind::Quantity),
-        ColumnSpec::new(PeerColumn::File, "file", "File", ColumnKind::Text),
+        ColumnSpec::new(
+            PeerColumn::State,
+            column_keys::STATE,
+            columns::STATE,
+            ColumnKind::Rank,
+        ),
+        ColumnSpec::new(
+            PeerColumn::Speed,
+            column_keys::SPEED,
+            columns::SPEED,
+            ColumnKind::Quantity,
+        ),
+        ColumnSpec::new(
+            PeerColumn::File,
+            column_keys::FILE,
+            columns::FILE,
+            ColumnKind::Text,
+        ),
     ];
     const NAME: PeerColumn = PeerColumn::Peer;
 

@@ -21,6 +21,7 @@ use crate::table_sort::{SortedTable, TableSort, header_label, header_widths};
 use crate::theme::Theme;
 use crate::views::off_screen;
 use crate::views::say_gave_way;
+use crate::words::absent;
 use crate::wrap::{clamp_u16, display_width};
 
 pub(crate) use cut::cut_middle;
@@ -62,6 +63,13 @@ impl Cell {
         self
     }
 
+    /// A cell with no value: `word` says which state it is, and a column too
+    /// narrow for it draws the mark, with the word on the Off-screen line.
+    #[must_use]
+    pub(crate) fn absent(word: impl Into<String>, style: Style) -> Self {
+        Self::new(word, style).or_short(absent::SHORT)
+    }
+
     /// Draw `spans` in the cell; `text` stays what the Off-screen line says.
     #[must_use]
     pub(crate) fn drawn(mut self, spans: Vec<Span<'static>>) -> Self {
@@ -95,6 +103,17 @@ impl Cell {
             self.style,
         )]
     }
+}
+
+/// The floor of a column of words: the widest of them, so a language whose
+/// words run longer widens the column rather than cutting them.
+#[must_use]
+pub(crate) fn widest<S: AsRef<str>>(words: &[S]) -> usize {
+    words
+        .iter()
+        .map(|word| display_width(word.as_ref()))
+        .max()
+        .unwrap_or(0)
 }
 
 /// `text` padded with spaces to `width` cells, on the left when `right`.

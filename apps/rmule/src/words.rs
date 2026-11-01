@@ -12,20 +12,27 @@
 //! else cannot reach those surfaces.
 
 pub use rmule_words::{
-    Sentence, download, event, kad, login, os, peer, plain, plural, portmap, reach, serve, severity,
-    software, store, units,
+    Sentence, absent, download, event, kad, login, os, peer, plain, plural, portmap, reach, serve,
+    severity, software, store, units,
 };
 
 pub mod app;
+pub mod columns;
+pub mod forms;
 pub mod front_door;
 pub mod help;
+pub mod hints;
 pub mod labels;
 pub mod log;
+pub mod networks;
 pub mod player;
 pub mod readd;
 pub mod rows;
 pub mod scan;
 pub mod search;
 pub mod server;
+pub mod settings;
+pub mod shared;
 pub mod statistics;
+pub mod transfers;
 pub mod viewport;

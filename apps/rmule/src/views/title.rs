@@ -3,17 +3,16 @@
 //! cut: whole parts give way in a stated order — the hint's, last first, then
 //! the title's, last first — so a narrow pane reads `Servers (3)`, never
 //! `Ser a add…`. A title's parts are its ` · `-separated clauses; a hint's are
-//! its keys, separated by two spaces or by ` · `.
+//! its keys ([`hints::line`]).
 
+use crate::words::hints;
 use crate::wrap::display_width;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
-/// The separator between a title's clauses, and between a ` · ` hint's keys.
+/// The separator between a title's clauses.
 const DOT: &str = " · ";
-/// The separator between the keys of a spaced hint.
-const GAP: &str = "  ";
 
 /// One title or hint, split into the parts that give way whole.
 struct Parts<'a> {
@@ -27,8 +26,7 @@ impl<'a> Parts<'a> {
     }
 
     fn hint(text: &'a str) -> Self {
-        let text = text.trim();
-        Self::split(text, if text.contains(GAP) { GAP } else { DOT })
+        Self::split(text.trim(), hints::GAP)
     }
 
     fn split(text: &'a str, joiner: &'static str) -> Self {

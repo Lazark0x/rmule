@@ -11,6 +11,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::table::Cell;
 use crate::theme::Theme;
+use crate::words::labels;
 use crate::wrap::{clamp_u16, wrap_text, wrapped_lines};
 
 /// What the selected row's `cells` do not show at `widths`, each as `Label
@@ -43,7 +44,7 @@ pub(crate) fn height(body: Rect, parts: &[String]) -> u16 {
 }
 
 fn text(parts: &[String]) -> String {
-    format!("Off-screen: {}", parts.join(" · "))
+    format!("{}{}", labels::OFF_SCREEN, parts.join(" · "))
 }
 
 /// Draw `parts` as the `Off-screen:` line at the bottom of `body`, wrapped

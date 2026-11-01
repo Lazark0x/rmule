@@ -4,8 +4,8 @@
 │   Flaky Mirror           172.16.9.9     ▄│
 │   Static Pin             10.0.0.2       ▼│
 │Off-screen: Port 4661 · Desc Main hub, no │
-│fakes · Ping 42ms · Users 1M · Files 24M ·│
-│Age 12s · Prio Norm · Fail 0 · Static no  │
+│fakes · Ping 42ms · Users 1.2M · Files    │
+│24.5M · Age 12s · Prio Norm · Fail 0 ·    │
 │Health: answering — its last… came 12s ago│
 └ 9 columns not shown ────────────── 1 / 4 ┘
 ┌ Log (0) ───────────────────────── z zoom ┐

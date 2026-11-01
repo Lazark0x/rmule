@@ -38,13 +38,16 @@ fn each_ping_state_renders_its_own_cell_and_counts_and_age_follow_it() {
     ] {
         assert_eq!(format_ping(&ping), cell);
         assert!(
-            cell.chars().count() <= SERVER_COLS[4],
+            cell.chars().count() <= server_floors()[4],
             "{cell} overflows Ping"
         );
         assert_eq!(count_cell(None, &ping), count);
         assert_eq!(count_cell(Some(431_004), &ping), "431k");
         let age = age_cell(None, &ping);
-        assert!(age.chars().count() <= SERVER_COLS[7], "{age} overflows Age");
+        assert!(
+            age.chars().count() <= server_floors()[7],
+            "{age} overflows Age"
+        );
         if ping.measured().is_none() {
             assert_eq!(age, cell, "an undated row's age says why, as its ping");
         }
@@ -67,14 +70,10 @@ fn dynamics_render_as_dashes_until_a_server_reports_them() {
     ] {
         assert_eq!(format_age(Duration::from_secs(secs)), cell);
     }
-    assert_eq!(short_count(None), "—");
-    assert_eq!(short_count(Some(0)), "0", "zero users is a measurement");
-    assert_eq!(short_count(Some(9_999)), "9999");
-    assert_eq!(short_count(Some(431_004)), "431k");
-    assert_eq!(short_count(Some(24_507_112)), "24M");
-    for count in [0u32, 9_999, 10_000, 999_999, 1_000_000, u32::MAX] {
+    assert_eq!(short_count(0), "0", "zero users is a measurement");
+    for count in [0, 9_999, 10_000, 999_999, 1_000_000, u64::from(u32::MAX)] {
         assert!(
-            short_count(Some(count)).chars().count() <= 5,
+            short_count(count).chars().count() <= 5,
             "{count} overflows the cell"
         );
     }

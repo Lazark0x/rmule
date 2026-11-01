@@ -3,7 +3,7 @@
 │Asks: nobody yet; a search waits for a server or Kad                                    │
 │Filters: none   o edit                                                                  │
 └────────────────────────────────────────────────────────────────────────────────────────┘
-[big buck bunny · —]
+[big buck bunny · 0]
 ┌ Results · Not sent ─────────────────────────────────────────────── [ ] search  x close ┐
 │                                                                                        │
 │           not sent — the engine has stopped. The query is still in the input.          │

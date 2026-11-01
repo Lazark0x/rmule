@@ -20,10 +20,12 @@ use rmule_core::{ServerHealth, ServerPriority};
 use super::{NetworksView, Pane};
 use crate::row_selection::selection_style;
 use crate::state::{Ed2kConnection, UiState, server_label};
-use crate::table::{self, Cell, Rows, Table, cut_middle};
+use crate::table::{self, Cell, Rows, Table, cut_middle, widest};
 use crate::theme::Theme;
-use crate::views::short_count;
-use crate::words::server::DetailContext;
+use crate::words::server::{DetailContext, UNMEASURED_PING_WORDS};
+use crate::words::units::short_count;
+use crate::words::{absent, hints, networks as words};
+use crate::wrap::display_width;
 
 /// Floors of the eleven server columns — Name · Address · Port · Description
 /// · Ping · Users · Files · Age · Prio · Fail · Static.
@@ -31,9 +33,20 @@ use crate::words::server::DetailContext;
 /// Name and Description are **greedy** and share what the fixed columns leave
 /// over. Name's floor is the room it keeps before other columns give way to
 /// it, Description's the narrowest worth showing. Address's floor fits the
-/// widest IPv4 (`255.255.255.255`) whole.
-const SERVER_COLS: [usize; 11] = [20, 15, 5, 16, 5, 5, 5, 4, 4, 4, 6];
-/// The greedy pair's indices in [`SERVER_COLS`].
+/// widest IPv4 (`255.255.255.255`) whole; the rest are measured from what they
+/// draw.
+fn server_floors() -> [usize; 11] {
+    let priority = widest(&[words::PRIO_LOW, words::PRIO_NORMAL, words::PRIO_HIGH]);
+    let flag = widest(&[words::YES, words::NO]);
+    let unmeasured = widest(&UNMEASURED_PING_WORDS);
+    let age = display_width(&words::age(WIDEST_AGE_SECS)).max(unmeasured);
+    let ping = display_width(&words::ping_ms(999)).max(unmeasured);
+    let count = unmeasured.max(5);
+    [20, 15, 5, 16, ping, count, count, age, priority, 4, flag]
+}
+/// A hundred days less a second: the age with the most digits a cell shows.
+const WIDEST_AGE_SECS: u64 = 8_639_999;
+/// The greedy pair's indices in the floors.
 const SERVER_NAME_COL: usize = 0;
 const SERVER_DESC_COL: usize = 3;
 
@@ -52,7 +65,7 @@ const SERVER_GUTTER_W: usize = 3;
 pub(super) fn row_name(row: &ServerDiagnostics) -> String {
     let name = row.server.name.to_display_string();
     if name.trim().is_empty() {
-        "—".to_string()
+        absent::NO_NAME.to_string()
     } else {
         name
     }
@@ -61,9 +74,9 @@ pub(super) fn row_name(row: &ServerDiagnostics) -> String {
 /// aMule's `ST_PREFERENCE` in four columns.
 pub(super) fn priority_word(priority: ServerPriority) -> &'static str {
     match priority {
-        ServerPriority::Low => "Low",
-        ServerPriority::Normal => "Norm",
-        ServerPriority::High => "High",
+        ServerPriority::Low => words::PRIO_LOW,
+        ServerPriority::Normal => words::PRIO_NORMAL,
+        ServerPriority::High => words::PRIO_HIGH,
     }
 }
 
@@ -88,14 +101,7 @@ fn age_cell(age: Option<Duration>, ping: &PingState) -> String {
 /// How long ago a server last answered, three cells: seconds under a minute,
 /// then minutes, hours under two days, days under a hundred, then weeks.
 fn format_age(age: Duration) -> String {
-    let secs = age.as_secs();
-    match secs {
-        0..60 => format!("{secs}s"),
-        60..3_600 => format!("{}m", secs / 60),
-        3_600..172_800 => format!("{}h", secs / 3_600),
-        172_800..8_640_000 => format!("{}d", secs / 86_400),
-        _ => format!("{}w", secs / 604_800),
-    }
+    words::age(age.as_secs())
 }
 
 /// What the detail words need beyond the row.
@@ -122,8 +128,8 @@ pub(super) fn detail_sentences(row: &ServerDiagnostics, state: &UiState) -> [Str
 /// trip, or the word for why there is none.
 fn format_ping(ping: &PingState) -> String {
     match ping.measured() {
-        Some(rtt) if rtt.as_millis() < 1000 => format!("{}ms", rtt.as_millis()),
-        Some(rtt) => format!("{:.1}s", rtt.as_secs_f64()),
+        Some(rtt) if rtt.as_millis() < 1000 => words::ping_ms(rtt.as_millis()),
+        Some(rtt) => words::ping_s(rtt.as_secs_f64()),
         None => crate::words::server::unmeasured_ping_word(ping)
             .unwrap_or_default()
             .to_string(),
@@ -135,7 +141,7 @@ fn format_ping(ping: &PingState) -> String {
 fn count_cell(count: Option<u32>, ping: &PingState) -> String {
     count.map_or_else(
         || crate::words::server::unreported_count_word(ping).to_string(),
-        |count| short_count(Some(count)),
+        |count| short_count(u64::from(count)),
     )
 }
 
@@ -154,20 +160,13 @@ impl NetworksView {
         let connected = state.connected_server.as_ref();
         let title = match (&state.ed2k, connected) {
             (Ed2kConnection::Connected { client_id }, server) => {
-                let class = if client_id.is_high_id() {
-                    "HighID"
-                } else {
-                    "LowID"
-                };
                 let server = server.map_or_else(String::new, server_label);
-                format!(" Servers ({}) · {server} {class} ", rows.len())
+                words::servers_connected(rows.len(), &server, client_id.is_high_id())
             }
-            (Ed2kConnection::Connecting { server }, _) => format!(
-                " Servers ({}) · {} ",
-                rows.len(),
-                crate::words::server::dialling(server)
-            ),
-            _ => format!(" Servers ({}) · not connected ", rows.len()),
+            (Ed2kConnection::Connecting { server }, _) => {
+                words::servers_title(rows.len(), &crate::words::server::dialling(server))
+            }
+            _ => words::servers_off(rows.len()),
         };
         let title = if self.tags.is_empty() {
             title
@@ -181,24 +180,36 @@ impl NetworksView {
         // `c` is hinted only where it can act (No dead UI): a selected row.
         let toggle = match self.selected(state) {
             Some(row) if crate::views::is_remaking(state, &row.server.endpoint) => {
-                "c stop reconnecting · "
+                Some(hints::STOP_RECONNECTING)
             }
             Some(row) if crate::views::is_dialling(state, &row.server.endpoint) => {
-                "c stop connecting · "
+                Some(hints::STOP_CONNECTING)
             }
-            Some(row) if crate::views::is_ours(state, &row.server.endpoint) => "c disconnect · ",
-            Some(_) => "c connect · ",
-            None => "",
+            Some(row) if crate::views::is_ours(state, &row.server.endpoint) => {
+                Some(hints::DISCONNECT)
+            }
+            Some(_) => Some(hints::CONNECT),
+            None => None,
         };
         let hint = if state.server_list_updating {
-            " updating… ".to_string()
+            words::UPDATING.to_string()
         } else if rows.is_empty() {
-            " a add · U update · m menu ".to_string()
+            hints::line(&[hints::ADD_SERVER, hints::UPDATE_LIST, hints::MENU])
         } else {
-            format!(
-                " {toggle}m menu · / filter · a add · Tab log · d details · U update · \
-                 Space tag · s/S sort · z zoom "
-            )
+            let mut keys: Vec<_> = toggle.into_iter().collect();
+            keys.extend([
+                hints::MENU,
+                hints::FILTER,
+                hints::ADD_SERVER,
+                hints::TO_LOG,
+                hints::DETAILS,
+                hints::UPDATE_LIST,
+                hints::TAG,
+                hints::SORT,
+                hints::REVERSE,
+                hints::ZOOM,
+            ]);
+            hints::line(&keys)
         };
         let block = crate::views::title::titled(
             theme.pane(focused),
@@ -228,7 +239,7 @@ impl NetworksView {
         };
         let table = Table::of(
             &self.sort,
-            &SERVER_COLS,
+            &server_floors(),
             SERVER_NAME_COL,
             &SERVER_GIVE_WAY,
             theme.header(),
@@ -238,7 +249,7 @@ impl NetworksView {
         .empty(if self.filter.shown() {
             crate::words::rows::NO_MATCH
         } else {
-            "no servers — press a to add one, or U to update the list from a URL"
+            words::NO_SERVERS
         });
         let rows = Rows {
             count: rows.len(),
@@ -335,7 +346,7 @@ fn server_cells(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Cell
             if has_description {
                 description
             } else {
-                "—".to_string()
+                absent::NONE.to_string()
             },
             known(has_description),
         ),
@@ -361,7 +372,11 @@ fn server_cells(row: &ServerDiagnostics, base: Style, theme: &Theme) -> Vec<Cell
         // A known no, not an unknown: aMule's Yes/No
         // (`ServerListCtrl.cpp:334`), never a dash.
         Cell::new(
-            if row.server.is_static { "yes" } else { "no" },
+            if row.server.is_static {
+                words::YES
+            } else {
+                words::NO
+            },
             known(row.server.is_static),
         ),
     ]

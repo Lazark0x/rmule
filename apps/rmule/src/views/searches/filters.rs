@@ -18,6 +18,8 @@ use crate::form::{Field, Form, FormKey};
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::words::search::{FilterError, SizeFault};
+use crate::words::units::size_unit;
+use crate::words::{forms, hints};
 use crate::wrap::wrap_text;
 
 /// The parsed form of [`Filters`] — what actually reaches the query.
@@ -118,9 +120,10 @@ impl Filters {
         Ok(query)
     }
 
-    /// The idle one-liner: only the constraints that are actually set, so an
-    /// unfiltered search says so in one word instead of five empty slots.
-    fn summary(&self) -> String {
+    /// The idle one-liner: only the constraints that are actually set, or
+    /// nothing, so an unfiltered search says so in one word instead of five
+    /// empty slots.
+    fn summary(&self) -> Option<String> {
         let set = |field: usize| {
             let text = self.text(field);
             (!text.is_empty()).then_some(text)
@@ -130,17 +133,13 @@ impl Filters {
                 .map(|class| crate::words::search::file_class_words(class).to_string()),
             set(Self::MIN_SIZE).map(|text| format!("≥{}", size_words(text))),
             set(Self::MAX_SIZE).map(|text| format!("≤{}", size_words(text))),
-            set(Self::MIN_SOURCES).map(|text| format!("≥{text} src")),
+            set(Self::MIN_SOURCES).map(|text| forms::min_sources_summary(&text)),
             set(Self::EXTENSION).map(|text| format!(".{}", text.trim_start_matches('.'))),
         ]
         .into_iter()
         .flatten()
         .collect();
-        if parts.is_empty() {
-            "none".to_string()
-        } else {
-            parts.join(" · ")
-        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
     }
 }
 
@@ -148,7 +147,7 @@ impl Default for Filters {
     fn default() -> Self {
         // "Any" leads the class selector, exactly where aMule's dropdown puts
         // it, so index 0 is always "no constraint".
-        let mut classes = vec!["Any"];
+        let mut classes = vec![forms::ANY_CLASS];
         classes.extend(
             Ed2kFileClass::ALL
                 .iter()
@@ -156,11 +155,11 @@ impl Default for Filters {
         );
         Self {
             form: Form::new(vec![
-                Field::choice("Type", classes, 0),
-                Field::text("Min size", "").with_placeholder("any (e.g. 700 MB)"),
-                Field::text("Max size", "").with_placeholder("any (e.g. 700 MB)"),
-                Field::text("Min sources", "").with_placeholder("any (e.g. 10)"),
-                Field::text("Extension", "").with_placeholder("any (e.g. avi)"),
+                Field::choice(forms::FILTER_TYPE, classes, 0),
+                Field::text(forms::MIN_SIZE, "").with_placeholder(forms::SIZE_HINT),
+                Field::text(forms::MAX_SIZE, "").with_placeholder(forms::SIZE_HINT),
+                Field::text(forms::MIN_SOURCES, "").with_placeholder(forms::SOURCES_HINT),
+                Field::text(forms::EXTENSION, "").with_placeholder(forms::EXTENSION_HINT),
             ]),
         }
     }
@@ -199,13 +198,9 @@ fn parse_size(text: &str) -> Result<Option<u64>, SizeFault> {
         .find(|c: char| !c.is_ascii_digit() && c != '.')
         .unwrap_or(text.len());
     let (number, unit) = text.split_at(split);
-    let multiplier: u64 = match unit.trim().to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" => 1024,
-        "m" | "mb" => 1024 * 1024,
-        "g" | "gb" => 1024 * 1024 * 1024,
-        "t" | "tb" => 1024_u64.pow(4),
-        other => return Err(SizeFault::UnknownUnit(other.to_string())),
+    let unit = unit.trim().to_lowercase();
+    let Some(multiplier) = size_unit(&unit) else {
+        return Err(SizeFault::UnknownUnit(unit));
     };
     let value: f64 = number
         .parse()
@@ -268,15 +263,16 @@ impl SearchesView {
         theme: &Theme,
     ) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
         if !self.filters_open {
-            let mut spans = vec![Span::styled("Filters: ", theme.dim_text())];
-            let summary = self.filters.summary();
-            let style = if summary == "none" {
-                theme.dim_text()
-            } else {
-                Style::new().fg(theme.fg)
-            };
-            spans.push(Span::styled(summary, style));
-            spans.push(Span::styled("   o edit", theme.dim_text()));
+            let mut spans = vec![Span::styled(forms::FILTERS, theme.dim_text())];
+            spans.push(self.filters.summary().map_or_else(
+                || Span::styled(forms::NO_FILTERS, theme.dim_text()),
+                |summary| Span::styled(summary, Style::new().fg(theme.fg)),
+            ));
+            spans.push(Span::raw(hints::GAP));
+            spans.push(Span::styled(
+                hints::line(&[hints::EDIT_FILTERS]),
+                theme.dim_text(),
+            ));
             let line = Line::from(spans);
             if line.width() <= width {
                 return (vec![line], None);

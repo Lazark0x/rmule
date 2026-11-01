@@ -14,11 +14,11 @@
 ││██████████▁▅██████████▁▅██████████▁▅██████████▁▅██████████▁▅██████████▁▅████││
 │└ 1m ago ─────────────────────────────────────────────────────────────── now ┘│
 │┌ Session ────────────────────────────┐┌ Activity ───────────────────────────┐│
-││Downloaded   19.7 MB                 ││Downloads    0 (0 active)            ││
-││Uploaded     3.7 MB                  ││Uploads      0 active · 0 queued     ││
-││Down now     225.0 KB/s              ││Peer hellos  0 refused               ││
-││Up now       40.0 KB/s               ││Shared files 0                       ││
-││Kad in       —                       ││eD2k         not connected           ││
-││Kad out      —                       ││Kad          off                     ││
+││Downloaded 19.7 MB                   ││Downloads    0 (0 active)            ││
+││Uploaded   3.7 MB                    ││Uploads      0 active · 0 queued     ││
+││Down now   225.0 KB/s                ││Peer hellos  0 refused               ││
+││Up now     40.0 KB/s                 ││Shared files 0                       ││
+││Kad in     not running               ││eD2k         not connected           ││
+││Kad out    not running               ││Kad          off                     ││
 │└─────────────────────────────────────┘└─────────────────────────────────────┘│
-└ ▼ 225.0 KB/s ▲  40.0 KB/s │ ●eD2k off ●Kad: off │ Users: — · Files: —─? help ┘
+└ ▼ 225.0 KB/s ▲  40.0 KB/s │ ●eD2k off ●Kad: off───────────────────────? help ┘

@@ -18,6 +18,7 @@ use crate::form::ModalLines;
 use crate::row_selection::viewport::{BAR_W, Viewport, split};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
+use crate::words::hints::{self, Hint};
 use crate::wrap::{clamp_u16, wrapped_lines};
 
 /// What a modal's body lays out for one width.
@@ -300,6 +301,22 @@ pub(crate) struct Question<'a> {
 
 /// The widest a question's panel is drawn, room for a file's name on a line.
 const QUESTION_W: u16 = 64;
+
+/// A form's key legend: each key in the accent, what it does after it.
+pub(crate) fn legend(keys: &[Hint], theme: &Theme) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw(hints::GAP));
+        }
+        spans.push(Span::styled(key.key, Style::new().fg(theme.accent)));
+        spans.push(Span::styled(
+            format!(" {}", key.does),
+            Style::new().fg(theme.fg),
+        ));
+    }
+    Line::from(spans)
+}
 
 /// Clear a panel centered in `area` and ask `question`, with the one answer
 /// pair every confirm has: `y yes`, `n no`. Scrolled by `viewport` when the

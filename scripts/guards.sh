@@ -40,6 +40,12 @@
 #              private tree, in any public tracked file
 #   sentence   a `Sentence` made outside a words module: rmule-words, or the
 #              TUI's own words (apps/rmule/src/words.rs and words/)
+#   drawnword  a string literal holding a letter in a module of the TUI that
+#              draws (scripts/drawn-words.py names them): what the operator
+#              reads comes from a words module, and a stored key from
+#              apps/rmule/src/stored_keys.rs
+#   plural     a word chosen by `== 1` or a `1 =>` arm in a words module, where
+#              rmule_words::plural is the one way
 #   readme     a parity figure README states that docs/protocol/parity/count.py
 #              does not count
 #   refconst   a constant declared under an eMule symbol name whose value the
@@ -771,6 +777,27 @@ while IFS= read -r f; do
 done <<EOF
 $(rs_files)
 EOF
+
+# 14b. drawnword, plural — the words a module draws live in a words module, and
+# a count picks its form through the one seam. scripts/drawn-words.py lexes the
+# source, so comments, test items, attributes and `tracing::` calls are read
+# past; it names the modules it reaches. It has no allowance of its own: a
+# word it finds moves.
+words_found="$(python3 scripts/drawn-words.py 2>&1)"
+words_status=$?
+if [ "$words_status" -ne 0 ]; then
+    report drawnword scripts/drawn-words.py "the check did not run (exit $words_status)"
+else
+    while IFS="$(printf '\t')" read -r check path lines; do
+        [ -n "$check" ] || continue
+        case "$check" in
+        drawnword) report drawnword "$path" "word at line(s) $lines — move it to a words module" ;;
+        plural) report plural "$path" "form chosen by a count at line(s) $lines — say it with rmule_words::plural" ;;
+        esac
+    done <<EOF
+$words_found
+EOF
+fi
 
 # 15. refconst — a constant rmule declares under eMule's own symbol name
 # carries eMule's value (ADR-0082). The Reference Source is a pinned clone no

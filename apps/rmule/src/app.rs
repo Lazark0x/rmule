@@ -600,11 +600,7 @@ mod tests {
         };
         let dark = glyphs(Theme::default_dark());
         for theme in [Theme::light(), Theme::fallback_256()] {
-            assert_eq!(
-                glyphs(theme),
-                dark,
-                "theme changed glyphs, not just styles"
-            );
+            assert_eq!(glyphs(theme), dark, "theme changed glyphs, not just styles");
         }
     }
 

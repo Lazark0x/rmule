@@ -1,4 +1,4 @@
-┌ Servers (2) · not connected ──────── c connect · m menu · / filter · a add ┐
+┌ Servers (2) · not connected ── c connect  m menu  / filter  a add  Tab log ┐
 │   Name ▲                  Address          Port  Ping Users Files  Age Prio│
 │▸  Der Grosse Deut…er Zwei 198.51.100.200   4661  soon  120k  soon soon Norm│
 │   Second                  10.0.0.5         4661  soon  soon  soon soon Norm│
@@ -10,12 +10,12 @@
 └ too narrow to show: Desc, Fail, Static ───────────────────────────── 1 / 2 ┘
 ┌ Log (0) ─────────────────── z zoom ┐┌ Kad ──────────────────────── K start ┐
 │nothing has happened yet            ││● Kad: off                            │
-│                                    ││Joined    — (node not started)        │
-│                                    ││Contacts  —                           │
-│                                    ││Firewall  — (never run)               │
-│                                    ││UDP       — (never run)               │
-│                                    ││Keywords  —                           │
-│                                    ││Node id   —                           │
-│                                    ││Received  —                           │
-│                                    ││Sent      —                           │
+│                                    ││Joined   not running                  │
+│                                    ││Contacts not running                  │
+│                                    ││Firewall not running                  │
+│                                    ││UDP      not running                  │
+│                                    ││Keywords not running                  │
+│                                    ││Node id  not running                  │
+│                                    ││Received not running                  │
+│                                    ││Sent     not running                  │
 └────────────────────────────────────┘└──────────────────────────────────────┘

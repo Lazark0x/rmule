@@ -10,9 +10,9 @@
 │7m00s · Src 8 (1)                                           │
 └ too narrow to show: Size, Done, Speed, ETA, Src ──── 1 / 3 ┘
 ┌ Sources · bunny.mp4 ────── Tab downloads  / filter  s sort ┐
-│  Source ▲                   Software       Phase           │
-│▸ 10.0.0.1:4662              aMule v2.3.3   recv p4         │
-│  10.0.0.2:4662 · remembered —              queued #3       │
+│  Source ▲                   Software           Phase       │
+│▸ 10.0.0.1:4662              aMule v2.3.3       recv p4     │
+│  10.0.0.2:4662 · remembered unknown            queued #3   │
 │                                                            │
 │Off-screen: Speed 98.7 KB/s                                 │
 └ too narrow to show: Speed ────────────────────────── 1 / 2 ┘

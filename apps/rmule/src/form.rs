@@ -45,11 +45,6 @@ mod path;
 
 pub(crate) use path::complete_directory;
 
-/// Label column every form's fields align on — the unification of the two
-/// widths the views had drifted to (Networks 10, Searches 11). Sized to the
-/// widest label any of them carries (`Download dir`, `Nodes.dat URL`).
-pub(crate) const LABEL_W: usize = 12;
-
 /// A focused selector wears its cycle arrows: there is no insertion point to
 /// mark on something you step.
 const ARROWS: &str = "  ←→";
@@ -58,13 +53,6 @@ const ARROWS: &str = "  ←→";
 /// past the end of a text. Reserved on *every* row, so entering an editor
 /// cannot re-wrap a value that fits.
 const MARKER_W: usize = 4; // `ARROWS`
-
-/// The narrowest a form renders without overrunning its pane: the label gutter
-/// (a space either side of [`LABEL_W`]), the marker reserve, and one column of
-/// value. Below this the *labels* are what would have to be cut, and a
-/// truncated label names nothing — so the floor is stated rather than silently
-/// crossed. It is far under the 80-column terminal this UI supports.
-pub(crate) const MIN_WIDTH: usize = LABEL_W + 2 + MARKER_W + 1;
 
 /// What a field holds.
 pub(crate) enum FieldKind {
@@ -390,7 +378,32 @@ impl Form {
             .map(|field| display_width(field.value().0))
             .max()
             .unwrap_or(0);
-        LABEL_W + 2 + MARKER_W + widest
+        self.gutter() + MARKER_W + widest
+    }
+
+    /// The label column: its widest label, measured, so a word of any length
+    /// holds it.
+    fn label_w(&self) -> usize {
+        crate::table::widest(
+            &self
+                .fields
+                .iter()
+                .map(|field| field.label)
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// The label column with a space either side of it.
+    fn gutter(&self) -> usize {
+        self.label_w() + 2
+    }
+
+    /// The narrowest this form renders without overrunning its pane: the label
+    /// gutter, the marker reserve, and one column of value. Below this the
+    /// *labels* are what would have to be cut, and a truncated label names
+    /// nothing, so the floor is stated rather than silently crossed.
+    pub fn min_width(&self) -> usize {
+        self.gutter() + MARKER_W + 1
     }
 
     /// Is the focused field a selector (nothing to type into)?
@@ -553,12 +566,13 @@ impl Form {
     /// once entered) passes `false` and still shows which row the cursor is
     /// on.
     ///
-    /// No line exceeds `width` at or above [`MIN_WIDTH`]; values, notes and
+    /// No line exceeds `width` at or above [`Form::min_width`]; values, notes and
     /// the error all wrap rather than clip.
     pub fn render(&self, width: usize, theme: &Theme, caret: bool) -> Rendered {
-        // The label span is `" {label:<LABEL_W$} "` — one column of padding on
-        // each side of the column itself.
-        let gutter = LABEL_W + 2;
+        // The label span is one column of padding on each side of the column
+        // itself.
+        let label_w = self.label_w();
+        let gutter = self.gutter();
         let value_w = width.saturating_sub(gutter + MARKER_W).max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut rows: Vec<Option<usize>> = Vec::new();
@@ -593,7 +607,7 @@ impl Form {
                 Style::new().fg(theme.fg)
             };
             let start = lines.len();
-            let label = Span::styled(format!(" {:<LABEL_W$} ", field.label), label_style);
+            let label = Span::styled(format!(" {:<label_w$} ", field.label), label_style);
             let mut field_lines = match &field.kind {
                 FieldKind::Text { edit, .. } if focused && caret && !edit.is_empty() => {
                     let shown = edit.show(value_w + MARKER_W, value_style, theme.dim_text());
@@ -722,7 +736,10 @@ pub(crate) fn validate_port(port: &str) -> Result<u16, Sentence> {
 
 /// An `http`/`https` URL, the only two schemes anything here fetches over.
 pub(crate) fn validate_url(url: &str) -> Result<&str, Sentence> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if crate::words::forms::URL_SCHEMES
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
+    {
         Ok(url)
     } else {
         Err(words::URL_SCHEME)

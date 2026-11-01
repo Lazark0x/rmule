@@ -286,8 +286,14 @@ pub const fn role_words(role: DirectoryRole) -> Option<&'static str> {
 /// not news.
 fn scan_receipt(summary: &ScanSummary) -> String {
     let said: Vec<String> = [
-        (summary.hashed, Plural::new("{n} file added", "{n} files added")),
-        (summary.carried, Plural::new("{n} file moved", "{n} files moved")),
+        (
+            summary.hashed,
+            Plural::new("{n} file added", "{n} files added"),
+        ),
+        (
+            summary.carried,
+            Plural::new("{n} file moved", "{n} files moved"),
+        ),
         (
             summary.dropped,
             Plural::new("{n} file no longer shared", "{n} files no longer shared"),

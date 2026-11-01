@@ -15,11 +15,11 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, RenderDirection, Sparkline};
 
-use crate::rates::format_rate;
 use crate::state::{RateWindow, Rates, UiState};
 use crate::theme::Theme;
 use crate::views::title::titled;
 use crate::words::statistics as words;
+use crate::words::units::rate;
 use crate::wrap::{display_width, wrapped_lines};
 
 /// Which meter a graph plots. Both series ride the *same* history column, so
@@ -35,8 +35,8 @@ impl Series {
     /// immediate.
     const fn label(self) -> &'static str {
         match self {
-            Self::Down => "▼ Download",
-            Self::Up => "▲ Upload",
+            Self::Down => words::GRAPH_DOWN,
+            Self::Up => words::GRAPH_UP,
         }
     }
 
@@ -184,15 +184,12 @@ fn graph_title(
     let Some(now_bps) = now_bps else {
         return format!(" {label} ");
     };
-    let full = format!(
-        " {label} · now {} · {tallest} {} ",
-        format_rate(now_bps),
-        format_rate(peak_bps)
-    );
+    let now = rate(now_bps);
+    let full = words::graph_title_tallest(label, &now, tallest, &rate(peak_bps));
     if display_width(&full) <= band {
         return full;
     }
-    let short = format!(" {label} · now {} ", format_rate(now_bps));
+    let short = words::graph_title(label, &now);
     if display_width(&short) <= band {
         return short;
     }

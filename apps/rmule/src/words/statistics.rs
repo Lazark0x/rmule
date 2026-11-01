@@ -88,3 +88,83 @@ mod tests {
         assert_eq!(reads(2 * 86_400 + 3 * 3_600 + 59), "· up 2d 3h ");
     }
 }
+
+/// The session pane's title.
+pub const SESSION_TITLE: &str = " Session ";
+/// The activity pane's title.
+pub const ACTIVITY_TITLE: &str = " Activity ";
+/// A stopped core, on the session pane's title.
+pub const ENGINE_STOPPED: &str = "· engine stopped ";
+/// The bytes received.
+pub const DOWNLOADED: &str = "Downloaded";
+/// The bytes sent.
+pub const UPLOADED: &str = "Uploaded";
+/// The receive rate.
+pub const DOWN_NOW: &str = "Down now";
+/// The send rate.
+pub const UP_NOW: &str = "Up now";
+/// Kad datagrams in.
+pub const KAD_IN: &str = "Kad in";
+/// Kad datagrams out.
+pub const KAD_OUT: &str = "Kad out";
+/// The eD2k row.
+pub const ED2K: &str = "eD2k";
+/// The Kad row.
+pub const KAD: &str = "Kad";
+/// The downloads row.
+pub const DOWNLOADS: &str = "Downloads";
+/// The uploads row.
+pub const UPLOADS: &str = "Uploads";
+/// The shared files row.
+pub const SHARED_FILES: &str = "Shared files";
+/// The eD2k row while a dial is out.
+pub const CONNECTING: &str = "connecting…";
+/// The eD2k row with no session.
+pub const NOT_CONNECTED: &str = "not connected";
+/// The Kad row with no node.
+pub const KAD_OFF: &str = "off";
+/// The Kad row with a node someone answered.
+pub const KAD_JOINED: &str = "on · joined";
+/// The Kad row with a node nobody answered yet.
+pub const KAD_NO_CONTACT: &str = "on · no contact";
+/// The download graph's label.
+pub const GRAPH_DOWN: &str = "▼ Download";
+/// The upload graph's label.
+pub const GRAPH_UP: &str = "▲ Upload";
+
+/// The eD2k row with a session.
+#[must_use]
+pub fn connected(high_id: bool) -> String {
+    let class = if high_id { "HighID" } else { "LowID" };
+    format!("connected ({class})")
+}
+
+/// The downloads row.
+#[must_use]
+pub fn downloads_row(total: usize, active: usize) -> String {
+    format!("{total} ({active} active)")
+}
+
+/// The uploads row.
+#[must_use]
+pub fn uploads_row(active: usize, queued: usize) -> String {
+    format!("{active} active · {queued} queued")
+}
+
+/// A datagram rate.
+#[must_use]
+pub fn datagrams_per_second(bps: f64) -> String {
+    format!("{}/s", crate::words::units::decimal(bps))
+}
+
+/// A graph's title, as much of it as the band holds.
+#[must_use]
+pub fn graph_title(label: &str, now: &str) -> String {
+    format!(" {label} · now {now} ")
+}
+
+/// A graph's title with its tallest column.
+#[must_use]
+pub fn graph_title_tallest(label: &str, now: &str, tallest: &str, peak: &str) -> String {
+    format!(" {label} · now {now} · {tallest} {peak} ")
+}
