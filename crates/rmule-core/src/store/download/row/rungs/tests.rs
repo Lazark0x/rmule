@@ -1,5 +1,7 @@
 //! The rungs' evidence: an older store climbs to today's rows.
 
+use std::path::Path;
+
 use rmule_primitives::{Ed2kText, FileHash, ServerEndpoint};
 use rmule_store::{Ladder, Schema};
 
