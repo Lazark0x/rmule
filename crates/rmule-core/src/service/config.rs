@@ -79,10 +79,6 @@ pub struct CoreConfig {
     /// list, its re-ranking and the connections it holds small, which a node
     /// serving a handful of slots has no use to exceed.
     pub max_upload_queue_len: u16,
-    /// How often the serve activity re-ranks its idle waiters so a queued
-    /// peer's reported `OP_QUEUERANKING` tracks elapsed wait and any credit it
-    /// gained while waiting.
-    pub queue_rerank_interval: Duration,
     /// The **Search Quiet Timeout**: how long a search stays open after the
     /// last accepted result batch — counted only once every leg (server, global
     /// sweep, Kad walk) has settled — before core reports
@@ -152,26 +148,10 @@ pub struct CoreConfig {
     /// every server, aMule's ten passes of a 100 ms `Process` and eMule's
     /// `UDPSEARCHSPEED`.
     pub global_source_tick: Duration,
-    /// The status-ping sweep's first-contact pace (ADR-0052): a
-    /// server never probed this run — a fresh import, or every row at start —
-    /// is probed at one per tick, 250 ms (eMuleAI's `UDPSEARCHSPEED`, the
-    /// family's fastest shipped server-UDP fan-out).
-    pub status_ping_first_contact_tick: Duration,
     /// The status-ping sweep's refresh pace and start delay (ADR-0052): at most
     /// one refresh `0x96` per tick across the list (aMule `UDPSERVERSTATTIME`,
     /// 5 s).
     pub status_ping_tick: Duration,
-    /// The per-server status re-ask window (ADR-0052): 4.5 h, aMule's
-    /// `UDPSERVSTATREASKTIME`. A server pinged within it, less up to an hour
-    /// of jitter, is walked past, not re-asked.
-    pub status_ping_reask: Duration,
-    /// The least time between two pings of one server when its UDP key has
-    /// expired (ADR-0052): 20 min, aMule's `UDPSERVSTATMINREASKTIME`, the
-    /// shortest interval the family ever re-pings one server at.
-    pub status_ping_key_floor: Duration,
-    /// The crypt-ping reply grace before a plain fallback (aMule's 20 s
-    /// `CryptPingReplyPending` window, ADR-0046).
-    pub crypt_ping_grace: Duration,
     /// How often the Kad source discovery task (ADR-0043) scans the active
     /// downloads and shared files for due work. Bounds first-ask and
     /// first-publish latency; the protocol cadences below gate actual sends.
@@ -180,31 +160,9 @@ pub struct CoreConfig {
     /// aMule `Constants.h`: 1 hour), the unit of the **Ask Clock**: the Nth
     /// ask waits N of these, up to 7.
     pub kad_reask_interval: Duration,
-    /// How often the serve task purges waiters that stopped reasking or whose
-    /// file was unshared (aMule `CUploadQueue::Process`) — the
-    /// disconnected-standing reap cadence (ADR-0057).
-    pub upload_purge_interval: Duration,
-    /// A waiting peer's reask-silence deadline before purge (aMule
-    /// `MAX_PURGEQUEUETIME`, 1 h): disconnected standing survives only while
-    /// the reask heartbeat keeps beating (ADR-0057).
-    pub upload_reask_purge_after: Duration,
     /// How long a shared directory that is not there waits between looks for
     /// its return (ADR-0101, "Missing"): one `stat` a minute.
     pub missing_directory_look: Duration,
-    /// Whether the peer-TCP surfaces consult the IP filter (aMule
-    /// `IpFilterClients`, default **true** — aMule filters out of the box,
-    /// with an empty table until a dat file exists). Gates the accept, dial,
-    /// and source-ingest checks; with no [`CoreBuilder::ip_filter_dir`](crate::CoreBuilder::ip_filter_dir) the
-    /// table is empty and nothing is ever filtered regardless.
-    pub ip_filter_clients: bool,
-    /// Whether the server surfaces consult the IP filter (aMule
-    /// `IpFilterServers`, default **true**): the server dial and the
-    /// global-source server-list install.
-    pub ip_filter_servers: bool,
-    /// The IP filter access-level threshold (aMule `FilterLevel`, default
-    /// 127): only ranges whose level is **strictly below** this block, and
-    /// the cut is applied when the table is built from the dat files.
-    pub ip_filter_level: u8,
     /// The UDP port the **server-UDP** socket binds (the global source
     /// sweep, status pings and the server description ask). Unlike the
     /// client-UDP port ([`CoreSettings::udp_port`](crate::CoreSettings::udp_port))
@@ -291,7 +249,6 @@ impl Default for CoreConfig {
             slot_wait_timeout: DEFAULT_SLOT_WAIT_TIMEOUT,
             upload_slot_budget: 4,
             max_upload_queue_len: 64,
-            queue_rerank_interval: Duration::from_secs(20),
             search_quiet_timeout: Duration::from_secs(3),
             search_server_answer_timeout: Duration::from_secs(12),
             search_kad_lifetime: Duration::from_secs(45),
@@ -306,11 +263,7 @@ impl Default for CoreConfig {
             callback_timeout: Duration::from_secs(30),
             global_source_interval: Duration::from_secs(1300),
             global_source_tick: Duration::from_secs(1),
-            status_ping_first_contact_tick: Duration::from_millis(250),
             status_ping_tick: Duration::from_secs(5),
-            status_ping_reask: Duration::from_secs(16_200),
-            status_ping_key_floor: Duration::from_secs(20 * 60),
-            crypt_ping_grace: Duration::from_secs(20),
             server_udp_port: 0,
             address_families: FamilySelection::default(),
             external_address: ExternalAddressOverride::default(),
@@ -318,12 +271,7 @@ impl Default for CoreConfig {
             natt: NattConfig::default(),
             kad_sweep_interval: Duration::from_secs(10),
             kad_reask_interval: Duration::from_secs(3600),
-            upload_purge_interval: Duration::from_secs(60),
-            upload_reask_purge_after: Duration::from_secs(3600),
             missing_directory_look: Duration::from_secs(60),
-            ip_filter_clients: true,
-            ip_filter_servers: true,
-            ip_filter_level: 127,
             max_server_met_bytes: rmule_bootstrap::DEFAULT_MAX_SERVER_MET_BYTES,
         }
     }

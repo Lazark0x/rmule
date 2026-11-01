@@ -40,6 +40,21 @@ mod standing;
 use links::{Link, NextLinks, register_serve_connection};
 use standing::{asker_at, banned_standings, current_modifiers};
 
+/// How often the serve activity re-ranks its idle waiters, so a queued peer's
+/// reported `OP_QUEUERANKING` tracks elapsed wait and any credit it gained
+/// while waiting.
+pub(crate) const RERANK_INTERVAL: Duration = Duration::from_secs(20);
+
+/// How often waiters that stopped reasking, or whose file was unshared, are
+/// purged (aMule `CUploadQueue::Process`): the disconnected-standing reap
+/// cadence (ADR-0057).
+pub(crate) const PURGE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// A waiting peer's reask-silence deadline before purge (aMule
+/// `MAX_PURGEQUEUETIME`, 1 h): disconnected standing survives only while the
+/// reask heartbeat keeps beating (ADR-0057).
+pub(crate) const PURGE_AFTER: Duration = Duration::from_secs(3600);
+
 /// The serve activity's task, over a runtime whose listener is **already
 /// bound**: the actor binds, announces `ServingStarted`, and
 /// spawns this only on success, so a start that fails never reaches a task at

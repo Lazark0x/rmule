@@ -34,6 +34,22 @@ use verdict::{ProbeKind, Stake, Verdicts};
 /// already keeps.
 pub(crate) const ANSWER_GRACE: Duration = Duration::from_secs(20);
 
+/// The first-contact pace (ADR-0052): a server never probed this run — a
+/// fresh import, or every row at start — is probed at one per tick, 250 ms
+/// (eMuleAI's `UDPSEARCHSPEED`, the family's fastest shipped server-UDP
+/// fan-out).
+pub(crate) const FIRST_CONTACT_TICK: Duration = Duration::from_millis(250);
+
+/// The per-server status re-ask window (ADR-0052): 4.5 h, aMule's
+/// `UDPSERVSTATREASKTIME`. A server pinged within it, less up to an hour of
+/// jitter, is walked past, not re-asked.
+pub(crate) const REASK_WINDOW: Duration = Duration::from_secs(16_200);
+
+/// The least time between two pings of one server when its UDP key has
+/// expired (ADR-0052): 20 min, aMule's `UDPSERVSTATMINREASKTIME`, the shortest
+/// interval the family ever re-pings one server at.
+pub(crate) const KEY_FLOOR: Duration = Duration::from_secs(20 * 60);
+
 /// How far apart two pings may be sent for one's answer to vouch that the
 /// network carried the other (ADR-0052, the offline guard): a minute holds a
 /// dozen refreshes at the steady pace and the whole of a small list's pass.

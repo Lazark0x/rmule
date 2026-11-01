@@ -15,4 +15,4 @@ mod source_exchange;
 mod state;
 
 pub(crate) use liveness::{BoundListener, SharedServeListener};
-pub(crate) use runner::{ServeOutcome, ServeTask};
+pub(crate) use runner::{PURGE_AFTER, PURGE_INTERVAL, RERANK_INTERVAL, ServeOutcome, ServeTask};

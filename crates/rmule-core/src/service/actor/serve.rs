@@ -174,7 +174,7 @@ where
             // The Held Places every download run publishes (ADR-0116).
             held_places: self.download_runtime.shared.held_places.clone(),
             bans: self.wiring.kad_cells.adapters.ban_store.clone(),
-            rerank_interval: self.wiring.config.queue_rerank_interval,
+            rerank_interval: crate::serve::RERANK_INTERVAL,
             // The live client-UDP front (ADR-0057): the demuxed
             // `0x90` reask stream feeds the serve reply matrix, and
             // each `SendClientUdp` reply rides the shared socket
@@ -183,8 +183,8 @@ where
             // too. Both are `None` when the client-UDP socket failed to bind.
             reask_rx: self.client_udp_reask_rx.take(),
             client_udp_tx: self.client_udp_reply_tx.clone(),
-            purge_interval: self.wiring.config.upload_purge_interval,
-            purge_after: self.wiring.config.upload_reask_purge_after,
+            purge_interval: crate::serve::PURGE_INTERVAL,
+            purge_after: crate::serve::PURGE_AFTER,
             // The same shared counter state the download
             // runners and `Core::diagnostics_snapshot` hold
             // (ADR-0077), so upload rows and the session up

@@ -27,7 +27,10 @@ mod status_ping_sweep;
 pub(crate) use engine::ServerUdpEngine;
 pub(crate) use seal::ServerUdpSeal;
 pub(crate) use status_challenge::{StatusChallenges, os_rand16};
-pub(crate) use status_ping_sweep::{CryptPingArm, StatusPingSweep, os_crypt_ping_nonce};
+pub(crate) use status_ping_sweep::{
+    ANSWER_GRACE, CryptPingArm, FIRST_CONTACT_TICK, KEY_FLOOR, REASK_WINDOW, StatusPingSweep,
+    os_crypt_ping_nonce,
+};
 
 /// One received server-UDP datagram, tagged with the answering server's
 /// standard endpoint (the engine maps the UDP source back, ADR-0046) — the

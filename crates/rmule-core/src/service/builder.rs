@@ -450,13 +450,7 @@ where
         // filter-not-ready-blocks-everything branch. The adapters already
         // hold clones of the handle, so the swap is visible everywhere.
         if let Some(dir) = node.ip_filter_dir.as_deref() {
-            let loaded = IpFilter::load_dir(
-                dir,
-                node.config.ip_filter_level,
-                node.config.ip_filter_clients,
-                node.config.ip_filter_servers,
-            );
-            *node.cells.ip_filter.write() = loaded;
+            *node.cells.ip_filter.write() = IpFilter::load_dir(dir);
         }
         // The node's hash, fixed before anything can read it:
         // every reader — the peer-UDP crypt layer, NAT-T, the Kad node, each
@@ -577,14 +571,11 @@ impl Core {
         // One core-owned IP filter (aMule `CIPFilter` parity),
         // shared by the accept, dial, server-dial, source-ingest, and
         // server-list gates — the same create-once-clone-into-every-adapter
-        // pattern as `ban_store`. Created empty with the config's gates;
+        // pattern as `ban_store`. Created empty, both gates on;
         // `CoreBuilder::build` loads the dat files into it (before the actor
         // spawns, so no connection can ever precede the loaded table) when
         // `ip_filter_dir` names a directory.
-        let ip_filter: SharedIpFilter = Arc::new(parking_lot::RwLock::new(IpFilter::empty(
-            config.ip_filter_clients,
-            config.ip_filter_servers,
-        )));
+        let ip_filter: SharedIpFilter = SharedIpFilter::default();
         // One core-owned enacted buddy slot (socket unification, ADR-0061),
         // shared by the Kad factory (0x51 recruit + 0x52 relay), the accept
         // path (holds the buddy's persistent inbound link, routes ping/close),

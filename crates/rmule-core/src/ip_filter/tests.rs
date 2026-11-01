@@ -219,7 +219,7 @@ fn load_dir_reads_both_files_tolerating_absence_and_non_utf8_descriptions() {
 
     // Nothing on disk: an empty filter, not an error (aMule's missing-file
     // `return 0`).
-    let empty = IpFilter::load_dir(dir.path(), 127, true, true);
+    let empty = IpFilter::load_dir(dir.path());
     assert!(!empty.is_filtered_client(ip(10, 0, 0, 1)));
 
     // Only the static file exists — it loads alone (aMule loads it
@@ -229,7 +229,7 @@ fn load_dir_reads_both_files_tolerating_absence_and_non_utf8_descriptions() {
     let mut static_line = b"10.0.0.0-10.0.0.255,0,caf\xe9 r\xe9seau\n".to_vec();
     static_line.extend_from_slice(b"# trailing comment\n");
     std::fs::write(dir.path().join("ipfilter_static.dat"), &static_line).expect("write");
-    let loaded = IpFilter::load_dir(dir.path(), 127, true, true);
+    let loaded = IpFilter::load_dir(dir.path());
     assert!(loaded.is_filtered_client(ip(10, 0, 0, 128)));
 
     // Both exist: the static file overrides the downloaded one's overlap.
@@ -243,7 +243,7 @@ fn load_dir_reads_both_files_tolerating_absence_and_non_utf8_descriptions() {
         b"10.0.0.0-10.0.0.255,0,static says block\n",
     )
     .expect("write");
-    let both = IpFilter::load_dir(dir.path(), 127, true, true);
+    let both = IpFilter::load_dir(dir.path());
     assert!(both.is_filtered_client(ip(10, 0, 0, 1)), "static wins");
     assert!(both.is_filtered_client(ip(20, 0, 0, 1)));
 }

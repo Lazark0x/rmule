@@ -246,6 +246,11 @@ fn covers<K: RangeKey>(blocked: &[(K, K)], key: K) -> bool {
         .is_some_and(|i| blocked[i].1 >= key)
 }
 
+/// The IP filter access-level threshold (aMule `FilterLevel`, default 127):
+/// only ranges whose level is **strictly below** this block, and the cut is
+/// applied when the table is built from the dat files.
+const LEVEL_THRESHOLD: u8 = 127;
+
 /// The built verdict store: the blocked set (level threshold already applied)
 /// plus the two config gates aMule checks before the table
 /// (`IsFilteringClients` / `IsFilteringServers`, `IPFilter.cpp:421`).
@@ -264,21 +269,16 @@ impl Default for IpFilter {
     /// `IpFilterServers` default true), empty table — filters nothing until a
     /// dat file is loaded.
     fn default() -> Self {
-        Self::empty(true, true)
-    }
-}
-
-impl IpFilter {
-    /// An empty filter with the given gates — blocks nothing.
-    pub(crate) fn empty(filter_clients: bool, filter_servers: bool) -> Self {
         Self {
-            filter_clients,
-            filter_servers,
+            filter_clients: true,
+            filter_servers: true,
             blocked: Vec::new(),
             blocked_v6: Vec::new(),
         }
     }
+}
 
+impl IpFilter {
     /// Build from in-memory file contents, applied in order — later texts'
     /// lines overwrite earlier overlap, which is the whole precedence
     /// mechanism behind `ipfilter_static.dat` loading second. Pure; the fs
@@ -310,12 +310,7 @@ impl IpFilter {
     /// `Core`. The systemwide fallback path (`UseIPFilterSystem`, default off
     /// in aMule) and archive unpacking (`UnpackArchive`) are deferred: rmule
     /// reads the two plain-text config-dir files only.
-    pub(crate) fn load_dir(
-        dir: &Path,
-        level_threshold: u8,
-        filter_clients: bool,
-        filter_servers: bool,
-    ) -> Self {
+    pub(crate) fn load_dir(dir: &Path) -> Self {
         let mut texts: Vec<Vec<u8>> = Vec::new();
         for name in ["ipfilter.dat", "ipfilter_static.dat"] {
             let path = dir.join(name);
@@ -331,8 +326,7 @@ impl IpFilter {
             }
         }
         let borrowed: Vec<&[u8]> = texts.iter().map(Vec::as_slice).collect();
-        let (filter, stats) =
-            Self::from_texts(&borrowed, level_threshold, filter_clients, filter_servers);
+        let (filter, stats) = Self::from_texts(&borrowed, LEVEL_THRESHOLD, true, true);
         for (name, file_stats) in ["ipfilter.dat", "ipfilter_static.dat"].iter().zip(&stats) {
             if file_stats.accepted > 0 || file_stats.malformed > 0 {
                 tracing::info!(
@@ -347,7 +341,7 @@ impl IpFilter {
         tracing::info!(
             blocked_ranges = filter.blocked.len(),
             blocked_ipv6_ranges = filter.blocked_v6.len(),
-            level = level_threshold,
+            level = LEVEL_THRESHOLD,
             "IP filter ready"
         );
         filter

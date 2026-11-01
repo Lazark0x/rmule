@@ -43,7 +43,7 @@ scheduling is (ADR-0026).
 - `UploadSlotQueue` in `rmule-core` admits, ranks, promotes and purges remote
   requesters across all connections. Rank is aMule's credit-weighted score
   (ADR-0041); the serve activity re-ranks idle waiters every
-  `CoreConfig::queue_rerank_interval` and sends `OP_QUEUERANKING`.
+  `RERANK_INTERVAL` and sends `OP_QUEUERANKING`.
 - Core pushes part bytes down with `ServerCommand::SendBlock`, read from the
   content store's `read_range`, or with `ServerCommand::SendDeflatedBlock` when the
   block's zlib stream is smaller, its file may be compressed and the peer inflates

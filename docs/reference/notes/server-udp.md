@@ -161,7 +161,7 @@ The steps of one tick:
   feeds UDP-only consumers).
 
 rmule: `rmule-core::server_udp::StatusPingSweep` — `status_ping_tick` = 5 s,
-`status_ping_reask` = 4.5 h, `status_ping_key_floor` = 20 min (`CoreConfig`), challenge
+`REASK_WINDOW` = 4.5 h, `KEY_FLOOR` = 20 min, challenge
 minted from caller-supplied entropy (`GlobServStatReq::mint`), registered via
 `StatusChallenges::expect` **before** the send. A row listed by name is resolved when its
 ping is due.
@@ -195,7 +195,7 @@ enabled. Then:
   A valid `0x97` within the grace clears it; a timeout with the flag still set falls
   to the plain arm, which sends a plain `0x96`. aMule's `+ 20` on its **millisecond**
   tick clock is a unit slip (the comment says "20 seconds"); rmule models the intended
-  **20 s** (`CoreConfig::crypt_ping_grace`), an ADR-0045 cite-and-correct beside
+  **20 s** (`ANSWER_GRACE`), an ADR-0045 cite-and-correct beside
   the jitter one.
 - **Reply mapping** (`GetServerByIPUDP(ip, port, bObfuscationPorts=true)`,
   `src/ServerList.cpp#L639`): a `0x97` maps back to its server three ways —

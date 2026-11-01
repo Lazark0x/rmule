@@ -65,10 +65,10 @@ pub(super) fn spawn_server_udp_front(
             facts: server_facts.clone(),
             challenges: status_challenges,
             entropy: crate::server_udp::os_rand16,
-            first_contact_tick: config.status_ping_first_contact_tick,
+            first_contact_tick: crate::server_udp::FIRST_CONTACT_TICK,
             tick: config.status_ping_tick,
-            reask: config.status_ping_reask,
-            key_floor: config.status_ping_key_floor,
+            reask: crate::server_udp::REASK_WINDOW,
+            key_floor: crate::server_udp::KEY_FLOOR,
             crypt: crate::server_udp::CryptPingArm {
                 policy: obfuscation.clone(),
                 // The crypt-ping probe's public-IP precondition (ADR-0046,
@@ -76,7 +76,7 @@ pub(super) fn spawn_server_udp_front(
                 // High-ID IDCHANGE (ADR-0047 `public_ip`) through the shared
                 // self-facts cell.
                 own: own_identity.clone(),
-                grace: config.crypt_ping_grace,
+                grace: crate::server_udp::ANSWER_GRACE,
                 nonce: crate::server_udp::os_crypt_ping_nonce,
             },
             resolver: crate::name_resolver::system_resolver(),
