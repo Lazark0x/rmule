@@ -370,9 +370,14 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             // `OP_REQFILENAMEANSWER 0x59`; `OP_SETREQFILEID 0x4F` asks for
             // the part status and is answered by `OP_FILESTATUS 0x50`. The pairing
             // is the one `rmule_peer::file_request` documents — a fake that
-            // answers the other question lets an ordering bug pass.
+            // answers the other question lets an ordering bug pass. A file the
+            // fake does not hold gets no answer: stock's name reader breaks on
+            // it, and a session closes on an answer about a file it never asked.
             0x58 => {
                 stats.standalone_probe_asks += 1;
+                if packet.payload().get(..16) != Some(script.file_hash.as_bytes()) {
+                    continue;
+                }
                 let _ = wtx
                     .send(wire::filename_answer_bytes(
                         script.file_hash,
@@ -382,6 +387,9 @@ async fn run_script(sock: tokio::net::TcpStream, script: PeerScript) -> PeerStat
             }
             0x4F => {
                 stats.standalone_probe_asks += 1;
+                if packet.payload().get(..16) != Some(script.file_hash.as_bytes()) {
+                    continue;
+                }
                 let _ = wtx
                     .send(wire::file_status_bytes(
                         script.file_hash,

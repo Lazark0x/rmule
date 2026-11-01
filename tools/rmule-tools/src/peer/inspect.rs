@@ -59,6 +59,10 @@ pub(crate) fn inspect_packet(path: &Path) -> Result<()> {
             println!("kind: queue_ranking");
             println!("rank: {}", r.rank);
         }
+        PeerPacket::QueueRank(r) => {
+            println!("kind: queue_rank");
+            println!("rank: {}", r.rank);
+        }
         PeerPacket::RequestParts(r) => {
             println!("kind: request_parts");
             println!("file_hash: {}", r.file_hash.to_hex_upper());
