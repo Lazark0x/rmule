@@ -316,7 +316,7 @@ fn quit_flows_out_of_reduce() {
         app.reduce(key_action(KeyCode::Char('q')), Instant::now()),
         Flow::Quit
     ));
-    // …but not while help is open: there q dismisses.
+    // …but not while help is open: there it is typed into the filter.
     let mut app = App::new(Theme::default_dark());
     app.reduce(key_action(KeyCode::Char('?')), Instant::now());
     assert!(app.chrome.help_open);
@@ -324,7 +324,8 @@ fn quit_flows_out_of_reduce() {
         app.reduce(key_action(KeyCode::Char('q')), Instant::now()),
         Flow::Continue
     ));
-    assert!(!app.chrome.help_open);
+    assert!(app.chrome.help_open);
+    assert!(app.chrome.help_typed());
 }
 
 #[test]

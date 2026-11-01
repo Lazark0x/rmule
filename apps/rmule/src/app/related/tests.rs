@@ -98,10 +98,8 @@ async fn from_a_download_whose_name_is_not_known() {
         &[
             DOWN,
             KeyCode::Char('m'),
-            DOWN,
-            DOWN,
-            DOWN,
-            DOWN,
+            KeyCode::Char('G'),
+            KeyCode::Char('k'),
             KeyCode::Enter,
         ],
     );
@@ -138,7 +136,12 @@ async fn with_the_core_stopped_the_item_is_dimmed_and_nothing_is_queued() {
     app.chrome.active = ViewId::Transfers;
     keys(
         &mut app,
-        &[KeyCode::Char('m'), DOWN, DOWN, DOWN, DOWN, KeyCode::Enter],
+        &[
+            KeyCode::Char('m'),
+            KeyCode::Char('G'),
+            KeyCode::Char('k'),
+            KeyCode::Enter,
+        ],
     );
     assert!(app.pending_commands.is_empty());
     assert_eq!(app.chrome.active, ViewId::Transfers);
