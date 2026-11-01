@@ -21,15 +21,15 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use ed2k::digest::Digest;
 use rmule_primitives::{Ed2kFileLink, Ed2kLink, PartHash, PartHashSet, UserHash};
 
-use crate::adapters::{PeerTransferService, SourceLookupService};
 use crate::content::{
     HeldCheckFailed, HeldPartFile, HeldWriteError, HoleVerdict, PartFileChange, Revalidation,
-    part_link, probe_holes,
+    on_pool, part_link, probe_holes,
 };
 use crate::download::runner::RunnerContext;
 use crate::durable::{DownloadLifecycle, VerifiedPartRecord};
@@ -293,7 +293,34 @@ fn recorded_end(parts: &[VerifiedPartRecord]) -> u64 {
         .unwrap_or(0)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What a landed part proved: whether its own hash checked it, or only the
+/// whole file's will.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Landed {
+    /// A part hash the run trusts matched it.
+    Verified,
+    /// No part hash stands yet: the file hash proves it at completion.
+    FileHashOnly,
+}
+
+/// The bytes of a finished part hashed on the pool (ADR-0031): the part hash a
+/// record names, and what the hash proved, handing the bytes back.
+fn hash_part(
+    expected: Option<PartHash>,
+    bytes: Vec<u8>,
+) -> (Result<(PartHash, Landed), DownloadFailure>, Vec<u8>) {
+    let hashed = match expected {
+        Some(expected) => {
+            verify_part_bytes(expected, &bytes).map(|()| (expected, Landed::Verified))
+        }
+        None => Ok((
+            PartHash::from_bytes(ed2k::Ed2kBlue::digest(&bytes).into()),
+            Landed::FileHashOnly,
+        )),
+    };
+    (hashed, bytes)
+}
+
 pub(super) async fn persist_streamed_part<S, P>(
     runner: &RunnerContext<S, P>,
     download_id: DownloadId,
@@ -301,52 +328,42 @@ pub(super) async fn persist_streamed_part<S, P>(
     resolved: &ResolvedHashSet,
     part_index: u32,
     offset: u64,
-    bytes: &[u8],
-    file_hash_only_parts: &mut Vec<u32>,
-    evt_tx: &crate::service::Outbox,
-) -> Result<(), PersistError>
+    bytes: Vec<u8>,
+) -> Result<Landed, PersistError>
 where
-    S: SourceLookupService,
-    P: PeerTransferService,
+    S: Send,
+    P: Send,
 {
-    let (part_hash, verified) =
-        if let Some(expected) = part_hash_on_arrival(resolved, file, part_index) {
-            verify_part_bytes(expected, bytes).map_err(PersistError::Rejected)?;
-            (expected, true)
-        } else if resolved.hashes.is_empty() {
-            (
-                PartHash::from_bytes(ed2k::Ed2kBlue::digest(bytes).into()),
-                false,
-            )
-        } else {
-            return Err(PersistError::Rejected(
-                DownloadFailure::PartVerificationFailed,
-            ));
-        };
+    let expected = part_hash_on_arrival(resolved, file, part_index);
+    if expected.is_none() && !resolved.hashes.is_empty() {
+        return Err(PersistError::Rejected(
+            DownloadFailure::PartVerificationFailed,
+        ));
+    }
+    let (hashed, bytes) = on_pool(move || hash_part(expected, bytes)).await;
+    let (part_hash, landed) = hashed.map_err(PersistError::Rejected)?;
     let record = VerifiedPartRecord {
         part_index,
         offset,
         len: bytes.len() as u64,
         part_hash,
     };
-    write_through_held(runner, download_id, record, bytes).await?;
-    if verified {
+    write_through_held(runner, download_id, record, &bytes).await?;
+    if landed == Landed::Verified {
         tracing::info!(
             download_id = download_id.as_u64(),
             part_index,
             "part verified",
         );
         send_download_event(
-            evt_tx,
+            &runner.rt.evt_tx,
             DownloadEvent::PartVerified {
                 download_id,
                 part_index,
             },
         );
-    } else {
-        file_hash_only_parts.push(part_index);
     }
-    Ok(())
+    Ok(landed)
 }
 
 /// Write `bytes` through the held part file and record the part — or, when
@@ -356,7 +373,11 @@ async fn write_through_held<S, P>(
     download_id: DownloadId,
     record: VerifiedPartRecord,
     bytes: &[u8],
-) -> Result<(), PersistError> {
+) -> Result<(), PersistError>
+where
+    S: Send,
+    P: Send,
+{
     let mut held = runner.part_file.lock().await;
     let file = held.as_mut().ok_or(PersistError::Ended(
         DownloadFailure::StorageIntegrityFailed(StorageIntegrityFault::PartFileMissing),
@@ -364,10 +385,10 @@ async fn write_through_held<S, P>(
     match file.write_part(record.offset, bytes).await {
         Ok(allocated) => {
             runner.rt.diagnostics.part_file_read(download_id, allocated);
-            runner
-                .rt
-                .store
-                .record_verified_part(download_id, record)
+            // A commit syncs: it holds a pool thread, not a runtime worker.
+            let store = Arc::clone(&runner.rt.store);
+            on_pool(move || store.record_verified_part(download_id, record))
+                .await
                 .map_err(|error| {
                     tracing::warn!(%error, "a verified part could not be recorded");
                     PersistError::Ended(DownloadFailure::StoreFailed)

@@ -11,7 +11,7 @@ use rmule_primitives::{ED2K_PART_SIZE, Ed2kFileLink, FileHash, PartHash, PartHas
 
 use crate::{DownloadFailure, VerificationAuthority};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ResolvedHashSet {
     pub authority: VerificationAuthority,
     pub hashes: Vec<PartHash>,

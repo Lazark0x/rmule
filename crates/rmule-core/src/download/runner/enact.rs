@@ -13,7 +13,7 @@ use crate::adapters::{
     SourceLookupService, WorkerBrief,
 };
 use crate::callback::{DownloadAsk, DownloadReach, PendingCallback};
-use crate::download::persist::{PersistError, persist_streamed_part};
+use crate::download::persist::{Landed, PersistError};
 use crate::download::state::{Decision, DownloadState};
 use crate::download::worker_pool::{WorkerChannels, WorkerFact, WorkerId, WorkerPool};
 use crate::error::DownloadFailure;
@@ -23,6 +23,7 @@ use crate::storage::DownloadRepository;
 
 use super::callbacks::CallbackContext;
 use super::fleet::{enter_phase, refresh_parts};
+use super::persist_lane::{Landing, PartToLand, PersistLane};
 use super::republish::Republished;
 use super::{RunnerContext, WORKER_SHUTDOWN_TIMEOUT, now, served};
 
@@ -55,14 +56,17 @@ pub(super) struct LoopCtx<'a, S, P> {
     /// (see [`Republished`]) and
     /// withdrawn when the run ends (ADR-0116).
     pub(super) held_places: crate::held_places::HeldPlacesSeat,
+    /// The run's finished parts on their way to the store.
+    pub(super) persist: PersistLane<'a>,
     /// The generation the drain's tail last republished at.
     pub(super) republished: Option<Republished>,
 }
 
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
-/// surface in the download loop. Decisions drain in order; a `PersistPart` or
-/// a failed `Spawn` feeds its follow-up decisions back onto the queue (the
-/// persist / spawn round-trips), so the loop stays flat — no recursion.
+/// surface in the download loop. Decisions drain in order; a failed `Spawn`
+/// feeds its follow-up decisions back onto the queue (the spawn round-trip),
+/// so the loop stays flat — no recursion. A `PersistPart` goes on the run's
+/// [`PersistLane`], and its landing comes back as a fact of the fleet loop.
 /// `Fail` tears the fleet down and returns the reason. Every successful drain
 /// ends by refreshing the diagnostics scheduler counts from `ctx.state`, so no
 /// individual enact site repeats it and none can forget it; a `Fail` returns
@@ -127,42 +131,26 @@ where
                 offset,
                 bytes,
             } => {
-                let result = persist_streamed_part(
-                    ctx.runner,
-                    ctx.download_id,
-                    ctx.file,
-                    ctx.state.resolved(),
-                    part_index,
-                    offset,
-                    &bytes,
-                    &mut ctx.file_hash_only_parts,
-                    ctx.evt_tx,
-                )
-                .await;
-                match result {
-                    // The part file changed under the run (what it cost is
-                    // said and dropped, ADR-0094), or the store could not
-                    // record the part: the run ends.
-                    Err(PersistError::Ended(end)) => queue.push_front(Decision::Fail(end)),
-                    Err(PersistError::Rejected(reason)) => {
-                        queue.extend(ctx.state.on_persist_result(
-                            now(),
-                            part_index,
-                            peer,
-                            Err(reason),
-                        ));
-                    }
-                    Ok(()) => {
-                        served::part_written(ctx.runner).await;
-                        queue.extend(ctx.state.on_persist_result(now(), part_index, peer, Ok(())))
-                    }
+                // A full lane holds the drain: the workers wait on the brain
+                // and the sockets on the workers.
+                while ctx.persist.full() {
+                    let landing = next_landing(ctx).await;
+                    queue.extend(after_landing(ctx, landing));
                 }
-                // Before any decision that result returned is enacted, so
-                // no status the run sends names a part the serve side
-                // lacks (ADR-0113).
-                served::rule_range_of(ctx.runner, ctx.download_id, &ctx.state);
+                let part = PartToLand {
+                    part_index,
+                    peer,
+                    offset,
+                    bytes,
+                };
+                let resolved = ctx.state.resolved().clone();
+                ctx.persist
+                    .take(ctx.runner, ctx.download_id, ctx.file, part, resolved);
             }
             Decision::PersistProvisionalHashes(hashes) => {
+                // The set judges every part recorded: none may land behind
+                // its back under the set it replaces.
+                settle_lane(ctx, queue).await;
                 // A store that cannot keep the set fails the run through the
                 // one whole-fleet terminal, so every worker is
                 // told `Shutdown` and every roster relation ends — never a
@@ -499,6 +487,10 @@ where
                         crate::diagnostics::WorkerPhase::ShutDown,
                     );
                 }
+                // What is on the lane lands: a verified part stays verified
+                // for the next run, and the file is left to whoever deletes it.
+                let mut after = VecDeque::new();
+                settle_lane(ctx, &mut after).await;
                 shut_down_every_worker(ctx, cancel).await;
                 let live = ctx.command_channels.iter().map(|c| c.id).collect();
                 await_worker_shutdown(&mut ctx.fact_rx, live).await;
@@ -523,6 +515,55 @@ where
     hold_queued_relations(ctx);
     ctx.awaited_grants.hold(&ctx.state);
     Ok(())
+}
+
+/// What the brain makes of `landing`, as the decisions it answers: the run
+/// ends on an end, and a rejected part goes back to its repair.
+pub(super) fn after_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>, landing: Landing) -> Vec<Decision> {
+    let Landing {
+        part_index,
+        peer,
+        result,
+    } = landing;
+    match result {
+        // The part file changed under the run (what it cost is said and
+        // dropped, ADR-0094), or the store could not record the part: the
+        // run ends.
+        Err(PersistError::Ended(end)) => vec![Decision::Fail(end)],
+        Err(PersistError::Rejected(reason)) => {
+            ctx.state
+                .on_persist_result(now(), part_index, peer, Err(reason))
+        }
+        Ok(landed) => {
+            if landed == Landed::FileHashOnly {
+                ctx.file_hash_only_parts.push(part_index);
+            }
+            ctx.state.on_persist_result(now(), part_index, peer, Ok(()))
+        }
+    }
+}
+
+/// The next part off the lane.
+async fn next_landing<S, P>(ctx: &mut LoopCtx<'_, S, P>) -> Landing
+where
+    S: Send,
+    P: Send,
+{
+    ctx.persist
+        .landed(ctx.runner, ctx.download_id, ctx.file)
+        .await
+}
+
+/// Land everything on the lane, its decisions on `queue`.
+pub(super) async fn settle_lane<S, P>(ctx: &mut LoopCtx<'_, S, P>, queue: &mut VecDeque<Decision>)
+where
+    S: Send,
+    P: Send,
+{
+    while ctx.persist.busy() {
+        let landing = next_landing(ctx).await;
+        queue.extend(after_landing(ctx, landing));
+    }
 }
 
 /// A server-relayed ask for `key`'s callback that never left — no live

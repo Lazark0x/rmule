@@ -37,6 +37,7 @@ mod fleet;
 mod intake;
 mod link_sources;
 mod lookup;
+mod persist_lane;
 mod reply_sink;
 mod republish;
 mod served;

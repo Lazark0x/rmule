@@ -35,7 +35,7 @@ use crate::storage::DownloadRepository;
 use super::adopt::adopt;
 use super::awaited_grants::AwaitedGrants;
 use super::callbacks::CallbackContext;
-use super::enact::{LoopCtx, enact_drain};
+use super::enact::{LoopCtx, after_landing, enact_drain};
 use super::intake;
 use super::reply_sink::ReaskSinkLease;
 use super::republish::WakeReading;
@@ -343,6 +343,7 @@ where
         queued_relations: std::collections::HashSet::new(),
         awaited_grants,
         held_places: runner.rt.held_places.seat(download_id),
+        persist: super::persist_lane::PersistLane::new(),
         republished: None,
     };
 
@@ -439,6 +440,12 @@ where
                 let mut q: VecDeque<Decision> = ctx.state.on_stop(failure.clone()).into();
                 enact_drain(&mut q, &mut ctx).await?;
                 return Err(failure);
+            }
+            landing = ctx.persist.landed(ctx.runner, download_id, ctx.file), if ctx.persist.busy() => {
+                // A finished part landed, or could not: the brain hears it.
+                let mut q: VecDeque<Decision> = after_landing(&mut ctx, landing).into();
+                enact_drain(&mut q, &mut ctx).await?;
+                continue;
             }
             () = sleep_until_optional(next_wake) => {
                 // Something the brain holds fell due: a callback road's
@@ -580,7 +587,7 @@ where
                 // (ADR-0093): a Kad node that died or started since spawn.
                 q.extend(ctx.state.on_discovery_active(now(), discovery.any_active() || lookup_owed));
                 enact_drain(&mut q, &mut ctx).await?;
-                told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait).await;
+                told_wait = retell_wait(&ctx, &discovery, lookup_owed, told_wait);
                 publish_seeds(&ctx);
                 publish_exchange_pool(&ctx);
                 source_count.publish(ctx.state.listed_sources());
@@ -697,7 +704,7 @@ mod tests;
 /// a server session ending or arriving, Kad starting or stopping — so the
 /// operator reads who can still find it a source, not the reason it had at
 /// spawn. Once a worker or callback is out, the wait it told is over.
-async fn retell_wait<S, P>(
+fn retell_wait<S, P>(
     ctx: &LoopCtx<'_, S, P>,
     discovery: &super::DiscoveryLiveness,
     lookup_owed: bool,

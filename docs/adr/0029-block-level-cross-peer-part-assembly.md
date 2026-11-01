@@ -26,8 +26,12 @@ Part assembly lives in `rmule-core`, in one shared buffer per in-flight part.
   packet does not extend it, before anything else the worker says, and within 100 ms.
 - Core merges each arrival into the part's Arrived Ranges, writing only the bytes not
   yet arrived: a later copy of an arrived byte, a duplicate's or a drained block's, is
-  dropped. When the ranges cover the part, core verifies the MD4 part hash, persists
-  the part, and frees the buffer.
+  dropped. When the ranges cover the part, the run's **Persist Lane** verifies the MD4
+  part hash on the blocking pool, writes the part and commits its record at the store's
+  own durability, one part at a time, and the brain hears the landing as a fact and
+  frees the buffer. The brain takes blocks meanwhile. The lane holds two parts behind
+  the one it works on; past that the drain waits, and the sockets with it. A part hash
+  set settles the lane first, since it judges every part recorded.
 - Several workers share a part's blocks, and the End Game asks its last blocks twice
   (ADR-0117). A worker's end frees the blocks it was asked and keeps every byte that
   arrived, so a mid-part drop never resets progress.

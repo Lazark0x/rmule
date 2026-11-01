@@ -198,6 +198,7 @@ pub(super) fn loop_ctx<'a, S, P>(
         queued_relations: std::collections::HashSet::new(),
         awaited_grants: super::awaited_grants::AwaitedGrants::new(runner.rt.peer_links.clone()),
         held_places: runner.rt.held_places.seat(DownloadId::from_u64(1)),
+        persist: super::persist_lane::PersistLane::new(),
         republished: None,
     }
 }

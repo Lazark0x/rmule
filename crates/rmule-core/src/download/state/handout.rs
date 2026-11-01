@@ -126,7 +126,9 @@ impl DownloadState {
             &progress,
         );
         let Handout::Blocks { blocks, duplicate } = handout else {
-            return if want.drained {
+            // A part still landing may yet come back to be fetched: the
+            // worker keeps its slot until the landing says.
+            return if want.drained && self.pending_persist.is_empty() {
                 Handed::NothingFree
             } else {
                 Handed::Working

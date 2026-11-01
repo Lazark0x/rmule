@@ -15,7 +15,6 @@ use std::path::Path;
 use rmule_primitives::PartHash;
 
 use crate::content::HeldPartFile;
-use crate::download::state::DownloadState;
 use crate::file_key::FileKey;
 use crate::served_downloads::PartFileIdentity;
 use crate::service::DownloadId;
@@ -83,15 +82,6 @@ pub(super) fn rule_recorded_range<S, P>(runner: &RunnerContext<S, P>, download_i
             "the part hash set could not be read from the store"
         ),
     }
-}
-
-/// [`rule_range`] against the set the brain holds in force.
-pub(super) fn rule_range_of<S, P>(
-    runner: &RunnerContext<S, P>,
-    download_id: DownloadId,
-    state: &DownloadState,
-) {
-    rule_range(runner, download_id, &state.resolved().hashes);
 }
 
 /// The completion move stored `path` as its destination, which may be a

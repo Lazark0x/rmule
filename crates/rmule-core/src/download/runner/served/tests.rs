@@ -15,7 +15,7 @@ use rmule_primitives::{
     SourceSighting,
 };
 
-use super::super::enact::{LoopCtx, enact_drain};
+use super::super::enact::{LoopCtx, enact_drain, settle_lane};
 use super::super::test_context::{Held, NeverLooksUp, NeverTransfers, loop_ctx, runner_context};
 use super::*;
 use crate::adapters::{PeerTransferService, PeerWorker, PeerWorkerEvent, WorkerBrief};
@@ -23,7 +23,8 @@ use crate::content::HeldPartFile;
 use crate::diagnostics::{PartState, WorkerSlot};
 use crate::download::source_book::Gate;
 use crate::download::state::{
-    CallbackCapability, Channel, ContentFacts, Decision, SourcingPosture, StartingFacts,
+    CallbackCapability, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
+    StartingFacts,
 };
 use crate::error::DownloadFailure;
 use crate::hashing::ResolvedHashSet;
@@ -198,6 +199,18 @@ fn ctx_of<'a, S, P>(
     ctx
 }
 
+/// Drain `queue`, then every landing it put on the lane and what those answer.
+async fn landed<S, P>(mut queue: VecDeque<Decision>, ctx: &mut LoopCtx<'_, S, P>)
+where
+    S: crate::adapters::SourceLookupService,
+    P: PeerTransferService,
+{
+    while !queue.is_empty() || ctx.persist.busy() {
+        enact_drain(&mut queue, ctx).await.unwrap();
+        settle_lane(ctx, &mut queue).await;
+    }
+}
+
 fn persist(bytes: &[u8], part_index: u32) -> Decision {
     Decision::PersistPart {
         part_index,
@@ -224,8 +237,7 @@ async fn a_first_write_that_renumbers_the_file_leaves_the_served_key_true() {
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
-    let mut queue = VecDeque::from([persist(&bytes, part)]);
-    enact_drain(&mut queue, &mut ctx).await.unwrap();
+    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
 
     let written = cell.served(link.file_hash).unwrap().identity.unwrap().key;
     let at_path = FileKey::at(record.paths().part_path()).unwrap();
@@ -236,8 +248,61 @@ async fn a_first_write_that_renumbers_the_file_leaves_the_served_key_true() {
     );
 }
 
+/// A finished part's hash, write and commit are the lane's: the brain goes on
+/// taking blocks while they run. Held here by the part file's lock, which the
+/// landing needs.
 #[tokio::test]
-async fn a_persisted_part_is_in_the_range_before_the_next_decision_is_enacted() {
+async fn a_finished_part_leaves_the_drain_free_while_it_lands() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = content();
+    let link = rmule_testkit::file_link("served.bin", &bytes);
+    let cell = ServedDownloads::default();
+    let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
+    let (state, part) = working(&link, &record);
+    let mut ctx = ctx_of(&runner, &link, &record, state);
+    let holding = runner.part_file.lock().await;
+
+    let mut queue = VecDeque::from([persist(&bytes, part)]);
+    tokio::time::timeout(Duration::from_secs(1), enact_drain(&mut queue, &mut ctx))
+        .await
+        .expect("the drain does not wait for the landing")
+        .unwrap();
+
+    assert!(ctx.persist.busy());
+    drop(holding);
+    landed(VecDeque::new(), &mut ctx).await;
+    let parts = runner.rt.store.verified_parts(record.id()).unwrap();
+    assert_eq!(parts.len(), 1, "the part landed");
+}
+
+/// A lane holds two parts behind the one it works on; the next stops the
+/// drain, so a volume slower than the network fills no memory.
+#[tokio::test]
+async fn a_full_lane_holds_the_drain() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = content();
+    let link = rmule_testkit::file_link("served.bin", &bytes);
+    let cell = ServedDownloads::default();
+    let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
+    let (state, part) = working(&link, &record);
+    let mut ctx = ctx_of(&runner, &link, &record, state);
+    let holding = runner.part_file.lock().await;
+    let mut three = VecDeque::from(vec![persist(&bytes, part); 3]);
+    enact_drain(&mut three, &mut ctx).await.unwrap();
+
+    let mut fourth = VecDeque::from([persist(&bytes, part)]);
+    let waited = tokio::time::timeout(
+        Duration::from_millis(200),
+        enact_drain(&mut fourth, &mut ctx),
+    )
+    .await;
+
+    assert!(waited.is_err(), "the fourth part waits for room");
+    drop(holding);
+}
+
+#[tokio::test]
+async fn a_landed_part_is_in_the_range_before_the_next_decision_is_enacted() {
     let dir = tempfile::tempdir().unwrap();
     let bytes = content();
     let link = rmule_testkit::file_link("served.bin", &bytes);
@@ -253,15 +318,13 @@ async fn a_persisted_part_is_in_the_range_before_the_next_decision_is_enacted() 
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
     // The dial reads `our_part_status` for its brief as it is enacted.
-    let mut queue = VecDeque::from([
-        persist(&bytes, part),
-        Decision::Spawn {
-            peer: PeerEndpoint::V4(OTHER),
-            slot: WorkerSlot::from_usize(1),
-            want_sources: false,
-            opening: crate::adapters::WorkerOpening::Probe,
-        },
-    ]);
+    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
+    let mut queue = VecDeque::from([Decision::Spawn {
+        peer: PeerEndpoint::V4(OTHER),
+        slot: WorkerSlot::from_usize(1),
+        want_sources: false,
+        opening: crate::adapters::WorkerOpening::Probe,
+    }]);
     enact_drain(&mut queue, &mut ctx).await.unwrap();
 
     let seen = seen.lock();
@@ -290,9 +353,7 @@ async fn the_offer_waits_for_a_whole_set_that_arrives_after_the_part() {
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
 
-    enact_drain(&mut VecDeque::from([persist(&bytes, part)]), &mut ctx)
-        .await
-        .unwrap();
+    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
     assert!(
         cell.offered().is_empty(),
         "a part no set checked is not offered"
@@ -323,9 +384,7 @@ async fn a_part_the_arriving_set_disproves_is_dropped_and_fetched_again() {
     let (runner, mut held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
     let (state, part) = working(&link, &record);
     let mut ctx = ctx_of(&runner, &link, &record, state);
-    enact_drain(&mut VecDeque::from([persist(&bytes, part)]), &mut ctx)
-        .await
-        .unwrap();
+    landed(VecDeque::from([persist(&bytes, part)]), &mut ctx).await;
     assert_eq!(ctx.file_hash_only_parts, [part]);
 
     set[part as usize] = PartHash::from_bytes([0xEE; 16]);
@@ -393,4 +452,29 @@ async fn a_pause_leaves_the_key_length_and_time_of_the_part_file_it_lets_go() {
     let at_rest = paused.at_rest.expect("nobody writes a paused file");
     assert_eq!(at_rest.len, meta.len());
     assert_eq!(at_rest.modified, meta.modified().unwrap());
+}
+
+/// The part boundary's price on the brain and on the lane: by hand, in
+/// release, with the rig (`enact::drain_bench`). The in-memory store syncs
+/// nothing, so the lane's number leaves the commit's fsync out.
+#[tokio::test]
+#[ignore = "by hand, in release: prints what a part costs the brain"]
+async fn part_boundary_bench() {
+    let dir = tempfile::tempdir().unwrap();
+    let bytes = content();
+    let link = rmule_testkit::file_link("served.bin", &bytes);
+    let cell = ServedDownloads::default();
+    let (runner, _held, record) = run_of(NeverTransfers, &link, &cell, dir.path()).await;
+    let (state, part) = working(&link, &record);
+    let mut ctx = ctx_of(&runner, &link, &record, state);
+
+    let mut queue = VecDeque::from([persist(&bytes, part)]);
+    let started = Instant::now();
+    enact_drain(&mut queue, &mut ctx).await.unwrap();
+    let drained = started.elapsed();
+    landed(VecDeque::new(), &mut ctx).await;
+    println!(
+        "a part costs the brain {drained:?}, the lane {:?}",
+        started.elapsed()
+    );
 }
