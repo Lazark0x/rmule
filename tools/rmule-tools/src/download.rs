@@ -262,6 +262,12 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
     let began = tokio::time::Instant::now();
     let mut crypt_flips = crypt_flip::CryptFlips::new(args.peer_crypt_flip.clone());
     crate::node::connect(&core, &server).await?;
+    for (file, out) in files.into_iter().zip(&args.out) {
+        core.send(crate::output::start(file, Some(server.clone()), out)?)
+            .await?;
+    }
+    // Listed once every download is in, so the first UDP round's snapshot of
+    // the queue holds them all.
     if let Some(text) = &args.also_server {
         let also = ServerEndpoint::parse_host_port(text)
             .with_context(|| format!("parse server endpoint {text}"))?;
@@ -269,10 +275,6 @@ pub(crate) async fn start(args: DownloadStartArgs) -> Result<()> {
             server: ManagedServer::listed(also),
         }))
         .await?;
-    }
-    for (file, out) in files.into_iter().zip(&args.out) {
-        core.send(crate::output::start(file, Some(server.clone()), out)?)
-            .await?;
     }
 
     let deadline = args
