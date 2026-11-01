@@ -9,7 +9,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use redb::backends::InMemoryBackend;
 use rmule_store::{
-    Indexed, Ladder, OpenRefusal, Record, Schema, StorageBackend, Store, StoreError, UpgradeStep,
+    Indexed, Ladder, OpenRefusal, Opening, OpeningWatch, Record, Schema, StorageBackend, Store,
+    StoreError, UpgradeStep,
 };
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,16 @@ fn store_at_v1(dir: &Path) -> PathBuf {
 fn copy_at(file: &Path, version: u32) -> PathBuf {
     let name = file.file_name().unwrap().to_string_lossy();
     file.with_file_name(format!("{name}.v{version}"))
+}
+
+#[test]
+fn a_file_this_open_makes_reports_no_repair() {
+    let dir = tempfile::tempdir().unwrap();
+    let told = Arc::new(AtomicBool::new(false));
+    let heard = Arc::clone(&told);
+    let watch: OpeningWatch = Arc::new(move |_| heard.store(true, Ordering::Relaxed));
+    Store::open_watched(dir.path().join("new.redb"), &schema_v1(), &V1, &watch).unwrap();
+    assert!(!told.load(Ordering::Relaxed), "there was no last run");
 }
 
 #[test]

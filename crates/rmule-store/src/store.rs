@@ -98,15 +98,20 @@ impl Store {
         Ok(store)
     }
 
-    /// The engine on the file at `path`, a repair reported to `watch`.
+    /// The engine on the file at `path`, a repair reported to `watch`. The
+    /// engine runs its repair over a file it has just made too; only a file
+    /// that held something before this open has a last run to recover from.
     fn on_file(path: &Path, watch: &OpeningWatch) -> Result<Self, StoreError> {
         let told = Arc::clone(watch);
+        let had_a_run = std::fs::metadata(path).is_ok_and(|file| file.len() > 0);
         let mut builder = Database::builder();
         builder.set_repair_callback(move |session: &mut RepairSession| {
             // The ratio is in 0..=1, so the cast keeps every value.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let percent = (session.progress() * 100.0) as u8;
-            told(Opening::Repairing { percent });
+            if had_a_run {
+                told(Opening::Repairing { percent });
+            }
         });
         Ok(Self::over(builder.create(path)?, Some(path)))
     }
