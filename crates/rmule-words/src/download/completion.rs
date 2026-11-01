@@ -104,8 +104,8 @@ mod tests {
         );
         assert_eq!(
             completion_progress(CompletionStep::Copying, 1_048_576, None),
-            "copying the finished file to the disk it goes to: 1.0 MB of —",
-            "a size not known is a dash, never 0 B"
+            "copying the finished file to the disk it goes to: 1.0 MB of unknown",
+            "a size not known is said, never 0 B"
         );
         assert_eq!(
             completing_line(

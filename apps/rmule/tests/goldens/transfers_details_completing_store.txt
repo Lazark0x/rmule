@@ -10,7 +10,7 @@
 │            │ speed   0.0 KB/s                                 │            │
 │            │ sources 0 known: 1 asking, 3 queued, 1           │            │
 │            │         transferring                             │            │
-│            │ on disk —                                        │            │
+│            │ on disk unknown                                  │            │
 │            │ move    waiting for rmule's store to record the  │            │
 │            │         finished file                            │            │
 │            │                                                  │            │
