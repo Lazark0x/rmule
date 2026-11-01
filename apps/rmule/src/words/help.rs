@@ -44,6 +44,7 @@ pub const SEARCHES: &[Binding] = &[
         "x / n",
         "Searches: stop or close a search / server's next page",
     ),
+    ("u", "Searches: bring back the search closed last"),
 ];
 
 /// Transfers.

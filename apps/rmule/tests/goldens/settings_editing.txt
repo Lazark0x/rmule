@@ -5,10 +5,10 @@
 │ Data dir     /home/u/.local/share/rmule  (from HOME)                      █│
 │                                                                           █│
 │Shared directories                                                         █│
-│ Share a dir  Enter, type an absolute path, Enter                          █│
+│ Share a dir  Enter, type a path, Enter                                    █│
 │                                                                           █│
 │Network                                                                    █│
-│ Nickname     ▮  (on restart)                                              █│
+│ Nickname     ▮ (on restart)                                               █│
 │ eD2k port    4662  (on restart)                                           █│
 │ UDP port     4672  (on restart)                                           █│
 │ Obfuscation  requested  peer TCP/UDP + Kad + server UDP                   █│

@@ -19,7 +19,9 @@ pub(crate) fn draw_searches(
 ) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
     terminal
-        .draw(|frame| view.draw(frame, frame.area(), state, &theme(), Instant::now()))
+        .draw(|frame| {
+            view.draw(frame, frame.area(), state, &theme(), Instant::now());
+        })
         .expect("draw");
     terminal.backend().buffer().clone()
 }

@@ -152,7 +152,7 @@ fn a_click_on_a_table_row_selects_it_and_focuses_the_pane() {
                 &state,
                 &Theme::default_dark(),
                 Instant::now(),
-            )
+            );
         })
         .expect("draw");
     view.focus = Pane::Sources; // prove the click refocuses

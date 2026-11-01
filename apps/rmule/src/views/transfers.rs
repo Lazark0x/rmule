@@ -50,7 +50,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Paragraph, TableState};
@@ -163,6 +163,9 @@ pub struct TransfersView {
     overlay: Overlay,
     /// The Add-link form (`L`), modal over everything while it is up.
     add_link: Option<add_link::AddLink>,
+    /// A form left while its links wait for a download dir; `L` brings it
+    /// back.
+    parked_link: Option<add_link::AddLink>,
     /// Pane areas cached at draw time for click hit-testing.
     table_area: Rect,
     sources_area: Rect,
@@ -298,7 +301,7 @@ impl TransfersView {
                 }
             }
             KeyCode::Char('C') => self.clear_completed_key(state),
-            KeyCode::Char('L') => self.open_add_link(),
+            KeyCode::Char('L') => self.open_add_link(state),
             KeyCode::Char('p') => match self.selected_row_status(state, ids) {
                 Some((id, status)) => ViewOutcome::Emit(pause_toggle_action(status, id)),
                 None => ViewOutcome::Ignored,
@@ -426,7 +429,7 @@ impl TransfersView {
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         let lines = self.sorted_lines(state);
         let ids: Vec<DownloadId> = lines.iter().map(|line| line.id).collect();
         self.clamp(&ids, state);
@@ -447,7 +450,12 @@ impl TransfersView {
                 self.draw_confirm_clear(frame, area, counted, theme)
             }
         }
-        self.draw_add_link(frame, area, theme);
+        self.draw_add_link(frame, area, theme)
+    }
+
+    /// Whether the Add-link form holds the keyboard.
+    pub(crate) fn text_open(&self) -> bool {
+        self.add_link.is_some()
     }
 }
 

@@ -447,7 +447,9 @@ fn an_overwide_cell_grows_the_row_and_keeps_every_character() {
         .insert(download_id(1), 12_345.6 * 1024.0);
     let mut terminal = Terminal::new(TestBackend::new(GOLDEN_W, GOLDEN_H)).expect("terminal");
     terminal
-        .draw(|frame| view.draw(frame, frame.area(), &state, &Theme::default_dark(), now()))
+        .draw(|frame| {
+            view.draw(frame, frame.area(), &state, &Theme::default_dark(), now());
+        })
         .expect("draw");
     let buffer = terminal.backend().buffer();
     let rows: Vec<String> = (0..GOLDEN_H)

@@ -9,9 +9,14 @@
 //! impl <Name>View {
 //!     pub fn handle_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome;
 //!     pub fn draw(&mut self, frame: &mut Frame, area: Rect, state: &UiState,
-//!                 theme: &Theme, now: Instant);
+//!                 theme: &Theme, now: Instant) -> Option<Position>;
+//!     pub(crate) fn text_open(&self) -> bool;
 //! }
 //! ```
+//!
+//! `draw` returns where the caret of an open text field is, and the app puts
+//! the terminal's cursor there; `text_open` says a field holds the keyboard,
+//! so the Key Gate passes it the chords a line editor binds.
 
 pub(crate) mod modal;
 pub mod networks;
@@ -29,6 +34,7 @@ pub mod statistics;
 pub(crate) mod title;
 pub mod transfers;
 
+use std::ops::Range;
 use std::time::Instant;
 
 use ratatui::layout::{Position, Rect};
@@ -246,6 +252,21 @@ pub(crate) fn bottom_border(pane: Rect) -> Rect {
         return Rect::default();
     }
     Rect::new(pane.x + 1, pane.bottom() - 1, pane.width - 2, 1)
+}
+
+/// Where a caret at line `at.0`, column `at.1` of laid-out lines falls when
+/// `shown` of them are drawn into `area`: nowhere when it is scrolled off.
+pub(crate) fn caret_in(
+    area: Rect,
+    shown: Range<usize>,
+    at: Option<(usize, u16)>,
+) -> Option<Position> {
+    let (line, column) = at?;
+    if !shown.contains(&line) || column >= area.width {
+        return None;
+    }
+    let row = crate::wrap::clamp_u16(line - shown.start);
+    (row < area.height).then(|| Position::new(area.x + column, area.y + row))
 }
 
 /// Center a `width`×`height` rect inside `area`, clamped to fit — the one

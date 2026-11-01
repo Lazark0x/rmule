@@ -31,12 +31,15 @@ impl SearchesView {
             self.readd = None;
             self.filters_open = false;
             self.input_focused = false;
+            let kept = self.keep_draft();
             self.held.open_unsent(
                 &query.file_name().to_display_string(),
                 Some(query.file_hash()),
                 reason,
             );
-            self.show_current_query();
+            if kept || self.query.is_empty() {
+                self.show_current_query();
+            }
             return ViewOutcome::Emit(Action::SwitchView(crate::view::ViewId::Searches));
         }
         if let Some(reason) = crate::views::related::unavailable(state) {
@@ -50,8 +53,11 @@ impl SearchesView {
         self.filters_open = false;
         self.input_focused = false;
         let search_id = rmule_core::SearchId::mint();
+        let kept = self.keep_draft();
         self.held.open(&query, search_id);
-        self.show_current_query();
+        if kept || self.query.is_empty() {
+            self.show_current_query();
+        }
         ViewOutcome::Emit(Action::Command(CoreCommand::Search(
             SearchCommand::StartSearch { search_id, query },
         )))

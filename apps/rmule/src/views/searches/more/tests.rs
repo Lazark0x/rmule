@@ -84,7 +84,9 @@ fn status_of(view: &mut SearchesView, state: &UiState) -> String {
     let mut terminal =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(160, 12)).expect("terminal");
     terminal
-        .draw(|frame| view.draw(frame, frame.area(), state, &theme, Instant::now()))
+        .draw(|frame| {
+            view.draw(frame, frame.area(), state, &theme, Instant::now());
+        })
         .expect("draw");
     let buffer = terminal.backend().buffer();
     (0..buffer.area.height)

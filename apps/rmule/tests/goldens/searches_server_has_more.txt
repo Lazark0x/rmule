@@ -4,7 +4,7 @@
 │Filters: none   o edit                                                                        │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 [linux · 1]
-┌ Results · Completed · 1 · server has more ─── [ ] search  x close  n more  s sort  S reverse ┐
+┌ Results · Completed · 1 · server has more ── Enter menu  [ ] search  x close  n more  s sort ┐
 │  Name ▲                                                          Size      Sources Type      │
 │▸ linux-1.iso                                                   1.0 KB           40 CD-Images │
 │                                                                                              │

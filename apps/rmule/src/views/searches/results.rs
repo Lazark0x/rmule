@@ -232,6 +232,11 @@ impl SearchesView {
             },
             |_| " Results · Not sent ".to_string(),
         );
+        let reopen = if self.held.can_reopen() {
+            "  u reopen"
+        } else {
+            ""
+        };
         let hint = if let Some(pane) = pane {
             let x = if pane.status.is_live() && state.core_alive {
                 "x stop"
@@ -248,13 +253,18 @@ impl SearchesView {
             } else {
                 ""
             };
-            format!(" [ ] search  {x}{next}{sort} ")
+            let menu = if pane.results.is_empty() {
+                ""
+            } else {
+                "Enter menu  "
+            };
+            format!(" {menu}[ ] search  {x}{next}{sort}{reopen} ")
         } else if self.current_refused() || self.current_not_sent().is_some() {
-            " [ ] search  x close ".to_string()
+            format!(" [ ] search  x close{reopen} ")
         } else {
-            String::new()
+            reopen.to_string()
         };
-        let block = crate::views::title::titled(
+        let block = crate::views::title::titled_first_key(
             Block::bordered().border_style(Style::new().fg(border)),
             area.width,
             (&title, Style::new().fg(theme.fg)),
@@ -279,7 +289,8 @@ impl SearchesView {
                     .or_else(|| self.related_message(pane))
                     .unwrap_or_else(|| {
                         match pane {
-                            None => "press / and type a query",
+                            None if self.input_focused => crate::words::search::TYPE_A_QUERY,
+                            None => crate::words::search::PRESS_SLASH,
                             Some(pane) => match pane.status {
                                 SearchStatus::Running | SearchStatus::WaitingForConnection
                                     if !state.core_alive =>

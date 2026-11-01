@@ -5,7 +5,7 @@
 │ Data dir     —  (none: give --data-dir, or set RMULE_DATA or HOME)        █│
 │                                                                           █│
 │Shared directories                                                         █│
-│ Share a dir  Enter, type an absolute path, Enter                          █│
+│ Share a dir  Enter, type a path, Enter                                    █│
 │                                                                           █│
 │Network                                                                    █│
 │ Nickname     rmule  (on restart)                                          █│

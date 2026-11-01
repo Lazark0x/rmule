@@ -72,8 +72,8 @@ pub(super) fn fields(state: &UiState) -> Vec<(Field, Slot)> {
         })
         .collect();
     rows.push((
-        Field::text("Share a dir", String::new())
-            .with_placeholder("Enter, type an absolute path, Enter"),
+        Field::directory("Share a dir", String::new())
+            .with_placeholder("Enter, type a path, Enter"),
         Slot::AddDir,
     ));
     if let Some((field, _)) = rows.first_mut() {
@@ -163,9 +163,12 @@ fn directory_to_add(text: &str) -> Result<PathBuf, Sentence> {
     if text.is_empty() {
         return Err(words::add_directory_refusal(AddDirectoryRefusal::Empty));
     }
-    let path = PathBuf::from(text);
+    let path = crate::config::expand_home(text);
     if !path.is_absolute() {
         return Err(words::add_directory_refusal(AddDirectoryRefusal::Relative));
+    }
+    if !path.is_dir() {
+        return Err(words::add_directory_refusal(AddDirectoryRefusal::Missing));
     }
     Ok(path)
 }

@@ -23,7 +23,9 @@ impl App {
             Action::Input(event) => {
                 let mapped = match event {
                     Event::Key(key) => {
-                        match input::gate(&key) {
+                        let overlay = self.chrome.help_open || self.chrome.quit_open;
+                        let text_open = !overlay && self.views.text_open(self.chrome.active);
+                        match input::gate(&key, text_open) {
                             input::KeyGate::Pass => {}
                             input::KeyGate::Drop => return Flow::Continue,
                             input::KeyGate::Interrupt => {
@@ -34,7 +36,7 @@ impl App {
                         // active view sees keys before the globals — that is
                         // what lets a focused query input treat `h`/`q` as
                         // text. A chrome modal preempts everything.
-                        if self.chrome.help_open || self.chrome.quit_open {
+                        if overlay {
                             input::map_key(&self.chrome, key)
                         } else {
                             match self.views.handle_key(self.chrome.active, key, &self.state) {
@@ -173,22 +175,40 @@ impl App {
                 self.reduce(Action::Flash(app_words::LINK_SENT), now)
             }
             Action::Preference(edit) => match self.write_preference(edit) {
-                Some(flash) => self.reduce(Action::Flash(flash), now),
-                None => Flow::Continue,
+                Ok(Some(flash)) | Err(flash) => self.reduce(Action::Flash(flash), now),
+                Ok(None) => Flow::Continue,
+            },
+            Action::SettingsEdit(edit) => match self.write_preference(edit) {
+                Ok(receipt) => {
+                    self.views.settings.saved();
+                    self.dirty = true;
+                    match receipt {
+                        Some(flash) => self.reduce(Action::Flash(flash), now),
+                        None => Flow::Continue,
+                    }
+                }
+                Err(why) => {
+                    self.views.settings.refused(why);
+                    self.dirty = true;
+                    Flow::Continue
+                }
             },
             Action::ConfirmDownloadDir(dir) => {
                 let edit = crate::config::PrefEdit::DownloadDir(dir.clone());
                 match self.config.as_ref().map(|config| config.check(&edit)) {
                     Some(Err(rmule_core::SettingError::Refused(refusal))) => {
                         rmule_core::run_log::write(&refusal.record(), self.run_log.get());
-                        return self.reduce(
-                            Action::Flash(crate::words::store::setting_refused(&refusal)),
-                            now,
-                        );
+                        self.views
+                            .settings
+                            .refused(crate::words::store::setting_refused(&refusal));
+                        self.dirty = true;
+                        return Flow::Continue;
                     }
                     Some(Err(error)) => {
                         tracing::warn!(%error, "a setting could not be checked");
-                        return self.reduce(Action::Flash(crate::words::store::NOT_SAVED), now);
+                        self.views.settings.refused(crate::words::store::NOT_SAVED);
+                        self.dirty = true;
+                        return Flow::Continue;
                     }
                     Some(Ok(())) | None => {}
                 }
@@ -200,7 +220,8 @@ impl App {
             | Action::Snapshot(_)
             | Action::CoreClosed
             | Action::Note(_)
-            | Action::ForgetSearch(_) => {
+            | Action::ForgetSearch(_)
+            | Action::RestoreSearch(_) => {
                 // Sequencing, not state: the Kad join rides the run's
                 // first eD2k *login* — not startup, not a dial that may still
                 // fail, and not the `c` key. Owed once: a reconnect, a server
@@ -251,7 +272,11 @@ impl App {
                     self.dirty |= self.chrome.update(&flash, now);
                     return Flow::Continue;
                 }
+                let closed_a_search = matches!(action, Action::ForgetSearch(_));
                 self.dirty |= self.state.apply(action, now);
+                if closed_a_search {
+                    return self.reduce(Action::Flash(crate::words::search::CLOSED), now);
+                }
                 // After the fold, so a refusal outlasts the connection's own
                 // note in the status bar.
                 if kad_join_ended {
@@ -318,17 +343,21 @@ impl App {
     }
 
     /// Persist one Settings edit, apply what this app keeps itself, and
-    /// return the status-bar receipt — or nothing for a table's sort, whose
-    /// receipt is the header arrow already drawn.
+    /// return the status-bar receipt — nothing for a table's sort, whose
+    /// receipt is the header arrow already drawn — or why it was not saved.
     ///
     /// A core key goes through Core Settings, which takes it up in the running
     /// core when it is live and says when it takes effect; the receipt reads
     /// that answer. The write is synchronous on purpose: it is one small store
     /// transaction (a device flush, single-digit milliseconds — ADR-0083), so
-    /// there is nothing to queue and nothing to await. A failure is reported
-    /// where the operator is looking: why Core Settings refused the value, or
-    /// that the store refused the write, never a swallowed one.
-    fn write_preference(&mut self, edit: crate::config::PrefEdit) -> Option<Sentence> {
+    /// there is nothing to queue and nothing to await. A failure is said
+    /// to the caller, which reports it where the operator is looking: why Core
+    /// Settings refused the value, or that the store refused the write, never
+    /// a swallowed one.
+    fn write_preference(
+        &mut self,
+        edit: crate::config::PrefEdit,
+    ) -> Result<Option<Sentence>, Sentence> {
         let sort = matches!(edit, crate::config::PrefEdit::TableSort { .. });
         let effect = match &self.config {
             None => rmule_core::TakesEffect::Now,
@@ -336,11 +365,11 @@ impl App {
                 Ok(effect) => effect,
                 Err(rmule_core::SettingError::Refused(refusal)) => {
                     rmule_core::run_log::write(&refusal.record(), self.run_log.get());
-                    return Some(crate::words::store::setting_refused(&refusal));
+                    return Err(crate::words::store::setting_refused(&refusal));
                 }
                 Err(error) => {
                     tracing::warn!(%error, "a setting could not be saved");
-                    return Some(crate::words::store::NOT_SAVED);
+                    return Err(crate::words::store::NOT_SAVED);
                 }
             },
         };
@@ -360,7 +389,7 @@ impl App {
             _ => {}
         }
         self.dirty = true;
-        (!sort).then(|| app_words::receipt(&edit, effect))
+        Ok((!sort).then(|| app_words::receipt(&edit, effect)))
     }
 }
 

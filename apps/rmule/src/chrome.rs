@@ -171,8 +171,10 @@ impl ChromeState {
             | Action::Actions(_)
             | Action::CopyLink(_)
             | Action::Preference(_)
+            | Action::SettingsEdit(_)
             | Action::ConfirmDownloadDir(_)
             | Action::ForgetSearch(_)
+            | Action::RestoreSearch(_)
             | Action::SearchRelated(_)
             | Action::StartKad
             | Action::Preview(_)

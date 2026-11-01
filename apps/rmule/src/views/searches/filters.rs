@@ -128,8 +128,8 @@ impl Filters {
         let parts: Vec<String> = [
             self.class()
                 .map(|class| crate::words::search::file_class_words(class).to_string()),
-            set(Self::MIN_SIZE).map(|text| format!("≥{text}")),
-            set(Self::MAX_SIZE).map(|text| format!("≤{text}")),
+            set(Self::MIN_SIZE).map(|text| format!("≥{}", size_words(text))),
+            set(Self::MAX_SIZE).map(|text| format!("≤{}", size_words(text))),
             set(Self::MIN_SOURCES).map(|text| format!("≥{text} src")),
             set(Self::EXTENSION).map(|text| format!(".{}", text.trim_start_matches('.'))),
         ]
@@ -163,6 +163,17 @@ impl Default for Filters {
                 Field::text("Extension", "").with_placeholder("any (e.g. avi)"),
             ]),
         }
+    }
+}
+
+/// A size bound as the summary says it: as typed when it carries a unit, and
+/// in the app's own spelling when it is a bare count of bytes.
+fn size_words(text: &str) -> String {
+    match parse_size(text) {
+        Ok(Some(bytes)) if text.ends_with(|c: char| c.is_ascii_digit()) => {
+            crate::words::units::human_size(bytes)
+        }
+        _ => text.to_string(),
     }
 }
 
@@ -230,7 +241,7 @@ impl SearchesView {
                 Ok(_) => {
                     self.filters.form.error = None;
                     self.filters_open = false;
-                    if self.query.trim().is_empty() {
+                    if self.query.text().trim().is_empty() {
                         ViewOutcome::Redraw
                     } else {
                         self.commit_query(state)
@@ -249,8 +260,13 @@ impl SearchesView {
 
     /// The search-options row: one summary line when idle, the labelled editor
     /// when expanded (the Networks add-server form's shape, inline instead of
-    /// modal — these fields belong *to* the query above them).
-    pub(super) fn filter_lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    /// modal — these fields belong *to* the query above them), with the
+    /// editor's caret.
+    pub(super) fn filter_lines(
+        &self,
+        width: usize,
+        theme: &Theme,
+    ) -> (Vec<Line<'static>>, Option<(usize, u16)>) {
         if !self.filters_open {
             let mut spans = vec![Span::styled("Filters: ", theme.dim_text())];
             let summary = self.filters.summary();
@@ -263,19 +279,21 @@ impl SearchesView {
             spans.push(Span::styled("   o edit", theme.dim_text()));
             let line = Line::from(spans);
             if line.width() <= width {
-                return vec![line];
+                return (vec![line], None);
             }
             let flat: String = line
                 .spans
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect();
-            return wrap_text(&flat, width)
+            let lines = wrap_text(&flat, width)
                 .into_iter()
                 .map(|part| Line::from(Span::styled(part, theme.dim_text())))
                 .collect();
+            return (lines, None);
         }
-        self.filters.form.render(width, theme, true).lines
+        let rendered = self.filters.form.render(width, theme, true);
+        (rendered.lines, rendered.caret)
     }
 }
 

@@ -10,10 +10,11 @@ use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
 use super::super::TransfersView;
 use crate::action::Action;
 use crate::fixture::*;
-use crate::golden::assert_golden;
+use crate::golden::assert_golden_caret;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::views::ViewOutcome;
+use crate::words::download::{self as words, LinkRefusal};
 
 /// A link carrying two fields no client reads (`x=1`, `comment`), an AICH
 /// root and one classic source — the reader's own skipped-field fixture.
@@ -54,7 +55,7 @@ fn asked(outcome: ViewOutcome) -> usize {
 fn a_paste_of_several_links_asks_for_each() {
     let state = with_session();
     let mut view = TransfersView::new();
-    view.open_add_link();
+    view.open_add_link(&state);
     let paste = format!("{SKIPPING_LINK}\r\n{OTHER_LINK}\n");
     assert_eq!(asked(view.handle_paste(&paste, &state)), 2);
     assert!(view.add_link.is_none(), "nothing left to answer");
@@ -66,7 +67,7 @@ fn a_paste_of_several_links_asks_for_each() {
 fn links_refused_in_a_paste_come_up_in_turn() {
     let state = with_session();
     let mut view = TransfersView::new();
-    view.open_add_link();
+    view.open_add_link(&state);
     let paste = format!("not a link\n{SKIPPING_LINK}\nnor this\n");
     assert_eq!(asked(view.handle_paste(&paste, &state)), 1);
     let field = |view: &TransfersView| {
@@ -229,9 +230,9 @@ fn golden_transfers_add_link_form() {
     let mut view = TransfersView::new();
     view.handle_key(press(KeyCode::Char('L')), &state);
     let now = Instant::now();
-    assert_golden("transfers_add_link_form", 100, 24, |frame| {
+    assert_golden_caret("transfers_add_link_form", 100, 24, |frame| {
         let area = frame.area();
-        view.draw(frame, area, &state, &Theme::default_dark(), now);
+        view.draw(frame, area, &state, &Theme::default_dark(), now)
     });
 }
 
@@ -243,9 +244,9 @@ fn golden_transfers_add_link_refused() {
     typed(&mut view, &state, &bunny_link());
     view.handle_key(press(KeyCode::Enter), &state);
     let now = Instant::now();
-    assert_golden("transfers_add_link_refused", 100, 24, |frame| {
+    assert_golden_caret("transfers_add_link_refused", 100, 24, |frame| {
         let area = frame.area();
-        view.draw(frame, area, &state, &Theme::default_dark(), now);
+        view.draw(frame, area, &state, &Theme::default_dark(), now)
     });
 }
 
@@ -262,13 +263,57 @@ fn golden_transfers_add_link_scrolls_in_a_short_frame() {
             view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
         })
     };
-    assert_golden("transfers_add_link_short", 70, 4, |frame| {
+    assert_golden_caret("transfers_add_link_short", 70, 4, |frame| {
         let area = frame.area();
-        view.draw(frame, area, &state, &Theme::default_dark(), Instant::now());
+        view.draw(frame, area, &state, &Theme::default_dark(), Instant::now())
     });
     assert!(!shown(&mut view).contains("cancel"));
     view.handle_key(press(KeyCode::End), &state);
     assert!(shown(&mut view).contains("cancel"));
     typed(&mut view, &state, "e");
     assert!(shown(&mut view).contains("Link"), "{}", shown(&mut view));
+}
+
+/// With no download dir there is nowhere to land: the link stays typed with
+/// the reason under it, and outlives the form, since setting one means
+/// leaving it.
+#[test]
+fn a_link_with_no_download_dir_is_kept_until_there_is_one() {
+    let mut state = three_downloads();
+    state.session.download_dir = None;
+    let mut view = TransfersView::new();
+    view.open_add_link(&state);
+    view.handle_paste(SKIPPING_LINK, &state);
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    assert_eq!(
+        refusal(&view),
+        Some(words::link_refused(&LinkRefusal::NoDownloadDir).as_str())
+    );
+
+    view.handle_key(press(KeyCode::Esc), &state);
+    assert!(view.add_link.is_none());
+    state.session.download_dir = Some(PathBuf::from("/srv/downloads"));
+    view.open_add_link(&state);
+    let entry = view.add_link.as_ref().expect("the form");
+    assert_eq!(entry.form.text(0), SKIPPING_LINK, "L brings the link back");
+    assert_eq!(entry.form.error, None, "the reason has gone");
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Emit(_)
+    ));
+}
+
+#[test]
+fn a_form_cancelled_for_any_other_reason_leaves_nothing() {
+    let state = with_session();
+    let mut view = TransfersView::new();
+    view.open_add_link(&state);
+    view.handle_paste("not a link", &state);
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Esc), &state);
+    view.open_add_link(&state);
+    assert_eq!(view.add_link.as_ref().expect("the form").form.text(0), "");
 }

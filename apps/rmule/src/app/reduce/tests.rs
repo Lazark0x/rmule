@@ -69,6 +69,27 @@ fn a_chord_reaches_no_view_and_altgr_is_text() {
 
 /// `q` is one letter on the wrong tab away: over a running download it asks,
 /// `y` leaves, anything that declines stays, and a second Ctrl-C is the answer.
+/// A chord the line editor binds reaches an open field from the reducer down;
+/// with no field open it is nothing, and an unbound one never reaches a view
+/// as its letter.
+#[test]
+fn an_open_field_claims_its_chords_at_the_gate() {
+    let now = Instant::now();
+    let mut app = App::new(Theme::default_dark());
+    app.chrome.active = ViewId::Searches;
+    app.reduce(key_action(KeyCode::Tab), now);
+    for c in "big buck".chars() {
+        app.reduce(key_action(KeyCode::Char(c)), now);
+    }
+    app.reduce(chord(KeyCode::Char('p'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big buck");
+    app.reduce(chord(KeyCode::Char('w'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big ");
+    app.reduce(key_action(KeyCode::Esc), now);
+    app.reduce(chord(KeyCode::Char('u'), KeyModifiers::CONTROL), now);
+    assert_eq!(app.views.searches.query_text(), "big ", "no field open");
+}
+
 #[test]
 fn a_quit_over_a_running_download_asks_first() {
     let now = Instant::now();
@@ -698,10 +719,11 @@ fn a_refused_download_dir_is_said_before_the_share_warning() {
 
     app.reduce(Action::ConfirmDownloadDir(home.path().to_path_buf()), now);
     assert_eq!(
-        app.chrome.flash_text(now),
+        app.views.settings.refusal(),
         Some(
             "not saved: everything under the download dir is shared, and it is your home directory"
-        )
+        ),
+        "the refusal stays under the field"
     );
     assert_eq!(app.views.settings.warned_dir(), None, "no share warning");
 

@@ -54,6 +54,8 @@ pub(super) struct HeldSearch {
     pub(super) kind: HeldKind,
     /// The selection in this search's results.
     pub(super) cursor: RowCursor<ResultId>,
+    /// What was typed in the input and not sent while this entry was current.
+    pub(super) draft: Option<String>,
 }
 
 /// The strip: its entries in the order they were opened, and which is current.
@@ -67,6 +69,8 @@ pub(super) struct HeldSearches {
     /// The ids the operator closed: a late event naming one opens nothing,
     /// even when `newest_seen` has not reached it yet.
     closed: BTreeSet<SearchId>,
+    /// The entry closed last and where it stood, for its one undo.
+    last_closed: Option<(usize, HeldSearch)>,
     /// What part of the strip is on screen, in entries: it scrolls only when
     /// the current entry would leave the view.
     viewport: Viewport,
@@ -95,6 +99,7 @@ impl HeldSearches {
             query,
             kind,
             cursor: RowCursor::default(),
+            draft: None,
         });
         self.current = self.entries.len() - 1;
     }
@@ -108,6 +113,7 @@ impl HeldSearches {
             query: query.to_string(),
             kind: HeldKind::NotSent { why, related },
             cursor: RowCursor::default(),
+            draft: None,
         });
         self.current = self.entries.len() - 1;
     }
@@ -140,6 +146,7 @@ impl HeldSearches {
                     query: String::new(),
                     kind: HeldKind::Keywords,
                     cursor: RowCursor::default(),
+                    draft: None,
                 });
             }
         }
@@ -201,11 +208,29 @@ impl HeldSearches {
             return None;
         }
         let closed = self.entries.remove(self.current);
-        self.closed.insert(closed.id);
+        let id = closed.id;
+        self.closed.insert(id);
+        self.last_closed = Some((self.current, closed));
         if self.current >= self.entries.len() {
             self.current = self.entries.len().saturating_sub(1);
         }
-        Some(closed.id)
+        Some(id)
+    }
+
+    /// Whether a closed entry can come back.
+    pub(super) fn can_reopen(&self) -> bool {
+        self.last_closed.is_some()
+    }
+
+    /// Bring back the entry closed last, where it stood, and make it current.
+    /// Its id.
+    fn reopen(&mut self) -> Option<SearchId> {
+        let (at, entry) = self.last_closed.take()?;
+        let id = entry.id;
+        self.closed.remove(&id);
+        self.current = at.min(self.entries.len());
+        self.entries.insert(self.current, entry);
+        Some(id)
     }
 
     /// Draw the strip into the one-row `area`, scrolled so the current entry
@@ -307,20 +332,20 @@ impl SearchesView {
                 .expect("a valid test query");
         let id = crate::fixture::search_id(self.held.entries.len() as u64 + 1);
         self.held.open(&sent.into(), id);
-        self.query = query.to_string();
+        self.query.set(query);
         self
     }
 
     /// The query the input shows for the current entry.
     #[cfg(test)]
     pub(crate) fn shown_query(&self) -> &str {
-        &self.query
+        self.query.text()
     }
 
     /// Focus is on the results, not the query input or a modal.
     #[cfg(test)]
     pub(crate) fn results_focused(&self) -> bool {
-        !self.input_focused && self.menu.is_none() && !self.filters_open && self.readd.is_none()
+        !self.text_open() && self.menu.is_none() && self.readd.is_none()
     }
 
     /// Act on the current entry's cursor; with no entry there is none to move.
@@ -336,25 +361,47 @@ impl SearchesView {
 
     /// `[` / `]`: the neighbouring held search, its query in the input.
     pub(super) fn step_held(&mut self, delta: isize) -> ViewOutcome {
+        self.keep_draft();
         if self.held.step(delta) {
             self.show_current_query();
         }
         ViewOutcome::Redraw
     }
 
-    /// The input shows the current entry's query; with no entry
-    /// left, the empty prompt. A Related-Files entry leaves the input empty:
-    /// its file is no keywords to edit, and the query line names it instead.
+    /// Before the input changes hands: what is typed there and was never sent
+    /// stays with the current entry. Whether there was one.
+    pub(super) fn keep_draft(&mut self) -> bool {
+        let typed = self.query.text();
+        let Some(entry) = self.held.current_mut() else {
+            return false;
+        };
+        let sent = if entry.kind.related_file().is_some() {
+            ""
+        } else {
+            entry.query.as_str()
+        };
+        entry.draft = (typed != sent).then(|| typed.to_string());
+        true
+    }
+
+    /// The input shows what was left typed on the current entry, else its
+    /// query; with no entry left, the empty prompt. A Related-Files entry
+    /// leaves the input empty: its file is no keywords to edit, and the query
+    /// line names it instead.
     pub(super) fn show_current_query(&mut self) {
-        match self.held.current() {
-            Some(entry) if entry.kind.related_file().is_some() => self.query.clear(),
-            Some(entry) => self.query.clone_from(&entry.query),
-            None => self.query.clear(),
-        }
+        let shown = match self.held.current() {
+            Some(HeldSearch {
+                draft: Some(draft), ..
+            }) => draft.as_str(),
+            Some(entry) if entry.kind.related_file().is_some() => "",
+            Some(entry) => entry.query.as_str(),
+            None => "",
+        };
+        self.query.set(shown);
     }
 
     /// `x`: a running search stops and keeps what arrived; a stopped or
-    /// complete one closes, and its results go with it.
+    /// complete one closes, its results set aside for one `u`.
     pub(super) fn stop_or_close(&mut self, state: &UiState) -> ViewOutcome {
         let Some(entry) = self.held.current() else {
             return ViewOutcome::Ignored;
@@ -363,9 +410,7 @@ impl SearchesView {
         // Refused before it started, or never sent: nothing runs and nothing
         // arrived. So too once the core has stopped: nothing runs any more.
         if entry.kind.never_started() || super::no_core::absent(state).is_some() {
-            self.held.close_current();
-            self.show_current_query();
-            return ViewOutcome::Emit(Action::ForgetSearch(search_id));
+            return self.close_current(search_id);
         }
         if !state.searches.contains_key(&search_id) {
             return ViewOutcome::Emit(Action::Flash(crate::words::search::NOT_STARTED));
@@ -379,12 +424,24 @@ impl SearchesView {
                 SearchCommand::CancelSearch { search_id },
             )));
         }
-        let closed = self.held.close_current();
+        self.close_current(search_id)
+    }
+
+    fn close_current(&mut self, search_id: SearchId) -> ViewOutcome {
+        self.keep_draft();
+        self.held.close_current();
         self.show_current_query();
-        match closed {
-            Some(search_id) => ViewOutcome::Emit(Action::ForgetSearch(search_id)),
-            None => ViewOutcome::Redraw,
-        }
+        ViewOutcome::Emit(Action::ForgetSearch(search_id))
+    }
+
+    /// `u`: the search closed last comes back with its results.
+    pub(super) fn reopen(&mut self) -> ViewOutcome {
+        self.keep_draft();
+        let Some(search_id) = self.held.reopen() else {
+            return ViewOutcome::Ignored;
+        };
+        self.show_current_query();
+        ViewOutcome::Emit(Action::RestoreSearch(search_id))
     }
 }
 

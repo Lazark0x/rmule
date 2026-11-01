@@ -11,7 +11,7 @@ use std::net::Ipv4Addr;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -151,9 +151,14 @@ fn validate_host(host: &str) -> Result<&str, Sentence> {
     }
 }
 
-/// The add-server / update-URL modal: labelled fields with a trailing caret on
-/// the focused one, the last rejection under them, and the key legend.
-pub(super) fn draw_form(frame: &mut Frame, area: Rect, entry: &ServerForm, theme: &Theme) {
+/// The add-server / update-URL modal: labelled fields, the last rejection
+/// under them, and the key legend. Returns where the caret is.
+pub(super) fn draw_form(
+    frame: &mut Frame,
+    area: Rect,
+    entry: &ServerForm,
+    theme: &Theme,
+) -> Option<Position> {
     // Greedy width: at least the house 58, and as much more as the
     // longest entry needs to read on one line — a pre-filled `server.met` URL
     // is longer than the add-server fields ever are.
@@ -181,7 +186,7 @@ pub(super) fn draw_form(frame: &mut Frame, area: Rect, entry: &ServerForm, theme
             ]);
             entry.form.render_modal(inner_w, theme, vec![legend])
         },
-    );
+    )
 }
 
 impl NetworksView {
@@ -243,7 +248,7 @@ mod tests {
 
     use rmule_core::CoreEvent;
 
-    use crate::golden::assert_golden;
+    use crate::golden::{assert_golden, assert_golden_caret};
 
     use crate::views::networks::*;
 
@@ -411,9 +416,9 @@ mod tests {
         typed(&mut view, &state, "10.0.0.300");
         view.handle_key(press(KeyCode::Enter), &state); // surfaces the validation error
         let now = Instant::now();
-        assert_golden("networks_add_form", 78, 21, |frame| {
+        assert_golden_caret("networks_add_form", 78, 21, |frame| {
             let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now);
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
         });
     }
 
@@ -423,9 +428,9 @@ mod tests {
         let mut view = NetworksView::new();
         view.handle_key(press(KeyCode::Char('U')), &state);
         let now = Instant::now();
-        assert_golden("networks_update_form", 78, 21, |frame| {
+        assert_golden_caret("networks_update_form", 78, 21, |frame| {
             let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now);
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
         });
     }
 
@@ -471,9 +476,9 @@ mod tests {
                 view.draw(frame, area, &state, &Theme::default_dark(), now);
             })
         };
-        assert_golden("networks_add_form_short", 70, 6, |frame| {
+        assert_golden_caret("networks_add_form_short", 70, 6, |frame| {
             let area = frame.area();
-            view.draw(frame, area, &state, &Theme::default_dark(), now);
+            view.draw(frame, area, &state, &Theme::default_dark(), now)
         });
         view.handle_key(press(KeyCode::Tab), &state);
         let last = shown(&mut view);

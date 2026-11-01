@@ -37,13 +37,15 @@
 //! A selector has nothing to type into, so `←`/`→` step it and it commits on
 //! the spot. A text field needs an editing mode — `Enter` opens it, `Enter`
 //! commits it, `Esc` restores what was stored — because a tab is not a modal
-//! and `q` must stay `q` while nobody is typing.
+//! and `q` must stay `q` while nobody is typing. Only those two leave an open
+//! field: one field commits at a time, so `Tab`, the arrows and the wheel stay
+//! on it, and it stays open with its typing until the store has the value.
 
 use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph};
@@ -211,8 +213,9 @@ pub struct SettingsView {
     line_rows: Vec<Option<usize>>,
     /// The form's inner rect from the last draw, for click hit-testing.
     body: Rect,
-    /// A download directory whose commit has shown the disclosure warning
-    /// (ADR-0101) and waits for the second `Enter` that confirms it.
+    /// A directory whose commit has shown its warning — the disclosure of a
+    /// download directory (ADR-0101), a Temp dir that does not exist yet — and
+    /// waits for the second `Enter` that confirms it.
     warned_dir: Option<std::path::PathBuf>,
     /// What each form row stands for, in form order.
     slots: Vec<Slot>,
@@ -259,10 +262,10 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
 
     let fields = Row::ALL.map(|row| {
         let field = match row {
-            Row::DownloadDir => Field::text("Download dir", path(&prefs.download_dir))
+            Row::DownloadDir => Field::directory("Download dir", path(&prefs.download_dir))
                 .with_placeholder("unset — downloads have nowhere to land"),
             // Unset, the row names the directory core reads by default.
-            Row::TempDir => Field::text("Temp dir", path(&prefs.temp_dir)).with_placeholder(
+            Row::TempDir => Field::directory("Temp dir", path(&prefs.temp_dir)).with_placeholder(
                 crate::words::app::temp_dir_default(
                     prefs
                         .data_dir
@@ -487,6 +490,11 @@ impl SettingsView {
         Ok(Some(edit))
     }
 
+    /// Whether an open field holds the keyboard, with no question over it.
+    pub(crate) fn text_open(&self) -> bool {
+        self.editing && self.removing.is_none()
+    }
+
     /// A paste into the field open for editing, whole.
     pub(crate) fn handle_paste(&mut self, text: &str) -> ViewOutcome {
         if self.editing && self.form.paste(text) {
@@ -516,7 +524,8 @@ impl SettingsView {
 
         // A selector commits where it is stepped: there is nothing to type, so
         // an editing mode for one would be ceremony with no purpose.
-        if self.form.focus_is_choice()
+        if !self.editing
+            && self.form.focus_is_choice()
             && matches!(key.code, KeyCode::Left | KeyCode::Right | KeyCode::Enter)
         {
             self.form.step_choice(key.code != KeyCode::Left);
@@ -524,7 +533,7 @@ impl SettingsView {
         }
 
         if self.editing {
-            return match self.form.handle_key(key) {
+            return match self.form.field_key(key) {
                 FormKey::Commit if self.focused_slot() == Some(&Slot::AddDir) => self.send_add(),
                 FormKey::Commit => self.emit(&state.preferences),
                 FormKey::Cancel => {
@@ -582,12 +591,16 @@ impl SettingsView {
             Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
                 ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
             }
-            Ok(Some(edit)) => {
-                self.warned_dir = None;
-                self.editing = false;
-                self.form.error = None;
-                ViewOutcome::Emit(Action::Preference(edit))
+            // A Temp dir that does not exist is made at the set: said first,
+            // since the path may be a typo.
+            Ok(Some(PrefEdit::TempDir(Some(dir))))
+                if !dir.exists() && self.warned_dir.as_ref() != Some(&dir) =>
+            {
+                self.form.error = Some(words::temp_dir_missing(&dir));
+                self.warned_dir = Some(dir);
+                ViewOutcome::Redraw
             }
+            Ok(Some(edit)) => ViewOutcome::Emit(Action::SettingsEdit(edit)),
             Ok(None) => ViewOutcome::Redraw,
             Err(reason) => {
                 self.form.error = Some(reason);
@@ -596,10 +609,28 @@ impl SettingsView {
         }
     }
 
+    /// The store took the value: the field closes.
+    pub(crate) fn saved(&mut self) {
+        self.editing = false;
+        self.warned_dir = None;
+        self.form.error = None;
+    }
+
+    /// The value was not taken: `why` under the field, the typing kept.
+    pub(crate) fn refused(&mut self, why: Sentence) {
+        self.warned_dir = None;
+        self.form.error = Some(why);
+    }
+
     /// The share guards pass `dir`: say that everything under it will be
-    /// offered, and let the next `Enter` commit it.
+    /// offered, and that it will be made if it is not there, and let the next
+    /// `Enter` commit it.
     pub fn warn_share(&mut self, dir: std::path::PathBuf) {
-        self.form.error = Some(words::share_warning(&dir));
+        self.form.error = Some(if dir.exists() {
+            words::share_warning(&dir)
+        } else {
+            words::share_warning_missing(&dir)
+        });
         self.warned_dir = Some(dir);
     }
 
@@ -607,6 +638,12 @@ impl SettingsView {
     #[cfg(test)]
     pub(crate) fn warned_dir(&self) -> Option<&std::path::Path> {
         self.warned_dir.as_deref()
+    }
+
+    /// What stands under the open field.
+    #[cfg(test)]
+    pub(crate) fn refusal(&self) -> Option<&str> {
+        self.form.error.as_deref()
     }
 
     /// A click selects the field it landed on. Editing stays keyboard-only,
@@ -626,7 +663,8 @@ impl SettingsView {
 
     /// Render one frame into `area` (spec §6 return). Re-reads the
     /// stored preferences first, except while a field is open — an edit in
-    /// progress outranks the snapshot underneath it.
+    /// progress outranks the snapshot underneath it. Returns where the caret
+    /// of an open field is.
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -634,9 +672,11 @@ impl SettingsView {
         state: &UiState,
         theme: &Theme,
         _now: Instant,
-    ) {
+    ) -> Option<Position> {
         self.sync(state);
-        let hint = if self.editing {
+        let hint = if self.editing && self.form.focus_is_directory() {
+            " Tab complete  Enter save  Esc cancel "
+        } else if self.editing {
             " Enter save  Esc cancel "
         } else if self.form.focus_is_item() {
             " j/k row  x stop sharing "
@@ -661,7 +701,7 @@ impl SettingsView {
         // garbled column (`form::MIN_WIDTH`; far under the 80 columns this UI
         // supports).
         if inner.height == 0 || usize::from(inner.width) < form::MIN_WIDTH {
-            return;
+            return None;
         }
 
         // A rejection is pinned to the foot of the pane rather than left in
@@ -691,6 +731,7 @@ impl SettingsView {
             (rendered, error) = render(inner.width - viewport::BAR_W);
         }
         self.line_rows = rendered.rows;
+        let caret_at = rendered.caret;
         let error_h = clamp_u16(error.len()).min(inner.height);
         let height = room(&error);
 
@@ -709,6 +750,7 @@ impl SettingsView {
             (row, rows.count()),
         );
 
+        let shown = first..first + usize::from(height);
         let visible: Vec<Line<'static>> = rendered
             .lines
             .into_iter()
@@ -737,7 +779,11 @@ impl SettingsView {
                 theme,
                 &self.modal_viewport,
             );
+            return None;
         }
+        (self.removing.is_none())
+            .then(|| crate::views::caret_in(list, shown, caret_at))
+            .flatten()
     }
 }
 

@@ -36,3 +36,13 @@ pub const ENGINE_STOPPED: &str = "the engine has stopped";
 
 /// `n` with the engine stopped.
 pub const NOTHING_SENT: Sentence = Sentence::fixed("nothing sent — the engine has stopped");
+
+/// The empty results pane while the query holds the keyboard.
+pub const TYPE_A_QUERY: &str = "type a query, Enter searches";
+
+/// The empty results pane with the query left alone.
+pub const PRESS_SLASH: &str = "press / and type a query";
+
+/// A search closed: its one undo.
+pub const CLOSED: crate::words::Sentence =
+    crate::words::Sentence::fixed("search closed: u brings it back");

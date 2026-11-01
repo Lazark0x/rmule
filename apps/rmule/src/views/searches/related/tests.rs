@@ -158,7 +158,7 @@ fn starting_one_sends_the_related_query_and_focuses_the_results() {
         other => panic!("expected a related StartSearch, got {other:?}"),
     }
     assert!(!view.input_focused, "focus is on the results");
-    assert_eq!(view.query, "", "the file is no keywords to edit");
+    assert_eq!(view.query.text(), "", "the file is no keywords to edit");
     let screen = render(&mut view, &state, 78);
     assert!(screen.contains("❯ related to: debian.iso"), "{screen}");
     assert!(screen.contains("[~debian.iso · —…]"), "{screen}");

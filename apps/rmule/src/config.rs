@@ -17,7 +17,7 @@
 //! Run Log level, connect at start, the last server and the Player Command —
 //! in the same store, and applies them itself.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmule_core::port_mapping::PortMappingMode;
@@ -691,18 +691,35 @@ pub enum UnfitDirectory {
     NotADirectory(String),
 }
 
-/// The text `path`, trimmed, as a directory: absolute, and not an existing
-/// non-directory.
+/// The text `path`, trimmed, as a directory: absolute once a leading `~` is
+/// read, and not an existing non-directory.
 fn directory(path: &str) -> Result<PathBuf, UnfitDirectory> {
     let trimmed = path.trim();
-    let path = Path::new(trimmed);
+    let path = expand_home(trimmed);
     if !path.is_absolute() {
         return Err(UnfitDirectory::Relative);
     }
     if path.exists() && !path.is_dir() {
         return Err(UnfitDirectory::NotADirectory(trimmed.to_string()));
     }
-    Ok(path.to_path_buf())
+    Ok(path)
+}
+
+/// The path `text` names, a leading `~` read as the operator's home.
+pub(crate) fn expand_home(text: &str) -> PathBuf {
+    under_home(text, rmule_core::home_dir(|name| std::env::var_os(name)))
+}
+
+/// `text` under `home` when it starts `~`, as it stands otherwise: also when
+/// no home is known, or `~name` asks for somebody else's.
+fn under_home(text: &str, home: Option<PathBuf>) -> PathBuf {
+    match (text.strip_prefix('~'), home) {
+        (Some(""), Some(home)) => home,
+        (Some(rest), Some(home)) if rest.starts_with(std::path::is_separator) => {
+            home.join(rest.trim_start_matches(std::path::is_separator))
+        }
+        _ => PathBuf::from(text),
+    }
 }
 
 /// A nickname as it will travel on the wire: non-empty, and free of the

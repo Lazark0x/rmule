@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::widgets::TableState;
 
 use rmule_core::{CoreCommand, SearchCommand};
@@ -33,10 +33,12 @@ use rmule_primitives::{Ed2kText, KeywordQuery};
 
 use super::ViewOutcome;
 use crate::action::Action;
+use crate::line_edit::LineEdit;
 use crate::row_selection::viewport::Viewport;
 use crate::state::UiState;
 use crate::table_sort::{Memo, RowMove, TableSort, TableSorts};
 use crate::theme::Theme;
+use crate::words::Sentence;
 use filters::Filters;
 use held::HeldSearches;
 use menu::{draw_menu, menu_step};
@@ -61,7 +63,12 @@ mod sort;
 pub struct SearchesView {
     /// `/` focuses the query line; `Esc` returns to the results pane.
     input_focused: bool,
-    query: String,
+    /// Focus came to the input with the tab, not with a `/`: until a key is
+    /// typed the navigation keys are still the app's.
+    arrived: bool,
+    query: LineEdit,
+    /// Why the typed query was not sent, under it until the typing changes.
+    refusal: Option<Sentence>,
     /// Drawing state only: the row the current Held Search's cursor was
     /// placed on each frame, and the Viewport's offset.
     results_state: TableState,
@@ -123,16 +130,25 @@ impl SearchesView {
         if !self.input_focused {
             return ViewOutcome::Ignored;
         }
-        self.query.push_str(&crate::form::one_line(text));
+        self.arrived = false;
+        self.refusal = None;
+        self.query.paste(text);
         ViewOutcome::Redraw
+    }
+
+    /// Whether the query or the options editor holds the keyboard.
+    pub(crate) fn text_open(&self) -> bool {
+        self.menu.is_none() && self.readd.is_none() && (self.input_focused || self.filters_open)
     }
 
     /// The operator came to the tab. With no search held the one thing to do
     /// here is type, and a typed letter must not reach the globals, where `q`
-    /// quits.
+    /// quits. The digits, `?` and `Esc` stay the app's until something is
+    /// typed; a query that starts with a digit comes after a `/`.
     pub(crate) fn arrive(&mut self, state: &UiState) {
         self.held.bind(state);
         if self.held.is_empty() && self.menu.is_none() && !self.filters_open {
+            self.arrived = !self.input_focused && self.query.is_empty();
             self.input_focused = true;
         }
     }
@@ -140,7 +156,7 @@ impl SearchesView {
     /// The query as typed.
     #[cfg(test)]
     pub(crate) fn query_text(&self) -> &str {
-        &self.query
+        self.query.text()
     }
 
     /// Take up the results' sort as the durable preferences kept it.
@@ -188,34 +204,7 @@ impl SearchesView {
 
         // 3. Focused query input: every printable is text.
         if self.input_focused {
-            return match key.code {
-                KeyCode::Esc => {
-                    self.input_focused = false;
-                    ViewOutcome::Redraw
-                }
-                // Tab/Shift-Tab (spec: the global two-pane cycle) leave
-                // the input for the results pane; there are only two panes
-                // here, so either direction lands on the same one, matching
-                // Shared Files' two-pane toggle.
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.input_focused = false;
-                    ViewOutcome::Redraw
-                }
-                KeyCode::Enter => self.commit_query(state),
-                KeyCode::Backspace => {
-                    self.query.pop();
-                    ViewOutcome::Redraw
-                }
-                // Arriving here focuses the query, so the `/` that focuses it
-                // from the results must not become its first letter.
-                KeyCode::Char('/') if self.query.is_empty() => ViewOutcome::Redraw,
-                KeyCode::Char(c) => {
-                    self.query.push(c);
-                    ViewOutcome::Redraw
-                }
-                // Remaining non-text control keys (function keys, …) bubble.
-                _ => ViewOutcome::Ignored,
-            };
+            return self.handle_query_key(key, state);
         }
 
         // 4. Results pane (input unfocused): navigation, the strip, row menu,
@@ -229,13 +218,9 @@ impl SearchesView {
             return self.with_cursor(|cursor| cursor.apply(&ids, movement));
         }
         match key.code {
-            KeyCode::Char('/') => {
-                self.input_focused = true;
-                ViewOutcome::Redraw
-            }
             // Two panes (input, results): Tab and Shift-Tab both cross to
             // the input, mirroring `/`.
-            KeyCode::Tab | KeyCode::BackTab => {
+            KeyCode::Char('/') | KeyCode::Tab | KeyCode::BackTab => {
                 self.input_focused = true;
                 ViewOutcome::Redraw
             }
@@ -258,14 +243,50 @@ impl SearchesView {
             // `n`: the next page from the entry's server (ADR-0036).
             KeyCode::Char('n') if !self.held.is_empty() => self.ask_more(state),
             KeyCode::Char('x') => self.stop_or_close(state),
+            KeyCode::Char('u') if self.held.can_reopen() => self.reopen(),
             // Everything else (h/l/1–6/c/p/?/q) is a global binding; `[`/`]`
             // with no search held bubble to globals that do not bind them.
             _ => ViewOutcome::Ignored,
         }
     }
 
+    /// One key in the focused query.
+    fn handle_query_key(&mut self, key: KeyEvent, state: &UiState) -> ViewOutcome {
+        if std::mem::take(&mut self.arrived) && self.query.is_empty() {
+            match key.code {
+                KeyCode::Char('1'..='6' | '?') => {
+                    self.arrived = true;
+                    return ViewOutcome::Ignored;
+                }
+                // Asking for the input the tab already gave.
+                KeyCode::Char('/') => return ViewOutcome::Redraw,
+                _ => {}
+            }
+        }
+        match key.code {
+            // Tab/Shift-Tab (spec: the global two-pane cycle) leave the input
+            // for the results pane; there are only two panes here, so either
+            // direction lands on the same one, matching Shared Files'
+            // two-pane toggle. `↓` goes the way the results lie.
+            KeyCode::Esc | KeyCode::Tab | KeyCode::BackTab | KeyCode::Down => {
+                self.input_focused = false;
+                ViewOutcome::Redraw
+            }
+            KeyCode::Enter => self.commit_query(state),
+            _ if self.query.key(&key) => {
+                self.refusal = None;
+                ViewOutcome::Redraw
+            }
+            // Remaining non-text control keys (function keys, …) bubble.
+            _ => ViewOutcome::Ignored,
+        }
+    }
+
+    /// `Enter`: send the query and move to its results, where a second
+    /// `Enter` opens a row's menu. A query that cannot be sent stays in the
+    /// input, with the reason under it.
     fn commit_query(&mut self, state: &UiState) -> ViewOutcome {
-        let phrase = self.query.trim();
+        let phrase = self.query.text().trim();
         if phrase.is_empty() {
             return ViewOutcome::Redraw; // nothing to commit; stay focused.
         }
@@ -274,6 +295,7 @@ impl SearchesView {
         if let Some(reason) = no_core::absent(state) {
             let phrase = phrase.to_string();
             self.held.open_unsent(&phrase, None, reason);
+            self.input_focused = false;
             return ViewOutcome::Redraw;
         }
         // A search names no server: core sends each leg where it can
@@ -282,9 +304,7 @@ impl SearchesView {
         let query = match KeywordQuery::new(Ed2kText::from_utf8(phrase)) {
             Ok(query) => query,
             Err(error) => {
-                return ViewOutcome::Emit(Action::Flash(crate::words::search::invalid_query(
-                    &error,
-                )));
+                return self.refuse_query(crate::words::search::invalid_query(&error));
             }
         };
         // A filter that cannot be parsed is refused *here* too: `Enter` on the
@@ -299,14 +319,19 @@ impl SearchesView {
                 let query = query.into();
                 let search_id = rmule_core::SearchId::mint();
                 self.held.open(&query, search_id);
+                self.input_focused = false;
                 ViewOutcome::Emit(Action::Command(CoreCommand::Search(
                     SearchCommand::StartSearch { search_id, query },
                 )))
             }
-            Err(reason) => {
-                ViewOutcome::Emit(Action::Flash(crate::words::search::invalid_filter(&reason)))
-            }
+            Err(reason) => self.refuse_query(crate::words::search::invalid_filter(&reason)),
         }
+    }
+
+    fn refuse_query(&mut self, why: Sentence) -> ViewOutcome {
+        self.refusal = Some(why);
+        self.input_focused = true;
+        ViewOutcome::Redraw
     }
 
     /// Click routing (ADR-0072, Row Selection): the query line focuses the input,
@@ -321,12 +346,14 @@ impl SearchesView {
         }
         if let Some(index) = self.held.hit(column, row) {
             self.input_focused = false;
+            self.keep_draft();
             self.held.select(index);
             self.show_current_query();
             return ViewOutcome::Redraw;
         }
         if crate::views::pane_hit(self.input_area, column, row) {
             self.input_focused = true;
+            self.arrived = false;
             return ViewOutcome::Redraw;
         }
         if let Some(outcome) = self.header_click(column, row) {
@@ -341,7 +368,8 @@ impl SearchesView {
         ViewOutcome::Ignored
     }
 
-    /// Render the view into `area` (spec §3.3).
+    /// Render the view into `area` (spec §3.3). Returns where the caret is
+    /// while a text field holds the keyboard.
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -349,7 +377,7 @@ impl SearchesView {
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         let _ = now; // the searches view has no time-based rendering (yet).
         self.held.bind(state);
         // The input block grows with its wrapped content instead of clipping a
@@ -365,7 +393,7 @@ impl SearchesView {
         self.input_area = input_area;
         self.results_area = results_area;
 
-        self.draw_input(frame, input_area, state, theme);
+        let caret = self.draw_input(frame, input_area, state, theme);
         self.held.draw(frame, strip_area, state, theme);
         self.draw_results(frame, results_area, state, theme);
 
@@ -373,6 +401,7 @@ impl SearchesView {
             draw_menu(frame, area, (cursor, &self.menu_viewport), state, theme);
         }
         self.draw_readd(frame, area, theme);
+        caret.filter(|_| self.text_open())
     }
 }
 

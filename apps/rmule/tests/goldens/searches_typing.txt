@@ -10,7 +10,7 @@
 │                                                                            │
 │                                                                            │
 │                                                                            │
-│                          press / and type a query                          │
+│                        type a query, Enter searches                        │
 │                                                                            │
 │                                                                            │
 │                                                                            │

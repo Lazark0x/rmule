@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use rmule_primitives::Ed2kText;
 
-use crate::golden::assert_golden;
+use crate::golden::{assert_golden, assert_golden_caret};
 
 use super::*;
 use crate::fixture::*;
@@ -263,8 +263,8 @@ fn golden_searches_options_editor() {
     for c in "700 MB".chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
-    assert_golden("searches_options_editor", 78, 21, |frame| {
-        view.draw(frame, frame.area(), &state, &theme, Instant::now());
+    assert_golden_caret("searches_options_editor", 78, 21, |frame| {
+        view.draw(frame, frame.area(), &state, &theme, Instant::now())
     });
 }
 

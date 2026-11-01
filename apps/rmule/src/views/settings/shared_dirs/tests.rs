@@ -95,13 +95,32 @@ fn a_typed_path_is_sent_for_core_to_guard_count_and_ask() {
     for _ in 0.."media".len() {
         view.handle_key(press(KeyCode::Backspace), &state);
     }
-    let books = crate::fixture::rooted("srv/books");
-    for c in books.display().to_string().chars() {
+    let missing = crate::fixture::rooted("srv/no-such-books");
+    for c in missing.display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    assert_eq!(
+        view.form.error.as_deref(),
+        Some(crate::words::scan::ADD_MISSING),
+        "a path with nothing at it stays in the field, refused"
+    );
+    assert_eq!(
+        view.form.text(view.form.focus),
+        missing.display().to_string()
+    );
+    view.handle_key(crate::fixture::ctrl('u'), &state);
+    let books = tempfile::tempdir().expect("a directory");
+    let path = books.path().to_path_buf();
+    for c in path.display().to_string().chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
     assert_eq!(
         command(view.handle_key(press(KeyCode::Enter), &state)),
-        Some(rmule_core::ScanCommand::AddSharedDirectory { path: books })
+        Some(rmule_core::ScanCommand::AddSharedDirectory { path })
     );
 }
 

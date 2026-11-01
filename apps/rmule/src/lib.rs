@@ -67,6 +67,7 @@ pub mod fault;
 pub(crate) mod form;
 pub mod input;
 pub mod kad;
+pub(crate) mod line_edit;
 pub mod player;
 pub mod rates;
 pub mod row_selection;

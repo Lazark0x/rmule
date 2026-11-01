@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use crate::state::UiState;
 use crate::theme::Theme;
@@ -70,6 +70,18 @@ impl Views {
         }
     }
 
+    /// Whether a text field on the active view holds the keyboard.
+    pub(super) fn text_open(&self, active: ViewId) -> bool {
+        match active {
+            ViewId::Transfers => self.transfers.text_open(),
+            ViewId::Searches => self.searches.text_open(),
+            ViewId::Networks => self.networks.text_open(),
+            ViewId::Settings => self.settings.text_open(),
+            ViewId::SharedFiles | ViewId::Statistics => false,
+        }
+    }
+
+    /// Draw the active view; where the caret of its open text field is.
     pub(super) fn draw(
         &mut self,
         active: ViewId,
@@ -78,7 +90,7 @@ impl Views {
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         match active {
             ViewId::Transfers => self.transfers.draw(frame, area, state, theme, now),
             ViewId::Searches => self.searches.draw(frame, area, state, theme, now),
@@ -87,10 +99,16 @@ impl Views {
                 // wall-clock event times, derived at draw from `wall − age`.
                 // Goldens call the view directly and use its fixed fallback.
                 self.networks.wall_now = Some(chrono::Local::now().fixed_offset());
-                self.networks.draw(frame, area, state, theme, now);
+                self.networks.draw(frame, area, state, theme, now)
             }
-            ViewId::SharedFiles => self.shared.draw(frame, area, state, theme, now),
-            ViewId::Statistics => statistics::draw(frame, area, state, theme, now),
+            ViewId::SharedFiles => {
+                self.shared.draw(frame, area, state, theme, now);
+                None
+            }
+            ViewId::Statistics => {
+                statistics::draw(frame, area, state, theme, now);
+                None
+            }
             ViewId::Settings => self.settings.draw(frame, area, state, theme, now),
         }
     }

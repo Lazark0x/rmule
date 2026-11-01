@@ -213,6 +213,11 @@ pub(crate) fn key_action(code: KeyCode) -> Action {
     Action::Input(Event::Key(press(code)))
 }
 
+/// A Ctrl chord on `letter`.
+pub(crate) fn ctrl(letter: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(letter), KeyModifiers::CONTROL)
+}
+
 /// A key press with no modifiers — the one keystroke shape every view test
 /// feeds `handle_key`.
 pub(crate) fn press(code: KeyCode) -> KeyEvent {

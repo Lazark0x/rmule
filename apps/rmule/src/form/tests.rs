@@ -51,18 +51,50 @@ fn typing_lands_in_text_fields_and_never_in_a_selector() {
     assert_eq!(form.choice(2), 0, "backspace is the selector's clear");
 }
 
-/// `←`/`→` belong to a selector and to nothing else: on a text field they
-/// are not the form's keys at all, so a non-modal caller can use them.
+/// `←`/`→` and space step a selector and edit a text field.
 #[test]
-fn arrows_reach_the_caller_when_the_focused_field_is_text() {
+fn a_text_field_takes_the_arrows_a_selector_steps_with() {
     let mut form = form();
-    assert_eq!(form.handle_key(press(KeyCode::Right)), FormKey::Ignored);
+    assert_eq!(form.handle_key(press(KeyCode::Left)), FormKey::Consumed);
     assert_eq!(
         form.handle_key(press(KeyCode::Char(' '))),
         FormKey::Consumed
     );
-    assert_eq!(form.text(1), "rmule", "…and space typed into the field");
-    assert_eq!(form.fields[1].value().0, "rmule ");
+    assert_eq!(form.fields[1].value().0, "rmul e");
+}
+
+#[test]
+fn a_one_field_edit_stays_on_its_field() {
+    let mut form = form();
+    for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down] {
+        assert_eq!(form.field_key(press(code)), FormKey::Ignored);
+        assert_eq!(form.focus, 1, "{code:?} left the field");
+    }
+    assert_eq!(form.text(1), "rmule");
+}
+
+#[test]
+fn a_directory_field_completes_on_tab_and_says_what_is_left() {
+    let root = tempfile::tempdir().expect("a directory");
+    std::fs::create_dir(root.path().join("anime-new")).expect("a directory");
+    std::fs::create_dir(root.path().join("anime-old")).expect("a directory");
+    let typed = format!("{}{}a", root.path().display(), std::path::MAIN_SEPARATOR);
+    let mut form = Form::new(vec![Field::directory("Dir", typed)]);
+    assert_eq!(form.handle_key(press(KeyCode::Tab)), FormKey::Consumed);
+    assert_eq!(form.focus, 0, "Tab completes, it does not move");
+    assert!(form.text(0).ends_with("anime-"), "{}", form.text(0));
+    let note = form.note.as_deref().expect("the choices are said");
+    assert!(note.contains("anime-old"), "{note}");
+    form.handle_key(press(KeyCode::Char('o')));
+    assert_eq!(form.note, None, "the next key clears it");
+}
+
+#[test]
+fn a_placeholder_is_not_typed_text_and_the_caret_stands_before_it() {
+    let form = Form::new(vec![Field::text("Size", "").with_placeholder("any")]);
+    let rendered = form.render(40, &Theme::default_dark(), true);
+    assert_eq!(rendered.caret, Some((0, 14)), "at the start of the value");
+    assert!(rendered.lines[0].to_string().contains("any"));
 }
 
 #[test]
@@ -116,6 +148,6 @@ fn the_render_reports_where_the_focused_field_landed() {
     let focused = &text[rendered.focus.clone()];
     assert_eq!(focused.len(), 1);
     assert!(focused[0].starts_with(" Name "), "{focused:?}");
-    assert!(focused[0].contains("rmule▮"), "{focused:?}");
+    assert_eq!(rendered.caret, Some((rendered.focus.start, 14 + 5)));
     assert!(text.last().unwrap().contains("nope"), "{text:?}");
 }

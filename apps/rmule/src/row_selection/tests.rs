@@ -47,11 +47,15 @@ struct Case {
 fn transfers(focus: usize, theme: &Theme) -> Buffer {
     let (mut view, state) = (TransfersView::new(), three_downloads());
     let now = Instant::now();
-    drawn(|frame| view.draw(frame, area(), &state, theme, now));
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, now);
+    });
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, now))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, now);
+    })
 }
 
 fn shared(focus: usize, theme: &Theme) -> Buffer {
@@ -68,7 +72,9 @@ fn searches(focus: usize, theme: &Theme) -> Buffer {
     if focus == 1 {
         view.handle_key(press(KeyCode::Char('/')), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 fn networks(focus: usize, theme: &Theme) -> Buffer {
@@ -76,7 +82,9 @@ fn networks(focus: usize, theme: &Theme) -> Buffer {
     for _ in 0..focus {
         view.handle_key(press(KeyCode::Tab), &state);
     }
-    drawn(|frame| view.draw(frame, area(), &state, theme, Instant::now()))
+    drawn(|frame| {
+        view.draw(frame, area(), &state, theme, Instant::now());
+    })
 }
 
 /// The cells of every `▸` on screen, top to bottom.

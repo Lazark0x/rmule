@@ -65,6 +65,9 @@ pub enum Action {
     /// [`crate::state::UiState::preferences`], and applies the live half of it
     /// (the theme, the session's download directory).
     Preference(crate::config::PrefEdit),
+    /// [`Action::Preference`] from the Settings form: the field stays open
+    /// with its typing until the write lands, and a refusal stays under it.
+    SettingsEdit(crate::config::PrefEdit),
     /// A download directory the Settings form would commit (ADR-0101): the
     /// app asks core's share guards first, and only a directory they pass
     /// gets the form's warning that everything under it is offered — a
@@ -73,6 +76,9 @@ pub enum Action {
     /// The operator closed a held search (ADR-0073, Held Searches): its
     /// results leave memory with it. Core has already ended the search.
     ForgetSearch(rmule_core::SearchId),
+    /// The operator brought back the search closed last: its results return
+    /// from where the close set them aside.
+    RestoreSearch(rmule_core::SearchId),
     /// A row menu's *Search related* (ADR-0037, Related-Files Search): the
     /// Search tab opens a Held Search for the file and becomes current.
     SearchRelated(rmule_primitives::RelatedFilesQuery),

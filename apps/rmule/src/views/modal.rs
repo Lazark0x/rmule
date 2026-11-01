@@ -8,16 +8,24 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyCode;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
 use super::centered;
+use crate::form::ModalLines;
 use crate::row_selection::viewport::{BAR_W, Viewport, split};
 use crate::table_sort::RowMove;
 use crate::theme::Theme;
 use crate::wrap::clamp_u16;
+
+/// What a modal's body lays out for one width.
+struct ModalLaid {
+    lines: Vec<Line<'static>>,
+    focus: Option<Range<usize>>,
+    caret: Option<(usize, u16)>,
+}
 
 /// One modal's frame, drawn by [`Modal::draw_scrolled`].
 pub(crate) struct Modal {
@@ -125,14 +133,17 @@ impl Modal {
         viewport: &Cell<Viewport>,
         lines: impl Fn(u16) -> Vec<Line<'static>>,
     ) {
-        self.draw_laid(frame, area, width, theme, viewport, |width| {
-            (lines(width), None)
+        self.draw_laid(frame, area, width, theme, viewport, |width| ModalLaid {
+            lines: lines(width),
+            focus: None,
+            caret: None,
         });
     }
 
     /// [`Modal::draw_scrolled`] for a form: `lines(width)` also says which
     /// lines the focused field takes, and the viewport keeps them on screen
-    /// until the operator scrolls it by hand.
+    /// until the operator scrolls it by hand. Returns where the caret is, when
+    /// it is on screen.
     pub(crate) fn draw_form(
         self,
         frame: &mut Frame,
@@ -140,12 +151,16 @@ impl Modal {
         width: u16,
         theme: &Theme,
         viewport: &Cell<Viewport>,
-        lines: impl Fn(u16) -> (Vec<Line<'static>>, Range<usize>),
-    ) {
+        lines: impl Fn(u16) -> ModalLines,
+    ) -> Option<Position> {
         self.draw_laid(frame, area, width, theme, viewport, |width| {
-            let (lines, focus) = lines(width);
-            (lines, Some(focus))
-        });
+            let laid = lines(width);
+            ModalLaid {
+                lines: laid.lines,
+                focus: Some(laid.focus),
+                caret: laid.caret,
+            }
+        })
     }
 
     fn draw_laid(
@@ -155,35 +170,36 @@ impl Modal {
         width: u16,
         theme: &Theme,
         viewport: &Cell<Viewport>,
-        lines: impl Fn(u16) -> (Vec<Line<'static>>, Option<Range<usize>>),
-    ) {
-        let (mut laid, mut focus) = lines(width);
-        let height = clamp_u16(laid.len() + 2)
+        lines: impl Fn(u16) -> ModalLaid,
+    ) -> Option<Position> {
+        let mut laid = lines(width);
+        let height = clamp_u16(laid.lines.len() + 2)
             .max(self.min_height)
             .min(area.height);
-        let bar = laid.len() > usize::from(height.saturating_sub(2));
+        let bar = laid.lines.len() > usize::from(height.saturating_sub(2));
         let width = if !bar {
             width
         } else if width < area.width {
             width + BAR_W
         } else {
-            (laid, focus) = lines(width.saturating_sub(BAR_W));
+            laid = lines(width.saturating_sub(BAR_W));
             width
         };
         let modal = centered(area, width, height);
         let (inner, bar) = split(self.open(frame, modal, theme), bar);
         let text = self.text(inner);
         let mut place = viewport.get();
-        let shown = match focus {
+        let shown = match laid.focus {
             Some(focus) => {
-                let first = place.follow_span(focus, laid.len(), text.height, (0, 0));
-                first..(first + usize::from(text.height)).min(laid.len())
+                let first = place.follow_span(focus, laid.lines.len(), text.height, (0, 0));
+                first..(first + usize::from(text.height)).min(laid.lines.len())
             }
-            None => place.show(laid.len(), text.height),
+            None => place.show(laid.lines.len(), text.height),
         };
         viewport.set(place);
-        frame.render_widget(Paragraph::new(laid[shown].to_vec()), text);
+        frame.render_widget(Paragraph::new(laid.lines[shown.clone()].to_vec()), text);
         place.draw(frame, modal, bar, theme);
+        crate::views::caret_in(text, shown, laid.caret)
     }
 
     /// Clear `modal` and draw its frame; returns the inside of the border.
@@ -236,15 +252,13 @@ pub(crate) fn scroll_key(viewport: &mut Cell<Viewport>, code: KeyCode) {
     }
 }
 
-/// Scroll a form by a key a field has no use for — the page keys and the
-/// ends — and let the focus pull it back when a field takes a key. Whether
-/// `code` was one of them; the form's own keys are the caller's.
+/// Scroll a form by a key a field has no use for — the page keys — and let
+/// the focus pull it back when a field takes a key. Whether `code` was one of
+/// them; the form's own keys are the caller's.
 pub(crate) fn scroll_form(viewport: &mut Cell<Viewport>, code: KeyCode) -> bool {
     let movement = match code {
         KeyCode::PageDown => RowMove::Step(viewport.get().page()),
         KeyCode::PageUp => RowMove::Step(-viewport.get().page()),
-        KeyCode::Home => RowMove::First,
-        KeyCode::End => RowMove::Last,
         _ => return false,
     };
     viewport.get_mut().hold(movement);

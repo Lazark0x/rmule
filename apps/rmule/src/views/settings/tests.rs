@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::fixture::press;
-use crate::golden::assert_golden;
+use crate::golden::{assert_golden, assert_golden_caret};
 
 fn state() -> UiState {
     UiState {
@@ -82,7 +82,7 @@ fn a_text_field_needs_an_edit_mode_and_a_selector_does_not() {
     // A selector commits where it is stepped, with no mode at all.
     focus_on(&mut view, Row::Theme);
     match view.handle_key(press(KeyCode::Right), &state) {
-        ViewOutcome::Emit(Action::Preference(PrefEdit::Theme(choice))) => {
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Theme(choice))) => {
             assert_eq!(choice, ThemeChoice::Dark);
         }
         other => panic!("expected a theme edit, got {other:?}"),
@@ -147,7 +147,7 @@ fn a_download_directory_commit_warns_before_it_lands() {
     );
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::DownloadDir(_)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::DownloadDir(_)))
     ));
 }
 
@@ -158,19 +158,135 @@ fn a_download_directory_commit_warns_before_it_lands() {
 fn a_temp_directory_commit_lands_without_a_share_warning() {
     let mut view = SettingsView::new();
     let state = state();
-    let parts = crate::fixture::rooted("srv/parts");
+    let parts = tempfile::tempdir().expect("a directory");
+    focus_on(&mut view, Row::TempDir);
+    view.handle_key(press(KeyCode::Enter), &state);
+    for c in parts.path().display().to_string().chars() {
+        view.handle_key(press(KeyCode::Char(c)), &state);
+    }
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::TempDir(dir))) =
+        view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the commit is the edit");
+    };
+    assert_eq!(dir.as_deref(), Some(parts.path()));
+    assert_eq!(view.form.error, None);
+}
+
+#[test]
+fn a_temp_directory_that_is_not_there_is_said_before_it_is_made() {
+    let mut view = SettingsView::new();
+    let state = state();
+    let parts = crate::fixture::rooted("srv/no-such-parts");
     focus_on(&mut view, Row::TempDir);
     view.handle_key(press(KeyCode::Enter), &state);
     for c in parts.display().to_string().chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
-    let ViewOutcome::Emit(Action::Preference(PrefEdit::TempDir(dir))) =
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    let warning = view.form.error.as_deref().expect("the warning");
+    assert!(warning.contains("does not exist"), "{warning}");
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::TempDir(dir))) =
         view.handle_key(press(KeyCode::Enter), &state)
+    else {
+        panic!("the second Enter confirms");
+    };
+    assert_eq!(dir, Some(parts));
+}
+
+#[test]
+fn a_download_directory_that_is_not_there_says_so_with_the_disclosure() {
+    let mut view = SettingsView::new();
+    let dir = crate::fixture::rooted("srv/no-such-downloads");
+    view.warn_share(dir);
+    let warning = view.form.error.as_deref().expect("the warning");
+    assert!(warning.contains("does not exist"), "{warning}");
+    assert!(warning.contains("offered to the network"), "{warning}");
+}
+
+/// An open field keeps what was typed however the operator tries to leave it.
+#[test]
+fn no_key_but_esc_and_enter_leaves_an_open_field() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let focus = view.form.focus;
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Char('Z')), &state);
+    for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::Up, KeyCode::Down] {
+        view.handle_key(press(code), &state);
+        assert_eq!(view.form.focus, focus, "{code:?} left the field");
+        assert!(view.editing);
+    }
+    assert!(view.form.text(focus).ends_with('Z'));
+}
+
+/// The store refusing a value keeps the field open, its typing in it.
+#[test]
+fn a_value_the_store_refuses_stays_in_the_field_with_the_reason() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let focus = view.form.focus;
+    view.handle_key(press(KeyCode::Enter), &state);
+    view.handle_key(press(KeyCode::Char('Z')), &state);
+    let ViewOutcome::Emit(Action::SettingsEdit(_)) = view.handle_key(press(KeyCode::Enter), &state)
     else {
         panic!("the commit is the edit");
     };
-    assert_eq!(dir, Some(parts));
-    assert_eq!(view.form.error, None);
+    assert!(view.editing, "open until the store answers");
+    view.refused(crate::words::store::NOT_SAVED);
+    view.sync(&state);
+    assert!(view.editing);
+    assert!(view.form.text(focus).ends_with('Z'), "the typing stays");
+    assert_eq!(
+        view.form.error.as_deref(),
+        Some(crate::words::store::NOT_SAVED.as_str())
+    );
+    view.saved();
+    assert!(!view.editing, "the store took it");
+}
+
+#[test]
+fn the_caret_of_an_open_field_is_where_the_cursor_goes() {
+    let mut view = SettingsView::new();
+    let state = state();
+    focus_on(&mut view, Row::Nickname);
+    let closed = crate::golden::render_with_caret(78, 30, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        )
+    });
+    assert!(!closed.contains(crate::golden::CARET), "nothing open");
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.text_open());
+    view.handle_key(press(KeyCode::Home), &state);
+    let open = crate::golden::render_with_caret(78, 30, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        )
+    });
+    let line = open
+        .lines()
+        .find(|line| line.contains("Nickname"))
+        .expect("the row");
+    assert_eq!(
+        line.find(crate::golden::CARET)
+            .map(|at| line[..at].chars().count()),
+        Some(1 + 14),
+        "{line}"
+    );
 }
 
 #[test]
@@ -241,7 +357,7 @@ fn the_dead_server_limit_takes_one_to_ten_tries() {
     };
     assert!(matches!(
         typed("5"),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::DeadServerRetries(5)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::DeadServerRetries(5)))
     ));
     for refused in ["0", "11", "x"] {
         assert!(
@@ -273,12 +389,12 @@ fn the_auto_update_addresses_split_on_spaces_and_each_must_be_a_url() {
     ];
     assert!(matches!(
         typed(" http://one.example/server.met  https://two.example/server.met "),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::ServerMetAutoUpdateUrls(typed)))
             if typed == urls
     ));
     assert!(matches!(
         typed(""),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::ServerMetAutoUpdateUrls(typed)))
             if typed.is_empty()
     ));
     assert!(matches!(
@@ -309,7 +425,7 @@ fn remember_peers_takes_one_to_255() {
     let (outcome, _) = typed("255");
     assert!(matches!(
         outcome,
-        ViewOutcome::Emit(Action::Preference(PrefEdit::RememberPeers(peers))) if peers.get().get() == 255
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::RememberPeers(peers))) if peers.get().get() == 255
     ));
     for refused in ["0", "256", "x"] {
         let (outcome, refusal) = typed(refused);
@@ -364,13 +480,13 @@ fn a_player_command_is_refused_unless_its_words_split_into_a_player() {
     let (outcome, _) = typed("  mpv --fs  ");
     assert!(matches!(
         outcome,
-        ViewOutcome::Emit(Action::Preference(PrefEdit::PlayerCommand(Some(command))))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::PlayerCommand(Some(command))))
             if command == "mpv --fs"
     ));
     let (outcome, _) = typed("   ");
     assert!(matches!(
         outcome,
-        ViewOutcome::Emit(Action::Preference(PrefEdit::PlayerCommand(None)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::PlayerCommand(None)))
     ));
 }
 
@@ -400,7 +516,7 @@ fn the_full_run_log_row_is_a_selector_that_commits_its_choice() {
     view.handle_key(press(KeyCode::Char('l')), &state);
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::Preference(PrefEdit::RunLogFull(true)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::RunLogFull(true)))
     ));
 }
 
@@ -467,14 +583,14 @@ fn golden_settings_editing_a_field_shows_the_caret_and_a_rejection() {
     // own fixed 7-line box (a short message plus its reserved blank
     // padding) below it — 22 cropped both the Identity rows and most of
     // the error box unseen.
-    assert_golden("settings_editing", 78, 30, |frame| {
+    assert_golden_caret("settings_editing", 78, 30, |frame| {
         view.draw(
             frame,
             frame.area(),
             &state,
             &Theme::default_dark(),
             Instant::now(),
-        );
+        )
     });
 }
 

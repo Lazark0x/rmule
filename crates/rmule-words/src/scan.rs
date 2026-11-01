@@ -340,6 +340,9 @@ pub const ADD_EMPTY: &str = "type the path of a directory to share";
 /// The add row's commit with a relative path.
 pub const ADD_RELATIVE: &str = "a shared directory is named by its absolute path";
 
+/// The add row's commit with no directory at the path.
+pub const ADD_MISSING: &str = "no directory there: check the path, Tab completes it";
+
 /// The remove confirm's title.
 pub const REMOVE_TITLE: &str = " Stop sharing? ";
 

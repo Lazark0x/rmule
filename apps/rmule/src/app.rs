@@ -343,8 +343,16 @@ impl App {
         off_the_workers(|| {
             tui.draw(|frame| {
                 let content = chrome::draw_frame(frame, state, chrome_state, theme, now);
-                views.draw(chrome_state.active, frame, content, state, theme, now);
+                let caret = views.draw(chrome_state.active, frame, content, state, theme, now);
                 chrome::draw_overlays(frame, state, chrome_state, theme);
+                // The terminal's own cursor, where an input method composes.
+                // An overlay covers the field and takes the keys.
+                if let Some(caret) = caret
+                    && !chrome_state.help_open
+                    && !chrome_state.quit_open
+                {
+                    frame.set_cursor_position(caret);
+                }
             })
         })?;
         self.dirty = false;

@@ -136,7 +136,7 @@ fn the_connected_row_is_marked_by_a_glyph_beside_the_selection_arrow() {
                 &state,
                 &theme,
                 Instant::now(),
-            )
+            );
         })
         .expect("draw");
     let buffer = terminal.backend().buffer();
@@ -272,7 +272,7 @@ fn a_wrapped_row_keeps_every_character_and_maps_its_lines_back_to_the_row() {
                 &state,
                 &Theme::default_dark(),
                 Instant::now(),
-            )
+            );
         })
         .expect("draw");
     let buffer = terminal.backend().buffer();
@@ -338,7 +338,7 @@ fn a_long_list_scrolls_the_selected_row_into_view() {
                     &state,
                     &Theme::default_dark(),
                     Instant::now(),
-                )
+                );
             })
             .expect("draw");
     };

@@ -4,16 +4,18 @@
 //! The link is read by `Ed2kLink::read`, the reader `rmule-cli add` uses, and
 //! started by the `StartDownload` the Search tab's Download sends — so the
 //! TUI and the CLI accept, skip and refuse exactly the same links. What the
-//! form refuses stays on screen under the field with the typing kept; the
-//! fields a link carried that no client reads are said in the status feed
-//! once the download is asked for.
+//! form refuses stays on screen under the field with the typing kept; a link
+//! refused for want of a download dir also outlives the form, since setting
+//! one means leaving it, and `L` brings it back. The fields a link carried
+//! that no client reads are said in the status feed once the download is asked
+//! for.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use rmule_core::{CoreCommand, DownloadCommand, NameTaken};
@@ -40,6 +42,9 @@ pub(super) struct AddLink {
     viewport: Cell<Viewport>,
     /// Links of a paste refused and waiting their turn in the field.
     refused: VecDeque<(String, LinkRefusal)>,
+    /// The refusal in force names no fault of the link: it needs a download
+    /// dir, which is set elsewhere.
+    waits_for_dir: bool,
 }
 
 impl AddLink {
@@ -50,7 +55,14 @@ impl AddLink {
             ]),
             viewport: Cell::default(),
             refused: VecDeque::new(),
+            waits_for_dir: false,
         }
+    }
+
+    /// Say why the field's link was refused.
+    fn refuse(&mut self, refusal: &LinkRefusal) {
+        self.waits_for_dir = matches!(refusal, LinkRefusal::NoDownloadDir);
+        self.form.error = Some(words::link_refused(refusal));
     }
 
     /// Put the next refused link in the field with its refusal. Whether there
@@ -60,7 +72,7 @@ impl AddLink {
             return false;
         };
         self.form.set_focused_text(&line);
-        self.form.error = Some(words::link_refused(&refusal));
+        self.refuse(&refusal);
         true
     }
 }
@@ -97,6 +109,9 @@ fn start(
         && !names_sources(&file)
     {
         return Err(LinkRefusal::AlreadyDownloading { name: name.clone() });
+    }
+    if state.session.download_dir.is_none() {
+        return Err(LinkRefusal::NoDownloadDir);
     }
     let command = Action::Command(CoreCommand::Download(DownloadCommand::StartDownload {
         name: SafeFileName::of_link(&file),
@@ -145,9 +160,15 @@ impl TransfersView {
         ViewOutcome::Emit(Action::Actions(asked))
     }
 
-    /// `L`: open the Add-link form.
-    pub(super) fn open_add_link(&mut self) -> ViewOutcome {
-        self.add_link = Some(AddLink::new());
+    /// `L`: open the Add-link form, or the one that waited for a download
+    /// dir, its refusal gone once there is one.
+    pub(super) fn open_add_link(&mut self, state: &UiState) -> ViewOutcome {
+        let mut entry = self.parked_link.take().unwrap_or_else(AddLink::new);
+        if state.session.download_dir.is_some() && entry.waits_for_dir {
+            entry.waits_for_dir = false;
+            entry.form.error = None;
+        }
+        self.add_link = Some(entry);
         ViewOutcome::Redraw
     }
 
@@ -163,7 +184,8 @@ impl TransfersView {
         release_form(&mut entry.viewport);
         match entry.form.handle_key(key) {
             FormKey::Cancel => {
-                self.add_link = None;
+                let left = self.add_link.take();
+                self.parked_link = left.filter(|entry| entry.waits_for_dir);
                 ViewOutcome::Redraw
             }
             FormKey::Commit => {
@@ -177,7 +199,7 @@ impl TransfersView {
                         outcome
                     }
                     Err(refusal) => {
-                        entry.form.error = Some(words::link_refused(&refusal));
+                        entry.refuse(&refusal);
                         ViewOutcome::Redraw
                     }
                 }
@@ -187,10 +209,14 @@ impl TransfersView {
     }
 
     /// The form over the view: the field, the last refusal, the key legend.
-    pub(super) fn draw_add_link(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let Some(entry) = self.add_link.as_ref() else {
-            return;
-        };
+    /// Returns where its caret is.
+    pub(super) fn draw_add_link(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+    ) -> Option<Position> {
+        let entry = self.add_link.as_ref()?;
         let width = clamp_u16(entry.form.natural_width() + 2)
             .max(FORM_W)
             .min(area.width);
@@ -210,7 +236,7 @@ impl TransfersView {
                 ]);
                 entry.form.render_modal(inner_w, theme, vec![legend])
             },
-        );
+        )
     }
 }
 

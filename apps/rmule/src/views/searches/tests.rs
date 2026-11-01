@@ -1,10 +1,16 @@
 //! Unit tests for the Searches view: the query input, the method selector and options row, the Held Search strip, and their goldens.
 
-use crate::golden::assert_golden;
+use crate::golden::{assert_golden, render_to_lines};
 
 use super::*;
 use crate::fixture::*;
-use crate::state::SearchStatus;
+use crate::state::{SearchStatus, fold};
+
+fn typed(view: &mut SearchesView, state: &UiState, text: &str) {
+    for c in text.chars() {
+        view.handle_key(press(KeyCode::Char(c)), state);
+    }
+}
 
 #[test]
 fn slash_focuses_the_input_and_esc_returns_to_the_results() {
@@ -73,7 +79,7 @@ fn tab_leaves_the_input_without_being_typed() {
     view.handle_key(press(KeyCode::Tab), &state);
     assert!(!view.input_focused);
     // The query is untouched — Tab left the field, it did not edit it.
-    assert_eq!(view.query, "eels");
+    assert_eq!(view.query.text(), "eels");
 }
 
 #[test]
@@ -88,13 +94,175 @@ fn a_focused_input_captures_printables_including_binding_letters() {
             ViewOutcome::Redraw
         ));
     }
-    assert_eq!(view.query, "hlqj1");
+    assert_eq!(view.query.text(), "hlqj1");
     // Backspace edits the buffer.
     assert!(matches!(
         view.handle_key(press(KeyCode::Backspace), &state),
         ViewOutcome::Redraw
     ));
-    assert_eq!(view.query, "hlqj");
+    assert_eq!(view.query.text(), "hlqj");
+}
+
+/// The keys of the first search: `Enter` sends and moves to the results, so
+/// a second one opens the row menu and never a twin.
+#[test]
+fn enter_sends_the_search_and_moves_to_its_results() {
+    let mut state = session_state();
+    let mut view = SearchesView::new();
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    typed(&mut view, &state, "bunny");
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Emit(Action::Command(_))
+    ));
+    assert!(view.results_focused());
+    assert_eq!(view.query.text(), "bunny", "the query stays in view");
+    let opened = view.held.entries.len();
+    let id = view.held.current_id().expect("the search");
+    assert!(
+        !matches!(
+            view.handle_key(press(KeyCode::Enter), &state),
+            ViewOutcome::Emit(Action::Command(_))
+        ),
+        "a second Enter sends nothing"
+    );
+    assert_eq!(view.held.entries.len(), opened, "no twin");
+    fold(
+        &mut state,
+        search_event(rmule_core::SearchEvent::SearchStarted { search_id: id }),
+    );
+    fold(
+        &mut state,
+        search_event(rmule_core::SearchEvent::SearchResultsReceived {
+            search_id: id,
+            results: vec![search_result("bunny.mkv", 3)],
+        }),
+    );
+    view.handle_key(press(KeyCode::Enter), &state);
+    assert!(view.menu.is_some(), "Enter on a result is its menu");
+}
+
+#[test]
+fn down_from_the_query_is_the_way_to_the_results() {
+    let state = UiState::default();
+    let mut view = SearchesView::new();
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    typed(&mut view, &state, "eels");
+    view.handle_key(press(KeyCode::Down), &state);
+    assert!(view.results_focused());
+    assert_eq!(view.query.text(), "eels");
+}
+
+#[test]
+fn a_refused_query_stays_typed_with_the_reason_under_it() {
+    let state = session_state();
+    let mut view = SearchesView::new();
+    view.handle_key(press(KeyCode::Char('o')), &state);
+    view.handle_key(press(KeyCode::Down), &state);
+    typed(&mut view, &state, "lots");
+    view.handle_key(press(KeyCode::Esc), &state);
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    typed(&mut view, &state, "bunny");
+    assert!(matches!(
+        view.handle_key(press(KeyCode::Enter), &state),
+        ViewOutcome::Redraw
+    ));
+    assert!(view.input_focused, "still in the query");
+    assert_eq!(view.query.text(), "bunny");
+    assert!(view.refusal.is_some());
+    let screen = render_to_lines(78, 21, |frame| {
+        view.draw(
+            frame,
+            frame.area(),
+            &state,
+            &Theme::default_dark(),
+            Instant::now(),
+        )
+    });
+    assert!(screen.contains('✗'), "under the field: {screen}");
+    view.handle_key(press(KeyCode::Backspace), &state);
+    assert!(view.refusal.is_none(), "the typing changed");
+}
+
+/// Arriving by digit, the digits, `?` and `Esc` are still the app's; a typed
+/// letter is text, `q` included, and after a `/` a digit is too.
+#[test]
+fn arrival_leaves_the_navigation_keys_with_the_app() {
+    let state = UiState::default();
+    let mut view = SearchesView::new();
+    view.arrive(&state);
+    assert!(view.input_focused);
+    for code in [KeyCode::Char('3'), KeyCode::Char('?')] {
+        assert!(matches!(
+            view.handle_key(press(code), &state),
+            ViewOutcome::Ignored
+        ));
+    }
+    assert_eq!(view.query.text(), "");
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    view.handle_key(press(KeyCode::Char('1')), &state);
+    assert_eq!(view.query.text(), "1", "a `/` first, and the digit is text");
+    view.handle_key(press(KeyCode::Backspace), &state);
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    assert_eq!(view.query.text(), "/", "a second `/` is text");
+
+    let mut view = SearchesView::new();
+    view.arrive(&state);
+    view.handle_key(press(KeyCode::Char('q')), &state);
+    view.handle_key(press(KeyCode::Char('3')), &state);
+    assert_eq!(view.query.text(), "q3", "typing has begun");
+
+    let mut view = SearchesView::new();
+    view.arrive(&state);
+    view.handle_key(press(KeyCode::Esc), &state);
+    assert!(!view.input_focused);
+}
+
+#[test]
+fn a_draft_stays_with_its_search_across_a_step() {
+    let state = UiState::default();
+    let mut view = SearchesView::new().having_sent("alpha").having_sent("beta");
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    view.handle_key(press(KeyCode::End), &state);
+    typed(&mut view, &state, " max");
+    view.handle_key(press(KeyCode::Esc), &state);
+    view.handle_key(press(KeyCode::Char('[')), &state);
+    assert_eq!(view.query.text(), "alpha");
+    view.handle_key(press(KeyCode::Char(']')), &state);
+    assert_eq!(
+        view.query.text(),
+        "beta max",
+        "what was typed is still there"
+    );
+}
+
+#[test]
+fn the_real_cursor_sits_at_the_caret_of_the_query_and_only_there() {
+    let state = UiState::default();
+    let mut view = SearchesView::new();
+    let area = |view: &mut SearchesView| {
+        let mut caret = None;
+        render_to_lines(78, 21, |frame| {
+            caret = view.draw(
+                frame,
+                frame.area(),
+                &state,
+                &Theme::default_dark(),
+                Instant::now(),
+            );
+        });
+        caret
+    };
+    assert_eq!(area(&mut view), None, "nothing is being typed");
+    view.handle_key(press(KeyCode::Char('/')), &state);
+    typed(&mut view, &state, "日本");
+    assert_eq!(
+        area(&mut view).map(|at| (at.x, at.y)),
+        Some((1 + 2 + 4, 1)),
+        "two wide glyphs past the prompt"
+    );
+    view.handle_key(press(KeyCode::Home), &state);
+    assert_eq!(area(&mut view).map(|at| (at.x, at.y)), Some((3, 1)));
 }
 
 #[test]

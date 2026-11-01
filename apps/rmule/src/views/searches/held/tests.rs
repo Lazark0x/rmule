@@ -16,7 +16,7 @@ use crate::state::fold;
 /// view sent it under.
 fn send(view: &mut SearchesView, state: &UiState, query: &str) -> SearchId {
     view.input_focused = true;
-    view.query.clear();
+    view.query.set("");
     for c in query.chars() {
         view.handle_key(press(KeyCode::Char(c)), state);
     }
@@ -128,12 +128,12 @@ fn brackets_walk_the_strip_and_the_input_follows_the_current_query() {
     let (mut view, state, ids) = holding(&["alpha", "beta", "gamma"]);
     key(&mut view, &state, KeyCode::Char('['));
     assert_eq!(current(&view), (ids[1], "beta"));
-    assert_eq!(view.query, "beta");
+    assert_eq!(view.query.text(), "beta");
     key(&mut view, &state, KeyCode::Char('['));
     key(&mut view, &state, KeyCode::Char('['));
     assert_eq!(current(&view).1, "alpha", "clamped at the left end");
     key(&mut view, &state, KeyCode::Char(']'));
-    assert_eq!(view.query, "beta");
+    assert_eq!(view.query.text(), "beta");
 }
 
 #[test]
@@ -221,7 +221,7 @@ fn x_stops_a_running_search_then_closes_it() {
     }
     assert_eq!(queries(&view), ["alpha", "gamma"]);
     assert_eq!(current(&view).1, "gamma", "the right neighbour");
-    assert_eq!(view.query, "gamma");
+    assert_eq!(view.query.text(), "gamma");
 }
 
 #[test]
@@ -296,7 +296,7 @@ fn a_click_on_an_entry_selects_it() {
     );
     assert!(matches!(outcome, ViewOutcome::Redraw));
     assert_eq!(current(&view).1, "alpha");
-    assert_eq!(view.query, "alpha");
+    assert_eq!(view.query.text(), "alpha");
 }
 
 #[test]
@@ -401,4 +401,58 @@ fn a_late_event_for_a_closed_search_opens_no_entry() {
     started(&mut state, id);
     view.held.bind(&state);
     assert!(view.held.is_empty(), "the closed search was held again");
+}
+
+/// One `x` on a finished search has one undo: the entry, its place, its query
+/// and its results come back.
+#[test]
+fn u_brings_back_the_search_closed_last() {
+    let (mut view, mut state, ids) = holding(&["alpha", "beta", "gamma"]);
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchCancelled { search_id: ids[1] }),
+    );
+    key(&mut view, &state, KeyCode::Char('['));
+    let ViewOutcome::Emit(forget) = key(&mut view, &state, KeyCode::Char('x')) else {
+        panic!("x closes a stopped search");
+    };
+    state.apply(forget, Instant::now());
+    assert!(!state.searches.contains_key(&ids[1]));
+    assert_eq!(queries(&view), ["alpha", "gamma"]);
+
+    let ViewOutcome::Emit(restore) = key(&mut view, &state, KeyCode::Char('u')) else {
+        panic!("u reopens it");
+    };
+    state.apply(restore, Instant::now());
+    assert_eq!(queries(&view), ["alpha", "beta", "gamma"], "where it stood");
+    assert_eq!(current(&view), (ids[1], "beta"));
+    assert_eq!(view.query.text(), "beta");
+    assert!(state.searches.contains_key(&ids[1]), "its results are back");
+
+    assert!(
+        matches!(
+            key(&mut view, &state, KeyCode::Char('u')),
+            ViewOutcome::Ignored
+        ),
+        "one close, one undo"
+    );
+}
+
+#[test]
+fn a_late_event_for_a_reopened_search_finds_it() {
+    let (mut view, mut state, ids) = holding(&["alpha"]);
+    fold(
+        &mut state,
+        search_event(SearchEvent::SearchCancelled { search_id: ids[0] }),
+    );
+    let ViewOutcome::Emit(forget) = key(&mut view, &state, KeyCode::Char('x')) else {
+        panic!("x closes a stopped search");
+    };
+    state.apply(forget, Instant::now());
+    let ViewOutcome::Emit(restore) = key(&mut view, &state, KeyCode::Char('u')) else {
+        panic!("u reopens it");
+    };
+    state.apply(restore, Instant::now());
+    view.held.bind(&state);
+    assert_eq!(queries(&view), ["alpha"], "bound once, not held twice");
 }

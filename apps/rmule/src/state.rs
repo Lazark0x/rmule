@@ -110,6 +110,8 @@ pub struct UiState {
     /// Every **Related-Files Search** core refused before it started, by the
     /// id the Search tab gave it: a refused search has no pane.
     pub refused_searches: BTreeMap<SearchId, RelatedSearchRefusal>,
+    /// The results of the search closed last, for its one undo.
+    pub closed_search: Option<(SearchId, SearchPane)>,
     /// Latest levels wholesale; superseded, never merged.
     pub diagnostics: DiagnosticsSnapshot,
     /// Bridge-synthesized rates from the same tick as `diagnostics`.
@@ -173,6 +175,7 @@ impl Default for UiState {
             upload_peers: BTreeMap::new(),
             searches: BTreeMap::new(),
             refused_searches: BTreeMap::new(),
+            closed_search: None,
             file_history: None,
             diagnostics: DiagnosticsSnapshot::default(),
             rates: TransferRates::default(),
@@ -242,8 +245,19 @@ impl UiState {
                 note(self, text)
             }
             Action::ForgetSearch(search_id) => {
-                let pane = self.searches.remove(&search_id).is_some();
-                self.refused_searches.remove(&search_id).is_some() || pane
+                let pane = self.searches.remove(&search_id);
+                let held = pane.is_some();
+                self.closed_search = pane.map(|pane| (search_id, pane));
+                self.refused_searches.remove(&search_id).is_some() || held
+            }
+            Action::RestoreSearch(search_id) => {
+                match self.closed_search.take() {
+                    Some((closed, pane)) if closed == search_id => {
+                        self.searches.entry(closed).or_insert(pane);
+                    }
+                    other => self.closed_search = other,
+                }
+                true
             }
             // Chrome/input/outbound arms belong to `ChromeState`/the app
             // loop, never to the core-facing state.
@@ -259,6 +273,7 @@ impl UiState {
             | Action::Actions(_)
             | Action::CopyLink(_)
             | Action::Preference(_)
+            | Action::SettingsEdit(_)
             | Action::ConfirmDownloadDir(_)
             | Action::SearchRelated(_)
             | Action::StartKad

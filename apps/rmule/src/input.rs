@@ -17,13 +17,14 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::chrome::{self, ChromeState};
+use crate::line_edit::LineEdit;
 
 /// What the reducer does with a key before anything else reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyGate {
     /// A press the views and the globals may read.
     Pass,
-    /// Means nothing: a release, or a Ctrl or Alt chord no surface binds.
+    /// Means nothing: a release, or a Ctrl or Alt chord nothing here binds.
     Drop,
     /// Ctrl-C: the quit path, from every surface.
     Interrupt,
@@ -35,8 +36,10 @@ pub enum KeyGate {
 /// a press acts. In raw mode Ctrl-C reaches here as `c` with a modifier, so a
 /// view that read the code alone would take it for its own `c`. Ctrl with Alt
 /// on a character is AltGr on a Windows console, and that is typed text.
+/// With a text field holding the keyboard (`text_open`), a chord the line
+/// editor binds passes: Ctrl-C alone stays above any field.
 #[must_use]
-pub fn gate(key: &KeyEvent) -> KeyGate {
+pub fn gate(key: &KeyEvent, text_open: bool) -> KeyGate {
     if key.kind == KeyEventKind::Release {
         return KeyGate::Drop;
     }
@@ -45,6 +48,7 @@ pub fn gate(key: &KeyEvent) -> KeyGate {
     match key.code {
         KeyCode::Char(_) if ctrl && alt => KeyGate::Pass,
         KeyCode::Char('c' | 'C') if ctrl => KeyGate::Interrupt,
+        _ if text_open && LineEdit::claims(key) => KeyGate::Pass,
         _ if ctrl || alt => KeyGate::Drop,
         _ => KeyGate::Pass,
     }
@@ -268,18 +272,45 @@ mod tests {
             KeyModifiers::NONE,
             KeyEventKind::Release,
         );
-        assert_eq!(gate(&release), KeyGate::Drop);
-        assert_eq!(gate(&press(KeyCode::Char('a'))), KeyGate::Pass);
+        assert_eq!(gate(&release, false), KeyGate::Drop);
+        assert_eq!(gate(&press(KeyCode::Char('a')), false), KeyGate::Pass);
         let shifted = chord(KeyCode::Char('A'), KeyModifiers::SHIFT);
-        assert_eq!(gate(&shifted), KeyGate::Pass);
+        assert_eq!(gate(&shifted, false), KeyGate::Pass);
         let ctrl = KeyModifiers::CONTROL;
-        assert_eq!(gate(&chord(KeyCode::Char('c'), ctrl)), KeyGate::Interrupt);
-        assert_eq!(gate(&chord(KeyCode::Char('p'), ctrl)), KeyGate::Drop);
-        assert_eq!(gate(&chord(KeyCode::Left, ctrl)), KeyGate::Drop);
+        let c = chord(KeyCode::Char('c'), ctrl);
+        assert_eq!(gate(&c, false), KeyGate::Interrupt);
+        assert_eq!(gate(&chord(KeyCode::Char('p'), ctrl), false), KeyGate::Drop);
+        assert_eq!(gate(&chord(KeyCode::Left, ctrl), false), KeyGate::Drop);
         let alt = KeyModifiers::ALT;
-        assert_eq!(gate(&chord(KeyCode::Char('q'), alt)), KeyGate::Drop);
+        assert_eq!(gate(&chord(KeyCode::Char('q'), alt), false), KeyGate::Drop);
         let alt_gr = KeyModifiers::CONTROL | KeyModifiers::ALT;
-        assert_eq!(gate(&chord(KeyCode::Char('@'), alt_gr)), KeyGate::Pass);
+        let at_sign = chord(KeyCode::Char('@'), alt_gr);
+        assert_eq!(gate(&at_sign, false), KeyGate::Pass);
+    }
+
+    #[test]
+    fn an_open_text_field_claims_the_chords_it_binds_and_no_others() {
+        let ctrl = KeyModifiers::CONTROL;
+        let alt = KeyModifiers::ALT;
+        let word_back = chord_of(KeyCode::Char('w'), ctrl);
+        assert_eq!(gate(&word_back, false), KeyGate::Drop);
+        assert_eq!(gate(&word_back, true), KeyGate::Pass);
+        let word_left = chord_of(KeyCode::Char('b'), alt);
+        assert_eq!(gate(&word_left, true), KeyGate::Pass);
+        assert_eq!(
+            gate(&chord_of(KeyCode::Char('p'), ctrl), true),
+            KeyGate::Drop,
+            "an unbound chord must not reach a view as its letter"
+        );
+        assert_eq!(
+            gate(&chord_of(KeyCode::Char('c'), ctrl), true),
+            KeyGate::Interrupt,
+            "Ctrl-C quits from every surface"
+        );
+    }
+
+    fn chord_of(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
     }
 
     #[test]

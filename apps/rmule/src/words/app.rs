@@ -236,6 +236,8 @@ pub enum AddDirectoryRefusal {
     Empty,
     /// The path is relative.
     Relative,
+    /// Nothing is at the path, or it is not a directory.
+    Missing,
 }
 
 /// A refused shared-directory add, as the line under the field.
@@ -244,6 +246,7 @@ pub const fn add_directory_refusal(refusal: AddDirectoryRefusal) -> Sentence {
     Sentence::fixed(match refusal {
         AddDirectoryRefusal::Empty => super::scan::ADD_EMPTY,
         AddDirectoryRefusal::Relative => super::scan::ADD_RELATIVE,
+        AddDirectoryRefusal::Missing => super::scan::ADD_MISSING,
     })
 }
 
@@ -269,6 +272,50 @@ pub fn share_warning(dir: &Path) -> Sentence {
         "everything under {} will be offered to the network — Enter to confirm, Esc to cancel",
         dir.display()
     ))
+}
+
+/// [`share_warning`] for a directory that does not exist yet.
+#[must_use]
+pub fn share_warning_missing(dir: &Path) -> Sentence {
+    Sentence::owned(format!(
+        "{} does not exist and will be made, and everything under it will be offered to the \
+         network — Enter to confirm, Esc to cancel",
+        dir.display()
+    ))
+}
+
+/// A Temp dir that does not exist yet, before the `Enter` that sets it.
+#[must_use]
+pub fn temp_dir_missing(dir: &Path) -> Sentence {
+    Sentence::owned(format!(
+        "{} does not exist and will be made — Enter to confirm, Esc to cancel",
+        dir.display()
+    ))
+}
+
+/// A directory field's `Tab` found nothing to complete to.
+pub const NO_DIRECTORY_MATCHES: Sentence = Sentence::fixed("no directory there begins like that");
+
+/// A directory field's `Tab` could not look in `dir`, as typed.
+#[must_use]
+pub fn path_unreadable(dir: &str) -> Sentence {
+    Sentence::owned(format!("cannot look in {dir}"))
+}
+
+/// The directories a `Tab` left to choose from, the first few by name.
+#[must_use]
+pub fn directories_match(names: &[String]) -> Sentence {
+    const SHOWN: usize = 6;
+    let list = names
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("  ");
+    Sentence::owned(match names.len().saturating_sub(SHOWN) {
+        0 => list,
+        more => format!("{list}  and {more} more"),
+    })
 }
 
 /// The Temp dir row while none is set: the directory core reads by default,

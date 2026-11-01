@@ -26,7 +26,7 @@ use std::time::Instant;
 
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 
 use rmule_core::diagnostics::ServerDiagnostics;
 use rmule_primitives::ServerEndpoint;
@@ -309,7 +309,7 @@ impl NetworksView {
         state: &UiState,
         theme: &Theme,
         now: Instant,
-    ) {
+    ) -> Option<Position> {
         self.clamp_selection(state);
 
         let [servers_area, bottom] =
@@ -326,12 +326,19 @@ impl NetworksView {
         if let Some(menu) = self.menu.as_ref() {
             draw_menu(frame, area, menu, theme);
         }
-        if let Some(form) = self.form.as_ref() {
-            draw_form(frame, area, form, theme);
-        }
+        let caret = self
+            .form
+            .as_ref()
+            .and_then(|form| draw_form(frame, area, form, theme));
         if let Some(confirm) = self.confirm.as_ref() {
             draw_confirm(frame, area, confirm, theme);
         }
+        caret
+    }
+
+    /// Whether a form holds the keyboard.
+    pub(crate) fn text_open(&self) -> bool {
+        self.form.is_some()
     }
 }
 
@@ -437,7 +444,7 @@ mod tests {
                     &state,
                     &Theme::default_dark(),
                     Instant::now(),
-                )
+                );
             })
             .expect("draw");
         view.focus = Pane::Log;

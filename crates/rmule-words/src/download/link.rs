@@ -37,6 +37,8 @@ pub enum LinkRefusal {
         /// The name the download runs under.
         name: String,
     },
+    /// No download dir is set, so the file has nowhere to land.
+    NoDownloadDir,
 }
 
 impl LinkRefusal {
@@ -65,6 +67,10 @@ impl LinkRefusal {
 pub fn link_refused(refusal: &LinkRefusal) -> Sentence {
     Sentence::owned(match refusal {
         LinkRefusal::Empty => "paste an eD2k file link: ed2k://|file|name|size|hash|/".to_string(),
+        LinkRefusal::NoDownloadDir => {
+            "no download dir yet: Esc, press 6 and set Download dir; L brings this link back"
+                .to_string()
+        }
         LinkRefusal::Unreadable => {
             "not a readable eD2k link — check that it was copied whole".to_string()
         }

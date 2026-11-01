@@ -43,13 +43,11 @@ fn a_query_with_no_core_is_held_as_not_sent_and_stays_in_the_input() {
         "nothing is sent and nothing flashes a wrong cause"
     );
     assert_eq!(view.shown_query(), "big buck bunny");
-    assert!(!view.results_focused(), "the input keeps focus");
+    assert!(view.results_focused(), "focus goes where a search goes");
     assert_golden("searches_not_sent_no_core", 90, 12, |frame| {
-        view.draw(frame, frame.area(), &state, &theme(), Instant::now());
+        view.draw(frame, frame.area(), &state, &theme(), Instant::now())
     });
 
-    // Moving off and back finds the query where it was.
-    view.handle_key(press(KeyCode::Esc), &state);
     let closed = view.handle_key(press(KeyCode::Char('x')), &state);
     assert!(matches!(closed, ViewOutcome::Emit(Action::ForgetSearch(_))));
     assert!(render(&mut view, &state).contains("press / and type a query"));

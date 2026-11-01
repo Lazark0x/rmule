@@ -30,6 +30,8 @@ data-encoding.workspace = true
 # NFD for the accent fold in a Table Sort's name comparison.
 icu_normalizer.workspace = true
 ratatui.workspace = true
+# Grapheme clusters: a caret moves over what a reader calls a character.
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 # The server.met fetch capability core deliberately does not link (ADR-0080):
 # `ReqwestFetcher` is injected at startup so *Update from URL* works, and

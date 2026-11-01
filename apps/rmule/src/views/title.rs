@@ -59,6 +59,12 @@ impl<'a> Parts<'a> {
 /// included: the padded texts to draw, either empty once it gave way whole.
 #[must_use]
 pub(crate) fn fit_titles(width: u16, title: &str, hint: &str) -> (String, String) {
+    fit(width, title, hint, false)
+}
+
+/// The fit, with the hint's first key outlasting every title clause but the
+/// first when `first_key` holds.
+fn fit(width: u16, title: &str, hint: &str, first_key: bool) -> (String, String) {
     let room = usize::from(width).saturating_sub(2);
     let mut title = Parts::title(title);
     let mut hint = Parts::hint(hint);
@@ -68,7 +74,9 @@ pub(crate) fn fit_titles(width: u16, title: &str, hint: &str) -> (String, String
         if t + h + gap <= room {
             break;
         }
-        if hint.parts.pop().is_none() && title.parts.pop().is_none() {
+        if first_key && hint.parts.len() == 1 && title.parts.len() > 1 {
+            title.parts.pop();
+        } else if hint.parts.pop().is_none() && title.parts.pop().is_none() {
             break;
         }
     }
@@ -84,6 +92,27 @@ pub(crate) fn titled<'a>(
     (hint, hint_style): (&str, Style),
 ) -> Block<'a> {
     let (title, hint) = fit_titles(width, title, hint);
+    with_titles(block, (title, title_style), (hint, hint_style))
+}
+
+/// [`titled`] for a pane whose first key is how to act on it: that key stays
+/// after the title's later clauses have given way.
+#[must_use]
+pub(crate) fn titled_first_key<'a>(
+    block: Block<'a>,
+    width: u16,
+    (title, title_style): (&str, Style),
+    (hint, hint_style): (&str, Style),
+) -> Block<'a> {
+    let (title, hint) = fit(width, title, hint, true);
+    with_titles(block, (title, title_style), (hint, hint_style))
+}
+
+fn with_titles<'a>(
+    block: Block<'a>,
+    (title, title_style): (String, Style),
+    (hint, hint_style): (String, Style),
+) -> Block<'a> {
     let mut block = block;
     if !title.is_empty() {
         block = block.title_top(Line::from(Span::styled(title, title_style)));
@@ -96,7 +125,19 @@ pub(crate) fn titled<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::fit_titles;
+    use super::{fit, fit_titles};
+
+    #[test]
+    fn the_first_key_outlasts_the_title_clauses_after_the_first() {
+        let (title, hint) = fit(
+            44,
+            " Results · 228 · server done · Kad done ",
+            " Enter menu  [ ] search  x close ",
+            true,
+        );
+        assert_eq!(title, " Results · 228 · server done ");
+        assert_eq!(hint, " Enter menu ");
+    }
 
     #[test]
     fn a_border_with_room_keeps_every_part() {
