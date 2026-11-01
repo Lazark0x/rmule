@@ -21,7 +21,7 @@ use super::{
 use crate::directory_scan::WatchFault;
 use crate::directory_scan::scripted::{self, Scripted, Timeline, World, moved, row};
 use crate::directory_scan::{FileStamp, WatchBatch, WatchSignal};
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 /// What happens at one instant: the directory changes, the OS reports, and
 /// the actor or the serve side tells the worker something.
@@ -65,7 +65,7 @@ impl FolderWatch for ScriptedWatch {
 /// The actor's side: the registry and the withheld set every ruling lands
 /// in, and each ruling with the instant it came.
 struct Actor {
-    rows: Vec<SharedFileEntry>,
+    rows: Vec<SharedRow>,
     withheld: WithheldRows,
     log: Vec<(Duration, CheckReport)>,
 }
@@ -107,7 +107,7 @@ fn hash(tag: u8) -> FileHash {
 
 fn run(
     world: &World,
-    rows: Vec<SharedFileEntry>,
+    rows: Vec<SharedRow>,
     first: Vec<CheckInput>,
     script: Vec<(Duration, Step)>,
     until: Duration,
@@ -124,10 +124,10 @@ fn run(
 #[derive(Default)]
 struct Registry {
     /// The registry's rows.
-    rows: Vec<SharedFileEntry>,
+    rows: Vec<SharedRow>,
     /// Rows that join the registry at their instant, as a share the actor
     /// makes while the check runs.
-    joining: Vec<(Duration, SharedFileEntry)>,
+    joining: Vec<(Duration, SharedRow)>,
     /// Rows the actor withheld before the check's first look, and why.
     held: Vec<(FileHash, WithheldReason)>,
 }
@@ -228,7 +228,7 @@ fn run_on(
 }
 
 /// A row for a file written into the world at `path`.
-fn shared(world: &World, path: &str, bytes: &[u8], tag: u8) -> SharedFileEntry {
+fn shared(world: &World, path: &str, bytes: &[u8], tag: u8) -> SharedRow {
     let stamp = world.with(|dir| dir.file(path, bytes, 1));
     row(path, stamp, tag)
 }

@@ -516,7 +516,7 @@ pub(in crate::service) async fn run_core_with_adapters<S, P, L, K>(
     };
 
     // Read before the actor takes a command: the Registry Check's start look.
-    let registry_at_start = crate::registry::SharedFileRegistry::list(&*wiring.registry).ok();
+    let registry_at_start = crate::registry::SharedFileRegistry::rows(&*wiring.registry).ok();
     let share_guards = wiring.share_guards.clone();
     let temp_dir = wiring.settings.temp_dir.clone();
     // **Peer Reach** (ADR-0061, ADR-0091): both reach arms end in it, over

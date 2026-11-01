@@ -15,14 +15,14 @@ use super::{
     Consent, DirEntry, DirectorySource, EntryKind, FileStamp, Memory, PassEnd, ProgressCell,
     ScanReport, ScanSummary, SpareCopy, run_pass,
 };
-use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry};
+use crate::registry::{ShareRefusal, ShareSource, SharedFileEntry, SharedRow};
 
 struct Outcome {
     end: PassEnd,
     reports: Vec<ScanReport>,
 }
 
-fn pass_with(dir: &Scripted, rows: &[SharedFileEntry], consent: Consent) -> Outcome {
+fn pass_with(dir: &Scripted, rows: &[SharedRow], consent: Consent) -> Outcome {
     let progress: ProgressCell = Arc::new(Mutex::new(None));
     let mut reports = Vec::new();
     let end = run_pass(
@@ -38,7 +38,7 @@ fn pass_with(dir: &Scripted, rows: &[SharedFileEntry], consent: Consent) -> Outc
     Outcome { end, reports }
 }
 
-fn pass(dir: &Scripted, rows: &[SharedFileEntry]) -> Outcome {
+fn pass(dir: &Scripted, rows: &[SharedRow]) -> Outcome {
     pass_with(dir, rows, Consent::Given)
 }
 
@@ -231,7 +231,7 @@ fn a_gone_row_whose_size_matched_other_content_leaves_after_the_hashing() {
     );
 }
 
-fn outcome_entry(report: &ScanReport) -> SharedFileEntry {
+fn outcome_entry(report: &ScanReport) -> crate::registry::SharedFileEntry {
     match report {
         ScanReport::Share(entry) => entry.clone(),
         other => panic!("expected a share first, got {other:?}"),
@@ -382,7 +382,7 @@ fn an_unlistable_directory_changes_nothing() {
 
 /// Several thousand files spread over subdirectories, each with the row a
 /// past pass left.
-fn restart_fixture(files: usize) -> (Scripted, Vec<SharedFileEntry>) {
+fn restart_fixture(files: usize) -> (Scripted, Vec<SharedRow>) {
     let mut dir = Scripted::new();
     let mut rows = Vec::with_capacity(files);
     for sub in 0..files.div_ceil(100) {

@@ -20,7 +20,7 @@ use crate::adapters::{
 };
 use crate::directory_scan::FsDirectorySource;
 use crate::registry::{
-    AutoShared, SharedFileEntry, SharedFileRegistry, auto_share_completed_download,
+    AutoShared, SharedFileRegistry, SharedRow, auto_share_completed_download,
 };
 use crate::registry_check::{
     CheckInput, CheckReport, CheckSeams, WithheldReason, WithheldRows, run_check,
@@ -38,7 +38,7 @@ pub(super) enum RegistryMessage {
     Scan(ScanMessage),
     /// The Registry Check wants the registry as it stands after every
     /// message sent before this one.
-    RowsWanted(std::sync::mpsc::Sender<Vec<SharedFileEntry>>),
+    RowsWanted(std::sync::mpsc::Sender<Vec<SharedRow>>),
     /// A ruling of the Registry Check.
     Check(CheckReport),
     /// An **Offer Check**'s walk of a download's parts (ADR-0113).
@@ -112,7 +112,7 @@ impl RegistryCheckHandle {
 /// asks the actor, as every later read does.
 pub(super) fn spawn_registry_check(
     tx: RegistrySender,
-    at_start: Option<Vec<SharedFileEntry>>,
+    at_start: Option<Vec<SharedRow>>,
 ) -> RegistryCheckHandle {
     let withheld = WithheldRows::before_start_look();
     let (inputs, inputs_rx) = std::sync::mpsc::channel();
@@ -156,7 +156,7 @@ pub(super) fn spawn_registry_check(
 
 /// The registry as the actor stands after every message sent before asking;
 /// `None` once the check is stopping or the actor is gone.
-fn rows_now(tx: &RegistrySender, stop: &AtomicBool) -> Option<Vec<SharedFileEntry>> {
+fn rows_now(tx: &RegistrySender, stop: &AtomicBool) -> Option<Vec<SharedRow>> {
     let (reply_tx, reply_rx) = std::sync::mpsc::channel();
     tx.send(RegistryMessage::RowsWanted(reply_tx)).ok()?;
     loop {
@@ -180,7 +180,7 @@ where
     pub(super) async fn on_registry_message(&mut self, message: RegistryMessage) {
         match message {
             RegistryMessage::Scan(message) => self.on_scan_message(message).await,
-            RegistryMessage::RowsWanted(reply) => match self.wiring.registry.list() {
+            RegistryMessage::RowsWanted(reply) => match self.wiring.registry.rows() {
                 Ok(rows) => {
                     let _ = reply.send(rows);
                 }
@@ -209,7 +209,7 @@ where
             CheckReport::StartLookDone => {
                 let withheld = &self.registry_check.withheld;
                 withheld.looked();
-                let rows = self.wiring.registry.list().unwrap_or_default();
+                let rows = self.wiring.registry.rows().unwrap_or_default();
                 for row in withheld.offered(rows) {
                     self.wiring.file_known.share(row.file_hash);
                 }

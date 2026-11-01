@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
 use crate::directory_scan::{FileIdentity, SpareCopy};
-use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
+use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry, SharedRow};
 use crate::store::Schema;
 use crate::store::had_set::{self, DurableHadSet};
 use crate::store::spare_copy;
@@ -342,6 +342,15 @@ impl SharedFileRegistry for DurableSharedFileRegistry {
         })
     }
 
+    fn rows(&self) -> Result<Vec<SharedRow>, CoreError> {
+        self.store.read(|txn| {
+            Ok(crate::store::readable(&SHARED_FILES, txn)?
+                .into_iter()
+                .map(|(key, row)| row.into_row(FileHash::from_bytes(key)))
+                .collect())
+        })
+    }
+
     fn hash_set(&self, file_hash: FileHash) -> Result<Option<Vec<PartHash>>, CoreError> {
         self.store.read(|txn| {
             let key = *file_hash.as_bytes();
@@ -364,6 +373,18 @@ impl SharedFile {
             // stay unshared for its date: no stamp is what it rehashes on.
             modified: entry.modified.filter(|at| *at >= SystemTime::UNIX_EPOCH),
             identity: None,
+        }
+    }
+
+    /// The row a read of the set alone answers with.
+    fn into_row(self, file_hash: FileHash) -> SharedRow {
+        SharedRow {
+            file_hash,
+            file_size: self.file_size,
+            path: self.path,
+            name: self.name,
+            source: self.source,
+            modified: self.modified,
         }
     }
 

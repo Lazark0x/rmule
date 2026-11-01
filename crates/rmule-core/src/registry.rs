@@ -84,6 +84,57 @@ pub struct SharedFileEntry {
     pub modified: Option<SystemTime>,
 }
 
+/// A [`SharedFileEntry`] less its part hash set: what every reader of the
+/// whole share set but the one that serves hashes wants, read for what it
+/// uses. Empty `part_hashes` would mean a file below one part, so a row that
+/// was not read with its set has no such field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedRow {
+    /// [`SharedFileEntry::file_hash`].
+    pub file_hash: FileHash,
+    /// [`SharedFileEntry::file_size`].
+    pub file_size: u64,
+    /// [`SharedFileEntry::path`].
+    pub path: PathBuf,
+    /// [`SharedFileEntry::name`].
+    pub name: String,
+    /// [`SharedFileEntry::source`].
+    pub source: ShareSource,
+    /// [`SharedFileEntry::modified`].
+    pub modified: Option<SystemTime>,
+}
+
+impl From<&SharedFileEntry> for SharedRow {
+    fn from(entry: &SharedFileEntry) -> Self {
+        Self {
+            file_hash: entry.file_hash,
+            file_size: entry.file_size,
+            path: entry.path.clone(),
+            name: entry.name.clone(),
+            source: entry.source,
+            modified: entry.modified,
+        }
+    }
+}
+
+/// A row of the share set, whichever read it came from.
+pub(crate) trait ShareSetRow {
+    /// The row's key.
+    fn file_hash(&self) -> FileHash;
+}
+
+impl ShareSetRow for SharedFileEntry {
+    fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+}
+
+impl ShareSetRow for SharedRow {
+    fn file_hash(&self) -> FileHash {
+        self.file_hash
+    }
+}
+
 impl SharedFileEntry {
     /// The name a row whose file is at `path` is announced under: the path's
     /// file name, empty for a path that has none.
@@ -273,6 +324,10 @@ pub trait SharedFileRegistry: Send + Sync + 'static {
     /// listed after a restart answers a hash-set probe with the set it was
     /// shared with.
     fn list(&self) -> Result<Vec<SharedFileEntry>, CoreError>;
+
+    /// Every shared row less its part hash set, for a caller that serves no
+    /// hash: one read per table rather than one per row.
+    fn rows(&self) -> Result<Vec<SharedRow>, CoreError>;
 
     /// The stored ED2K part hash set for `file_hash`, or `None` if not
     /// shared — the projection of [`get`](Self::get) for a caller that wants

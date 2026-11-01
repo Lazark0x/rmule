@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime};
 
 use rmule_primitives::FileHash;
 
-use crate::registry::{ShareRefusal, SharedFileEntry};
+use crate::registry::{ShareRefusal, SharedFileEntry, SharedRow};
 
 pub use fs::FsDirectorySource;
 pub(crate) use hash::HashTurn;
@@ -123,7 +123,7 @@ impl PartFiles {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Known {
     /// The **Shared File Registry**.
-    pub(crate) rows: Vec<SharedFileEntry>,
+    pub(crate) rows: Vec<SharedRow>,
     /// rmule's own part files.
     pub(crate) parts: PartFiles,
     /// The recorded spare copies.
@@ -604,7 +604,7 @@ fn offer(
     carried: usize,
     to_hash: &[FoundFile],
 ) -> DirectoryOffer {
-    let kept: Vec<&SharedFileEntry> = known
+    let kept: Vec<&SharedRow> = known
         .rows
         .iter()
         .filter(|row| row.path.starts_with(root) && !lost.contains(&row.file_hash))

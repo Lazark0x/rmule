@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use rmule_primitives::FileHash;
 
 use super::{DirectorySource, EntryKind, FileStamp, Known, SpareCopy};
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 /// Whether the scan passes over a name, wherever it stands in a path: a
 /// dot-prefixed name. rmule's own part files are skipped by their paths
@@ -49,7 +49,7 @@ pub(crate) struct GoneRow {
 }
 
 impl GoneRow {
-    pub(crate) fn of(row: &SharedFileEntry) -> Self {
+    pub(crate) fn of(row: &SharedRow) -> Self {
         Self {
             file_hash: row.file_hash,
             path: row.path.clone(),
@@ -182,7 +182,7 @@ fn look_under(source: &dyn DirectorySource, dir: &Path, known: &Known, walked: &
 /// `root` are not the scan's.
 pub(crate) fn plan(root: &Path, walked: Walked, known: &Known) -> Plan {
     let Walked { found, unreadable } = walked;
-    let mut under: HashMap<&Path, &SharedFileEntry> = known
+    let mut under: HashMap<&Path, &SharedRow> = known
         .rows
         .iter()
         .filter(|row| row.path.starts_with(root))
@@ -246,6 +246,6 @@ pub(crate) fn plan(root: &Path, walked: Walked, known: &Known) -> Plan {
 }
 
 /// The **Hash Trust Rule**: the row's size and time are the file's.
-pub(crate) fn trusted(row: &SharedFileEntry, stamp: FileStamp) -> bool {
+pub(crate) fn trusted(row: &SharedRow, stamp: FileStamp) -> bool {
     row.file_size == stamp.size && row.modified == Some(stamp.modified)
 }

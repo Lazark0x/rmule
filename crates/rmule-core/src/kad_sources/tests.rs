@@ -300,8 +300,8 @@ async fn a_partial_share_is_published_once_and_withdrawn_when_its_download_ends(
     task.abort();
 }
 
-/// The registry behind a switch: while `failing`, `list` fails as a broken
-/// store read would; every `list` call is reported on `listed`.
+/// The registry behind a switch: while `failing`, `rows` fails as a broken
+/// store read would; every `rows` call is reported on `listed`.
 struct FlakyRegistry {
     inner: DurableSharedFileRegistry,
     failing: std::sync::atomic::AtomicBool,
@@ -322,10 +322,7 @@ impl crate::registry::SharedFileRegistry for FlakyRegistry {
     ) -> Result<bool, crate::error::CoreError> {
         self.inner.gone(file_hash, path)
     }
-    fn get(&self, file_hash: FileHash) -> Result<Option<SharedFileEntry>, crate::error::CoreError> {
-        self.inner.get(file_hash)
-    }
-    fn list(&self) -> Result<Vec<SharedFileEntry>, crate::error::CoreError> {
+    fn rows(&self) -> Result<Vec<crate::registry::SharedRow>, crate::error::CoreError> {
         let failing = self.failing.load(std::sync::atomic::Ordering::SeqCst);
         let _ = self.listed.send(!failing);
         if failing {
@@ -333,6 +330,12 @@ impl crate::registry::SharedFileRegistry for FlakyRegistry {
                 "read failed".to_owned(),
             ));
         }
+        self.inner.rows()
+    }
+    fn get(&self, file_hash: FileHash) -> Result<Option<SharedFileEntry>, crate::error::CoreError> {
+        self.inner.get(file_hash)
+    }
+    fn list(&self) -> Result<Vec<SharedFileEntry>, crate::error::CoreError> {
         self.inner.list()
     }
     fn hash_set(

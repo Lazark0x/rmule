@@ -23,7 +23,7 @@ use super::{
     DirectoryWatch, WatchBatch, WatchEnd, WatchFault, WatchSeams, WatchSignal, WatchStarter,
     watch_loop,
 };
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 type Step = scripted::Step<Vec<WatchSignal>>;
 
@@ -55,7 +55,7 @@ impl Drop for ScriptedWatch {
 
 struct Harness {
     world: World,
-    rows: RefCell<Vec<SharedFileEntry>>,
+    rows: RefCell<Vec<SharedRow>>,
     stop: Arc<AtomicBool>,
     elapsed: Arc<AtomicU64>,
     dropped: Arc<AtomicBool>,
@@ -79,7 +79,7 @@ struct Harness {
 }
 
 impl Harness {
-    fn new(world: World, rows: Vec<SharedFileEntry>) -> Self {
+    fn new(world: World, rows: Vec<SharedRow>) -> Self {
         Self {
             world,
             rows: RefCell::new(rows),
@@ -137,7 +137,7 @@ impl Harness {
             ScanReport::Share(entry) => {
                 let mut rows = self.rows.borrow_mut();
                 rows.retain(|r| r.file_hash != entry.file_hash);
-                rows.push(entry.clone());
+                rows.push(entry.into());
             }
             ScanReport::Unshare(hash) => {
                 self.rows.borrow_mut().retain(|r| r.file_hash != *hash);
@@ -219,12 +219,12 @@ impl Harness {
         )
     }
 
-    fn shares(&self) -> Vec<(Duration, SharedFileEntry)> {
+    fn shares(&self) -> Vec<(Duration, SharedRow)> {
         self.reports
             .borrow()
             .iter()
             .filter_map(|(at, report)| match report {
-                ScanReport::Share(entry) => Some((*at, entry.clone())),
+                ScanReport::Share(entry) => Some((*at, entry.into())),
                 _ => None,
             })
             .collect()

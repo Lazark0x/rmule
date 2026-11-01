@@ -140,7 +140,7 @@ impl<C: KadSourceChannel> KadPublisher<C> {
     /// unread registry says nothing about what is offered, so the
     /// publications stand as they are.
     async fn sweep(&self, published: &mut HashMap<FileHash, SourceLookupTarget>) -> bool {
-        let listed = match self.shared_files.list() {
+        let listed = match self.shared_files.rows() {
             Ok(listed) => listed,
             Err(error) => {
                 tracing::warn!(%error, "shared file registry unreadable; Kad publications kept");

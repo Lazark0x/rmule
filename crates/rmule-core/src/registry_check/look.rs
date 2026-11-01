@@ -6,7 +6,7 @@
 use std::io;
 
 use crate::directory_scan::{DirectorySource, EntryKind, FileStamp};
-use crate::registry::{ShareRefusal, SharedFileEntry};
+use crate::registry::{ShareRefusal, SharedRow};
 
 /// What a look found at a row's path.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub(crate) enum Look {
 
 /// Look at `row`'s path: one `stat`, and one more of its folder when the
 /// file is not there. Nothing is opened.
-pub(crate) fn look(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+pub(crate) fn look(source: &dyn DirectorySource, row: &SharedRow) -> Look {
     if let Some(refusal) = ShareRefusal::of(row.file_size) {
         return Look::Refused(refusal);
     }
@@ -44,7 +44,7 @@ pub(crate) fn look(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look 
 
 /// Look at `row` and, if its stamp says it is readable, open it: a withheld
 /// row is offered again only once it opens.
-pub(crate) fn look_and_open(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+pub(crate) fn look_and_open(source: &dyn DirectorySource, row: &SharedRow) -> Look {
     match look(source, row) {
         Look::Readable => match source.open(&row.path) {
             Ok(_) => Look::Readable,
@@ -57,7 +57,7 @@ pub(crate) fn look_and_open(source: &dyn DirectorySource, row: &SharedFileEntry)
 /// Look at `row` after a read of it failed. A path that still looks right is
 /// unreadable all the same: the open's error if it will not open, else the
 /// failed read's.
-pub(crate) fn look_after_failure(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+pub(crate) fn look_after_failure(source: &dyn DirectorySource, row: &SharedRow) -> Look {
     match look_and_open(source, row) {
         // It opens, so the read failed past the open: an I/O error.
         Look::Readable => Look::Unreadable(io::ErrorKind::Other),
@@ -65,7 +65,7 @@ pub(crate) fn look_after_failure(source: &dyn DirectorySource, row: &SharedFileE
     }
 }
 
-fn folder_look(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
+fn folder_look(source: &dyn DirectorySource, row: &SharedRow) -> Look {
     let Some(folder) = row.path.parent() else {
         return Look::FolderMissing;
     };
@@ -80,7 +80,7 @@ fn folder_look(source: &dyn DirectorySource, row: &SharedFileEntry) -> Look {
 /// The **Hash Trust Rule** as a look applies it. A row with no recorded time
 /// (written before store version 2) is compared on size alone: its time was
 /// never known, and the scan re-stamps the rows under its directory.
-fn matches_row(row: &SharedFileEntry, stamp: FileStamp) -> bool {
+fn matches_row(row: &SharedRow, stamp: FileStamp) -> bool {
     row.file_size == stamp.size
         && row
             .modified

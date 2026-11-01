@@ -36,17 +36,23 @@ fn pass_knowing(dir: &Scripted, known: &Known, consent: Consent) -> (PassEnd, Ve
 /// one no read could produce, so a share of it proves nothing was read.
 fn set_aside(dir: &mut Scripted, path: &str, bytes: &[u8], modified: u64) -> SetAside {
     let stamp = dir.file(path, bytes, modified);
-    let mut entry = row(path, stamp, 0);
-    entry.file_hash = FileHashSummary::digest_bytes(bytes).file_hash();
-    entry.name = Path::new(path)
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    entry.part_hashes = vec![PartHash::from_bytes([
-        0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2, 0xE1,
-        0xF0,
-    ])];
+    let row = row(path, stamp, 0);
+    let entry = crate::registry::SharedFileEntry {
+        file_hash: FileHashSummary::digest_bytes(bytes).file_hash(),
+        file_size: row.file_size,
+        path: row.path,
+        name: Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        source: row.source,
+        part_hashes: vec![PartHash::from_bytes([
+            0x0F, 0x1E, 0x2D, 0x3C, 0x4B, 0x5A, 0x69, 0x78, 0x87, 0x96, 0xA5, 0xB4, 0xC3, 0xD2,
+            0xE1, 0xF0,
+        ])],
+        modified: row.modified,
+    };
     SetAside {
         entry,
         identity: None,

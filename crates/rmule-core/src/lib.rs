@@ -193,7 +193,7 @@ pub use stop_request::StopRequest;
 // The one obfuscation policy `CoreSettings::obfuscation` carries across the peer
 // stream + datagram surfaces (ADR-0042/0046), re-exported so an application can
 // set it without depending on `rmule_net::peer` directly.
-pub use registry::{ShareRefusal, ShareSource, SharedFileEntry, SharedFileRegistry};
+pub use registry::{ShareRefusal, ShareSource, SharedFileEntry, SharedFileRegistry, SharedRow};
 pub use registry_check::{Withheld, WithheldReason};
 /// aMule's three-valued server priority (`ST_PREFERENCE`), re-exported so a
 /// front-end sets [`ManagedServer::priority`] without depending on

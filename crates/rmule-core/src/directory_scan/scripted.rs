@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 use rmule_primitives::FileHash;
 
 use super::{DirEntry, DirectorySource, EntryKind, FileIdentity, FileStamp, Known, WatchSignal};
-use crate::registry::{ShareSource, SharedFileEntry};
+use crate::registry::{ShareSource, SharedRow};
 
 pub(crate) const ROOT: &str = "/dl";
 
@@ -228,20 +228,19 @@ impl DirectorySource for Scripted {
 }
 
 /// The registry row a past pass left for `path`, its hash made up.
-pub(crate) fn row(path: &str, stamp: FileStamp, tag: u8) -> SharedFileEntry {
-    SharedFileEntry {
+pub(crate) fn row(path: &str, stamp: FileStamp, tag: u8) -> SharedRow {
+    SharedRow {
         file_hash: FileHash::from_bytes([tag; FileHash::BYTE_LEN]),
         file_size: stamp.size,
         path: PathBuf::from(path),
         name: String::new(),
         source: ShareSource::DownloadDirectory,
-        part_hashes: Vec::new(),
         modified: Some(stamp.modified),
     }
 }
 
 /// What the scan would know with `rows` shared and no download.
-pub(crate) fn known(rows: &[SharedFileEntry]) -> Known {
+pub(crate) fn known(rows: &[SharedRow]) -> Known {
     Known {
         rows: rows.to_vec(),
         ..Known::default()

@@ -421,7 +421,7 @@ where
             scan.missing = true;
         }
         self.scans_changed();
-        let under: Vec<_> = match self.wiring.registry.list() {
+        let under: Vec<_> = match self.wiring.registry.rows() {
             Ok(rows) => rows
                 .into_iter()
                 .filter(|row| row.path.starts_with(&dir))
@@ -450,7 +450,7 @@ where
     /// rows.
     fn known(&self) -> Result<Known, crate::CoreError> {
         Ok(Known {
-            rows: self.wiring.registry.list()?,
+            rows: self.wiring.registry.rows()?,
             parts: PartFiles::of(self.wiring.store.part_files()?),
             spares: self.wiring.registry.spares()?,
             identities: self.wiring.registry.identities()?,

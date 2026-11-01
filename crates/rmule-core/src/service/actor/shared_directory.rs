@@ -197,7 +197,7 @@ where
     /// touches it while it is refused. A Served Download whose destination
     /// lies under a refused entry is held back the same way (ADR-0113).
     async fn match_refusals(&mut self) {
-        let rows = match self.wiring.registry.list() {
+        let rows = match self.wiring.registry.rows() {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "rows under a refused directory not withheld; none is offered again while it is refused");

@@ -15,7 +15,7 @@ use super::super::scripted::{ROOT, Scripted, known, row};
 use super::super::{
     Consent, FileIdentity, Known, Memory, PassEnd, ProgressCell, ScanReport, SpareCopy, run_pass,
 };
-use crate::registry::SharedFileEntry;
+use crate::registry::SharedRow;
 
 fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
     let progress: ProgressCell = Arc::new(Mutex::new(None));
@@ -34,7 +34,7 @@ fn pass_knowing(dir: &Scripted, known: &Known) -> (PassEnd, Vec<ScanReport>) {
 }
 
 /// A shared film at `/dl/film.mkv` with identity inode 7, born at second 1.
-fn film(dir: &mut Scripted) -> (SharedFileEntry, FileIdentity) {
+fn film(dir: &mut Scripted) -> (SharedRow, FileIdentity) {
     let stamp = dir.file("/dl/film.mkv", b"the film", 5);
     let identity = dir.identify("/dl/film.mkv", 7, 1);
     let mut entry = row("/dl/film.mkv", stamp, 0);
@@ -42,7 +42,7 @@ fn film(dir: &mut Scripted) -> (SharedFileEntry, FileIdentity) {
     (entry, identity)
 }
 
-fn knowing(row: &SharedFileEntry, identity: Option<FileIdentity>) -> Known {
+fn knowing(row: &SharedRow, identity: Option<FileIdentity>) -> Known {
     Known {
         identities: identity
             .map(|identity| HashMap::from([(row.file_hash, identity)]))

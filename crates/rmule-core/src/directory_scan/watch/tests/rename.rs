@@ -6,7 +6,7 @@
 use super::*;
 
 /// A shared file at `/dl/draft.txt` whose identity the harness knows.
-fn identified(harness: &Harness) -> SharedFileEntry {
+fn identified(harness: &Harness) -> SharedRow {
     let stamp = harness
         .world
         .with(|dir| dir.file("/dl/draft.txt", b"contents", 1));
