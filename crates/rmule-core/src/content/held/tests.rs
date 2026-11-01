@@ -271,3 +271,67 @@ async fn a_file_longer_than_the_download_is_cut_to_its_size() {
     held.cut_to(100).await.unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), b"verified", "never grown");
 }
+
+/// Blocks reach the file as they arrive, in any order, off the grid too, and a
+/// part reads back whole from wherever they landed: on a disk with no holes as
+/// well, where the gaps a write left read as zeros until their bytes come.
+#[tokio::test]
+async fn blocks_written_out_of_order_read_back_as_the_part_on_a_disk_with_no_holes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("film.bin.part");
+    let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+    held.punches = false;
+    let block = EMBLOCKSIZE as usize;
+    let part: Vec<u8> = (0..2 * block + 123).map(|at| (at % 251) as u8).collect();
+    held.write_blocks(vec![
+        (2 * EMBLOCKSIZE, part[2 * block..].to_vec()),
+        (5, part[5..block].to_vec()),
+    ])
+    .await
+    .unwrap();
+    assert_eq!(held.recorded_end, part.len() as u64);
+    let plan = PartPlan {
+        part_index: rmule_peer::PartIndex::new(0),
+        offset: 0,
+        len: part.len() as u64,
+    };
+    held.write_blocks(vec![
+        (EMBLOCKSIZE, part[block..2 * block].to_vec()),
+        (0, part[..5].to_vec()),
+    ])
+    .await
+    .unwrap();
+
+    let (hash, cells) = held.read_part(plan, true).await.unwrap();
+    assert_eq!(hash, crate::hashing::part_hash_of(&part));
+    let cells = cells.expect("asked for");
+    assert_eq!(cells.len(), 3);
+    assert_eq!(cells[1], aich_block_hash(&part[block..2 * block]));
+    assert_eq!(held.read_bytes(plan).await.unwrap(), part);
+}
+
+/// A batch that opens two gaps punches each from where the last write ended:
+/// the length carries from write to write, so the bytes between stay.
+#[tokio::test]
+async fn a_batch_punches_every_gap_it_opens_and_no_byte_between() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("film.bin.part");
+    let (mut held, _) = HeldPartFile::hold(&path, 0).await.unwrap();
+    let mib = 1024 * 1024;
+    held.write_blocks(vec![
+        (8 * mib, vec![2; 4096]),
+        (4 * mib, vec![1; 4096]),
+        (0, vec![3; 4096]),
+    ])
+    .await
+    .unwrap();
+    let on_disk = std::fs::read(&path).unwrap();
+    assert_eq!(on_disk.len(), (8 * mib) as usize + 4096);
+    assert!(on_disk[..4096].iter().all(|&byte| byte == 3));
+    assert!(
+        on_disk[(4 * mib) as usize..][..4096]
+            .iter()
+            .all(|&byte| byte == 1)
+    );
+    assert!(on_disk[(8 * mib) as usize..].iter().all(|&byte| byte == 2));
+}

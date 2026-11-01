@@ -406,3 +406,30 @@ fn the_end_game_duplicates_only_within_its_bound() {
     );
     assert!(!scheduler.holds_claims(worker), "its set settled");
 }
+
+/// Of two parts equally rare, the one with more bytes goes first, so a part a
+/// source stranded finishes before a new one opens; a rarer part still goes
+/// first, and the Streaming Window keeps its own order.
+#[test]
+fn arrived_bytes_break_a_tie_of_rarity_and_only_a_tie() {
+    let size = 4 * ED2K_PART_SIZE;
+    let parts_held = PartBitmap::all_present(4);
+    let mut arrived = ByteRanges::default();
+    arrived.insert(3 * ED2K_PART_SIZE, 3 * ED2K_PART_SIZE + B);
+    let progress = Arrived(BTreeMap::from([(PartIndex::new(3), arrived)]));
+    let first = |order, frequency: &[u32]| {
+        let mut scheduler = DownloadScheduler::new(size, [], order);
+        match scheduler.hand(peer(1), 1, &parts_held, frequency, 40, &progress) {
+            Handout::Blocks { blocks, .. } => blocks[0].part_index.value(),
+            Handout::Nothing { .. } => panic!("blocks are left"),
+        }
+    };
+    assert_eq!(first(PartOrder::Rarest, &[9, 9, 9, 9]), 3, "the tie");
+    assert_eq!(first(PartOrder::Rarest, &[8, 9, 9, 9]), 0, "rarity first");
+    let window = PartOrder::Streaming { window_parts: 4 };
+    assert_eq!(
+        first(window, &[9, 9, 9, 9]),
+        0,
+        "the window keeps its order"
+    );
+}

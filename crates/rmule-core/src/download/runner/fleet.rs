@@ -39,7 +39,7 @@ use super::enact::{LoopCtx, after_fact, enact_drain, end_lane, settle_lane};
 use super::intake;
 use super::reply_sink::ReaskSinkLease;
 use super::republish::WakeReading;
-use super::{CallbackFacts, RunnerContext, now, stop_reason, wait_until_stop};
+use super::{CallbackFacts, RunnerContext, StopReason, now, stop_reason, wait_until_stop};
 
 /// How often the runner re-reads the facts the brain holds samples of and no
 /// change notice reaches: the Callback Capability (besides its Reach
@@ -428,6 +428,12 @@ where
         let (worker, peer, event) = tokio::select! {
             biased;
             _ = wait_until_stop(&mut stop_rx) => {
+                // Quit asks the run for what arrived and nothing else: no
+                // worker is told, and the row stays as it stands.
+                if *stop_rx.borrow() == StopReason::Quit {
+                    end_lane(&mut ctx, true, &mut VecDeque::new()).await;
+                    return Err(DownloadFailure::Paused);
+                }
                 let failure = stop_reason(&stop_rx).unwrap_or(DownloadFailure::Cancelled);
                 // The Peer Roster's Download leg (ADR-0059):
                 // `on_stop` ends in `Fail`, whose whole-fleet shutdown

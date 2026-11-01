@@ -332,8 +332,8 @@ impl DownloadState {
                 };
                 // With a trusted AICH root and a peer stating it past its
                 // clock, recover at block granularity (ADR-0038): ask it for
-                // the part's recovery data and hold the corrupt buffer (with
-                // its provenance) until `on_aich_answer`, the part still
+                // the part's recovery data and hold its ranges (with their
+                // provenance) until `on_aich_answer`, the part still
                 // verifying so none of its blocks is handed meanwhile. With
                 // none, its refetch attributes it (ADR-0117 §1).
                 let wire = u16::try_from(part_index.value());
@@ -398,7 +398,7 @@ impl DownloadState {
             0
         };
         // A copy of a part already assembled or verified — a duplicate's, or a
-        // block still draining — opens no buffer (ADR-0117).
+        // block still draining — opens no assembly (ADR-0117).
         if self.pending_persist.contains_key(&part_index)
             || self.awaiting_recovery.contains_key(&part_index)
             || self.scheduler.is_part_verified(part_index)

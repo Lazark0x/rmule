@@ -347,6 +347,9 @@ where
     })
 }
 
+#[cfg(test)]
+mod tests;
+
 /// The plan of `part_index`, for a decision that names a part.
 pub(super) fn plan_of(file: &Ed2kFileLink, part_index: PartIndex) -> PartPlan {
     part_plan(file.size(), part_index)

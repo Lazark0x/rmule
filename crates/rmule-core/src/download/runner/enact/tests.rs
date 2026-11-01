@@ -79,14 +79,9 @@ mod buddy_hash_spelling {
     };
 
     use super::*;
-    use crate::VerificationAuthority;
     use crate::download::runner::test_context::{NeverLooksUp, NeverTransfers, loop_ctx};
     use crate::download::source_book::Gate;
-    use crate::download::state::{
-        CallbackCapability, Channel, ContentFacts, Decision, DownloadState, SourcingPosture,
-        StartingFacts,
-    };
-    use crate::hashing::ResolvedHashSet;
+    use crate::download::state::{Channel, Decision, DownloadState};
     use crate::ip_filter::IpFilter;
 
     /// Asymmetric per four-byte word (ADR-0061), so the primary
@@ -127,36 +122,7 @@ mod buddy_hash_spelling {
     /// A one-part, callback-capable download state — the brain half of the
     /// harness, matching `download::state::tests::callback_state`.
     pub(super) fn download_state() -> DownloadState {
-        let mut state = DownloadState::new(
-            DownloadId::from_u64(1),
-            ContentFacts {
-                file_hash: FileHash::from_bytes([0; 16]),
-                file_size: 1_000,
-                link_part_hash_set: None,
-                resolved: ResolvedHashSet {
-                    authority: VerificationAuthority::FileHashOnly,
-                    hashes: Vec::new(),
-                },
-                aich_root: crate::download::state::AichRootAuthority::Rootless,
-                verified_parts: Vec::new(),
-                arrived: Vec::new(),
-                order: crate::scheduler::PartOrder::Rarest,
-            },
-            StartingFacts {
-                distrusted: std::collections::HashSet::new(),
-                seeds_written: 0,
-            },
-            SourcingPosture {
-                callback_capability: CallbackCapability::server_high_id(),
-                dial: crate::dialable::DialPosition::default(),
-                discovery_active: false,
-                client_udp: false,
-            },
-            Duration::from_secs(30),
-            crate::download::connection_budget::BudgetSeat::ceiling(1),
-        );
-        let _ = state.start(std::time::Instant::now());
-        state
+        crate::download::runner::test_context::one_part_state()
     }
 
     /// Kad rows taken behind an open gate at `at`, as the fleet's Kad arm

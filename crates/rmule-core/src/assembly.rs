@@ -217,6 +217,19 @@ impl PartAssembly {
         self.cell_hashes = cell_hashes;
     }
 
+    /// What this record costs the heap: the review's question of a part in
+    /// flight, read by the rig.
+    #[cfg(test)]
+    pub(crate) fn heap_bytes(&self) -> usize {
+        let writers: usize = self.writers.iter().map(Vec::capacity).sum();
+        std::mem::size_of::<Self>()
+            + self.arrived.ranges().count() * 2 * std::mem::size_of::<u64>() * 2
+            + self.writers.capacity() * std::mem::size_of::<Vec<PeerEndpoint>>()
+            + writers * std::mem::size_of::<PeerEndpoint>()
+            + self.user_hashes.capacity()
+                * (std::mem::size_of::<PeerEndpoint>() + std::mem::size_of::<UserHash>())
+    }
+
     /// The part's cells as one attempt at it: each cell's AICH block hash and
     /// writers (ADR-0117 §1). `None` before the lane read them.
     pub(crate) fn attempt(&self) -> Option<Attempt> {

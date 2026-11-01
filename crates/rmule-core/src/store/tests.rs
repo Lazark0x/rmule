@@ -7,6 +7,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use rmule_peer::PartIndex;
 use rmule_primitives::{PartHash, ServerEndpoint, UserHash};
 use rmule_store::{Ladder, Schema, Store};
 
@@ -14,6 +15,7 @@ use super::{
     DURABLE_STORE_FILE, DurableStore, OpenRefusal, open_durable_store, open_durable_store_in_memory,
 };
 use crate::app_config::AppConfigStore;
+use crate::assembly::ArrivedPart;
 use crate::credit::CreditStore;
 use crate::registry::{ShareSource, SharedFileEntry, SharedFileRegistry};
 use crate::server_list::{ManagedServer, ServerListStore, ServerMerge};
@@ -516,4 +518,31 @@ fn a_store_the_published_build_wrote_climbs_and_keeps_everything() {
             .join(Path::new("/srv/rmule/downloads/v020-fixture.bin.part"))
     );
     assert_eq!(repo.unreadable_rows().unwrap(), 0);
+
+    // The climb keeps the download, and its checkpoint starts empty and takes
+    // a row, which a recorded part then settles.
+    let id = download.id();
+    assert!(repo.arrived_parts(id).unwrap().is_empty());
+    let part = ArrivedPart {
+        ranges: vec![(0, 4096)],
+        ..ArrivedPart::none(PartIndex::new(0))
+    };
+    repo.record_arrived(id, vec![part.clone()]).unwrap();
+    assert_eq!(repo.arrived_parts(id).unwrap(), vec![part.clone()]);
+    repo.record_verified_part(
+        id,
+        VerifiedPartRecord {
+            part_index: 0,
+            offset: 0,
+            len: 4096,
+            part_hash: PartHash::from_bytes([1; 16]),
+        },
+    )
+    .unwrap();
+    assert!(repo.arrived_parts(id).unwrap().is_empty());
+    repo.record_arrived(id, vec![part]).unwrap();
+    assert!(
+        repo.arrived_parts(id).unwrap().is_empty(),
+        "a part recorded takes no row"
+    );
 }

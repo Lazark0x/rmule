@@ -12,8 +12,13 @@ use crate::adapters::{
 use super::{CoreActor, send_event};
 use crate::content::on_pool;
 use crate::credit::SharedCreditStore;
-use crate::service::activity::{JOIN_GRACE, join_or_abort, unix_now};
+use crate::download::StopReason;
+use crate::service::activity::{JOIN_GRACE, unix_now};
 use crate::service::{CoreEvent, QuitStep};
+
+/// How long Quit waits on every run's last checkpoint together: a sync and a
+/// commit each, one store, so a long list takes seconds on a slow disk.
+const DOWNLOAD_QUIT_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
 
 impl<S, P, L, K> CoreActor<S, P, L, K>
 where
@@ -54,9 +59,11 @@ where
             announce(&self.evt_tx, QuitStep::Search).await;
             self.activities.searches.stop_all(&self.evt_tx).await;
         }
-        // Aborted rather than stopped: a stop writes the lifecycle
+        // Told to quit rather than stopped: a stop writes the lifecycle
         // (`Paused`/`Cancelled`), and a quit must leave the store saying
-        // `Active` so the next start recovers the download as it was.
+        // `Active` so the next start recovers the download as it was. Each run
+        // gets its checkpoint out first (ADR-0117 §4); one that cannot within
+        // the grace is aborted, as a kill would end it.
         if !self.activities.downloads_idle() || !self.stopping.is_empty() {
             announce(&self.evt_tx, QuitStep::Download).await;
             // Each run's last ranking, written before the runs are aborted
@@ -66,10 +73,18 @@ where
             // says so, unlike the runs below.
             self.finish_stops().await;
             let ids: Vec<_> = self.activities.downloads().map(|(id, _)| id).collect();
-            for download_id in ids {
-                if let Some(download) = self.retire_download(download_id) {
-                    download.handle.abort();
-                    join_or_abort(download.handle).await;
+            let runs: Vec<_> = ids
+                .into_iter()
+                .filter_map(|download_id| self.retire_download(download_id))
+                .collect();
+            for run in &runs {
+                let _ = run.stop_tx.send(StopReason::Quit);
+            }
+            let grace = tokio::time::Instant::now() + DOWNLOAD_QUIT_GRACE;
+            for run in runs {
+                let abort = run.handle.abort_handle();
+                if tokio::time::timeout_at(grace, run.handle).await.is_err() {
+                    abort.abort();
                 }
             }
         }

@@ -11,7 +11,7 @@ aMule references are to 2.3.3 (`4e8f2b3c`); read, never ported (ADR-0082).
 
 ## Decision
 
-The Download Set is the downloads with a run. **Quit rewrites nothing:** it aborts each run,
+The Download Set is the downloads with a run. **Quit rewrites no lifecycle:** each run commits its Arrived Checkpoint and ends, aborted past a grace,
 and the row keeps the operator's last word. A crash leaves the same rows and gets the same
 attach. aMule likewise persists only a part file's paused bit (`PartFile.cpp:1059`,
 `:655-657`), and a file loaded without it is processed like any running file

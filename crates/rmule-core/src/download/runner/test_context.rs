@@ -148,6 +148,41 @@ pub(in crate::download) fn runner_context<S, P>(
 
 /// The loop context of download 1 over `runner` for `file`, its brain
 /// `state`: no worker live, no callback filed, nobody reachable.
+/// A one-part, callback-capable download state, started: the brain half of a
+/// harness that drives the drain.
+pub(super) fn one_part_state() -> DownloadState {
+    let mut state = DownloadState::new(
+        DownloadId::from_u64(1),
+        crate::download::state::ContentFacts {
+            file_hash: rmule_primitives::FileHash::from_bytes([0; 16]),
+            file_size: 1_000,
+            link_part_hash_set: None,
+            resolved: crate::hashing::ResolvedHashSet {
+                authority: crate::VerificationAuthority::FileHashOnly,
+                hashes: Vec::new(),
+            },
+            aich_root: crate::download::state::AichRootAuthority::Rootless,
+            verified_parts: Vec::new(),
+            arrived: Vec::new(),
+            order: crate::scheduler::PartOrder::Rarest,
+        },
+        crate::download::state::StartingFacts {
+            distrusted: std::collections::HashSet::new(),
+            seeds_written: 0,
+        },
+        crate::download::state::SourcingPosture {
+            callback_capability: crate::download::state::CallbackCapability::server_high_id(),
+            dial: crate::dialable::DialPosition::default(),
+            discovery_active: false,
+            client_udp: false,
+        },
+        std::time::Duration::from_secs(30),
+        crate::download::connection_budget::BudgetSeat::ceiling(1),
+    );
+    let _ = state.start(std::time::Instant::now());
+    state
+}
+
 pub(super) fn loop_ctx<'a, S, P>(
     runner: &'a RunnerContext<S, P>,
     file: &'a Ed2kFileLink,

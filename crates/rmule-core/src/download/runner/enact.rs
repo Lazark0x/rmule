@@ -67,8 +67,9 @@ pub(super) struct LoopCtx<'a, S, P> {
 /// Carry out one `Vec<Decision>` against the live runtime — the only async
 /// surface in the download loop. Decisions drain in order; a failed `Spawn`
 /// feeds its follow-up decisions back onto the queue (the spawn round-trip),
-/// so the loop stays flat — no recursion. A `PersistPart` goes on the run's
-/// [`PersistLane`], and its landing comes back as a fact of the fleet loop.
+/// so the loop stays flat — no recursion. New bytes and a `PersistPart` go on
+/// the run's [`PersistLane`], and a landing comes back as a fact of the fleet
+/// loop.
 /// `Fail` tears the fleet down and returns the reason. Every successful drain
 /// ends by refreshing the diagnostics scheduler counts from `ctx.state`, so no
 /// individual enact site repeats it and none can forget it; a `Fail` returns
@@ -624,7 +625,8 @@ where
             _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
         }
     }
-    loop {
+    // A lane the disk ended takes no byte, and its run ends behind this drain.
+    while !ctx.persist.ended() {
         tokio::select! {
             cached = cache.take(len) => return cached,
             fact = ctx.persist.next_fact(), if ctx.persist.busy() => {
@@ -633,6 +635,7 @@ where
             _ = wait_until_stop(&mut stop_rx) => return CachedBytes::over_the_cap(),
         }
     }
+    CachedBytes::over_the_cap()
 }
 
 /// End the lane with its run: what is gathered goes to the file and what is on

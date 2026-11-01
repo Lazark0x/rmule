@@ -186,7 +186,7 @@ slower worker is fetching. The first byte to arrive at an offset is kept, in the
 - **The Write Cache** is the node's bound on bytes between the brain and the disk: 64 MiB,
   counted at arrival and returned when the write ends, over every run. One run may hold 16 MiB of
   it, so a volume that stalls costs its own runs, not the node's. A run writes its bytes in order of
-  offset, joined where they touch, once it holds 1 MiB, each second, and before a part's check, a
+  offset once it holds 1 MiB, each second, and before a part's check, a
   checkpoint or a run's end. A run past its share, or short of the cache, holds its drain until
   its lane or the node gives bytes back: the workers wait on the brain and the sockets on the
   workers. A stop lets the drain through over the cap, so a stalled volume never stands between a

@@ -14,6 +14,7 @@ mod corruption;
 mod direct_ipv6;
 mod dual_stack;
 mod end_game;
+mod heap;
 mod intake;
 mod kad_root;
 mod ownership;

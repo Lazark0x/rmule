@@ -44,6 +44,7 @@ mod standing_session_search;
 
 // Download: part assignment, verification, and the peer pool feeding them.
 mod content_files;
+mod download_arrived;
 mod download_attach;
 mod download_clear;
 mod download_completion;

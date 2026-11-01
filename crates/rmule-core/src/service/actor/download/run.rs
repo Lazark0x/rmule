@@ -102,7 +102,7 @@ where
         if let Some(gate) = self.stop_completion(download_id).await? {
             let command = match reason {
                 StopReason::Cancel => DownloadCommand::CancelDownload { download_id },
-                StopReason::Pause | StopReason::Active => {
+                StopReason::Pause | StopReason::Active | StopReason::Quit => {
                     DownloadCommand::PauseDownload { download_id }
                 }
             };
@@ -147,8 +147,9 @@ where
                 self.activities.take_restoring(download_id);
                 self.cancel(download_id).await;
             }
-            // Nothing stops a run for this; it is a run's standing order.
-            StopReason::Active => {}
+            // Nothing stops a run for this: it is a run's standing order, and
+            // Quit keeps no stop.
+            StopReason::Active | StopReason::Quit => {}
         }
         stop.held
     }

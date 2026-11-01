@@ -64,13 +64,17 @@ pub(crate) enum StopReason {
     Active,
     Pause,
     Cancel,
+    /// The process ends: the run keeps what arrived and writes nothing else,
+    /// so the row says what it said and the next start recovers it (ADR-0093,
+    /// ADR-0117 §4).
+    Quit,
 }
 
 impl StopReason {
     pub(crate) const fn failure(self) -> Option<DownloadFailure> {
         match self {
             Self::Active => None,
-            Self::Pause => Some(DownloadFailure::Paused),
+            Self::Pause | Self::Quit => Some(DownloadFailure::Paused),
             Self::Cancel => Some(DownloadFailure::Cancelled),
         }
     }
@@ -167,7 +171,7 @@ pub(crate) struct RunnerContext<S, P> {
     pub(crate) rt: Arc<SharedRuntime<S, P>>,
     pub(crate) stop_rx: watch::Receiver<StopReason>,
     /// The run's **Held Part File** (ADR-0094): opened when the run starts and
-    /// the one handle every verified part is written through. `None` before
+    /// the one handle every byte is written through. `None` before
     /// that, and after finalize hands the file over.
     pub(crate) part_file: Mutex<Option<crate::content::HeldPartFile>>,
     /// The sources later links for this file bring while the run runs
@@ -357,6 +361,11 @@ where
         // The row outlives the run (ADR-0094): what the download holds is its
         // own fact, and only a cancel removes it.
         self.runner.rt.diagnostics.end_run(download_id, completed);
+        // Nobody reads the finished arm once Quit runs, and its queue is
+        // bounded.
+        if *self.runner.stop_rx.borrow() == StopReason::Quit {
+            return;
+        }
         let _ = self
             .finished_tx
             .send(FinishedActivity::Download(
