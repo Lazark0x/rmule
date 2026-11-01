@@ -1,7 +1,8 @@
 //! The Settings tab's labels, headings and the notes beside its fields. A
 //! label's width is measured, never assumed: `form` sizes its column to them.
 
-use crate::config::{ObfuscationChoice, ThemeChoice};
+use crate::config::{AppFlag, ObfuscationChoice, ThemeChoice};
+use rmule_core::Flag;
 use rmule_primitives::ServerEndpoint;
 
 /// The tab's title.
@@ -42,10 +43,6 @@ pub const ED2K_PORT: &str = "eD2k port";
 pub const SERVER_MET: &str = "server.met";
 /// Where the mirror is used.
 pub const SERVER_MET_NOTE: &str = "(Networks: U)";
-/// The first-run list fetch.
-pub const FETCH_LIST: &str = "Fetch list";
-/// What it does.
-pub const FETCH_LIST_NOTE: &str = "at start when the list is empty  (on restart)";
 /// The UDP port.
 pub const UDP_PORT: &str = "UDP port";
 /// The obfuscation policy.
@@ -56,8 +53,6 @@ pub const OBFUSCATION_NOTE: &str = "peer TCP/UDP + Kad + server UDP";
 pub const PORT_MAPPING: &str = "Port mapping";
 /// What it does.
 pub const PORT_MAPPING_NOTE: &str = "opens router ports: UPnP, PCP, NAT-PMP  (on restart)";
-/// Connecting at start.
-pub const AUTOCONNECT: &str = "Autoconnect";
 /// The dead server limit.
 pub const DEAD_AFTER: &str = "Dead after";
 /// What it counts.
@@ -72,26 +67,10 @@ pub const REMEMBER_PEERS: &str = "Remember peers";
 pub const PLAYER: &str = "Player";
 /// The Kad seed mirror.
 pub const NODES_DAT: &str = "nodes.dat";
-/// The seed fetch.
-pub const FETCH_SEEDS: &str = "Fetch seeds";
-/// What it does.
-pub const FETCH_SEEDS_NOTE: &str = "nodes.dat on first Kad start  (on restart)";
 /// The theme.
 pub const THEME: &str = "Theme";
 /// What auto reads.
 pub const THEME_NOTE: &str = "auto follows the terminal";
-/// The terminal's title.
-pub const TERMINAL_TITLE: &str = "Terminal title";
-/// Reader Mode.
-pub const READER_MODE: &str = "Reader mode";
-/// The completion bell.
-pub const BELL: &str = "Bell";
-/// The mouse.
-pub const MOUSE: &str = "Mouse";
-/// The full Run Log.
-pub const FULL_RUN_LOG: &str = "Full run log";
-/// What it adds.
-pub const FULL_RUN_LOG_NOTE: &str = "adds peers, files and paths to rmule.log";
 /// The user hash.
 pub const USER_HASH: &str = "User hash";
 /// The Kad id.
@@ -102,6 +81,77 @@ pub const SHARED: &str = "Shared";
 pub const SHARE_A_DIR: &str = "Share a dir";
 /// What it takes.
 pub const SHARE_A_DIR_HINT: &str = "Enter, type a path, Enter";
+
+/// What an on/off row says.
+#[derive(Clone, Copy, Debug)]
+pub struct OnOffWords {
+    /// The row's label.
+    pub label: &'static str,
+    /// The note beside it.
+    pub note: &'static str,
+    /// Its name in a saved receipt.
+    pub receipt: &'static str,
+}
+
+/// A core **Flag**'s row.
+#[must_use]
+pub const fn flag_words(flag: Flag) -> OnOffWords {
+    match flag {
+        Flag::AutoFetchServerMet => OnOffWords {
+            label: "Fetch list",
+            note: "at start when the list is empty  (on restart)",
+            receipt: "server.met fetch at start",
+        },
+        Flag::AutoUpdateServerMet => OnOffWords {
+            label: super::server::AUTO_UPDATE_LABEL,
+            note: super::server::AUTO_UPDATE_NOTE,
+            receipt: "server list auto-update at start",
+        },
+        Flag::AutoFetchNodesDat => OnOffWords {
+            label: "Fetch seeds",
+            note: "nodes.dat on first Kad start  (on restart)",
+            receipt: "nodes.dat auto-fetch",
+        },
+    }
+}
+
+/// An [`AppFlag`]'s row. Connect at start's note is the server it would dial:
+/// [`connect_at_start_note`].
+#[must_use]
+pub const fn app_flag_words(flag: AppFlag) -> OnOffWords {
+    match flag {
+        AppFlag::ConnectAtStart => OnOffWords {
+            label: "Autoconnect",
+            note: "",
+            receipt: "connect at start",
+        },
+        AppFlag::RunLogFull => OnOffWords {
+            label: "Full run log",
+            note: "adds peers, files and paths to rmule.log",
+            receipt: "full run log",
+        },
+        AppFlag::TerminalTitle => OnOffWords {
+            label: "Terminal title",
+            note: super::app::TERMINAL_TITLE_NOTE,
+            receipt: "terminal title",
+        },
+        AppFlag::ReaderMode => OnOffWords {
+            label: "Reader mode",
+            note: super::app::READER_MODE_NOTE,
+            receipt: "reader mode",
+        },
+        AppFlag::CompletionBell => OnOffWords {
+            label: "Bell",
+            note: super::app::COMPLETION_BELL_NOTE,
+            receipt: "completion bell",
+        },
+        AppFlag::Mouse => OnOffWords {
+            label: "Mouse",
+            note: super::app::MOUSE_NOTE,
+            receipt: "mouse",
+        },
+    }
+}
 
 /// Where a row takes effect on the next start.
 pub const ON_RESTART: &str = "(on restart)";

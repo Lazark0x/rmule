@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use rmule_net::peer::ObfuscationPolicy;
 use rmule_primitives::Ed2kText;
 
-use super::{CoreSettings, Setting, SettingRefusal};
+use super::{CoreSettings, FlagTable, Flags, Setting, SettingRefusal, flag_reads, flag_text};
 use crate::app_config::{AppConfigStore, Preference};
 use crate::directory_scan::guard_in_place;
 use crate::port_mapping::PortMappingMode;
@@ -29,7 +29,7 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
         udp_port: kad.udp_port,
         obfuscation: parse_obfuscation(text(Preference::Obfuscation)?.as_deref()),
         // ADR-0086's Auto, unless the operator turned it off.
-        port_mapping: if text(Preference::PortMapping)?.is_none_or(|value| value == "true") {
+        port_mapping: if flag_reads(text(Preference::PortMapping)?.as_deref(), true) {
             PortMappingMode::Auto
         } else {
             PortMappingMode::Off
@@ -38,21 +38,12 @@ pub(super) fn read(store: &DurableAppConfig) -> Result<CoreSettings, CoreError> 
         server_policy: server_policy(store)?,
         server_met_url: text(Preference::ServerMetUrl)?
             .unwrap_or_else(|| rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_owned()),
-        // ADR-0065's first-run fetch, on unless the operator turned it off.
-        auto_fetch_server_met: text(Preference::AutoFetchServerMet)?
-            .is_none_or(|value| value == "true"),
-        // ADR-0065's auto-update, off unless the operator turned it on, as
-        // aMule's `AutoServerlist`.
-        auto_update_server_met: text(Preference::AutoUpdateServerMet)?
-            .is_some_and(|value| value == "true"),
         server_met_auto_update_urls: text(Preference::ServerMetAutoUpdateUrls)?
             .map(|urls| urls.lines().map(str::to_owned).collect())
             .unwrap_or_default(),
         nodes_dat_url: text(Preference::NodesDatUrl)?
             .unwrap_or_else(|| rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_owned()),
-        // The ADR-0067 amendment's opt-in, on unless the operator turned it off.
-        auto_fetch_nodes_dat: text(Preference::AutoFetchNodesDat)?
-            .is_none_or(|value| value == "true"),
+        flags: Flags::read(|key| store.value(key))?,
     })
 }
 
@@ -62,9 +53,12 @@ pub(super) fn server_policy(store: &DurableAppConfig) -> Result<ServerPolicy, Co
         dead_after: ServerPolicy::parse_dead_after(
             store.preference(Preference::DeadServerRetries)?.as_deref(),
         ),
-        withhold_from_related_search: store
-            .preference(Preference::WithholdSharesFromRelatedSearch)?
-            .is_some_and(|value| value == "true"),
+        withhold_from_related_search: flag_reads(
+            store
+                .preference(Preference::WithholdSharesFromRelatedSearch)?
+                .as_deref(),
+            false,
+        ),
     })
 }
 
@@ -98,11 +92,9 @@ pub(super) fn validate(setting: &Setting) -> Result<(), SettingRefusal> {
         | Setting::DeadServerRetries(_)
         | Setting::WithholdShares(_)
         | Setting::ServerMetUrl(_)
-        | Setting::AutoFetchServerMet(_)
-        | Setting::AutoUpdateServerMet(_)
         | Setting::ServerMetAutoUpdateUrls(_)
         | Setting::NodesDatUrl(_)
-        | Setting::AutoFetchNodesDat(_) => Ok(()),
+        | Setting::Flag(..) => Ok(()),
     }
 }
 
@@ -132,7 +124,6 @@ pub(super) fn validate_download_dir(
 
 /// Write a validated `setting` where its key is kept.
 pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(), CoreError> {
-    let flag = |on: bool| if on { "true" } else { "false" };
     match setting {
         Setting::DownloadDir { dir, .. } => store.set_download_dir(dir),
         Setting::TempDir(Some(dir)) => store.set_temp_dir(dir),
@@ -145,7 +136,7 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
         }
         Setting::PortMapping(mode) => store.set_preference(
             Preference::PortMapping,
-            flag(*mode == PortMappingMode::Auto),
+            flag_text(*mode == PortMappingMode::Auto),
         ),
         Setting::RememberPeers(peers) => {
             store.set_preference(Preference::RememberPeers, &peers.get().to_string())
@@ -154,15 +145,9 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
             store.set_preference(Preference::DeadServerRetries, &limit.to_string())
         }
         Setting::WithholdShares(on) => {
-            store.set_preference(Preference::WithholdSharesFromRelatedSearch, flag(*on))
+            store.set_preference(Preference::WithholdSharesFromRelatedSearch, flag_text(*on))
         }
         Setting::ServerMetUrl(url) => store.set_preference(Preference::ServerMetUrl, url.trim()),
-        Setting::AutoFetchServerMet(on) => {
-            store.set_preference(Preference::AutoFetchServerMet, flag(*on))
-        }
-        Setting::AutoUpdateServerMet(on) => {
-            store.set_preference(Preference::AutoUpdateServerMet, flag(*on))
-        }
         // One URL per line, as aMule's `addresses.dat` holds them.
         Setting::ServerMetAutoUpdateUrls(urls) => store.set_preference(
             Preference::ServerMetAutoUpdateUrls,
@@ -173,9 +158,7 @@ pub(super) fn persist(store: &DurableAppConfig, setting: &Setting) -> Result<(),
                 .join("\n"),
         ),
         Setting::NodesDatUrl(url) => store.set_preference(Preference::NodesDatUrl, url.trim()),
-        Setting::AutoFetchNodesDat(on) => {
-            store.set_preference(Preference::AutoFetchNodesDat, flag(*on))
-        }
+        Setting::Flag(flag, on) => store.set_value(flag.key(), flag_text(*on)),
     }
 }
 

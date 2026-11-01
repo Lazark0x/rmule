@@ -224,6 +224,10 @@ _Avoid_: play, open, preview window
 A Transfers row the Preview action acts on (ADR-0114): core says the download is **Previewable** (`DownloadMetadata::is_previewable()`, read, never re-derived) and it is complete or its diagnostics row has part 0 `Verified`. A resting row counts, so a restored download is ready before it resumes, and so is a failed one that kept the part. Read from the row each frame, never stored; the tail never gates.
 _Avoid_: playable, preview available (aMule's `PreviewAvailable`, a byte-range query), head and tail verified
 
+**App Flag**:
+A **Flag** the TUI keeps for itself (`AppFlag`): connect at start, the Run Log's full level, the terminal title, **Reader Mode**, the completion bell, the mouse. A new one is a row of its table, an arm of `app_flag_words` and its place in the Settings form's row list; a test fails a flag with no place.
+_Avoid_: toggle
+
 **Player Command**:
 The operator's player: one text under the TUI's own key `player_command`, edited on the Settings tab, unset by default, and then Preview opens the **Default App**; set, it overrides that. Split POSIX-style at launch (`shlex`, no shell); every `%PARTFILE` inside a word becomes the **Download File Path**, else the path goes last; the first word is the program and never holds `%PARTFILE`, and written as a path it is never a folder — except a macOS application bundle (`/Applications/IINA.app`), which starts as `open -a <bundle>` and the other words, the app named, so LaunchServices never picks a handler by `.part`. Read at every launch.
 _Avoid_: video player path, command line (a line implies a shell), viewer

@@ -3,9 +3,103 @@
 use std::path::Path;
 
 use super::*;
+use rmule_core::Flag;
+use rmule_core::port_mapping::PortMappingMode;
 
 fn store() -> SharedConfig {
     SharedConfig::open(rmule_testkit::memory_store())
+}
+
+/// The app's own rows of an installed store, as the build before them wrote
+/// them: the keys and their text are the store's format, so neither may ever
+/// move. Core's rows are pinned beside its settings.
+const INSTALLED_ROWS: [(&str, &str); 11] = [
+    ("theme", "256"),
+    ("connect_at_start", "false"),
+    ("run_log_full", "true"),
+    ("last_server", "198.51.100.7:4661"),
+    ("player_command", "mpv --fs"),
+    ("last_tab", "statistics"),
+    ("terminal_title", "true"),
+    ("reader_mode", "true"),
+    ("completion_bell", "true"),
+    ("mouse", "false"),
+    ("table_sorts", "search=size:desc"),
+];
+
+/// A store written before loads as the operator left it, and saving those
+/// values again writes the same rows, key for key and byte for byte.
+#[test]
+fn an_installed_stores_rows_load_and_save_the_same_bytes() {
+    let handle = |store: &Arc<DurableStore>| CoreSettingsHandle::open(Arc::clone(store));
+    let installed = rmule_testkit::memory_store();
+    for (key, value) in INSTALLED_ROWS {
+        handle(&installed)
+            .set_front_end_value(key, value)
+            .expect("row");
+    }
+    let loaded = SharedConfig::open(Arc::clone(&installed))
+        .load(None)
+        .expect("load");
+
+    let fresh = rmule_testkit::memory_store();
+    let config = SharedConfig::open(Arc::clone(&fresh));
+    for edit in [
+        PrefEdit::Theme(loaded.theme),
+        PrefEdit::Flag(
+            AppFlag::ConnectAtStart,
+            loaded.flags.is_on(AppFlag::ConnectAtStart),
+        ),
+        PrefEdit::Flag(AppFlag::RunLogFull, loaded.flags.is_on(AppFlag::RunLogFull)),
+        PrefEdit::LastServer(loaded.last_server.clone().expect("the last server")),
+        PrefEdit::PlayerCommand(loaded.player_command.clone()),
+        PrefEdit::LastTab(loaded.last_tab),
+        PrefEdit::Flag(
+            AppFlag::TerminalTitle,
+            loaded.flags.is_on(AppFlag::TerminalTitle),
+        ),
+        PrefEdit::Flag(AppFlag::ReaderMode, loaded.flags.is_on(AppFlag::ReaderMode)),
+        PrefEdit::Flag(
+            AppFlag::CompletionBell,
+            loaded.flags.is_on(AppFlag::CompletionBell),
+        ),
+        PrefEdit::Flag(AppFlag::Mouse, loaded.flags.is_on(AppFlag::Mouse)),
+        PrefEdit::TableSort {
+            table: "search",
+            column: "size",
+            direction: Direction::Descending,
+        },
+    ] {
+        config.commit(&edit).expect("commit");
+    }
+    // The identity is minted per store: everything else matches.
+    let saved = Preferences {
+        user_hash: loaded.user_hash,
+        kad_node_id: loaded.kad_node_id,
+        ..config.load(None).expect("load")
+    };
+    assert_eq!(saved, loaded);
+    for (key, value) in INSTALLED_ROWS {
+        assert_eq!(
+            handle(&fresh).front_end_value(key).expect("row").as_deref(),
+            Some(value),
+        );
+    }
+}
+
+/// Text no build wrote reads as off, an on-by-default key included: the rule
+/// every stored boolean has always read by.
+#[test]
+fn a_stored_boolean_is_on_only_as_true() {
+    let store = rmule_testkit::memory_store();
+    let settings = CoreSettingsHandle::open(Arc::clone(&store));
+    for key in ["connect_at_start", "mouse", "reader_mode"] {
+        settings.set_front_end_value(key, "yes").expect("row");
+    }
+    let loaded = SharedConfig::open(store).load(None).expect("load");
+    assert!(!loaded.flags.is_on(AppFlag::ConnectAtStart));
+    assert!(!loaded.flags.is_on(AppFlag::Mouse));
+    assert!(!loaded.flags.is_on(AppFlag::ReaderMode));
 }
 
 #[test]
@@ -13,22 +107,38 @@ fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
     let config = store();
     let prefs = config.load(None).expect("load");
     assert_eq!(
-        prefs.server_met_url,
+        prefs.core.server_met_url,
         rmule_bootstrap::DEFAULT_SERVER_MET_URL
     );
-    assert_eq!(prefs.nodes_dat_url, rmule_bootstrap::DEFAULT_NODES_DAT_URL);
-    assert!(prefs.auto_fetch_nodes_dat, "the TUI's ADR-0067 opt-in");
-    assert!(prefs.auto_fetch_server_met, "ADR-0065's first-run fetch");
-    assert!(prefs.port_mapping, "ADR-0086's Auto");
+    assert_eq!(
+        prefs.core.nodes_dat_url,
+        rmule_bootstrap::DEFAULT_NODES_DAT_URL
+    );
+    assert!(
+        prefs.core.flags.is_on(Flag::AutoFetchNodesDat),
+        "the TUI's ADR-0067 opt-in"
+    );
+    assert!(
+        prefs.core.flags.is_on(Flag::AutoFetchServerMet),
+        "ADR-0065's first-run fetch"
+    );
+    assert_eq!(
+        prefs.core.port_mapping,
+        PortMappingMode::Auto,
+        "ADR-0086's Auto"
+    );
     assert_eq!(prefs.theme, ThemeChoice::Auto);
     assert_eq!(
-        prefs.obfuscation.policy(),
+        prefs.core.obfuscation,
         rmule_core::CoreSettings::default().obfuscation,
         "unset obfuscation starts core on the library's ADR-0046 default"
     );
-    assert!(!prefs.run_log_full, "the Run Log is lean until asked");
-    assert_eq!(prefs.download_dir, None);
-    assert_eq!(prefs.nickname, rmule_core::DEFAULT_NICKNAME);
+    assert!(
+        !prefs.flags.is_on(AppFlag::RunLogFull),
+        "the Run Log is lean until asked"
+    );
+    assert_eq!(prefs.core.download_dir, None);
+    assert_eq!(prefs.core.nickname, rmule_core::DEFAULT_NICKNAME);
 }
 
 /// Every edit round-trips through the store *and* folds into the snapshot,
@@ -37,23 +147,27 @@ fn a_loaded_snapshot_defaults_to_the_mirrors_and_the_kad_opt_in() {
 fn every_edit_persists_and_reloads_as_itself() {
     let config = store();
     let edits = [
-        PrefEdit::DownloadDir(rmule_testkit::absolute_path("tmp/dl")),
-        PrefEdit::Nickname("bunny".to_string()),
-        PrefEdit::TcpPort(4711),
-        PrefEdit::UdpPort(4722),
-        PrefEdit::ServerMetUrl("https://example.invalid/server.met".to_string()),
-        PrefEdit::AutoFetchServerMet(false),
-        PrefEdit::AutoUpdateServerMet(true),
-        PrefEdit::ServerMetAutoUpdateUrls(vec![
+        PrefEdit::download_dir(rmule_testkit::absolute_path("tmp/dl")),
+        PrefEdit::Core(Setting::Nickname("bunny".to_string())),
+        PrefEdit::Core(Setting::TcpPort(4711)),
+        PrefEdit::Core(Setting::UdpPort(4722)),
+        PrefEdit::Core(Setting::ServerMetUrl(
+            "https://example.invalid/server.met".to_string(),
+        )),
+        PrefEdit::Core(Setting::Flag(Flag::AutoFetchServerMet, false)),
+        PrefEdit::Core(Setting::Flag(Flag::AutoUpdateServerMet, true)),
+        PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(vec![
             "https://one.invalid/server.met".to_string(),
             "https://two.invalid/server.met".to_string(),
-        ]),
-        PrefEdit::NodesDatUrl("https://example.invalid/nodes.dat".to_string()),
-        PrefEdit::AutoFetchNodesDat(false),
+        ])),
+        PrefEdit::Core(Setting::NodesDatUrl(
+            "https://example.invalid/nodes.dat".to_string(),
+        )),
+        PrefEdit::Core(Setting::Flag(Flag::AutoFetchNodesDat, false)),
         PrefEdit::Theme(ThemeChoice::Light),
-        PrefEdit::Obfuscation(ObfuscationChoice::Required),
-        PrefEdit::PortMapping(false),
-        PrefEdit::RunLogFull(true),
+        PrefEdit::Core(Setting::Obfuscation(ObfuscationChoice::Required.policy())),
+        PrefEdit::Core(Setting::PortMapping(PortMappingMode::Off)),
+        PrefEdit::Flag(AppFlag::RunLogFull, true),
         PrefEdit::TableSort {
             table: "search",
             column: "size",
@@ -75,13 +189,13 @@ fn every_edit_persists_and_reloads_as_itself() {
     // identity rows rather than the preference table.
     let reloaded = config.load(None).expect("reload");
     assert_eq!(reloaded, folded);
-    assert_eq!(reloaded.nickname, "bunny");
-    assert_eq!(reloaded.tcp_port, 4711);
-    assert_eq!(reloaded.udp_port, 4722);
-    assert!(!reloaded.auto_fetch_nodes_dat);
-    assert!(!reloaded.auto_fetch_server_met);
-    assert!(!reloaded.port_mapping);
-    assert!(reloaded.run_log_full);
+    assert_eq!(reloaded.core.nickname, "bunny");
+    assert_eq!(reloaded.core.tcp_port, 4711);
+    assert_eq!(reloaded.core.udp_port, 4722);
+    assert!(!reloaded.core.flags.is_on(Flag::AutoFetchNodesDat));
+    assert!(!reloaded.core.flags.is_on(Flag::AutoFetchServerMet));
+    assert_eq!(reloaded.core.port_mapping, PortMappingMode::Off);
+    assert!(reloaded.flags.is_on(AppFlag::RunLogFull));
     // Two tables' sorts share one stored value without clobbering.
     assert_eq!(
         reloaded.table_sorts.get("search"),
@@ -104,7 +218,7 @@ fn a_receipt_names_the_restart_exactly_when_the_edit_waits_for_one() {
         crate::words::app::receipt(&edit, effect)
     };
     assert_eq!(
-        receipt(PrefEdit::RunLogFull(true)).as_str(),
+        receipt(PrefEdit::Flag(AppFlag::RunLogFull, true)).as_str(),
         "saved: full run log → on",
         "the level is read at every line written, so it needs no restart"
     );
@@ -114,9 +228,9 @@ fn a_receipt_names_the_restart_exactly_when_the_edit_waits_for_one() {
             .ends_with("dark")
     );
     for waits in [
-        PrefEdit::ConnectAtStart(true),
-        PrefEdit::TcpPort(4662),
-        PrefEdit::RememberPeers(rmule_core::RememberPeers::DEFAULT),
+        PrefEdit::Flag(AppFlag::ConnectAtStart, true),
+        PrefEdit::Core(Setting::TcpPort(4662)),
+        PrefEdit::Core(Setting::RememberPeers(rmule_core::RememberPeers::DEFAULT)),
     ] {
         assert!(
             receipt(waits)
@@ -125,9 +239,9 @@ fn a_receipt_names_the_restart_exactly_when_the_edit_waits_for_one() {
         );
     }
     assert_eq!(
-        receipt(PrefEdit::ServerMetUrl(
+        receipt(PrefEdit::Core(Setting::ServerMetUrl(
             "http://mirror.example/server.met".into()
-        ))
+        )))
         .as_str(),
         "saved: server.met URL → http://mirror.example/server.met \
          (the next server list update uses it)",
@@ -168,17 +282,21 @@ fn an_empty_temp_dir_field_clears_the_one_set() {
     let config = store();
     let root = tempfile::tempdir().expect("temp dir");
     let parts = root.path().join("parts");
-    let set = PrefEdit::TempDir(validate_temp_dir(parts.to_str().expect("utf-8")).expect("a path"));
+    let set = PrefEdit::Core(Setting::TempDir(
+        validate_temp_dir(parts.to_str().expect("utf-8")).expect("a path"),
+    ));
     assert_eq!(config.commit(&set).expect("commit"), TakesEffect::NextStart);
-    assert_eq!(config.load(None).expect("load").temp_dir, Some(parts));
+    assert_eq!(config.load(None).expect("load").core.temp_dir, Some(parts));
 
-    let cleared = PrefEdit::TempDir(validate_temp_dir("  ").expect("empty text clears"));
-    assert_eq!(cleared, PrefEdit::TempDir(None));
+    let cleared = PrefEdit::Core(Setting::TempDir(
+        validate_temp_dir("  ").expect("empty text clears"),
+    ));
+    assert_eq!(cleared, PrefEdit::Core(Setting::TempDir(None)));
     assert_eq!(
         config.commit(&cleared).expect("commit"),
         TakesEffect::NextStart
     );
-    assert_eq!(config.load(None).expect("load").temp_dir, None);
+    assert_eq!(config.load(None).expect("load").core.temp_dir, None);
     assert_eq!(
         crate::words::app::receipt(&cleared, TakesEffect::NextStart).as_str(),
         "saved: Temp Directory → the default (takes effect on restart)"
@@ -194,7 +312,7 @@ async fn an_obfuscation_edit_on_a_running_core_takes_effect_at_once() {
         .settings(rmule_core::CoreSettings::default())
         .build();
     let config = SharedConfig::new(core.settings(), DurableAppConfig::new(store));
-    let edit = PrefEdit::Obfuscation(ObfuscationChoice::Requested);
+    let edit = PrefEdit::Core(Setting::Obfuscation(ObfuscationChoice::Requested.policy()));
     let effect = config.commit(&edit).expect("commit");
     assert_eq!(effect, TakesEffect::Now);
     assert_eq!(
@@ -243,17 +361,21 @@ fn a_leading_tilde_is_the_operators_home_and_nothing_else_is() {
 #[test]
 fn connect_at_start_is_on_unless_the_operator_stored_off() {
     let config = SharedConfig::open(rmule_testkit::memory_store());
-    assert!(config.load(None).expect("load").connect_at_start);
+    let connect_at_start = |config: &SharedConfig| {
+        let flags = config.load(None).expect("load").flags;
+        flags.is_on(AppFlag::ConnectAtStart)
+    };
+    assert!(connect_at_start(&config));
 
     config
-        .commit(&PrefEdit::ConnectAtStart(false))
+        .commit(&PrefEdit::Flag(AppFlag::ConnectAtStart, false))
         .expect("commit");
-    assert!(!config.load(None).expect("load").connect_at_start);
+    assert!(!connect_at_start(&config));
 
     config
-        .commit(&PrefEdit::ConnectAtStart(true))
+        .commit(&PrefEdit::Flag(AppFlag::ConnectAtStart, true))
         .expect("commit");
-    assert!(config.load(None).expect("load").connect_at_start);
+    assert!(connect_at_start(&config));
 }
 
 /// The two opt-ins start off, and the tab comes back as it was left.
@@ -262,20 +384,26 @@ fn the_last_tab_and_the_opt_ins_read_back() {
     let config = SharedConfig::open(rmule_testkit::memory_store());
     let fresh = config.load(None).expect("load");
     assert_eq!(fresh.last_tab, crate::view::ViewId::Networks);
-    assert!(!fresh.terminal_title && !fresh.completion_bell);
-    assert!(fresh.mouse, "an unset key takes the mouse");
+    assert!(!fresh.flags.is_on(AppFlag::TerminalTitle));
+    assert!(!fresh.flags.is_on(AppFlag::CompletionBell));
+    assert!(
+        fresh.flags.is_on(AppFlag::Mouse),
+        "an unset key takes the mouse"
+    );
 
     for edit in [
-        PrefEdit::Mouse(false),
+        PrefEdit::Flag(AppFlag::Mouse, false),
         PrefEdit::LastTab(crate::view::ViewId::Transfers),
-        PrefEdit::TerminalTitle(true),
-        PrefEdit::ReaderMode(true),
-        PrefEdit::CompletionBell(true),
+        PrefEdit::Flag(AppFlag::TerminalTitle, true),
+        PrefEdit::Flag(AppFlag::ReaderMode, true),
+        PrefEdit::Flag(AppFlag::CompletionBell, true),
     ] {
         config.commit(&edit).expect("commit");
     }
     let stored = config.load(None).expect("load");
     assert_eq!(stored.last_tab, crate::view::ViewId::Transfers);
-    assert!(stored.terminal_title && stored.completion_bell && stored.reader_mode);
-    assert!(!stored.mouse);
+    assert!(stored.flags.is_on(AppFlag::TerminalTitle));
+    assert!(stored.flags.is_on(AppFlag::CompletionBell));
+    assert!(stored.flags.is_on(AppFlag::ReaderMode));
+    assert!(!stored.flags.is_on(AppFlag::Mouse));
 }

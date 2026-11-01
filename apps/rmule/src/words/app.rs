@@ -9,8 +9,9 @@ pub use rmule_words::app::*;
 use std::path::Path;
 
 use super::Sentence;
-use crate::config::{PrefEdit, UnfitDirectory};
-use rmule_core::Opening;
+use crate::config::{ObfuscationChoice, PrefEdit, UnfitDirectory};
+use rmule_core::port_mapping::PortMappingMode;
+use rmule_core::{Opening, Setting};
 use rmule_os::terminal::NoStop;
 
 use crate::state::AttachFailure;
@@ -21,35 +22,12 @@ use crate::state::AttachFailure;
 /// so the operator's next update uses it whatever core takes up.
 #[must_use]
 pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
-    let on_off = |on: bool| if on { "on" } else { "off" };
     let what = match edit {
-        PrefEdit::DownloadDir(dir) => format!("download dir → {}", dir.display()),
-        PrefEdit::TempDir(Some(dir)) => format!("Temp Directory → {}", dir.display()),
-        PrefEdit::TempDir(None) => "Temp Directory → the default".to_string(),
-        PrefEdit::Nickname(name) => format!("nickname → {name}"),
-        PrefEdit::TcpPort(port) => format!("eD2k port → {port}"),
-        PrefEdit::UdpPort(port) => format!("UDP port → {port}"),
-        PrefEdit::ServerMetUrl(url) => format!("server.met URL → {url}"),
-        PrefEdit::AutoFetchServerMet(on) => {
-            format!("server.met fetch at start → {}", on_off(*on))
+        PrefEdit::Core(setting) => setting_receipt(setting),
+        PrefEdit::Flag(flag, on) => {
+            flag_receipt(super::settings::app_flag_words(*flag).receipt, *on)
         }
-        PrefEdit::AutoUpdateServerMet(on) => {
-            format!("server list auto-update at start → {}", on_off(*on))
-        }
-        PrefEdit::ServerMetAutoUpdateUrls(urls) => match urls.len() {
-            0 => "server list auto-update addresses → none".to_string(),
-            n => format!("server list auto-update addresses → {n}"),
-        },
-        PrefEdit::NodesDatUrl(url) => format!("nodes.dat URL → {url}"),
-        PrefEdit::AutoFetchNodesDat(on) => format!("nodes.dat auto-fetch → {}", on_off(*on)),
         PrefEdit::Theme(choice) => format!("theme → {}", super::settings::theme_word(*choice)),
-        PrefEdit::Obfuscation(choice) => format!(
-            "obfuscation → {}",
-            super::settings::obfuscation_word(*choice)
-        ),
-        PrefEdit::PortMapping(on) => format!("port mapping → {}", on_off(*on)),
-        PrefEdit::ConnectAtStart(on) => format!("connect at start → {}", on_off(*on)),
-        PrefEdit::RunLogFull(on) => format!("full run log → {}", on_off(*on)),
         PrefEdit::LastServer(server) => {
             format!("last server → {}", super::units::server_label(server))
         }
@@ -58,20 +36,14 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
             column,
             direction,
         } => format!("{table} sort → {column} {}", direction.arrow()),
-        PrefEdit::DeadServerRetries(_) | PrefEdit::WithholdShares(_) => {
-            super::server::policy_receipt(edit)
-        }
         PrefEdit::LastTab(view) => format!("last tab → {}", view.title()),
-        PrefEdit::TerminalTitle(on) => format!("terminal title → {}", on_off(*on)),
-        PrefEdit::ReaderMode(on) => format!("reader mode → {}", on_off(*on)),
-        PrefEdit::CompletionBell(on) => format!("completion bell → {}", on_off(*on)),
-        PrefEdit::Mouse(on) => format!("mouse → {}", on_off(*on)),
-        PrefEdit::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
         PrefEdit::PlayerCommand(command) => super::player::receipt(command.as_deref()),
     };
     let when = match (edit, effect) {
-        (PrefEdit::ServerMetUrl(_), _) => Some("the next server list update uses it"),
-        (PrefEdit::TempDir(_), rmule_core::TakesEffect::Now) => {
+        (PrefEdit::Core(Setting::ServerMetUrl(_)), _) => {
+            Some("the next server list update uses it")
+        }
+        (PrefEdit::Core(Setting::TempDir(_)), rmule_core::TakesEffect::Now) => {
             Some("downloads started from now on; the rest stay where they are")
         }
         (_, rmule_core::TakesEffect::Now) => None,
@@ -81,6 +53,38 @@ pub fn receipt(edit: &PrefEdit, effect: rmule_core::TakesEffect) -> Sentence {
         None => format!("saved: {what}"),
         Some(when) => format!("saved: {what} ({when})"),
     })
+}
+
+/// What a saved on/off row says, `name` as its words have it.
+fn flag_receipt(name: &str, on: bool) -> String {
+    format!("{name} → {}", if on { "on" } else { "off" })
+}
+
+/// What a saved edit of one of core's keys changed.
+fn setting_receipt(setting: &Setting) -> String {
+    match setting {
+        Setting::DownloadDir { dir, .. } => format!("download dir → {}", dir.display()),
+        Setting::TempDir(Some(dir)) => format!("Temp Directory → {}", dir.display()),
+        Setting::TempDir(None) => "Temp Directory → the default".to_string(),
+        Setting::Nickname(name) => format!("nickname → {name}"),
+        Setting::TcpPort(port) => format!("eD2k port → {port}"),
+        Setting::UdpPort(port) => format!("UDP port → {port}"),
+        Setting::ServerMetUrl(url) => format!("server.met URL → {url}"),
+        Setting::ServerMetAutoUpdateUrls(urls) => match urls.len() {
+            0 => "server list auto-update addresses → none".to_string(),
+            n => format!("server list auto-update addresses → {n}"),
+        },
+        Setting::NodesDatUrl(url) => format!("nodes.dat URL → {url}"),
+        Setting::Flag(flag, on) => flag_receipt(super::settings::flag_words(*flag).receipt, *on),
+        Setting::Obfuscation(policy) => format!(
+            "obfuscation → {}",
+            super::settings::obfuscation_word(ObfuscationChoice::of(*policy))
+        ),
+        Setting::PortMapping(mode) => flag_receipt("port mapping", *mode == PortMappingMode::Auto),
+        Setting::DeadServerRetries(limit) => super::server::dead_after_receipt(*limit),
+        Setting::WithholdShares(on) => super::server::withhold_shares_receipt(*on),
+        Setting::RememberPeers(peers) => super::download::remember_peers_receipt(*peers),
+    }
 }
 
 /// Why the core could not be attached, as a clause; what the store or the

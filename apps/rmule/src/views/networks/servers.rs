@@ -121,7 +121,7 @@ fn detail_context(row: &ServerDiagnostics, state: &UiState) -> DetailContext {
             .as_ref()
             .filter(|told| told.server == row.server.endpoint)
             .map(|told| told.shares),
-        policy: state.preferences.server_policy(),
+        policy: state.preferences.core.server_policy,
     }
 }
 

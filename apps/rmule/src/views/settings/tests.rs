@@ -3,41 +3,31 @@
 use super::*;
 use crate::fixture::press;
 use crate::golden::{assert_golden, assert_golden_caret};
+use rmule_core::{CoreSettings, FlagTable};
 
 fn state() -> UiState {
+    let mut flags = rmule_core::Flags::default();
+    flags.set(AppFlag::ConnectAtStart, false);
     UiState {
         preferences: Preferences {
-            download_dir: Some(std::path::PathBuf::from("/home/u/Downloads")),
-            temp_dir: None,
+            core: CoreSettings {
+                download_dir: Some(std::path::PathBuf::from("/home/u/Downloads")),
+                nickname: "rmule".to_string(),
+                tcp_port: 4662,
+                udp_port: 4672,
+                obfuscation: ObfuscationChoice::Requested.policy(),
+                ..CoreSettings::default()
+            },
+            flags,
             data_dir: Some(crate::args::DataDir {
                 path: std::path::PathBuf::from("/home/u/.local/share/rmule"),
                 source: crate::args::DataDirSource::Home,
             }),
-            nickname: "rmule".to_string(),
-            tcp_port: 4662,
-            udp_port: 4672,
-            server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_string(),
-            auto_fetch_server_met: true,
-            auto_update_server_met: false,
-            server_met_auto_update_urls: Vec::new(),
-            nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_string(),
-            auto_fetch_nodes_dat: true,
             theme: ThemeChoice::Auto,
-            obfuscation: ObfuscationChoice::Requested,
-            port_mapping: true,
             table_sorts: crate::table_sort::TableSorts::default(),
-            connect_at_start: false,
-            run_log_full: false,
             last_server: None,
             player_command: None,
             last_tab: crate::view::ViewId::default(),
-            terminal_title: false,
-            reader_mode: false,
-            completion_bell: false,
-            mouse: true,
-            dead_server_retries: 3,
-            withhold_shares: false,
-            remember_peers: rmule_core::RememberPeers::DEFAULT,
             user_hash: Some(rmule_primitives::UserHash::from_bytes([0x2a; 16])),
             kad_node_id: Some(rmule_core::KadId::from_bytes([0x77; 16])),
         },
@@ -50,7 +40,7 @@ fn state() -> UiState {
 /// Windows refuses it before any warning.
 fn state_with_a_rooted_download_dir() -> UiState {
     let mut state = state();
-    state.preferences.download_dir = Some(crate::fixture::rooted("home/u/Downloads"));
+    state.preferences.core.download_dir = Some(crate::fixture::rooted("home/u/Downloads"));
     state
 }
 
@@ -152,8 +142,36 @@ fn a_download_directory_commit_warns_before_it_lands() {
     );
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::DownloadDir(_)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(
+            Setting::DownloadDir { .. }
+        )))
     ));
+}
+
+/// A flag is its table row and its words: each has its place in the form, and
+/// stepping that row hands the app the edit of that flag and no other.
+#[test]
+fn every_flag_has_a_row_that_steps_it() {
+    let state = state();
+    let prefs = &state.preferences;
+    let core = Flag::ALL.iter().map(|flag| {
+        let on = !prefs.core.flags.is_on(*flag);
+        (Row::Flag(*flag), PrefEdit::Core(Setting::Flag(*flag, on)))
+    });
+    let app = AppFlag::ALL.iter().map(|flag| {
+        let on = !prefs.flags.is_on(*flag);
+        (Row::AppFlag(*flag), PrefEdit::Flag(*flag, on))
+    });
+    let mut view = SettingsView::new();
+    view.sync(&state);
+    for (row, edit) in core.chain(app) {
+        assert!(Row::ALL.contains(&row), "{row:?} has no place in the form");
+        focus_on(&mut view, row);
+        match view.handle_key(press(KeyCode::Enter), &state) {
+            ViewOutcome::Emit(Action::SettingsEdit(stepped)) => assert_eq!(stepped, edit),
+            _ => panic!("{row:?} handed the app no edit"),
+        }
+    }
 }
 
 /// Nothing under the Temp Directory is offered, so its commit asks no guard
@@ -169,7 +187,7 @@ fn a_temp_directory_commit_lands_without_a_share_warning() {
     for c in parts.path().display().to_string().chars() {
         view.handle_key(press(KeyCode::Char(c)), &state);
     }
-    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::TempDir(dir))) =
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::TempDir(dir)))) =
         view.handle_key(press(KeyCode::Enter), &state)
     else {
         panic!("the commit is the edit");
@@ -194,7 +212,7 @@ fn a_temp_directory_that_is_not_there_is_said_before_it_is_made() {
     ));
     let warning = view.form.error.as_deref().expect("the warning");
     assert!(warning.contains("does not exist"), "{warning}");
-    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::TempDir(dir))) =
+    let ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::TempDir(dir)))) =
         view.handle_key(press(KeyCode::Enter), &state)
     else {
         panic!("the second Enter confirms");
@@ -324,8 +342,8 @@ fn the_two_listen_ports_may_not_be_set_to_each_other() {
     let state = state();
     let prefs = &state.preferences;
     for (row, other, clash) in [
-        (Row::UdpPort, prefs.tcp_port, PortClash::UdpAgainstTcp),
-        (Row::TcpPort, prefs.udp_port, PortClash::TcpAgainstUdp),
+        (Row::UdpPort, prefs.core.tcp_port, PortClash::UdpAgainstTcp),
+        (Row::TcpPort, prefs.core.udp_port, PortClash::TcpAgainstUdp),
     ] {
         let mut view = SettingsView::new();
         focus_on(&mut view, row);
@@ -362,7 +380,9 @@ fn the_dead_server_limit_takes_one_to_ten_tries() {
     };
     assert!(matches!(
         typed("5"),
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::DeadServerRetries(5)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(
+            Setting::DeadServerRetries(5)
+        )))
     ));
     for refused in ["0", "11", "x"] {
         assert!(
@@ -394,12 +414,12 @@ fn the_auto_update_addresses_split_on_spaces_and_each_must_be_a_url() {
     ];
     assert!(matches!(
         typed(" http://one.example/server.met  https://two.example/server.met "),
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(typed))))
             if typed == urls
     ));
     assert!(matches!(
         typed(""),
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::ServerMetAutoUpdateUrls(typed)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(typed))))
             if typed.is_empty()
     ));
     assert!(matches!(
@@ -430,7 +450,7 @@ fn remember_peers_takes_one_to_255() {
     let (outcome, _) = typed("255");
     assert!(matches!(
         outcome,
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::RememberPeers(peers))) if peers.get().get() == 255
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Core(Setting::RememberPeers(peers)))) if peers.get().get() == 255
     ));
     for refused in ["0", "256", "x"] {
         let (outcome, refusal) = typed(refused);
@@ -517,11 +537,14 @@ fn golden_settings_an_unset_player_says_preview_opens_the_default_app() {
 fn the_full_run_log_row_is_a_selector_that_commits_its_choice() {
     let mut view = SettingsView::new();
     let state = state();
-    focus_on(&mut view, Row::RunLogFull);
+    focus_on(&mut view, Row::AppFlag(AppFlag::RunLogFull));
     view.handle_key(press(KeyCode::Char('l')), &state);
     assert!(matches!(
         view.handle_key(press(KeyCode::Enter), &state),
-        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::RunLogFull(true)))
+        ViewOutcome::Emit(Action::SettingsEdit(PrefEdit::Flag(
+            AppFlag::RunLogFull,
+            true
+        )))
     ));
 }
 
@@ -706,7 +729,7 @@ fn slash_filters_the_rows_and_esc_brings_them_back() {
     assert!(!narrowed.contains("Theme"), "{narrowed}");
     assert!(matches!(
         view.slots.get(view.form.focus),
-        Some(Slot::Row(Row::Mouse))
+        Some(Slot::Row(Row::AppFlag(AppFlag::Mouse)))
     ));
     view.handle_key(press(KeyCode::Esc), &state);
     assert!(shown(&mut view).contains("Theme"));

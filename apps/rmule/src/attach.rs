@@ -39,13 +39,13 @@ use rmule_bootstrap::{
     should_seed_server_list,
 };
 use rmule_core::{
-    AppConfigStore, Core, CoreCommand, CoreConfig, CoreError, DurableAppConfig, KadEnableConfig,
-    ManagedServer, MappingBackend, OpenRefusal, Opening, OpeningWatch, ServerListCommand,
-    ServerListStore, open_durable_store_watched,
+    AppConfigStore, Core, CoreCommand, CoreConfig, CoreError, DurableAppConfig, Flag,
+    KadEnableConfig, ManagedServer, MappingBackend, OpenRefusal, Opening, OpeningWatch,
+    ServerListCommand, ServerListStore, open_durable_store_watched,
 };
 
 use crate::args::DataDir;
-use crate::config::{Preferences, SharedConfig};
+use crate::config::{AppFlag, Preferences, SharedConfig};
 use crate::connect::AtStart;
 use crate::state::{AttachFailure, SessionConfig};
 
@@ -232,13 +232,14 @@ pub async fn attach<D: Deployment>(
     // until the user happened to open a peer session. It is a *preference*
     // rather than a hardcode — defaulting to the opt-in, and something an
     // operator can turn back off — as are both mirror URLs.
+    let flags = &preferences.core.flags;
     let bootstrap = BootstrapConfig {
-        auto_fetch_server_met: preferences.auto_fetch_server_met,
-        auto_update_enabled: preferences.auto_update_server_met,
-        auto_update_urls: preferences.server_met_auto_update_urls.clone(),
-        auto_fetch_nodes_dat: preferences.auto_fetch_nodes_dat,
-        server_met_url: preferences.server_met_url.clone(),
-        nodes_dat_url: preferences.nodes_dat_url.clone(),
+        auto_fetch_server_met: flags.is_on(Flag::AutoFetchServerMet),
+        auto_update_enabled: flags.is_on(Flag::AutoUpdateServerMet),
+        auto_update_urls: preferences.core.server_met_auto_update_urls.clone(),
+        auto_fetch_nodes_dat: flags.is_on(Flag::AutoFetchNodesDat),
+        server_met_url: preferences.core.server_met_url.clone(),
+        nodes_dat_url: preferences.core.nodes_dat_url.clone(),
         seeds: deployment.seeds(),
         ..BootstrapConfig::default()
     };
@@ -323,7 +324,7 @@ pub async fn attach<D: Deployment>(
 
     let session = SessionConfig {
         server,
-        download_dir: preferences.download_dir.clone(),
+        download_dir: preferences.core.download_dir.clone(),
     };
     let kad = KadJoin {
         config: crate::kad::enable_config(&data_dir),
@@ -332,7 +333,7 @@ pub async fn attach<D: Deployment>(
         fetcher,
     };
     let at_start = crate::connect::at_start(
-        preferences.connect_at_start,
+        preferences.flags.is_on(AppFlag::ConnectAtStart),
         preferences.last_server.as_ref(),
         &listed,
     );

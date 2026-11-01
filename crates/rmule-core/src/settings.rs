@@ -11,7 +11,12 @@
 //! download directory the Shared Directory List's guards refuse (ADR-0101),
 //! with the add's reason, and a Temp Directory that is not apart from every
 //! shared directory (ADR-0115), so a refused directory is never stored.
+//!
+//! A preference that is only on or off is a **Flag**: one line of a table in
+//! [`flag`], and every step below reads that table, so a new one touches no
+//! other code here.
 
+mod flag;
 mod stored;
 
 use std::path::{Path, PathBuf};
@@ -19,6 +24,7 @@ use std::sync::Arc;
 
 use rmule_net::peer::ObfuscationPolicy;
 
+pub use self::flag::{Flag, FlagTable, Flags, flag_reads, flag_text};
 use crate::app_config::{AppConfigStore, DEFAULT_NICKNAME, DEFAULT_PROTOCOL_VERSION};
 use crate::directory_scan::guard_temp_dir;
 use crate::port_mapping::PortMappingMode;
@@ -93,21 +99,13 @@ pub struct CoreSettings {
     /// The `server.met` mirror the first-run fetch and the front end's list
     /// update default to.
     pub server_met_url: String,
-    /// Whether a start with an empty server list fetches `server.met` from
-    /// [`server_met_url`](Self::server_met_url) once (ADR-0065). On by default.
-    pub auto_fetch_server_met: bool,
-    /// Whether a session start walks
-    /// [`server_met_auto_update_urls`](Self::server_met_auto_update_urls)
-    /// (ADR-0065's auto-update, aMule's `AutoServerlist`). Off by default.
-    pub auto_update_server_met: bool,
     /// The server.met auto-update URL list, walked in order (aMule's
     /// `addresses.dat`). Empty by default.
     pub server_met_auto_update_urls: Vec<String>,
     /// The `nodes.dat` mirror a Kad seed acquisition fetches.
     pub nodes_dat_url: String,
-    /// Whether a Kad start with no contacts may fetch `nodes.dat` itself
-    /// (ADR-0067 amendment): on by default, and the operator's to turn off.
-    pub auto_fetch_nodes_dat: bool,
+    /// Every [`Flag`].
+    pub flags: Flags<Flag>,
 }
 
 impl Default for CoreSettings {
@@ -126,11 +124,9 @@ impl Default for CoreSettings {
             remember_peers: RememberPeers::DEFAULT,
             server_policy: ServerPolicy::default(),
             server_met_url: rmule_bootstrap::DEFAULT_SERVER_MET_URL.to_owned(),
-            auto_fetch_server_met: true,
-            auto_update_server_met: false,
             server_met_auto_update_urls: Vec::new(),
             nodes_dat_url: rmule_bootstrap::DEFAULT_NODES_DAT_URL.to_owned(),
-            auto_fetch_nodes_dat: true,
+            flags: Flags::default(),
         }
     }
 }
@@ -167,6 +163,33 @@ impl CoreSettings {
     #[must_use]
     pub fn default_temp_dir(data_dir: &Path) -> PathBuf {
         data_dir.join("Temp")
+    }
+
+    /// Fold in a `setting` [`CoreSettingsHandle::set`] took, so this reads as
+    /// the store now does, without a read of it: the one fold, for a front
+    /// end's snapshot of what it shows.
+    pub fn apply(&mut self, setting: &Setting) {
+        match setting {
+            Setting::DownloadDir { dir, .. } => self.download_dir = Some(dir.clone()),
+            Setting::TempDir(dir) => self.temp_dir.clone_from(dir),
+            Setting::Nickname(nickname) => nickname.trim().clone_into(&mut self.nickname),
+            Setting::TcpPort(port) => self.tcp_port = *port,
+            Setting::UdpPort(port) => self.udp_port = *port,
+            Setting::Obfuscation(policy) => self.obfuscation = *policy,
+            Setting::PortMapping(mode) => self.port_mapping = *mode,
+            Setting::RememberPeers(peers) => self.remember_peers = *peers,
+            Setting::DeadServerRetries(limit) => self.server_policy.dead_after = *limit,
+            Setting::WithholdShares(on) => {
+                self.server_policy.withhold_from_related_search = *on;
+            }
+            Setting::ServerMetUrl(url) => url.trim().clone_into(&mut self.server_met_url),
+            Setting::ServerMetAutoUpdateUrls(urls) => {
+                self.server_met_auto_update_urls =
+                    urls.iter().map(|url| url.trim().to_owned()).collect();
+            }
+            Setting::NodesDatUrl(url) => url.trim().clone_into(&mut self.nodes_dat_url),
+            Setting::Flag(flag, on) => self.flags.set(*flag, *on),
+        }
     }
 }
 
@@ -216,16 +239,12 @@ pub enum Setting {
     WithholdShares(bool),
     /// The `server.met` mirror; not blank.
     ServerMetUrl(String),
-    /// The first-run `server.met` fetch.
-    AutoFetchServerMet(bool),
-    /// The server.met auto-update walk at start.
-    AutoUpdateServerMet(bool),
     /// The server.met auto-update URL list, in walk order; no URL blank.
     ServerMetAutoUpdateUrls(Vec<String>),
     /// The `nodes.dat` mirror; not blank.
     NodesDatUrl(String),
-    /// The Kad cold start's `nodes.dat` fetch.
-    AutoFetchNodesDat(bool),
+    /// A [`Flag`], on or off. The next start reads it.
+    Flag(Flag, bool),
 }
 
 /// When a persisted [`Setting`] changes what core does.
@@ -517,6 +536,7 @@ fn is_core_key(key: &str) -> bool {
     crate::Preference::ALL
         .into_iter()
         .any(|preference| preference.key() == key)
+        || Flag::ALL.iter().any(|flag| flag.key() == key)
 }
 
 #[cfg(test)]

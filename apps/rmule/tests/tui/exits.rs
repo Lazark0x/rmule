@@ -17,7 +17,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use rmule_core::port_mapping::PortMappingMode;
-use rmule_core::{CoreSettingsHandle, Setting, open_durable_store};
+use rmule_core::{CoreSettingsHandle, Flag, Setting, open_durable_store};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
 use tempfile::TempDir;
@@ -53,7 +53,7 @@ fn offline_data_dir(home: &Path) {
     let settings = CoreSettingsHandle::open(open_durable_store(&data).expect("the store"));
     rmule_testkit::scratch_ports(&settings);
     for setting in [
-        Setting::AutoFetchServerMet(false),
+        Setting::Flag(Flag::AutoFetchServerMet, false),
         Setting::PortMapping(PortMappingMode::Off),
     ] {
         settings.set(setting).expect("the setting");

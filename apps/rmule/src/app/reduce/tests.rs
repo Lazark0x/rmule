@@ -1,10 +1,12 @@
 //! Unit tests for the action reducer: how a bus action becomes a state change, a command or a flash.
 
 use super::*;
+use crate::config::AppFlag;
 use crate::fixture::key_action;
 use crate::theme::Theme;
 use crate::view::ViewId;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use rmule_core::Setting;
 
 fn release(code: KeyCode) -> Action {
     Action::Input(Event::Key(KeyEvent::new_with_kind(
@@ -607,14 +609,17 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     assert_eq!(app.state.preferences.theme, ThemeChoice::Light);
 
     let dir = rmule_testkit::absolute_path("tmp/rmule-dl");
-    app.reduce(Action::Preference(PrefEdit::DownloadDir(dir.clone())), now);
+    app.reduce(Action::Preference(PrefEdit::download_dir(dir.clone())), now);
     assert_eq!(
         app.state.session.download_dir.clone(),
         Some(dir.clone()),
         "the next download reads the new directory, not the startup one"
     );
 
-    app.reduce(Action::Preference(PrefEdit::TcpPort(4711)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Core(Setting::TcpPort(4711))),
+        now,
+    );
     assert_eq!(
         app.chrome.flash_text(now),
         Some("saved: eD2k port → 4711 (takes effect on restart)")
@@ -623,7 +628,7 @@ fn a_settings_edit_reaches_the_store_and_the_live_half_lands_at_once() {
     // …and all three are on disk, not just in the UI.
     let reloaded = config.load(None).expect("reload");
     assert_eq!(reloaded.theme, ThemeChoice::Light);
-    assert_eq!(reloaded.download_dir, Some(dir));
+    assert_eq!(reloaded.core.download_dir, Some(dir));
 }
 
 /// Two tables keep two different sorts in the one stored preference, and
@@ -708,17 +713,17 @@ fn a_refused_value_says_why() {
     let preferences = config.load(None).expect("load");
     let mut app = App::new(Theme::default_dark()).with_config(config, preferences);
     let now = Instant::now();
-    let limit = app.state.preferences.dead_server_retries;
+    let limit = app.state.preferences.core.server_policy.dead_after;
 
     app.reduce(
-        Action::Preference(crate::config::PrefEdit::DeadServerRetries(0)),
+        Action::Preference(crate::config::PrefEdit::Core(Setting::DeadServerRetries(0))),
         now,
     );
     assert_eq!(
         app.chrome.flash_text(now),
         Some("not saved: the dead server limit must be at least 1")
     );
-    assert_eq!(app.state.preferences.dead_server_retries, limit);
+    assert_eq!(app.state.preferences.core.server_policy.dead_after, limit);
 }
 
 /// A download dir the share guards refuse is told by the guard's reason, and
@@ -746,7 +751,7 @@ fn a_download_dir_the_share_guards_refuse_says_why_and_is_not_applied() {
     let now = Instant::now();
 
     app.reduce(
-        Action::Preference(crate::config::PrefEdit::DownloadDir(
+        Action::Preference(crate::config::PrefEdit::download_dir(
             home.path().to_path_buf(),
         )),
         now,
@@ -842,7 +847,10 @@ fn a_finished_download_rings_only_when_the_operator_asked() {
     app.reduce(completed(), now);
     assert!(!app.pending_bell, "off by default");
 
-    app.state.preferences.completion_bell = true;
+    app.state
+        .preferences
+        .flags
+        .set(AppFlag::CompletionBell, true);
     app.reduce(completed(), now);
     assert!(app.pending_bell);
 }
@@ -900,10 +908,16 @@ fn the_full_run_log_preference_changes_the_level_the_writers_read() {
     let now = Instant::now();
     assert_eq!(writers.get(), Level::Lean);
 
-    app.reduce(Action::Preference(PrefEdit::RunLogFull(true)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Flag(AppFlag::RunLogFull, true)),
+        now,
+    );
     assert_eq!(writers.get(), Level::Full);
 
-    app.reduce(Action::Preference(PrefEdit::RunLogFull(false)), now);
+    app.reduce(
+        Action::Preference(PrefEdit::Flag(AppFlag::RunLogFull, false)),
+        now,
+    );
     assert_eq!(writers.get(), Level::Lean);
 }
 

@@ -10,7 +10,8 @@
 //! [`AppConfigStore`] is that seam plus the rest, so a front-end still opens
 //! one store.
 //!
-//! This file holds the vocabulary — the seam, the [`Preference`] keys, the
+//! This file holds the vocabulary — the seam, the [`Preference`] keys (a
+//! [`Flag`](crate::Flag) declares its own), the
 //! [`KadIdentity`], and the entropy the generate-once minting draws on. The one
 //! implementation behind it is the Durable Store's
 //! [`DurableAppConfig`](crate::DurableAppConfig) — opened on a file in
@@ -57,8 +58,9 @@ pub struct KadIdentity {
     pub udp_port: u16,
 }
 
-/// A core-owned preference — the closed set of keys core keeps in the
-/// durable key/value `preferences` table.
+/// A core-owned preference that is more than on or off — the closed set of
+/// keys core keeps in the durable key/value `preferences` table beside each
+/// [`Flag`](crate::Flag)'s own.
 ///
 /// Core owns the preferences that change what core does and reaches them
 /// through **Core Settings** (ADR-0069), which parses each key's text into
@@ -82,26 +84,12 @@ pub enum Preference {
     /// The `server.met` mirror an operator-driven list update fetches
     /// (`rmule_bootstrap::DEFAULT_SERVER_MET_URL` when unset).
     ServerMetUrl,
-    /// Whether a session start with an empty server list fetches
-    /// `server.met` from [`ServerMetUrl`](Self::ServerMetUrl) once
-    /// (`"true"`/`"false"`, on when unset — ADR-0065's first-run fetch,
-    /// `rmule_bootstrap::BootstrapConfig::auto_fetch_server_met`).
-    AutoFetchServerMet,
-    /// Whether a session start walks
-    /// [`ServerMetAutoUpdateUrls`](Self::ServerMetAutoUpdateUrls) (ADR-0065's
-    /// auto-update, aMule's `AutoServerlist`; `"true"`/`"false"`, off when
-    /// unset).
-    AutoUpdateServerMet,
     /// The server.met auto-update URL list (aMule's `addresses.dat`), one URL
     /// per line, empty when unset.
     ServerMetAutoUpdateUrls,
     /// The `nodes.dat` mirror a Kad seed acquisition fetches
     /// (`rmule_bootstrap::DEFAULT_NODES_DAT_URL` when unset).
     NodesDatUrl,
-    /// Whether the front-end may fetch `nodes.dat` for a Kad cold start
-    /// (`"true"`/`"false"`; ADR-0067 amendment — an opt-in the TUI takes and
-    /// no library caller does).
-    AutoFetchNodesDat,
     /// The per-install secret mixed into the PCP Mapping Nonce (ADR-0086),
     /// as a decimal `u32`.
     PortMapSecret,
@@ -139,15 +127,12 @@ pub enum Preference {
 
 impl Preference {
     /// Every core-owned key, so the front end's raw surface can refuse them.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 13] = [
         Self::DownloadDir,
         Self::TempDir,
         Self::ServerMetUrl,
-        Self::AutoFetchServerMet,
-        Self::AutoUpdateServerMet,
         Self::ServerMetAutoUpdateUrls,
         Self::NodesDatUrl,
-        Self::AutoFetchNodesDat,
         Self::PortMapSecret,
         Self::PortMapping,
         Self::PortMapMethod,
@@ -166,11 +151,8 @@ impl Preference {
             Self::DownloadDir => "download_dir",
             Self::TempDir => "temp_dir",
             Self::ServerMetUrl => "server_met_url",
-            Self::AutoFetchServerMet => "auto_fetch_server_met",
-            Self::AutoUpdateServerMet => "auto_update_server_met",
             Self::ServerMetAutoUpdateUrls => "server_met_auto_update_urls",
             Self::NodesDatUrl => "nodes_dat_url",
-            Self::AutoFetchNodesDat => "auto_fetch_nodes_dat",
             Self::PortMapSecret => "port_map_secret",
             Self::PortMapping => "port_mapping",
             Self::PortMapMethod => "port_map_method",

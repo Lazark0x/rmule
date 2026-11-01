@@ -248,7 +248,7 @@ impl App {
                 }
             },
             Action::ConfirmDownloadDir(dir) => {
-                let edit = crate::config::PrefEdit::DownloadDir(dir.clone());
+                let edit = crate::config::PrefEdit::download_dir(dir.clone());
                 match self.config.as_ref().map(|config| config.check(&edit)) {
                     Some(Err(rmule_core::SettingError::Refused(refusal))) => {
                         rmule_core::run_log::write(&refusal.record(), self.run_log.get());
@@ -323,7 +323,11 @@ impl App {
                 }
                 // The one edge the opt-in bell rings for: a restored completed
                 // row comes back as a recovery and stays silent.
-                if self.state.preferences.completion_bell
+                if self
+                    .state
+                    .preferences
+                    .flags
+                    .is_on(crate::config::AppFlag::CompletionBell)
                     && matches!(
                         &action,
                         Action::Core(rmule_core::CoreEvent::Download(
@@ -340,8 +344,12 @@ impl App {
                 }
                 let closed_a_search = matches!(action, Action::ForgetSearch(_));
                 // Reader Mode: the data tick's levels wait for news or a key.
-                let held =
-                    self.state.preferences.reader_mode && matches!(action, Action::Snapshot(_));
+                let held = self
+                    .state
+                    .preferences
+                    .flags
+                    .is_on(crate::config::AppFlag::ReaderMode)
+                    && matches!(action, Action::Snapshot(_));
                 self.dirty |= self.state.apply(action, now) && !held;
                 if closed_a_search {
                     return self.reduce(Action::Flash(crate::words::search::CLOSED), now);
@@ -477,10 +485,10 @@ impl App {
             crate::config::PrefEdit::Theme(choice) => {
                 self.theme = choice.resolve(self.auto_theme);
             }
-            crate::config::PrefEdit::RunLogFull(on) => {
+            crate::config::PrefEdit::Flag(crate::config::AppFlag::RunLogFull, on) => {
                 self.run_log.set(rmule_core::run_log::Level::from_full(*on));
             }
-            crate::config::PrefEdit::DownloadDir(dir) => {
+            crate::config::PrefEdit::Core(rmule_core::Setting::DownloadDir { dir, .. }) => {
                 self.state.session.download_dir = Some(dir.clone());
             }
             _ => {}

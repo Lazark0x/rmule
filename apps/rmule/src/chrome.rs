@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Block;
 
 use crate::action::Action;
+use crate::config::AppFlag;
 use crate::state::UiState;
 use crate::theme::Theme;
 use crate::view::ViewId;
@@ -125,13 +126,17 @@ pub fn draw_overlays(
 /// The terminal's title this state asks for; `None` while the setting is off.
 #[must_use]
 pub fn terminal_title(state: &UiState) -> Option<String> {
-    state.preferences.terminal_title.then(|| {
-        crate::words::app::terminal_title(
-            &rate(state.rates.down_total_bps),
-            &rate(state.rates.up_total_bps),
-            state.tally(),
-        )
-    })
+    state
+        .preferences
+        .flags
+        .is_on(AppFlag::TerminalTitle)
+        .then(|| {
+            crate::words::app::terminal_title(
+                &rate(state.rates.down_total_bps),
+                &rate(state.rates.up_total_bps),
+                state.tally(),
+            )
+        })
 }
 
 /// Char width of one status segment.

@@ -17,6 +17,7 @@ use crate::action::Action;
 use crate::bridge::BridgeHandle;
 use crate::chrome::{self, ChromeState};
 use crate::client::CoreClient;
+use crate::config::AppFlag;
 use crate::state::UiState;
 use crate::stop::Stop;
 use crate::theme::Theme;
@@ -168,7 +169,7 @@ impl App {
     ) -> Self {
         self.theme = preferences.theme.resolve(self.auto_theme);
         self.run_log.set(rmule_core::run_log::Level::from_full(
-            preferences.run_log_full,
+            preferences.flags.is_on(AppFlag::RunLogFull),
         ));
         self.views.searches.restore_sort(&preferences.table_sorts);
         self.views.transfers.restore_sort(&preferences.table_sorts);
@@ -382,7 +383,7 @@ impl App {
     /// Draw if the terminal can take a frame; if not, the state stays dirty
     /// and the next tick asks again.
     fn draw<S: Surface>(&mut self, tui: &mut S, now: Instant) {
-        let reader_mode = self.state.preferences.reader_mode;
+        let reader_mode = self.state.preferences.flags.is_on(AppFlag::ReaderMode);
         let state = &self.state;
         let chrome_state = &self.chrome;
         let theme = &self.theme;
@@ -393,7 +394,7 @@ impl App {
             .set(views.view(chrome_state.active).text_open(state));
         let title = chrome::terminal_title(state);
         let new_title = (title != self.shown_title).then_some(title);
-        let mouse = state.preferences.mouse;
+        let mouse = state.preferences.flags.is_on(AppFlag::Mouse);
         let new_mouse = (Some(mouse) != self.shown_mouse).then_some(mouse);
         let drawn = tui.draw(|frame| {
             too_small = crate::views::too_small::holds(frame.area());
@@ -522,7 +523,7 @@ mod tests {
         app.draw(&mut surface, now);
         app.draw(&mut surface, now);
         assert_eq!(surface.mouse, [true]);
-        app.state.preferences.mouse = false;
+        app.state.preferences.flags.set(AppFlag::Mouse, false);
         app.draw(&mut surface, now);
         assert_eq!(surface.mouse, [true, false]);
     }
@@ -536,7 +537,10 @@ mod tests {
         app.draw(&mut surface, now);
         assert!(surface.titles.is_empty(), "off leaves the title alone");
 
-        app.state.preferences.terminal_title = true;
+        app.state
+            .preferences
+            .flags
+            .set(AppFlag::TerminalTitle, true);
         app.state.rates.down_total_bps = 8.0 * 1024.0 * 1024.0;
         app.draw(&mut surface, now);
         app.draw(&mut surface, now);
@@ -546,7 +550,10 @@ mod tests {
             "written once"
         );
 
-        app.state.preferences.terminal_title = false;
+        app.state
+            .preferences
+            .flags
+            .set(AppFlag::TerminalTitle, false);
         app.draw(&mut surface, now);
         assert_eq!(surface.titles.last(), Some(&None), "given back");
     }
@@ -572,7 +579,7 @@ mod tests {
         assert!(app.dirty, "off, a tick paints");
 
         let mut app = App::new(Theme::default_dark());
-        app.state.preferences.reader_mode = true;
+        app.state.preferences.flags.set(AppFlag::ReaderMode, true);
         app.dirty = false;
         let _ = app.reduce(tick(now), now);
         assert!(!app.dirty, "on, it does not");
@@ -744,7 +751,10 @@ mod tests {
     fn a_held_frame_leaves_the_state_dirty_and_its_title_owed() {
         let mut app = App::new(Theme::default_dark());
         app.dirty = true;
-        app.state.preferences.terminal_title = true;
+        app.state
+            .preferences
+            .flags
+            .set(AppFlag::TerminalTitle, true);
         let now = Instant::now();
 
         app.draw(&mut HeldSurface, now);

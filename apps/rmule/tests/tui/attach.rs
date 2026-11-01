@@ -15,9 +15,9 @@ use rmule_bootstrap::{BootstrapConfig, FetchError, Fetcher};
 use rmule_core::port_mapping::{MappingProtocol, PortMappingMode};
 use rmule_core::{
     Core, CoreCommand, CoreEvent, CoreSettingsHandle, DataDir, DataDirSource, DirectoryRefusal,
-    DirectoryRole, DirectoryState, DurableAppConfig, LoginStep, ManagedServer, MappingBackend,
-    ScanEvent, ServerConnectFailure, ServerConnectionEvent, ServerListEvent, ServerListStore,
-    Setting, TakesEffect, open_durable_store,
+    DirectoryRole, DirectoryState, DurableAppConfig, Flag, LoginStep, ManagedServer,
+    MappingBackend, ScanEvent, ServerConnectFailure, ServerConnectionEvent, ServerListEvent,
+    ServerListStore, Setting, TakesEffect, open_durable_store,
 };
 use rmule_primitives::{Ipv4Endpoint, ServerEndpoint};
 use rmule_testkit::ScriptedBackend;
@@ -248,11 +248,22 @@ async fn the_settings_tab_edits_through_the_attached_core() {
     let dir = data_dir(|_, _| {});
     let Attachment { core, config, .. } = attach_in(&dir, &Scratch::default()).await;
     let effect = |edit: PrefEdit| config.commit(&edit).expect("commit");
-    assert_eq!(effect(PrefEdit::DeadServerRetries(5)), TakesEffect::Now);
-    assert_eq!(effect(PrefEdit::UdpPort(4999)), TakesEffect::NextStart);
+    assert_eq!(
+        effect(PrefEdit::Core(Setting::DeadServerRetries(5))),
+        TakesEffect::Now
+    );
+    assert_eq!(
+        effect(PrefEdit::Core(Setting::UdpPort(4999))),
+        TakesEffect::NextStart
+    );
     core.shutdown().await;
     assert_eq!(
-        config.load(None).expect("load").dead_server_retries,
+        config
+            .load(None)
+            .expect("load")
+            .core
+            .server_policy
+            .dead_after,
         5,
         "and the store holds it"
     );
@@ -270,7 +281,7 @@ async fn the_auto_update_walk_runs_once_at_attach_with_the_first_run_in_front() 
     ];
     let dir = data_dir(|_, settings| {
         settings
-            .set(Setting::AutoUpdateServerMet(true))
+            .set(Setting::Flag(Flag::AutoUpdateServerMet, true))
             .expect("turn the walk on");
         settings
             .set(Setting::ServerMetAutoUpdateUrls(urls.clone()))
@@ -321,7 +332,7 @@ async fn the_auto_update_walk_runs_once_at_attach_with_the_first_run_in_front() 
 async fn the_off_switch_keeps_a_first_run_from_fetching() {
     let dir = data_dir(|_, settings| {
         settings
-            .set(Setting::AutoFetchServerMet(false))
+            .set(Setting::Flag(Flag::AutoFetchServerMet, false))
             .expect("turn the fetch off");
     });
     let deployment = Scratch::default();

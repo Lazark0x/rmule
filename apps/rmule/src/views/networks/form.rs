@@ -190,7 +190,9 @@ impl NetworksView {
         if state.server_list_updating {
             return ViewOutcome::Emit(Action::Flash(crate::words::server::LIST_UPDATE_RUNNING));
         }
-        self.form = Some(ServerForm::update_url(&state.preferences.server_met_url));
+        self.form = Some(ServerForm::update_url(
+            &state.preferences.core.server_met_url,
+        ));
         ViewOutcome::Redraw
     }
 

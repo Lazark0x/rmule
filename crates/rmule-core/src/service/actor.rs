@@ -123,11 +123,9 @@ impl StartSettings {
             remember_peers,
             server_policy,
             server_met_url: _,
-            auto_fetch_server_met: _,
-            auto_update_server_met: _,
             server_met_auto_update_urls: _,
             nodes_dat_url: _,
-            auto_fetch_nodes_dat: _,
+            flags: _,
         } = settings;
         let start = Self {
             credentials,

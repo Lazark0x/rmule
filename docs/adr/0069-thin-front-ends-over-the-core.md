@@ -72,6 +72,12 @@ subcommands).
   `preferences` table under the same key strings. Core keeps them through a raw
   key/value surface that refuses a key of core's own, and never interprets one; each
   front end names its keys in an enum of its own.
+- **A preference that is on or off is a Flag.** One row of a table holds its name,
+  stored key and unset value, and every step of the door reads the table, so a new one
+  is that row and its words. A front end declares its own flags with the same table.
+- **A front end shows what core reads.** Its snapshot holds a `CoreSettings`, not a
+  copy of its fields, and folds a saved `Setting` with `CoreSettings::apply`, so a key
+  has one default, one type and one fold.
 - **The change path.** `set(Setting)` validates the value, persists it, and answers
   when it takes effect: `Now` or `NextStart`. A download directory is validated against
   the Shared Directory List's guards too (ADR-0101) — the running core's, or those the

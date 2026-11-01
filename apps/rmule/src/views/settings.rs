@@ -52,7 +52,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::action::Action;
 use crate::config::{
-    ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
+    AppFlag, ObfuscationChoice, PrefEdit, Preferences, ThemeChoice, validate_download_dir,
     validate_nickname, validate_temp_dir,
 };
 use crate::form::{Field, Form, FormKey, validate_port, validate_url};
@@ -69,13 +69,16 @@ use crate::words::server as server_words;
 use crate::words::settings as words_s;
 use crate::words::{absent, hints};
 use crate::wrap::clamp_u16;
+use rmule_core::port_mapping::PortMappingMode;
+use rmule_core::{Flag, Setting};
 use shared_dirs::Slot;
 
 mod shared_dirs;
 
 /// The rows, in render order. The enum *is* the field list: it indexes the
 /// form, names the section breaks, and carries what a commit means, so a row
-/// cannot exist in one of those three places and be missing from another.
+/// cannot exist in one of those three places and be missing from another. A
+/// flag's row is its table row and its words; only its place is said here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Row {
     DownloadDir,
@@ -86,25 +89,20 @@ pub(super) enum Row {
     UdpPort,
     Obfuscation,
     PortMapping,
-    ConnectAtStart,
     ServerMetUrl,
-    AutoFetchServerMet,
-    AutoUpdateServerMet,
     ServerMetAutoUpdateUrls,
     DeadServerRetries,
     WithholdShares,
     RememberPeers,
     PlayerCommand,
     NodesDatUrl,
-    AutoFetchNodesDat,
     Theme,
-    TerminalTitle,
-    ReaderMode,
-    CompletionBell,
-    Mouse,
-    RunLogFull,
     UserHash,
     KadNodeId,
+    /// A core **Flag**.
+    Flag(Flag),
+    /// An [`AppFlag`].
+    AppFlag(AppFlag),
 }
 
 impl Row {
@@ -117,23 +115,23 @@ impl Row {
         Row::UdpPort,
         Row::Obfuscation,
         Row::PortMapping,
-        Row::ConnectAtStart,
+        Row::AppFlag(AppFlag::ConnectAtStart),
         Row::ServerMetUrl,
-        Row::AutoFetchServerMet,
-        Row::AutoUpdateServerMet,
+        Row::Flag(Flag::AutoFetchServerMet),
+        Row::Flag(Flag::AutoUpdateServerMet),
         Row::ServerMetAutoUpdateUrls,
         Row::DeadServerRetries,
         Row::WithholdShares,
         Row::RememberPeers,
         Row::PlayerCommand,
         Row::NodesDatUrl,
-        Row::AutoFetchNodesDat,
+        Row::Flag(Flag::AutoFetchNodesDat),
         Row::Theme,
-        Row::TerminalTitle,
-        Row::ReaderMode,
-        Row::CompletionBell,
-        Row::Mouse,
-        Row::RunLogFull,
+        Row::AppFlag(AppFlag::TerminalTitle),
+        Row::AppFlag(AppFlag::ReaderMode),
+        Row::AppFlag(AppFlag::CompletionBell),
+        Row::AppFlag(AppFlag::Mouse),
+        Row::AppFlag(AppFlag::RunLogFull),
         Row::UserHash,
         Row::KadNodeId,
     ];
@@ -149,7 +147,7 @@ impl Row {
             // socket (ADR-0057), so it belongs beside the eD2k listen port.
             Row::NodesDatUrl => Some(words_s::KAD),
             Row::Theme => Some(words_s::APPEARANCE),
-            Row::RunLogFull => Some(words_s::DIAGNOSTICS),
+            Row::AppFlag(AppFlag::RunLogFull) => Some(words_s::DIAGNOSTICS),
             Row::UserHash => Some(words_s::IDENTITY),
             _ => None,
         }
@@ -243,6 +241,11 @@ impl Default for SettingsView {
     }
 }
 
+/// An on/off row.
+fn on_off(label: &'static str, on: bool) -> Field {
+    Field::choice(label, words_s::ON_OFF.to_vec(), usize::from(on))
+}
+
 /// Build the whole form from a preference snapshot and the shared
 /// directories, with what each row stands for.
 fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
@@ -257,12 +260,13 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
         .position(|choice| *choice == prefs.theme)
         .unwrap_or(0);
 
+    let core = &prefs.core;
     let fields = Row::ALL.map(|row| {
         let field = match row {
-            Row::DownloadDir => Field::directory(words_s::DOWNLOAD_DIR, path(&prefs.download_dir))
+            Row::DownloadDir => Field::directory(words_s::DOWNLOAD_DIR, path(&core.download_dir))
                 .with_placeholder(words_s::DOWNLOAD_DIR_UNSET),
             // Unset, the row names the directory core reads by default.
-            Row::TempDir => Field::directory(words_s::TEMP_DIR, path(&prefs.temp_dir))
+            Row::TempDir => Field::directory(words_s::TEMP_DIR, path(&core.temp_dir))
                 .with_placeholder(crate::words::app::temp_dir_default(
                     prefs
                         .data_dir
@@ -276,31 +280,20 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 None => Field::display(words_s::DATA_DIR, absent::NONE.to_string())
                     .with_note(words_s::bracketed(front_door::NO_DATA_DIR)),
             },
-            Row::Nickname => Field::text(words_s::NICKNAME, prefs.nickname.clone())
+            Row::Nickname => {
+                Field::text(words_s::NICKNAME, core.nickname.clone()).with_note(words_s::ON_RESTART)
+            }
+            Row::TcpPort => Field::text(words_s::ED2K_PORT, core.tcp_port.to_string())
                 .with_note(words_s::ON_RESTART),
-            Row::TcpPort => Field::text(words_s::ED2K_PORT, prefs.tcp_port.to_string())
-                .with_note(words_s::ON_RESTART),
-            Row::ServerMetUrl => Field::text(words_s::SERVER_MET, prefs.server_met_url.clone())
+            Row::ServerMetUrl => Field::text(words_s::SERVER_MET, core.server_met_url.clone())
                 .with_note(words_s::SERVER_MET_NOTE),
-            Row::AutoFetchServerMet => Field::choice(
-                words_s::FETCH_LIST,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.auto_fetch_server_met),
-            )
-            .with_note(words_s::FETCH_LIST_NOTE),
-            Row::AutoUpdateServerMet => Field::choice(
-                server_words::AUTO_UPDATE_LABEL,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.auto_update_server_met),
-            )
-            .with_note(server_words::AUTO_UPDATE_NOTE),
             Row::ServerMetAutoUpdateUrls => Field::text(
                 server_words::AUTO_UPDATE_URLS_LABEL,
-                prefs.server_met_auto_update_urls.join(" "),
+                core.server_met_auto_update_urls.join(" "),
             )
             .with_placeholder(server_words::AUTO_UPDATE_URLS_NONE)
             .with_note(server_words::AUTO_UPDATE_URLS_NOTE),
-            Row::UdpPort => Field::text(words_s::UDP_PORT, prefs.udp_port.to_string())
+            Row::UdpPort => Field::text(words_s::UDP_PORT, core.udp_port.to_string())
                 .with_note(words_s::ON_RESTART),
             Row::Obfuscation => Field::choice(
                 words_s::OBFUSCATION,
@@ -309,35 +302,28 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                     .to_vec(),
                 ObfuscationChoice::ALL
                     .iter()
-                    .position(|choice| *choice == prefs.obfuscation)
+                    .position(|choice| *choice == ObfuscationChoice::of(core.obfuscation))
                     .unwrap_or(0),
             )
             .with_note(words_s::OBFUSCATION_NOTE),
-            Row::PortMapping => Field::choice(
+            Row::PortMapping => on_off(
                 words_s::PORT_MAPPING,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.port_mapping),
+                core.port_mapping == PortMappingMode::Auto,
             )
             .with_note(words_s::PORT_MAPPING_NOTE),
-            Row::ConnectAtStart => Field::choice(
-                words_s::AUTOCONNECT,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.connect_at_start),
+            Row::DeadServerRetries => Field::text(
+                words_s::DEAD_AFTER,
+                core.server_policy.dead_after.to_string(),
             )
-            .with_note(words_s::connect_at_start_note(prefs.last_server.as_ref())),
-            Row::DeadServerRetries => {
-                Field::text(words_s::DEAD_AFTER, prefs.dead_server_retries.to_string())
-                    .with_note(words_s::DEAD_AFTER_NOTE)
-            }
-            Row::WithholdShares => Field::choice(
+            .with_note(words_s::DEAD_AFTER_NOTE),
+            Row::WithholdShares => on_off(
                 words_s::HIDE_SHARES,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.withhold_shares),
+                core.server_policy.withhold_from_related_search,
             )
             .with_note(words_s::HIDE_SHARES_NOTE),
             Row::RememberPeers => Field::text(
                 words_s::REMEMBER_PEERS,
-                prefs.remember_peers.get().to_string(),
+                core.remember_peers.get().to_string(),
             )
             .with_note(crate::words::download::REMEMBER_PEERS_NOTE),
             Row::PlayerCommand => Field::text(
@@ -345,50 +331,27 @@ fn build(prefs: &Preferences, state: &UiState) -> (Form, Vec<Slot>) {
                 prefs.player_command.clone().unwrap_or_default(),
             )
             .with_placeholder(crate::words::player::UNSET),
-            Row::NodesDatUrl => Field::text(words_s::NODES_DAT, prefs.nodes_dat_url.clone())
+            Row::NodesDatUrl => Field::text(words_s::NODES_DAT, core.nodes_dat_url.clone())
                 .with_note(words_s::ON_RESTART),
-            Row::AutoFetchNodesDat => Field::choice(
-                words_s::FETCH_SEEDS,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.auto_fetch_nodes_dat),
-            )
-            .with_note(words_s::FETCH_SEEDS_NOTE),
             Row::Theme => Field::choice(
                 words_s::THEME,
                 ThemeChoice::ALL.map(words_s::theme_word).to_vec(),
                 theme_index,
             )
             .with_note(words_s::THEME_NOTE),
-            Row::TerminalTitle => Field::choice(
-                words_s::TERMINAL_TITLE,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.terminal_title),
-            )
-            .with_note(words::TERMINAL_TITLE_NOTE),
-            Row::ReaderMode => Field::choice(
-                words_s::READER_MODE,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.reader_mode),
-            )
-            .with_note(words::READER_MODE_NOTE),
-            Row::CompletionBell => Field::choice(
-                words_s::BELL,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.completion_bell),
-            )
-            .with_note(words::COMPLETION_BELL_NOTE),
-            Row::Mouse => Field::choice(
-                words_s::MOUSE,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.mouse),
-            )
-            .with_note(words::MOUSE_NOTE),
-            Row::RunLogFull => Field::choice(
-                words_s::FULL_RUN_LOG,
-                words_s::ON_OFF.to_vec(),
-                usize::from(prefs.run_log_full),
-            )
-            .with_note(words_s::FULL_RUN_LOG_NOTE),
+            Row::Flag(flag) => {
+                let words = words_s::flag_words(flag);
+                on_off(words.label, core.flags.is_on(flag)).with_note(words.note)
+            }
+            Row::AppFlag(flag) => {
+                let words = words_s::app_flag_words(flag);
+                let field = on_off(words.label, prefs.flags.is_on(flag));
+                if flag == AppFlag::ConnectAtStart {
+                    field.with_note(words_s::connect_at_start_note(prefs.last_server.as_ref()))
+                } else {
+                    field.with_note(words.note)
+                }
+            }
             Row::UserHash => Field::display(
                 words_s::USER_HASH,
                 prefs
@@ -479,57 +442,58 @@ impl SettingsView {
             Some(Slot::Row(row)) => Some(*row),
             _ => None,
         };
+        let on = self.form.choice(index) == 1;
         let edit = match row.as_ref() {
-            Some(Row::DownloadDir) => PrefEdit::DownloadDir(validate_download_dir(text)?),
-            Some(Row::TempDir) => PrefEdit::TempDir(validate_temp_dir(text)?),
-            Some(Row::Nickname) => PrefEdit::Nickname(validate_nickname(text)?),
+            Some(Row::DownloadDir) => PrefEdit::download_dir(validate_download_dir(text)?),
+            Some(Row::TempDir) => PrefEdit::Core(Setting::TempDir(validate_temp_dir(text)?)),
+            Some(Row::Nickname) => PrefEdit::Core(Setting::Nickname(validate_nickname(text)?)),
             Some(Row::TcpPort) => {
                 let port = validate_port(text)?;
-                if port == prefs.udp_port {
+                if port == prefs.core.udp_port {
                     return Err(words::port_clash(words::PortClash::TcpAgainstUdp));
                 }
-                PrefEdit::TcpPort(port)
+                PrefEdit::Core(Setting::TcpPort(port))
             }
             Some(Row::UdpPort) => {
                 let port = validate_port(text)?;
-                if port == prefs.tcp_port {
+                if port == prefs.core.tcp_port {
                     return Err(words::port_clash(words::PortClash::UdpAgainstTcp));
                 }
-                PrefEdit::UdpPort(port)
+                PrefEdit::Core(Setting::UdpPort(port))
             }
-            Some(Row::ServerMetUrl) => PrefEdit::ServerMetUrl(validate_url(text)?.to_string()),
-            Some(Row::ServerMetAutoUpdateUrls) => PrefEdit::ServerMetAutoUpdateUrls(
+            Some(Row::ServerMetUrl) => {
+                PrefEdit::Core(Setting::ServerMetUrl(validate_url(text)?.to_string()))
+            }
+            Some(Row::ServerMetAutoUpdateUrls) => PrefEdit::Core(Setting::ServerMetAutoUpdateUrls(
                 text.split_whitespace()
                     .map(|url| validate_url(url).map(str::to_owned))
                     .collect::<Result<_, _>>()?,
-            ),
-            Some(Row::DeadServerRetries) => PrefEdit::DeadServerRetries(validate_dead_after(text)?),
-            Some(Row::RememberPeers) => PrefEdit::RememberPeers(validate_remember_peers(text)?),
+            )),
+            Some(Row::DeadServerRetries) => {
+                PrefEdit::Core(Setting::DeadServerRetries(validate_dead_after(text)?))
+            }
+            Some(Row::RememberPeers) => {
+                PrefEdit::Core(Setting::RememberPeers(validate_remember_peers(text)?))
+            }
             Some(Row::PlayerCommand) => PrefEdit::PlayerCommand(player_command(text)?),
-            Some(Row::NodesDatUrl) => PrefEdit::NodesDatUrl(validate_url(text)?.to_string()),
-            Some(Row::ConnectAtStart) => PrefEdit::ConnectAtStart(self.form.choice(index) == 1),
-            Some(Row::PortMapping) => PrefEdit::PortMapping(self.form.choice(index) == 1),
-            Some(Row::RunLogFull) => PrefEdit::RunLogFull(self.form.choice(index) == 1),
-            Some(Row::TerminalTitle) => PrefEdit::TerminalTitle(self.form.choice(index) == 1),
-            Some(Row::ReaderMode) => PrefEdit::ReaderMode(self.form.choice(index) == 1),
-            Some(Row::CompletionBell) => PrefEdit::CompletionBell(self.form.choice(index) == 1),
-            Some(Row::Mouse) => PrefEdit::Mouse(self.form.choice(index) == 1),
-            Some(Row::WithholdShares) => PrefEdit::WithholdShares(self.form.choice(index) == 1),
-            Some(Row::AutoFetchServerMet) => {
-                PrefEdit::AutoFetchServerMet(self.form.choice(index) == 1)
+            Some(Row::NodesDatUrl) => {
+                PrefEdit::Core(Setting::NodesDatUrl(validate_url(text)?.to_string()))
             }
-            Some(Row::AutoUpdateServerMet) => {
-                PrefEdit::AutoUpdateServerMet(self.form.choice(index) == 1)
-            }
-            Some(Row::AutoFetchNodesDat) => {
-                PrefEdit::AutoFetchNodesDat(self.form.choice(index) == 1)
-            }
-            Some(Row::Obfuscation) => PrefEdit::Obfuscation(
+            Some(Row::Flag(flag)) => PrefEdit::Core(Setting::Flag(*flag, on)),
+            Some(Row::AppFlag(flag)) => PrefEdit::Flag(*flag, on),
+            Some(Row::PortMapping) => PrefEdit::Core(Setting::PortMapping(if on {
+                PortMappingMode::Auto
+            } else {
+                PortMappingMode::Off
+            })),
+            Some(Row::WithholdShares) => PrefEdit::Core(Setting::WithholdShares(on)),
+            Some(Row::Obfuscation) => PrefEdit::Core(Setting::Obfuscation(
                 ObfuscationChoice::ALL
                     .get(self.form.choice(index))
                     .copied()
-                    .unwrap_or_default(),
-            ),
+                    .unwrap_or_default()
+                    .policy(),
+            )),
             Some(Row::Theme) => PrefEdit::Theme(
                 ThemeChoice::ALL
                     .get(self.form.choice(index))
@@ -551,12 +515,14 @@ impl SettingsView {
             // (ADR-0101): the first `Enter` has the app ask the share guards,
             // which warn through [`Self::warn_share`] when they pass; the
             // second commits.
-            Ok(Some(PrefEdit::DownloadDir(dir))) if self.warned_dir.as_ref() != Some(&dir) => {
+            Ok(Some(PrefEdit::Core(Setting::DownloadDir { dir, .. })))
+                if self.warned_dir.as_ref() != Some(&dir) =>
+            {
                 ViewOutcome::Emit(Action::ConfirmDownloadDir(dir))
             }
             // A Temp dir that does not exist is made at the set: said first,
             // since the path may be a typo.
-            Ok(Some(PrefEdit::TempDir(Some(dir))))
+            Ok(Some(PrefEdit::Core(Setting::TempDir(Some(dir)))))
                 if !dir.exists() && self.warned_dir.as_ref() != Some(&dir) =>
             {
                 self.form.error = Some(words::temp_dir_missing(&dir));

@@ -27,6 +27,76 @@ fn a_cold_store_reads_as_a_fresh_install_runs() {
     );
 }
 
+/// The rows of an installed store, as the build before them wrote them: the
+/// keys and their text are the store's format, so neither may ever move.
+const INSTALLED_ROWS: [(&str, &str); 11] = [
+    ("server_met_url", "http://mirror.example/server.met"),
+    ("auto_fetch_server_met", "false"),
+    ("auto_update_server_met", "true"),
+    (
+        "server_met_auto_update_urls",
+        "http://one.example/server.met\nhttps://two.example/server.met",
+    ),
+    ("nodes_dat_url", "http://mirror.example/nodes.dat"),
+    ("auto_fetch_nodes_dat", "false"),
+    ("port_mapping", "false"),
+    ("obfuscation", "requested"),
+    ("dead_server_retries", "7"),
+    ("withhold_shares_related_search", "true"),
+    ("remember_peers", "9"),
+];
+
+/// A store written before reads as the operator left it, and setting those
+/// values again writes the same rows, key for key and byte for byte.
+#[test]
+fn an_installed_stores_rows_read_back_and_write_the_same_bytes() {
+    let (settings, store) = handle();
+    let rows = DurableAppConfig::new(Arc::clone(&store));
+    for (key, value) in INSTALLED_ROWS {
+        rows.set_value(key, value).expect("row");
+    }
+    let read = settings.read().expect("read");
+
+    let (fresh, fresh_store) = handle();
+    let peers = RememberPeers::new(std::num::NonZeroU8::new(9).expect("nine"));
+    for setting in [
+        Setting::ServerMetUrl(read.server_met_url.clone()),
+        Setting::Flag(Flag::AutoFetchServerMet, false),
+        Setting::Flag(Flag::AutoUpdateServerMet, true),
+        Setting::ServerMetAutoUpdateUrls(read.server_met_auto_update_urls.clone()),
+        Setting::NodesDatUrl(read.nodes_dat_url.clone()),
+        Setting::Flag(Flag::AutoFetchNodesDat, false),
+        Setting::PortMapping(read.port_mapping),
+        Setting::Obfuscation(read.obfuscation),
+        Setting::DeadServerRetries(read.server_policy.dead_after),
+        Setting::WithholdShares(read.server_policy.withhold_from_related_search),
+        Setting::RememberPeers(read.remember_peers),
+    ] {
+        fresh.set(setting).expect("set");
+    }
+    assert_eq!(read.remember_peers, peers);
+    assert_eq!(fresh.read().expect("read"), read);
+    let written = DurableAppConfig::new(fresh_store);
+    for (key, value) in INSTALLED_ROWS {
+        assert_eq!(written.value(key).expect("row").as_deref(), Some(value));
+    }
+}
+
+/// Text no build wrote reads as off, an on-by-default key included: the rule
+/// every stored boolean has always read by.
+#[test]
+fn a_stored_boolean_is_on_only_as_true() {
+    let (settings, store) = handle();
+    let rows = DurableAppConfig::new(store);
+    for key in Flag::ALL.iter().map(|flag| flag.key()) {
+        rows.set_value(key, "yes").expect("row");
+    }
+    let read = settings.read().expect("read");
+    for flag in Flag::ALL {
+        assert!(!read.flags.is_on(*flag), "{flag:?}");
+    }
+}
+
 /// Every key set on the store alone persists, reads back as set, and waits
 /// for the next start: no core runs behind the handle to take it up.
 #[test]
@@ -53,17 +123,21 @@ fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
         Setting::DeadServerRetries(policy.dead_after),
         Setting::WithholdShares(policy.withhold_from_related_search),
         Setting::ServerMetUrl("http://mirror.example/server.met".to_owned()),
-        Setting::AutoFetchServerMet(false),
-        Setting::AutoUpdateServerMet(true),
+        Setting::Flag(Flag::AutoFetchServerMet, false),
+        Setting::Flag(Flag::AutoUpdateServerMet, true),
         Setting::ServerMetAutoUpdateUrls(vec![
             " http://one.example/server.met".to_owned(),
             "https://two.example/server.met".to_owned(),
         ]),
         Setting::NodesDatUrl("http://mirror.example/nodes.dat".to_owned()),
-        Setting::AutoFetchNodesDat(false),
+        Setting::Flag(Flag::AutoFetchNodesDat, false),
     ] {
         assert_eq!(settings.set(setting), Ok(TakesEffect::NextStart));
     }
+    let mut flags = Flags::default();
+    flags.set(Flag::AutoFetchServerMet, false);
+    flags.set(Flag::AutoUpdateServerMet, true);
+    flags.set(Flag::AutoFetchNodesDat, false);
     assert_eq!(
         settings.read().expect("read"),
         CoreSettings {
@@ -77,16 +151,75 @@ fn every_setting_set_on_the_store_alone_persists_for_the_next_start() {
             remember_peers: RememberPeers::new(std::num::NonZeroU8::MIN),
             server_policy: policy,
             server_met_url: "http://mirror.example/server.met".to_owned(),
-            auto_fetch_server_met: false,
-            auto_update_server_met: true,
             server_met_auto_update_urls: vec![
                 "http://one.example/server.met".to_owned(),
                 "https://two.example/server.met".to_owned(),
             ],
             nodes_dat_url: "http://mirror.example/nodes.dat".to_owned(),
-            auto_fetch_nodes_dat: false,
+            flags,
         }
     );
+}
+
+/// The fold a front end's snapshot takes reads as the store does after the
+/// same set, the text core trims included, so the snapshot never needs a read
+/// behind it.
+#[test]
+fn a_fold_reads_as_the_store_reads_after_the_set() {
+    let (settings, _store) = handle();
+    let parts = tempfile::tempdir().expect("a temp dir");
+    let dir = rmule_testkit::absolute_path("downloads");
+    let mut folded = settings.read().expect("read");
+    let flags = Flag::ALL
+        .iter()
+        .map(|flag| Setting::Flag(*flag, !flag.default_on()));
+    let others = [
+        Setting::DownloadDir {
+            dir,
+            share_confirmed: true,
+        },
+        Setting::TempDir(Some(parts.path().to_path_buf())),
+        Setting::Nickname("  hübsch ".to_owned()),
+        Setting::TcpPort(4711),
+        Setting::UdpPort(4722),
+        Setting::Obfuscation(Some(ObfuscationPolicy::Required)),
+        Setting::PortMapping(PortMappingMode::Off),
+        Setting::RememberPeers(RememberPeers::new(std::num::NonZeroU8::MIN)),
+        Setting::DeadServerRetries(9),
+        Setting::WithholdShares(true),
+        Setting::ServerMetUrl(" http://mirror.example/server.met ".to_owned()),
+        Setting::ServerMetAutoUpdateUrls(vec![" http://one.example/server.met".to_owned()]),
+        Setting::NodesDatUrl(" http://mirror.example/nodes.dat ".to_owned()),
+        Setting::TempDir(None),
+    ];
+    for setting in flags.chain(others) {
+        settings.set(setting.clone()).expect("set");
+        folded.apply(&setting);
+        assert_eq!(settings.read().expect("read"), folded, "{setting:?}");
+    }
+}
+
+/// Every flag's table row holds: unset reads its default, a set writes its
+/// key, and a front end's raw surface cannot reach it.
+#[test]
+fn every_flag_reads_its_default_writes_its_key_and_is_core_s_own() {
+    let (settings, store) = handle();
+    let rows = DurableAppConfig::new(store);
+    for flag in Flag::ALL.iter().copied() {
+        let read = settings.read().expect("read");
+        assert_eq!(read.flags.is_on(flag), flag.default_on(), "{flag:?}");
+        settings
+            .set(Setting::Flag(flag, !flag.default_on()))
+            .expect("set");
+        assert_eq!(
+            rows.value(flag.key()).expect("row").as_deref(),
+            Some(flag_text(!flag.default_on())),
+        );
+        assert_eq!(
+            settings.set_front_end_value(flag.key(), "true"),
+            Err(SettingRefusal::CoreKey.into()),
+        );
+    }
 }
 
 /// A value the key cannot take is refused and nothing is written.

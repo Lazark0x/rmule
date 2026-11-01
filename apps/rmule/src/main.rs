@@ -33,6 +33,7 @@ use rmule::args::{self, BUILD, Invocation, MissingTerminal, RunArgs};
 use rmule::attach::{Attachment, Live, attach};
 use rmule::bridge::{self, BridgeConfig};
 use rmule::capability::{Capability, TerminalEnv};
+use rmule::config::AppFlag;
 use rmule::glyphs::GlyphTier;
 use rmule::input::spawn_input_pump;
 use rmule::stop::Stop;
@@ -230,11 +231,17 @@ async fn run(run_args: RunArgs) -> std::io::Result<ExitCode> {
     // `--log-level` holds for this run and is never stored; the
     // Settings tab shows the level in force.
     if let Some(level) = run_args.log_level {
-        preferences.run_log_full = level == Level::Full;
+        preferences
+            .flags
+            .set(AppFlag::RunLogFull, level == Level::Full);
     }
-    run_log_level.set(Level::from_full(preferences.run_log_full));
+    run_log_level.set(Level::from_full(
+        preferences.flags.is_on(AppFlag::RunLogFull),
+    ));
     // `--no-mouse` likewise.
-    preferences.mouse &= !run_args.no_mouse;
+    if run_args.no_mouse {
+        preferences.flags.set(AppFlag::Mouse, false);
+    }
     let handle = bridge::spawn(core, actions_tx.clone(), BridgeConfig::default());
     stop.quit_core_when_asked(handle.clone());
     // The operator's connect, given ahead of time — or nothing
