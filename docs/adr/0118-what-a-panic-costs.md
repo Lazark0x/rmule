@@ -88,8 +88,9 @@ blocking walk cannot keep the process alive after the terminal is back.
 Closing a window is an ordinary way out, not a panic and not an error: it ends with the same
 Quit, a status of success and no crash report.
 
-- `crate::tui`'s line is one thread that makes every terminal write. The run hands it bytes and
-  goes on, and a frame it cannot take yet is held, whole, for the next tick. A terminal nobody
+- `crate::tui`'s line is one thread that makes every terminal write, the title and the bell among
+  them. The run hands it bytes and goes on, and a frame it cannot take yet is held, whole, for the
+  next tick, with its caret and title owed to the frame that follows. A terminal nobody
   reads stalls that thread and no other. The loop asks the terminal nothing either: ratatui's
   cursor query before a clear is answered from memory, since crossterm's answer is a write and a
   two-second read of the input the pump is on.
@@ -111,8 +112,9 @@ in a read that never answers. Nothing else in the run depends on that thread end
 ### Job control
 
 Ctrl-Z and a SIGTSTP from outside take one path: the terminal is given back and the process group
-stops. A SIGCONT is the run going again, whoever stopped it: raw mode and the screen are taken
-anew, the next frame is drawn whole, and the status bar says the transfers stood still. The stop
+stops. A SIGCONT is the run going again, whoever stopped it: raw mode, the screen and a held
+terminal title are taken anew, the next frame is drawn whole, and the status bar says the
+transfers stood still. The stop
 is SIGSTOP, since the run holds a handler for SIGTSTP and the group has to stop whatever that
 handler does.
 
