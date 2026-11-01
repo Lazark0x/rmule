@@ -175,9 +175,9 @@ impl SharedView {
         self.peer_order(state).to_vec()
     }
 
-    /// A frame asks more than once, and the queue can hold thousands.
-    fn peer_order(&self, state: &UiState) -> Arc<[PeerEndpoint]> {
-        let key = OrderKey {
+    /// What the pane's order and widths stand on now.
+    pub(in crate::views::shared_files) fn peer_key(&self, state: &UiState) -> OrderKey {
+        OrderKey {
             peers: state.upload_peers.revision(),
             tick: state.last_snapshot_at,
             core_alive: state.core_alive,
@@ -187,8 +187,12 @@ impl SharedView {
             active_only: self.active_only,
             sort: self.peer_sort,
             typed: self.peer_filter.generation(),
-        };
-        self.peers_memo.get(key, || {
+        }
+    }
+
+    /// A frame asks more than once, and the queue can hold thousands.
+    fn peer_order(&self, state: &UiState) -> Arc<[PeerEndpoint]> {
+        self.peers_memo.get(self.peer_key(state), || {
             let visible = self.visible_peers(state);
             let ranks =
                 SoftwareRanks::new(visible.iter().filter_map(|peer| peer.software.as_ref()));

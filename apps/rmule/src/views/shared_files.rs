@@ -77,6 +77,8 @@ pub struct SharedView {
     peer_sort: TableSort<peers::sort::PeersTable>,
     /// The peers' endpoints, in that order.
     peers_memo: Memo<peers::sort::OrderKey, rmule_primitives::PeerEndpoint>,
+    /// The widest value each of the pane's columns shows.
+    peer_wants_memo: Memo<peers::sort::OrderKey, usize>,
     /// The selected upload peer, by endpoint; `peers_selected` is its
     /// position in the current order.
     peer_cursor: RowCursor<rmule_primitives::PeerEndpoint>,
@@ -124,6 +126,7 @@ impl Default for SharedView {
             peers_selected: 0,
             peer_sort: TableSort::default(),
             peers_memo: Memo::default(),
+            peer_wants_memo: Memo::default(),
             peer_cursor: RowCursor::default(),
             files_viewport: Viewport::default(),
             peers_viewport: Viewport::default(),

@@ -187,14 +187,16 @@ impl SharedView {
             let peer = visible[index];
             peer_cells(peer, state, bps_of(peer), theme)
         };
-        let mut wants = [0; 5];
-        for (index, cap) in PEER_CAPS.into_iter().enumerate() {
-            let widest = (0..visible.len())
-                .map(|row| display_width(&cells(row, &[])[index].text))
-                .max()
-                .unwrap_or(0);
-            wants[index] = widest.min(cap);
-        }
+        let wants = self.peer_wants_memo.get(self.peer_key(state), || {
+            let mut wants = vec![0; 5];
+            for row in 0..visible.len() {
+                let cells = cells(row, &[]);
+                for (want, (cell, cap)) in wants.iter_mut().zip(cells.iter().zip(PEER_CAPS)) {
+                    *want = display_width(&cell.text).min(cap).max(*want);
+                }
+            }
+            wants
+        });
         let table = Table::of(
             &self.peer_sort,
             &peer_floors(),
