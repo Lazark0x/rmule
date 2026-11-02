@@ -292,11 +292,13 @@ impl BuddyService {
     }
 
     /// Whether the single slot is currently filled.
+    #[cfg(test)]
     pub(crate) fn has_buddy(&self) -> bool {
         self.slot.is_some()
     }
 
     /// Our registered buddy-ID, or `None` when the slot is empty.
+    #[cfg(test)]
     pub(crate) fn buddy_id(&self) -> Option<KadId> {
         self.slot.map(|link| link.buddy_id)
     }
@@ -308,6 +310,7 @@ impl BuddyService {
     }
 
     /// Our registered buddy's eD2k user hash, or `None` when the slot is empty.
+    #[cfg(test)]
     pub(crate) fn buddy_hash(&self) -> Option<UserHash> {
         self.slot.map(|link| link.hash)
     }

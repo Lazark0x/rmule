@@ -123,7 +123,7 @@ impl FirewalledNode {
     /// Whether we currently hold a buddy. The enacted slot answers this from
     /// its own richer record ([`link::FirewalledSlot::buddy`]); this stays for
     /// the pure tier, which drives the node with no slot around it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn has_buddy(&self) -> bool {
         self.buddy.is_some()
     }
@@ -138,7 +138,6 @@ impl FirewalledNode {
     /// verdict alone: a server-High-ID node holding a buddy publishes the
     /// direct row exactly as aMule's row-type choice does, not the buddy row a
     /// Kad-only read would have kept it on.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_buddy_info(&self, firewalled: bool) -> Option<BuddyPublish> {
         // Only a firewalled node publishes buddy info; a reachable one publishes a
         // direct source (the ADR-0043 publisher's prior assumption). The published

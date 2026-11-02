@@ -317,12 +317,9 @@ impl AddressLearning {
     /// Which tier `family`'s address verdict currently rests on, or `None` when
     /// none holds.
     ///
-    /// The **Port Mapping** runtime reads this as the connected server's ID
-    /// verdict: [`Server`](ConfidenceTier::Server) holding an IPv4 *is* a
-    /// High-ID, since that tier exists only while a session assigned us one. It
-    /// is read here rather than plumbed from the session because the session
-    /// layer does not know a port mapper exists, and "what the server says our
-    /// address is" already lives in exactly one place.
+    /// [`Server`](ConfidenceTier::Server) holding an IPv4 *is* a High-ID, since
+    /// that tier exists only while a session assigned us one.
+    #[cfg(test)]
     pub(crate) fn address_tier(
         &self,
         family: AddressFamily,
@@ -406,9 +403,8 @@ impl AddressLearning {
             .or_else(|| self.hints.get(&family).copied())
     }
 
-    /// Whether anything at all has been observed — the "no learning has
-    /// happened yet" case a diagnostics consumer renders as unknown rather
-    /// than as an empty result.
+    /// Whether anything at all has been observed.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.interfaces.is_empty()
             && self.addresses.values().all(Ladder::is_empty)
@@ -900,6 +896,7 @@ impl SharedAddressLearning {
 
     /// Which tier one family's verdict rests on (see
     /// [`AddressLearning::address_tier`]).
+    #[cfg(test)]
     pub(crate) fn address_tier(&self, family: AddressFamily) -> Option<ConfidenceTier> {
         self.with(|store, now| store.address_tier(family, now))
     }
@@ -935,6 +932,7 @@ impl SharedAddressLearning {
     }
 
     /// Whether anything at all has been learned yet.
+    #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.with(|store, _| store.is_empty())
     }

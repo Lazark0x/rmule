@@ -11,10 +11,7 @@
 mod adapters;
 // The core-owned **Address Learning** store (ADR-0084): the sans-I/O sibling
 // of `Reachability` that turns typed `AddressObservation`s into one External
-// Endpoint verdict per address family and socket role. The port mapper
-// and the IPv6 dialect are its other two feeders, so some constructors
-// and the chooser's IPv6 half have no production caller until those land.
-#[cfg_attr(not(test), allow(dead_code))]
+// Endpoint verdict per address family and socket role.
 mod address_learning;
 mod app_config;
 mod assembly;
@@ -24,9 +21,7 @@ mod hello_refusals;
 // The core-owned open-node buddy service (ADR-0061): the single-slot citizen
 // next to `Reachability` that serves firewalled peers — the FINDBUDDY refusal
 // matrix, the verified `0x52`→`0x99` / `0x94`→`0x9A` relays, and the ping/pong
-// keepalive. `buddy_link` holds the live socket, so the allow covers only what
-// no production path reaches: the test-tier accessors.
-#[cfg_attr(not(test), allow(dead_code))]
+// keepalive. `buddy_link` holds the live socket.
 mod buddy;
 mod buddy_link;
 // The core-side callback route chooser (ADR-0061): one sans-I/O selector every
@@ -101,9 +96,7 @@ mod planning;
 // derives the Desired Mapping Set from the bound Family Pairs, races PCP /
 // NAT-PMP / UPnP, grades every trial on the exact external port, renews on the
 // RFC ladder and re-adds the set after a gateway reboot. `adapters::port_mapping`
-// is the runtime that enacts its commands; the allow covers the grading and
-// lease vocabulary that only the deterministic tier reads back.
-#[cfg_attr(not(test), allow(dead_code))]
+// is the runtime that enacts its commands.
 pub mod port_mapping;
 // The Run Log (ADR-0075): the record vocabulary every core event projects
 // into, its two levels, and the file a front end writes them to.
