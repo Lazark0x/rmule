@@ -25,8 +25,8 @@ restart.
 
 ### Bootstrap
 
-- A release carries a seed list. A first start lists its servers before any
-  fetch, and Kad dials its nodes first, so a mirror that fails or is forged
+- A release carries a seed list of servers. A first start lists them before any
+  fetch, so a mirror that fails or is forged
   cannot leave rmule with nowhere to go or choose every server for it.
 - A fetched list adds to the seeds and never replaces them, and a list of a
   shape no mirror serves is refused whole.

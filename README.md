@@ -116,9 +116,8 @@ eD2k server until you say so.
    `c`. Each later start connects to that server again; *Autoconnect* in
    Settings turns this off.
 4. **Kad** starts after the first server login, or at once when you press `K`
-   in Networks. If rmule knows no Kad contacts yet, it dials the seed nodes
-   this release carries, then what it fetches in `nodes.dat` from
-   `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)
+   in Networks. If rmule knows no Kad contacts yet, it dials what it fetches
+   in `nodes.dat` from `http://upd.emule-security.org/nodes.dat`. Settings has the URL (*nodes.dat*)
    and an off switch for the fetch (*Fetch seeds*).
 5. **Search and download.** Press `2`, type a query and press `Enter`. One
    search goes to the connected server, to other servers over UDP and to Kad,
@@ -247,7 +246,7 @@ the terminal: hold Shift, or Option on macOS, to select text, or turn off *Mouse
 in Settings or start with `--no-mouse`; clicks and the wheel then do nothing.
 Settings marks the choices that take effect on restart.
 
-![The Settings tab: paths, shared directories, network, servers, downloads, Kad, appearance and diagnostics](assets/screenshots/settings.png)
+![The Settings tab: paths, shared directories, network, servers, downloads, Kad and appearance](assets/screenshots/settings.png)
 
 `rmule --data-dir <path>` picks the data directory and
 `rmule --log-level detailed` adds peer addresses, file names, paths and hashes
