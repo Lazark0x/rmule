@@ -1,6 +1,6 @@
 #!/bin/bash
 # A first-class download from a stock aMule, interrupted once and finished.
-#   resume.sh <pause|restart|kill9|forged>
+#   resume.sh <pause|restart|paused-restart|kill9|forged>
 # A tap on each seed holds every block, so a byte sent twice is a refetch. A
 # second stock seed joins during the interruption: a stock-shaped client asks a
 # source it has just asked again only after the reask period, as stock does.
@@ -77,7 +77,12 @@ pause)
     rm "$R/pause.gate"
     box=rig-rmule
     ;;
-restart | forged)
+restart | paused-restart | forged)
+    if [ "$mode" != restart ]; then
+        # A pause stops the run, which is what writes its closing checkpoint.
+        touch "$R/pause.gate"
+        sleep 4
+    fi
     touch "$R/stop.gate"
     docker wait rig-rmule >/dev/null
     second_seed
